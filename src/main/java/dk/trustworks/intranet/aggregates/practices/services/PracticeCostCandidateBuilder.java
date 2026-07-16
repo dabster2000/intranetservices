@@ -43,6 +43,7 @@ final class PracticeCostCandidateBuilder {
         }
 
         Map<String, Map<String, BigDecimal>> intendedByCompanyMonth = new LinkedHashMap<>();
+        Set<String> monthEndFallbackEmployeeMonths = new TreeSet<>();
         for (SalaryCell salary : salaries) {
             requireNonNegative(salary.intendedSalaryDkk(), "NEGATIVE_INTENDED_SALARY");
             if (salary.intendedSalaryDkk().signum() == 0) continue;
@@ -53,6 +54,7 @@ final class PracticeCostCandidateBuilder {
                 String fallback = resolveMonthEnd(salary.userUuid(), salary.monthKey(), effective);
                 if (fallback == null) throw new CandidateIntegrityException("SALARY_MONTH_END_PRACTICE_UNAVAILABLE");
                 shares = Map.of(fallback, DeterministicShareNormalizer.ONE);
+                monthEndFallbackEmployeeMonths.add(userCompanyMonth);
             } else {
                 shares = normalize(userCapacity);
             }
@@ -105,7 +107,10 @@ final class PracticeCostCandidateBuilder {
         List<SalaryCoverage> salaryCoverage = intendedByCompanyMonth.entrySet().stream().map(entry -> {
             String[] parts = entry.getKey().split("\\|", -1);
             return new SalaryCoverage(parts[0], parts[1], sum(entry.getValue()),
-                    entry.getValue().keySet().stream().sorted().toList());
+                    entry.getValue().keySet().stream().sorted().toList(),
+                    Math.toIntExact(monthEndFallbackEmployeeMonths.stream()
+                            .filter(key -> key.endsWith("|" + parts[0] + "|" + parts[1]))
+                            .count()));
         }).sorted(Comparator.comparing(SalaryCoverage::stableKey)).toList();
         return new Result(List.copyOf(costs), ftes, salaryCoverage);
     }
@@ -155,7 +160,12 @@ final class PracticeCostCandidateBuilder {
         String stableKey() { return key(companyUuid, practiceCode, monthKey); }
     }
     record SalaryCoverage(String companyUuid, String monthKey, BigDecimal intendedSalaryDkk,
-                          List<String> expectedPractices) {
+                          List<String> expectedPractices,
+                          int costMonthEndPracticeFallbackEmployeeMonthCount) {
+        SalaryCoverage(String companyUuid, String monthKey, BigDecimal intendedSalaryDkk,
+                       List<String> expectedPractices) {
+            this(companyUuid, monthKey, intendedSalaryDkk, expectedPractices, 0);
+        }
         String stableKey() { return key(companyUuid, monthKey); }
     }
     record Result(List<MonthlyCost> costs, List<MonthlyFte> ftes, List<SalaryCoverage> salaryCoverage) {}

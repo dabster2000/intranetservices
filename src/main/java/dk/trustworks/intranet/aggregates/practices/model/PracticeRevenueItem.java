@@ -47,7 +47,7 @@ public class PracticeRevenueItem extends PanacheEntityBase {
     @Column(name = "item_control_dkk", precision = 48, scale = 12) public BigDecimal itemControlDkk;
     @Column(name = "document_control_dkk", precision = 48, scale = 2) public BigDecimal documentControlDkk;
     @Column(name = "document_gl_revenue_dkk", precision = 48, scale = 4) public BigDecimal documentGlRevenueDkk;
-    @Column(name = "item_cent_adjustment_dkk", precision = 48, scale = 2) public BigDecimal itemCentAdjustmentDkk;
+    @Column(name = "item_cent_adjustment_dkk", precision = 48, scale = 4) public BigDecimal itemCentAdjustmentDkk;
     @Column(name = "effective_document_ratio", precision = 38, scale = 18) public BigDecimal effectiveDocumentRatio;
     @Column(name = "document_ratio_closure_row") public boolean documentRatioClosureRow;
     @Column(name = "document_ratio_normalization_applied") public boolean documentRatioNormalizationApplied;

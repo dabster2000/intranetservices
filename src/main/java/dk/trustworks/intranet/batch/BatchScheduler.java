@@ -2,6 +2,7 @@ package dk.trustworks.intranet.batch;
 
 import dk.trustworks.intranet.aggregates.finance.services.OpexDistributionRefreshService;
 import dk.trustworks.intranet.aggregates.practices.services.PracticeCostBasisRefreshService;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,6 +29,15 @@ public class BatchScheduler {
 
     @Inject
     OpexDistributionRefreshService opexDistributionRefreshService;
+
+    @Inject
+    PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
+
+    @Inject
+    PracticeCostBasisRefreshService practiceCostBasisRefreshService;
+
+    /** Bounded same-input technical retries before a FAILED cost request stops being auto-retried. */
+    static final int MAX_COST_BASIS_TECHNICAL_RETRIES = 5;
 
     /**
      * Kill switch for expense-consume — the only scheduled job that POSTs vouchers
@@ -454,6 +464,48 @@ public class BatchScheduler {
         }
     }
 
+    /**
+     * A same-input technical failure of the latest cost request is retried in place (FAILED -> PENDING,
+     * attempt_count++) so a transient error does not permanently strand the queue. A dominated or
+     * exhausted failure is deliberately left FAILED; supersession handles displaced work separately.
+     */
+    @Scheduled(every = "60s", identity = "practice-cost-basis-technical-retry")
+    void retryStaleTechnicalCostFailure() {
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> retryable = em.createNativeQuery("""
+                    SELECT r.request_id, r.optimistic_version
+                    FROM practice_cost_basis_refresh_request r
+                    JOIN practice_operating_cost_publication p ON p.publication_id=1
+                    JOIN practice_contribution_publication_control c ON c.control_id=1
+                    JOIN bi_refresh_watermark b ON b.pipeline_name='FACT_USER_DAY'
+                    JOIN practice_revenue_source_watermark pb ON pb.source_name='PRACTICE_BASIS_INPUT'
+                    JOIN practice_revenue_source_watermark fg ON fg.source_name='FINANCE_GL'
+                    JOIN practice_revenue_source_watermark ac ON ac.source_name='ACCOUNT_CLASSIFICATION'
+                    WHERE r.status='FAILED' AND c.refresh_enabled=TRUE
+                      AND c.revenue_recovery_owner_token IS NULL
+                      AND r.attempt_count < :maxAttempts
+                      AND r.request_id=p.latest_cost_basis_request_id
+                      AND r.input_vector_fingerprint=p.latest_cost_basis_request_vector
+                      AND r.expected_full_refresh_version=b.full_refresh_version
+                      AND r.expected_incremental_refresh_version=b.incremental_refresh_version
+                      AND r.expected_practice_basis_input_version=pb.source_version
+                      AND r.expected_finance_gl_version=fg.source_version
+                      AND r.expected_account_classification_version=ac.source_version
+                      AND NOT EXISTS (
+                          SELECT 1 FROM practice_cost_basis_refresh_request newer
+                          WHERE newer.request_id > r.request_id)
+                    """).setParameter("maxAttempts", MAX_COST_BASIS_TECHNICAL_RETRIES).getResultList();
+            if (retryable.size() != 1) return;
+            Object[] row = retryable.getFirst();
+            BigInteger id = row[0] instanceof BigInteger v ? v : new BigInteger(row[0].toString());
+            long version = ((Number) row[1]).longValue();
+            practiceCostBasisRefreshService.retryTechnicalFailure(id, version);
+        } catch (Exception e) {
+            log.debug("Could not retry technical cost-basis failure: " + e.getMessage());
+        }
+    }
+
     /** Debounced source-vector poll plus the 04:45 Europe/Copenhagen safety run. */
     @Scheduled(every = "60s", identity = "practice-revenue-source-poll")
     void schedulePracticeRevenueRefresh() {
@@ -468,6 +520,9 @@ public class BatchScheduler {
 
     void startPracticeRevenueIfEligible() {
         try {
+            // Delivery evidence shares the hot BI change log. Consume it before evaluating the
+            // source vector; a running attempt deliberately defers to its final union scan.
+            practiceRevenueDirtyMarker.pollDeliveryEvidence();
             // The INSERT is idempotent and selects only a changed READY request. NO_CHANGE has
             // no resulting generation, so it cannot create a signal.
             opexDistributionRefreshService.emitReadyCostGenerationSignal();

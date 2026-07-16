@@ -70,6 +70,54 @@ public class PracticeRevenueAllocationService {
         return wholeItemUnassigned(request, ReasonCode.ATTRIBUTION_MISSING);
     }
 
+    /**
+     * Resolves recipient scope for a non-monetary item without fabricating an amount or allocation.
+     * The same category-specific source precedence, share validation, and segment classification as
+     * {@link #allocate(AllocationRequest)} are used; only the monetary cent-allocation step is skipped.
+     */
+    public EvidenceScope resolveEvidenceScope(AllocationRequest request) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(request.item(), "item");
+
+        Map<SourceTier, SourceEvidence> byTier = new EnumMap<>(SourceTier.class);
+        for (SourceEvidence source : request.sources() == null ? List.<SourceEvidence>of() : request.sources()) {
+            if (source == null || byTier.putIfAbsent(source.tier(), source) != null) {
+                return EvidenceScope.ambiguous(ReasonCode.CONTRADICTORY_EVIDENCE);
+            }
+        }
+
+        for (SourceTier tier : precedence(request.item(), request.documentType())) {
+            SourceEvidence source = byTier.get(tier);
+            if (source == null || source.state() == EvidenceState.ABSENT) continue;
+            if (source.state() == EvidenceState.INVALID) {
+                return EvidenceScope.ambiguous(
+                        source.reason() == ReasonCode.NONE ? ReasonCode.ATTRIBUTION_INVALID : source.reason());
+            }
+            SourceResolution resolution = resolveSource(source);
+            if (resolution.outcome() == SourceOutcome.ZERO_OR_ABSENT) continue;
+            if (resolution.outcome() == SourceOutcome.INVALID) {
+                return EvidenceScope.ambiguous(resolution.reason());
+            }
+
+            Set<SegmentId> segments = resolution.recipients().stream()
+                    .map(ResolvedRecipient::segmentId).collect(java.util.stream.Collectors.toSet());
+            if (segments.size() != 1 || segments.contains(SegmentId.UNASSIGNED)) {
+                return EvidenceScope.ambiguous(resolution.reason() == ReasonCode.NONE
+                        ? ReasonCode.ATTRIBUTION_INVALID : resolution.reason());
+            }
+            Set<String> practiceBases = resolution.recipients().stream()
+                    .map(recipient -> recipient.historicalPracticeFallback()
+                            ? "CURRENT_PRACTICE_FALLBACK" : "HISTORY")
+                    .collect(java.util.stream.Collectors.toSet());
+            SegmentId segment = segments.iterator().next();
+            String consultantTypeBasis = segment == SegmentId.EXTERNAL ? "EXTERNAL" : "INTERNAL";
+            return EvidenceScope.resolved(segment,
+                    practiceBases.size() == 1 ? practiceBases.iterator().next() : "MIXED",
+                    consultantTypeBasis);
+        }
+        return EvidenceScope.unresolved(ReasonCode.ATTRIBUTION_MISSING);
+    }
+
     private List<SourceTier> precedence(
             PracticeRevenueValuationService.ItemControl item,
             PracticeRevenueValuationService.DocumentType type) {
@@ -365,6 +413,7 @@ public class PracticeRevenueAllocationService {
     public enum ConsultantType { INTERNAL, EXTERNAL }
     public enum SegmentId { PM, BA, CYB, DEV, SA, JK, UD, EXTERNAL, OTHER, UNASSIGNED }
     public enum PracticeResolutionMethod { DATED_DELIVERY, SCHEDULED_CAPACITY, MONTH_END_PRACTICE, NONE }
+    public enum ScopeResolutionStatus { RESOLVED, UNRESOLVED, AMBIGUOUS }
     public enum ReasonCode {
         NONE, UNVALUED_ITEM, ATTRIBUTION_MISSING, ATTRIBUTION_INVALID,
         DUPLICATE_SOURCE_RECORD, MISSING_RECIPIENT, MISSING_CONSULTANT_TYPE,
@@ -414,6 +463,32 @@ public class PracticeRevenueAllocationService {
             Objects.requireNonNull(item, "item");
             Objects.requireNonNull(documentType, "documentType");
             sources = sources == null ? List.of() : List.copyOf(sources);
+        }
+    }
+
+    public record EvidenceScope(
+            SegmentId resolvedSegment, String practiceBasis, String consultantTypeBasis,
+            ScopeResolutionStatus status, ReasonCode reason) {
+        public EvidenceScope {
+            Objects.requireNonNull(status, "status");
+            reason = reason == null ? ReasonCode.NONE : reason;
+            if (status == ScopeResolutionStatus.RESOLVED && resolvedSegment == null) {
+                throw new IllegalArgumentException("resolved evidence scope requires a segment");
+            }
+            if (status != ScopeResolutionStatus.RESOLVED
+                    && (resolvedSegment != null || practiceBasis != null || consultantTypeBasis != null)) {
+                throw new IllegalArgumentException("unresolved evidence scope cannot carry a recipient");
+            }
+        }
+        static EvidenceScope resolved(SegmentId segment, String practiceBasis, String consultantTypeBasis) {
+            return new EvidenceScope(segment, practiceBasis, consultantTypeBasis,
+                    ScopeResolutionStatus.RESOLVED, ReasonCode.NONE);
+        }
+        static EvidenceScope unresolved(ReasonCode reason) {
+            return new EvidenceScope(null, null, null, ScopeResolutionStatus.UNRESOLVED, reason);
+        }
+        static EvidenceScope ambiguous(ReasonCode reason) {
+            return new EvidenceScope(null, null, null, ScopeResolutionStatus.AMBIGUOUS, reason);
         }
     }
 

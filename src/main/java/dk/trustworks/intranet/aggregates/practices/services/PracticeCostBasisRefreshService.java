@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.practices.services;
 
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -40,6 +41,7 @@ public class PracticeCostBasisRefreshService {
     @Inject EntityManager em;
     @Inject PracticeRevenueDependencyManifestProvider manifestProvider;
     @Inject PracticeBasisMaterializationService basisMaterializer;
+    @Inject PracticeCostSnapshotProvider costSnapshotProvider;
     private final PracticeCostCandidateBuilder costCandidateBuilder = new PracticeCostCandidateBuilder();
 
     @ConfigProperty(name = "practices.contribution.named-lock-wait", defaultValue = "PT30S")
@@ -58,6 +60,29 @@ public class PracticeCostBasisRefreshService {
         }
         try {
             return QuarkusTransaction.requiringNew().call(() -> buildAndPublish(claim));
+        } catch (DependencyManifestMissException miss) {
+            // Fail closed on a manifest/coverage miss: durably advance the monotonic manifest input
+            // version, enqueue the successor DEPENDENCY_MANIFEST_INPUT request, then retire this request
+            // as SUPERSEDED pointing at that successor. Both steps commit independently of the aborted build.
+            try {
+                BigInteger successor = QuarkusTransaction.requiringNew()
+                        .call(() -> escalateDependencyManifestMiss(miss));
+                QuarkusTransaction.requiringNew().run(() -> supersedeAndCleanup(claim, successor));
+            } catch (RuntimeException cleanupFailure) {
+                miss.addSuppressed(cleanupFailure);
+            }
+            throw miss;
+        } catch (CostRequestSupersededException superseded) {
+            // A newer covering input displaced this owned RUNNING request. Retire the request as
+            // SUPERSEDED pointing at its successor and drop only the unpublished candidate; this is
+            // deliberately not a technical FAILED so successor-following and retention stay coherent.
+            try {
+                QuarkusTransaction.requiringNew().run(
+                        () -> supersedeAndCleanup(claim, superseded.successorRequestId()));
+            } catch (RuntimeException cleanupFailure) {
+                superseded.addSuppressed(cleanupFailure);
+            }
+            throw superseded;
         } catch (RuntimeException failure) {
             try {
                 QuarkusTransaction.requiringNew().run(() -> failAndCleanup(claim, "COST_BASIS_BUILD_FAILED"));
@@ -84,7 +109,7 @@ public class PracticeCostBasisRefreshService {
                 SELECT request_id, request_key, cause, input_vector_fingerprint,
                        expected_full_refresh_version, expected_incremental_refresh_version,
                        expected_practice_basis_input_version, expected_finance_gl_version,
-                       expected_account_classification_version
+                       expected_account_classification_version, dependency_fingerprint
                 FROM practice_cost_basis_refresh_request r
                 JOIN practice_operating_cost_publication p
                   ON p.publication_id=1
@@ -118,8 +143,10 @@ public class PracticeCostBasisRefreshService {
                 .setParameter("requestKey", expected.requestKey())
                 .setParameter("inputVector", expected.inputVectorFingerprint()).executeUpdate();
         if (updated != 1) return null;
+        String capturedDependencyFingerprint = row.length > 9 ? text(row[9]) : null;
         return new Claim(id, text(row[1]), text(row[2]), text(row[3]), integer(row[4]), integer(row[5]),
-                integer(row[6]), integer(row[7]), integer(row[8]), integer(control[1]), owner);
+                integer(row[6]), integer(row[7]), integer(row[8]), capturedDependencyFingerprint,
+                integer(control[1]), owner);
     }
 
     Outcome buildAndPublish(Claim claim) {
@@ -128,7 +155,8 @@ public class PracticeCostBasisRefreshService {
         String basisGenerationId = UUID.randomUUID().toString();
         try {
             verifyClaimVector(claim);
-            YearMonth lastMonth = YearMonth.from(LocalDate.now(ZoneOffset.UTC)).minusMonths(1);
+            YearMonth lastMonth = YearMonth.from(
+                    LocalDate.now(UtilizationCalculationHelper.REPORTING_ZONE)).minusMonths(1);
             YearMonth firstMonth = lastMonth.minusMonths(59);
             var manifest = manifestProvider.scan(firstMonth, lastMonth);
             var users = loadBasisUsers(manifest.coverageStart(), manifest.coverageEnd());
@@ -136,8 +164,28 @@ public class PracticeCostBasisRefreshService {
                     basisGenerationId, manifest, claim.fullRefreshVersion(), claim.incrementalRefreshVersion(),
                     claim.practiceBasisInputVersion(), users));
 
+            // Certification equality (design §10 point 4): when a request captured a document-dependency
+            // fingerprint before the claim, the owner's recomputed manifest must match it exactly. Drift
+            // proves a dependency source moved between enqueue and owned recomputation: fail closed and
+            // escalate a fresh DEPENDENCY_MANIFEST_INPUT version rather than certifying against stale bounds.
+            if (claim.capturedDependencyFingerprint() != null
+                    && !claim.capturedDependencyFingerprint().equals(basis.dependencyManifestFingerprint())) {
+                deleteBasisCandidate(basisGenerationId);
+                throw new DependencyManifestMissException(manifest.coverageStart(), manifest.coverageEnd(),
+                        basis.dependencyManifestFingerprint());
+            }
+
             CostCandidatePersistence candidate = buildAndPersistCostCandidate(
                     basisGenerationId, manifest.coverageStart(), manifest.coverageEnd());
+            java.time.Instant candidateSnapshotAt = java.time.Instant.now();
+            PracticeCostSnapshotProvider.CanonicalWindow bookedWindow = PracticeCostSnapshotProvider.windowOf(
+                    costSnapshotProvider.loadCandidateSnapshot(
+                            dk.trustworks.intranet.financeservice.model.enums.CostSource.BOOKED,
+                            basisGenerationId, candidateSnapshotAt, manifest.coverageStart()));
+            PracticeCostSnapshotProvider.CanonicalWindow bookedPlusDraftWindow = PracticeCostSnapshotProvider.windowOf(
+                    costSnapshotProvider.loadCandidateSnapshot(
+                            dk.trustworks.intranet.financeservice.model.enums.CostSource.BOOKED_PLUS_DRAFT,
+                            basisGenerationId, candidateSnapshotAt, manifest.coverageStart()));
             String contentFingerprint = hash(basis.sourceFingerprint(), basis.capacityFingerprint(),
                     basis.dependencyManifestFingerprint(), candidate.contentFingerprint());
 
@@ -151,7 +199,7 @@ public class PracticeCostBasisRefreshService {
 
             boolean noChange = shouldCertifyNoChange(claim.cause(), contentFingerprint, text(publication[2]));
             if (noChange) {
-                int recertified = em.createNativeQuery("""
+                Query recertifyQuery = em.createNativeQuery("""
                         UPDATE practice_operating_cost_publication p
                         JOIN practice_contribution_publication_control c ON c.control_id=1
                         JOIN bi_refresh_watermark b ON b.pipeline_name='FACT_USER_DAY'
@@ -160,6 +208,20 @@ public class PracticeCostBasisRefreshService {
                         JOIN practice_revenue_source_watermark ac ON ac.source_name='ACCOUNT_CLASSIFICATION'
                         SET p.certified_cost_basis_request_id=:requestId,
                             p.certified_cost_basis_request_vector=:vector,
+                            p.booked_available=:bookedAvailable,
+                            p.booked_reason=:bookedReason,
+                            p.booked_anchor_month=:bookedAnchor,
+                            p.booked_current_start_month=:bookedCurrentStart,
+                            p.booked_current_end_month=:bookedCurrentEnd,
+                            p.booked_prior_start_month=:bookedPriorStart,
+                            p.booked_prior_end_month=:bookedPriorEnd,
+                            p.booked_plus_draft_available=:draftAvailable,
+                            p.booked_plus_draft_reason=:draftReason,
+                            p.booked_plus_draft_anchor_month=:draftAnchor,
+                            p.booked_plus_draft_current_start_month=:draftCurrentStart,
+                            p.booked_plus_draft_current_end_month=:draftCurrentEnd,
+                            p.booked_plus_draft_prior_start_month=:draftPriorStart,
+                            p.booked_plus_draft_prior_end_month=:draftPriorEnd,
                             p.publication_version=p.publication_version+1
                         WHERE p.publication_id=1
                           AND p.latest_cost_basis_request_id=:requestId
@@ -173,7 +235,10 @@ public class PracticeCostBasisRefreshService {
                           AND ac.source_version=:accountClassificationVersion
                           AND c.refresh_enabled=TRUE AND c.control_version=:controlVersion
                           AND c.revenue_recovery_owner_token IS NULL
-                        """).setParameter("requestId", claim.requestId())
+                        """);
+                bindWindowParameters(recertifyQuery, "booked", bookedWindow);
+                bindWindowParameters(recertifyQuery, "draft", bookedPlusDraftWindow);
+                int recertified = recertifyQuery.setParameter("requestId", claim.requestId())
                         .setParameter("vector", claim.inputVector())
                         .setParameter("publicationVersion", integer(publication[5]))
                         .setParameter("fullRefreshVersion", claim.fullRefreshVersion())
@@ -186,14 +251,15 @@ public class PracticeCostBasisRefreshService {
                     throw new PublicationConflictException("COST_RECERTIFICATION_CAS_FAILED");
                 }
                 int requestUpdated = terminalRequestUpdate(claim, "NO_CHANGE", null,
-                        toLocalDateTime(publication[3]), text(publication[4]), contentFingerprint, "BYTE_EQUIVALENT");
+                        toLocalDateTime(publication[3]), text(publication[4]), contentFingerprint,
+                        "BYTE_EQUIVALENT", basis.dependencyManifestFingerprint());
                 if (requestUpdated != 1) throw new PublicationConflictException("REQUEST_OWNER_LOST");
                 deleteBasisCandidate(basisGenerationId);
                 return new Outcome(claim.requestId(), "NO_CHANGE", null, text(publication[4]), contentFingerprint);
             }
 
             LocalDateTime generationAt = LocalDateTime.now(ZoneOffset.UTC);
-            int published = em.createNativeQuery("""
+            Query publishQuery = em.createNativeQuery("""
                     UPDATE practice_operating_cost_publication p
                     JOIN practice_contribution_publication_control c ON c.control_id = 1
                     JOIN bi_refresh_watermark b ON b.pipeline_name='FACT_USER_DAY'
@@ -208,6 +274,20 @@ public class PracticeCostBasisRefreshService {
                         p.certified_cost_basis_request_id = :requestId,
                         p.certified_cost_basis_request_vector = :vector,
                         p.cost_content_fingerprint = :fingerprint,
+                        p.booked_available=:bookedAvailable,
+                        p.booked_reason=:bookedReason,
+                        p.booked_anchor_month=:bookedAnchor,
+                        p.booked_current_start_month=:bookedCurrentStart,
+                        p.booked_current_end_month=:bookedCurrentEnd,
+                        p.booked_prior_start_month=:bookedPriorStart,
+                        p.booked_prior_end_month=:bookedPriorEnd,
+                        p.booked_plus_draft_available=:draftAvailable,
+                        p.booked_plus_draft_reason=:draftReason,
+                        p.booked_plus_draft_anchor_month=:draftAnchor,
+                        p.booked_plus_draft_current_start_month=:draftCurrentStart,
+                        p.booked_plus_draft_current_end_month=:draftCurrentEnd,
+                        p.booked_plus_draft_prior_start_month=:draftPriorStart,
+                        p.booked_plus_draft_prior_end_month=:draftPriorEnd,
                         p.publication_version = p.publication_version + 1
                     WHERE p.publication_id = 1
                       AND p.latest_cost_basis_request_id = :requestId
@@ -220,7 +300,10 @@ public class PracticeCostBasisRefreshService {
                       AND ac.source_version=:accountClassificationVersion
                       AND c.refresh_enabled = TRUE AND c.control_version = :controlVersion
                       AND c.revenue_recovery_owner_token IS NULL
-                    """)
+                    """);
+            bindWindowParameters(publishQuery, "booked", bookedWindow);
+            bindWindowParameters(publishQuery, "draft", bookedPlusDraftWindow);
+            int published = publishQuery
                     .setParameter("generation", generationAt)
                     .setParameter("opexRows", candidate.costRowCount())
                     .setParameter("fteRows", candidate.fteRowCount())
@@ -242,7 +325,7 @@ public class PracticeCostBasisRefreshService {
                     """).setParameter("generation", basisGenerationId).executeUpdate();
             if (basisReady != 1) throw new PublicationConflictException("COST_BASIS_CERTIFICATION_FAILED");
             if (terminalRequestUpdate(claim, "READY", generationAt, null, basisGenerationId,
-                    contentFingerprint, null) != 1) {
+                    contentFingerprint, null, basis.dependencyManifestFingerprint()) != 1) {
                 throw new PublicationConflictException("REQUEST_OWNER_LOST");
             }
             pruneUnreferencedBasisGenerations();
@@ -444,11 +527,11 @@ public class PracticeCostBasisRefreshService {
                 BigDecimal allocated = salaryCosts.stream().map(PracticeCostCandidateBuilder.MonthlyCost::amountDkk)
                         .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2);
                 long expected = coverage.expectedPractices().stream()
-                        .filter(CxoPracticeOperatingCostService.PRACTICES::contains).count();
+                        .filter(PracticeCostSnapshotLoader.PRACTICES::contains).count();
                 long actual = salaryCosts.stream().map(PracticeCostCandidateBuilder.MonthlyCost::practiceCode)
-                        .filter(CxoPracticeOperatingCostService.PRACTICES::contains).distinct().count();
+                        .filter(PracticeCostSnapshotLoader.PRACTICES::contains).distinct().count();
                 long covered = coverage.expectedPractices().stream()
-                        .filter(CxoPracticeOperatingCostService.PRACTICES::contains)
+                        .filter(PracticeCostSnapshotLoader.PRACTICES::contains)
                         .filter(expectedPractice -> salaryCosts.stream()
                                 .anyMatch(row -> row.practiceCode().equals(expectedPractice))).count();
                 long missing = expected - covered;
@@ -468,9 +551,10 @@ public class PracticeCostBasisRefreshService {
                             signed_salary_gl_dkk, allocated_salary_dkk, expected_salary_cell_count,
                             actual_salary_cell_count, covered_salary_cell_count, missing_salary_cell_count,
                             unexpected_salary_cell_count, allocation_gap_dkk, allowed_allocation_gap_dkk,
-                            complete, content_fingerprint)
+                            complete, cost_month_end_practice_fallback_employee_month_count,
+                            content_fingerprint)
                         VALUES (:generation,:company,:month,:source,:intended,:signed,:allocated,:expected,
-                                :actual,:covered,:missing,:unexpected,:gap,:allowed,:complete,:fingerprint)
+                                :actual,:covered,:missing,:unexpected,:gap,:allowed,:complete,:fallbacks,:fingerprint)
                         """).setParameter("generation", generationId)
                         .setParameter("company", coverage.companyUuid()).setParameter("month", coverage.monthKey())
                         .setParameter("source", source).setParameter("intended", coverage.intendedSalaryDkk().setScale(2, java.math.RoundingMode.HALF_UP))
@@ -479,6 +563,7 @@ public class PracticeCostBasisRefreshService {
                         .setParameter("covered", covered).setParameter("missing", missing)
                         .setParameter("unexpected", unexpected).setParameter("gap", gap)
                         .setParameter("allowed", allowed).setParameter("complete", complete)
+                        .setParameter("fallbacks", coverage.costMonthEndPracticeFallbackEmployeeMonthCount())
                         .setParameter("fingerprint", fingerprint).executeUpdate();
                 persisted++;
             }
@@ -515,12 +600,92 @@ public class PracticeCostBasisRefreshService {
         verifyClaimVector(claim);
         if (!claim.requestId().equals(integer(publication[0]))
                 || !claim.inputVector().equals(text(publication[1]))) {
-            throw new PublicationConflictException("COST_REQUEST_SUPERSEDED");
+            // The latest-request pointer moved to a newer covering input while this owner was building.
+            // Retire as SUPERSEDED pointing at that successor (defect 9) rather than as a technical FAILED.
+            throw new CostRequestSupersededException(successorRequestId(claim.requestId()));
         }
     }
 
+    /** The newest request beyond {@code requestId} is the successor a displaced owner points at. */
+    BigInteger successorRequestId(BigInteger requestId) {
+        Object successor = em.createNativeQuery("""
+                SELECT MAX(request_id) FROM practice_cost_basis_refresh_request WHERE request_id > :id
+                """).setParameter("id", requestId).getSingleResult();
+        return successor == null ? null : integer(successor);
+    }
+
+    /**
+     * Retires a displaced owned RUNNING request as SUPERSEDED pointing at its successor and drops only
+     * its unpublished candidate. A missing successor cannot happen for a genuine supersession, but is
+     * defended against by falling back to a technical FAILED rather than an invalid self-link.
+     */
+    void supersedeAndCleanup(Claim claim, BigInteger successorRequestId) {
+        deleteRunningBasisCandidates();
+        if (successorRequestId == null || successorRequestId.equals(claim.requestId())) {
+            failAndCleanup(claim, "COST_BASIS_SUPERSESSION_SUCCESSOR_MISSING");
+            return;
+        }
+        em.createNativeQuery("""
+                UPDATE practice_cost_basis_refresh_request
+                SET status='SUPERSEDED', superseded_by_request_id=:successor, owner_token=NULL,
+                    completed_at=UTC_TIMESTAMP(6), safe_reason='SUPERSEDED_BY_NEWER_INPUT',
+                    optimistic_version=optimistic_version+1
+                WHERE request_id=:id AND status='RUNNING' AND owner_token=:owner
+                  AND :successor > request_id
+                """).setParameter("successor", successorRequestId).setParameter("id", claim.requestId())
+                .setParameter("owner", claim.ownerToken()).executeUpdate();
+    }
+
+    /**
+     * Durably advances the monotonic dependency-manifest input version and enqueues the successor
+     * DEPENDENCY_MANIFEST_INPUT request carrying the recomputed manifest fingerprint and affected bounds.
+     * Idempotent for an identical still-PENDING miss (request_key dedupe inside the procedure).
+     */
+    BigInteger escalateDependencyManifestMiss(DependencyManifestMissException miss) {
+        em.createNativeQuery("CALL sp_advance_practice_dependency_manifest_input(:start, :end, :fingerprint)")
+                .setParameter("start", miss.affectedStart()).setParameter("end", miss.affectedEnd())
+                .setParameter("fingerprint", miss.manifestFingerprint()).executeUpdate();
+        return integer(em.createNativeQuery("SELECT LAST_INSERT_ID()").getSingleResult());
+    }
+
+    /**
+     * A same-input technical failure is retried on the SAME row: FAILED -> PENDING with an incremented
+     * attempt count, guarded by the optimistic version and by the row still being the latest request.
+     * A dominated failure is never disguised as a retryable one and never creates a duplicate request.
+     */
+    @jakarta.transaction.Transactional
+    public int retryTechnicalFailure(BigInteger requestId, long expectedVersion) {
+        return em.createNativeQuery("""
+                UPDATE practice_cost_basis_refresh_request r
+                JOIN practice_operating_cost_publication p ON p.publication_id=1
+                SET r.status='PENDING', r.owner_token=NULL, r.claimed_at=NULL, r.failed_at=NULL,
+                    r.attempt_count=r.attempt_count+1, r.safe_reason='TECHNICAL_RETRY',
+                    r.optimistic_version=r.optimistic_version+1
+                WHERE r.request_id=:id AND r.status='FAILED' AND r.optimistic_version=:version
+                  AND p.latest_cost_basis_request_id=r.request_id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM practice_cost_basis_refresh_request newer
+                      WHERE newer.request_id > r.request_id
+                  )
+                """).setParameter("id", requestId).setParameter("version", expectedVersion).executeUpdate();
+    }
+
+    private void deleteRunningBasisCandidates() {
+        @SuppressWarnings("unchecked")
+        List<String> candidates = em.createNativeQuery("""
+                SELECT generation_id FROM practice_basis_generation
+                WHERE status='RUNNING' AND generation_id NOT IN (
+                    SELECT COALESCE(practice_basis_generation_id, '') FROM practice_operating_cost_publication)
+                """).getResultList();
+        candidates.forEach(this::deleteBasisCandidate);
+    }
+
     private int terminalRequestUpdate(Claim claim, String status, LocalDateTime resulting,
-                                      LocalDateTime compared, String basis, String fingerprint, String reason) {
+                                      LocalDateTime compared, String basis, String fingerprint, String reason,
+                                      String dependencyFingerprint) {
+        // The certified manifest fingerprint is written atomically onto the terminal request row so the
+        // activation predicates (req.dependency_fingerprint = basis.dependency_manifest_fingerprint) become
+        // satisfiable for exactly the certified generation. Both READY and byte-equivalent NO_CHANGE carry it.
         return em.createNativeQuery("""
                 UPDATE practice_cost_basis_refresh_request
                 SET status=:status, owner_token=NULL, completed_at=UTC_TIMESTAMP(6),
@@ -528,13 +693,25 @@ public class PracticeCostBasisRefreshService {
                     resulting_basis_generation_id=CASE WHEN :status='READY' THEN :basis ELSE NULL END,
                     compared_cost_generation_at=:compared,
                     compared_basis_generation_id=CASE WHEN :status='NO_CHANGE' THEN :basis ELSE NULL END,
-                    content_fingerprint=:fingerprint, safe_reason=:reason,
-                    optimistic_version=optimistic_version+1
+                    content_fingerprint=:fingerprint, dependency_fingerprint=:dependencyFingerprint,
+                    safe_reason=:reason, optimistic_version=optimistic_version+1
                 WHERE request_id=:id AND status='RUNNING' AND owner_token=:owner
                 """).setParameter("status", status).setParameter("resulting", resulting)
                 .setParameter("basis", basis).setParameter("compared", compared)
-                .setParameter("fingerprint", fingerprint).setParameter("reason", reason)
+                .setParameter("fingerprint", fingerprint)
+                .setParameter("dependencyFingerprint", dependencyFingerprint).setParameter("reason", reason)
                 .setParameter("id", claim.requestId()).setParameter("owner", claim.ownerToken()).executeUpdate();
+    }
+
+    private static void bindWindowParameters(
+            Query query, String prefix, PracticeCostSnapshotProvider.CanonicalWindow window) {
+        query.setParameter(prefix + "Available", window.available());
+        query.setParameter(prefix + "Reason", window.reason());
+        query.setParameter(prefix + "Anchor", window.anchor());
+        query.setParameter(prefix + "CurrentStart", window.currentStart());
+        query.setParameter(prefix + "CurrentEnd", window.currentEnd());
+        query.setParameter(prefix + "PriorStart", window.priorStart());
+        query.setParameter(prefix + "PriorEnd", window.priorEnd());
     }
 
     void failAndCleanup(Claim claim, String safeReason) {
@@ -592,6 +769,12 @@ public class PracticeCostBasisRefreshService {
         } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
     private static String values(Object[] values) { return java.util.Arrays.deepToString(values); }
+    /**
+     * Only a proven byte-equivalent INCREMENTAL_BI candidate may finish NO_CHANGE (design §10 point 4).
+     * FULL_BI, PRACTICE_BASIS_INPUT, COST_GL_INPUT, and DEPENDENCY_MANIFEST_INPUT must always publish a new
+     * certified generation even when the consolidated cost is byte-identical, because the older immutable
+     * generation was never certified against the newer evidence/coverage.
+     */
     static boolean shouldCertifyNoChange(String cause, String candidateFingerprint, String publishedFingerprint) {
         return "INCREMENTAL_BI".equals(cause) && candidateFingerprint != null
                 && candidateFingerprint.equals(publishedFingerprint);
@@ -621,7 +804,8 @@ public class PracticeCostBasisRefreshService {
     record Claim(BigInteger requestId, String requestKey, String cause, String inputVector,
                  BigInteger fullRefreshVersion, BigInteger incrementalRefreshVersion,
                  BigInteger practiceBasisInputVersion, BigInteger financeGlVersion,
-                 BigInteger accountClassificationVersion, BigInteger controlVersion, String ownerToken) {}
+                 BigInteger accountClassificationVersion, String capturedDependencyFingerprint,
+                 BigInteger controlVersion, String ownerToken) {}
     private record CostCandidatePersistence(int costRowCount, int fteRowCount,
                                             int completenessRowCount, String contentFingerprint) {}
     public record Outcome(BigInteger requestId, String status, LocalDateTime costGenerationAt,
@@ -667,5 +851,32 @@ public class PracticeCostBasisRefreshService {
     }
     public static class PublicationConflictException extends IllegalStateException {
         public PublicationConflictException(String message) { super(message); }
+    }
+
+    /** A displaced owned request that must retire as SUPERSEDED pointing at the successor, not FAILED. */
+    public static class CostRequestSupersededException extends PublicationConflictException {
+        private final transient BigInteger successorRequestId;
+        public CostRequestSupersededException(BigInteger successorRequestId) {
+            super("COST_REQUEST_SUPERSEDED");
+            this.successorRequestId = successorRequestId;
+        }
+        public BigInteger successorRequestId() { return successorRequestId; }
+    }
+
+    /** A manifest/coverage miss that must fail closed and escalate DEPENDENCY_MANIFEST_INPUT. */
+    public static class DependencyManifestMissException extends PublicationConflictException {
+        private final transient LocalDate affectedStart;
+        private final transient LocalDate affectedEnd;
+        private final transient String manifestFingerprint;
+        public DependencyManifestMissException(LocalDate affectedStart, LocalDate affectedEnd,
+                                               String manifestFingerprint) {
+            super("BASIS_COVERAGE_MISS");
+            this.affectedStart = affectedStart;
+            this.affectedEnd = affectedEnd;
+            this.manifestFingerprint = manifestFingerprint;
+        }
+        public LocalDate affectedStart() { return affectedStart; }
+        public LocalDate affectedEnd() { return affectedEnd; }
+        public String manifestFingerprint() { return manifestFingerprint; }
     }
 }

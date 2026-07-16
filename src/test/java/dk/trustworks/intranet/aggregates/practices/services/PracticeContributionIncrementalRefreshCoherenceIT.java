@@ -28,6 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.aggregates.practices.services.ContributionUnavailableException.PUBLICATION_UNAVAILABLE;
@@ -62,9 +64,11 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
     void irrelevantOrPairedIncrementalPreservesPublishedGenerationAndExactSourceVector(
             String terminalStatus) {
         CxoPracticeContributionService service = new CxoPracticeContributionService();
+        service.readTransactions = directTransactions();
         service.em = coherentEntityManager(terminalRequest(terminalStatus));
         service.costSnapshotProvider = mock(PracticeCostSnapshotProvider.class);
-        when(service.costSnapshotProvider.getSnapshot(CostSource.BOOKED))
+        when(service.costSnapshotProvider.getSnapshot(
+                eq(CostSource.BOOKED), any(IntSupplier.class)))
                 .thenReturn(new PracticeCostSnapshotProvider.Snapshot(completeCost(), true));
 
         PracticeContributionResponseDTO response = service.getContribution(CostSource.BOOKED);
@@ -79,7 +83,8 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
                 response.sourceWatermarkVersions().keySet());
         assertTrue(response.sourceWatermarkVersions().values().stream()
                 .allMatch(SOURCE_VERSION.toString()::equals));
-        verify(service.costSnapshotProvider).getSnapshot(CostSource.BOOKED);
+        verify(service.costSnapshotProvider).getSnapshot(
+                eq(CostSource.BOOKED), any(IntSupplier.class));
     }
 
     @ParameterizedTest(name = "{0} cost work blocks the coherent response")
@@ -87,6 +92,7 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
     void relevantNonTerminalOrUnresolvedCostWorkFailsClosed(
             String status, BigInteger successorRequestId) {
         CxoPracticeContributionService service = new CxoPracticeContributionService();
+        service.readTransactions = directTransactions();
         service.em = coherentEntityManager(request(status, successorRequestId));
         service.costSnapshotProvider = mock(PracticeCostSnapshotProvider.class);
 
@@ -94,7 +100,8 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
                 () -> service.getContribution(CostSource.BOOKED));
 
         assertEquals(PUBLICATION_UNAVAILABLE, error.getMessage());
-        verify(service.costSnapshotProvider, never()).getSnapshot(any());
+        verify(service.costSnapshotProvider, never()).getSnapshot(
+                any(CostSource.class), any(IntSupplier.class));
     }
 
     static Stream<Arguments> blockingRequests() {
@@ -120,6 +127,7 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
         setField(scheduler, "jobOperator", jobs);
         setField(scheduler, "em", em);
         setField(scheduler, "opexDistributionRefreshService", signals);
+        setField(scheduler, "practiceRevenueDirtyMarker", mock(PracticeRevenueDirtyMarker.class));
 
         invokeNoArg(scheduler, "schedulePracticeCostBasisRefresh");
         invokeNoArg(scheduler, "startPracticeRevenueIfEligible");
@@ -156,6 +164,8 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
                 when(query.getResultList()).thenReturn(Collections.singletonList(requestRow));
             } else if (sql.contains("GROUP BY a.segment_id, a.attribution_status")) {
                 when(query.getResultList()).thenReturn(List.of());
+            } else if (sql.contains("scope_resolution_status") || sql.contains("i.validation_reason_code")) {
+                when(query.getResultList()).thenReturn(List.of());
             } else if (sql.contains("COUNT(DISTINCT source_document_uuid)")) {
                 when(query.getResultList()).thenReturn(Collections.singletonList(
                         new Object[]{0L, 0L, 0L, 0L, 0L, 0, 0, 0L, 0L}));
@@ -178,8 +188,17 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
         return query;
     }
 
+    private static PracticeContributionReadTransactionRunner directTransactions() {
+        return new PracticeContributionReadTransactionRunner() {
+            @Override
+            public <T> T requiringNew(int timeoutSeconds, Supplier<T> work) {
+                return work.get();
+            }
+        };
+    }
+
     private static Object[] snapshotRow() {
-        Object[] row = new Object[43];
+        Object[] row = new Object[45];
         row[0] = true;
         row[1] = BigInteger.ONE;
         row[2] = "READY";
@@ -212,6 +231,8 @@ class PracticeContributionIncrementalRefreshCoherenceIT {
         row[40] = BigInteger.ONE;
         row[41] = VECTOR;
         row[42] = LocalDate.of(2020, 1, 1);
+        row[43] = LocalDate.of(2026, 6, 1);
+        row[44] = BigInteger.ONE;
         return row;
     }
 

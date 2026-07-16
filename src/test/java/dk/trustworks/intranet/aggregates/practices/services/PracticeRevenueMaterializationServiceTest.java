@@ -1,13 +1,17 @@
 package dk.trustworks.intranet.aggregates.practices.services;
 
+import dk.trustworks.intranet.aggregates.practices.model.PracticeRevenueItem;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.util.Map;
 import java.util.List;
 
@@ -17,11 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PracticeRevenueMaterializationServiceTest {
+    @Test void revenueCoverageEndsAtTheLatestCompletedCopenhagenMonth(){
+        var coverage=PracticeRevenueMaterializationService.revenueCoverage(
+                Instant.parse("2026-06-30T22:30:00Z"));
+
+        assertEquals(YearMonth.of(2021,7),coverage.first());
+        assertEquals(YearMonth.of(2026,6),coverage.last());
+    }
+
     @Test void everyMaterializationQueryCarriesTheConfiguredCancellationBound(){
         var service=new PracticeRevenueMaterializationService();
         service.em=mock(EntityManager.class);
@@ -42,18 +55,71 @@ class PracticeRevenueMaterializationServiceTest {
                 ()->service.validate(candidate("10.00","9.99")));
     }
 
-    @Test void persistedEvidenceKeepsOnlyManualRowsConfirmed(){
+    @Test void glReconciliationToleranceScalesWithTheAbsoluteControlTotal(){
+        var service=new PracticeRevenueMaterializationService();
+        // Small control 5,000 -> tolerance max(1.00, 0.50)=1.00: 1.00 at boundary passes, 1.01 fails.
+        assertDoesNotThrow(()->service.validate(glCandidate("5000.00","5000.00","5000.00","1.00")));
+        assertThrows(PracticeRevenueMaterializationService.StructuralValidationException.class,
+                ()->service.validate(glCandidate("5000.00","5000.00","5000.00","1.01")));
+        // Large control 100,000 -> tolerance max(1.00, 10.00)=10.00: 9.99 and 10.00 pass, 10.01 fails.
+        assertDoesNotThrow(()->service.validate(glCandidate("100000.00","100000.00","100000.00","9.99")));
+        assertDoesNotThrow(()->service.validate(glCandidate("100000.00","100000.00","100000.00","10.00")));
+        assertThrows(PracticeRevenueMaterializationService.StructuralValidationException.class,
+                ()->service.validate(glCandidate("100000.00","100000.00","100000.00","10.01")));
+        // Negative control uses ABS for the tolerance basis.
+        assertDoesNotThrow(()->service.validate(glCandidate("-100000.00","-100000.00","-100000.00","-10.00")));
+        assertThrows(PracticeRevenueMaterializationService.StructuralValidationException.class,
+                ()->service.validate(glCandidate("-100000.00","-100000.00","-100000.00","-10.01")));
+    }
+
+    @Test void glReconciliationIsSkippedWhenThereIsNoGlControlledSubset(){
+        var service=new PracticeRevenueMaterializationService();
+        assertDoesNotThrow(()->service.validate(candidate("10.00","10.00")));
+    }
+
+    @Test void persistedEvidenceKeepsManualAndOnlyVersionedAutoEvidence(){
         var manual = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
                 stored("MANUAL", "INVOICE", "INTERNAL")));
         assertEquals(PracticeRevenueAllocationService.SourceTier.PERSISTED, manual.tier());
         assertEquals(PracticeRevenueAllocationService.AttributionSource.PERSISTED_MANUAL, manual.source());
         assertEquals(PracticeRevenueAllocationService.AttributionStatus.CONFIRMED, manual.attributionStatus());
 
-        var automatic = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
+        var legacyAutomatic = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
                 stored("AUTO", "PHANTOM", "INTERNAL")));
+        assertEquals(PracticeRevenueAllocationService.EvidenceState.ABSENT, legacyAutomatic.state());
+
+        var automatic = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
+                versionedAuto("a-auto", "fingerprint-source")));
         assertEquals(PracticeRevenueAllocationService.SourceTier.PHANTOM_AUTO, automatic.tier());
         assertEquals(PracticeRevenueAllocationService.AttributionSource.PHANTOM_AUTO, automatic.source());
         assertEquals(PracticeRevenueAllocationService.AttributionStatus.ESTIMATED, automatic.attributionStatus());
+    }
+
+    @Test void mismatchedAutoPopulationProvenanceIsAbsentRatherThanReused(){
+        var automatic = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
+                versionedAuto("a-1", "population-1"), versionedAuto("a-2", "population-2")));
+
+        assertEquals(PracticeRevenueAllocationService.EvidenceState.ABSENT, automatic.state());
+        assertEquals(PracticeRevenueAllocationService.SourceTier.PHANTOM_AUTO, automatic.tier());
+    }
+
+    @Test void unknownAutoAlgorithmOrSourceKindIsAbsentRatherThanReused(){
+        var unknownAlgorithm = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
+                versionedAuto("algorithm", "population-1", "PRACTICE_AUTO_ATTRIBUTION_V2",
+                        "REGISTERED_WORK_DISTRIBUTION")));
+        var unknownSourceKind = PracticeRevenueMaterializationService.evidenceForStoredAttributions(List.of(
+                versionedAuto("source-kind", "population-1", "PRACTICE_AUTO_ATTRIBUTION_V1",
+                        "UNVERSIONED_WORK_DISTRIBUTION")));
+
+        assertEquals(PracticeRevenueAllocationService.EvidenceState.ABSENT, unknownAlgorithm.state());
+        assertEquals(PracticeRevenueAllocationService.EvidenceState.ABSENT, unknownSourceKind.state());
+    }
+
+    @Test void duplicateRiskUsesAnExplicitPubliclyCountableStatus(){
+        assertEquals("PHANTOM_DUPLICATE_RISK", PracticeRevenueMaterializationService.duplicateRiskStatus(
+                PracticeRevenueValuationService.ReasonCode.MANUAL_PHANTOM_DUPLICATE_RISK));
+        assertEquals("NONE", PracticeRevenueMaterializationService.duplicateRiskStatus(
+                PracticeRevenueValuationService.ReasonCode.GL_CONTROL_AMBIGUOUS));
     }
 
     @Test void mixedOrMalformedStoredEvidenceFailsClosed(){
@@ -91,6 +157,55 @@ class PracticeRevenueMaterializationServiceTest {
                 LocalDate.parse("2021-07-01"), LocalDate.parse("2026-06-30"), window, window);
         assertNull(summary.glControlTotal());
         assertNull(summary.reconciliationGap());
+    }
+
+    @Test void glReconciliationUsesOnlyTheGlControlledAllocationSubset(){
+        var valuation = new PracticeRevenueValuationService();
+        var allocation = new PracticeRevenueAllocationService();
+        var glInput = new PracticeRevenueValuationService.DocumentInput("gl-document", "company",
+                PracticeRevenueValuationService.DocumentType.INVOICE, "CREATED", false,
+                LocalDate.parse("2026-02-17"), "DKK", "0",
+                List.of(new PracticeRevenueValuationService.ItemInput("gl-item",
+                        PracticeRevenueValuationService.ItemOrigin.BASE, "1", "100", "consultant", true,
+                        null, null, null, false, null, null, null, null, null, null, null, null)),
+                List.of(new PracticeRevenueValuationService.GlEntry("voucher", "company", 2025,
+                        "BOOKED", 1, 0, "REVENUE", "-100", "gl-document")), List.of());
+        var provisionalInput = new PracticeRevenueValuationService.DocumentInput(
+                "provisional-document", "company", PracticeRevenueValuationService.DocumentType.INVOICE,
+                "CREATED", false, LocalDate.parse("2026-02-17"), "DKK", "0",
+                List.of(new PracticeRevenueValuationService.ItemInput("provisional-item",
+                        PracticeRevenueValuationService.ItemOrigin.BASE, "1", "50", "consultant", true,
+                        null, null, null, false, null, null, null, null, null, null, null, null)),
+                List.of(), List.of());
+        var documents = valuation.value(List.of(glInput, provisionalInput)).documents();
+        var glDocument = documents.stream().filter(row -> row.documentUuid().equals("gl-document"))
+                .findFirst().orElseThrow();
+        var provisionalDocument = documents.stream()
+                .filter(row -> row.documentUuid().equals("provisional-document")).findFirst().orElseThrow();
+        var glAllocation = allocation.allocate(new PracticeRevenueAllocationService.AllocationRequest(
+                glDocument.items().getFirst(), PracticeRevenueValuationService.DocumentType.INVOICE,
+                List.of(sourceEvidence("gl", "PM", BigDecimal.ONE, false))));
+        var provisionalAllocation = allocation.allocate(new PracticeRevenueAllocationService.AllocationRequest(
+                provisionalDocument.items().getFirst(), PracticeRevenueValuationService.DocumentType.INVOICE,
+                List.of(sourceEvidence("provisional", "DEV", BigDecimal.ONE, false))));
+        var window = new PracticeRevenueMaterializationService.Window(false, "NO_WINDOW",
+                null, null, null, null, null);
+
+        var summary = new PracticeRevenueMaterializationService().summarize(2,
+                List.of(new PracticeRevenueMaterializationService.ItemEnvelope(
+                                "company", "CREATED", glDocument.items().getFirst(), glDocument),
+                        new PracticeRevenueMaterializationService.ItemEnvelope(
+                                "company", "CREATED", provisionalDocument.items().getFirst(), provisionalDocument)),
+                List.of(new PracticeRevenueMaterializationService.AllocationEnvelope(
+                                glDocument.items().getFirst().itemControlKey(), glAllocation),
+                        new PracticeRevenueMaterializationService.AllocationEnvelope(
+                                provisionalDocument.items().getFirst().itemControlKey(), provisionalAllocation)),
+                List.of(), LocalDate.parse("2021-07-01"), LocalDate.parse("2026-06-30"),
+                window, window);
+
+        assertEquals(new BigDecimal("150.00"), summary.allocationTotal());
+        assertEquals(new BigDecimal("100.00"), summary.glControlTotal());
+        assertEquals(new BigDecimal("0.00"), summary.reconciliationGap());
     }
 
     @Test void exactProspectiveDeliveryLineageIsConsumedAtTheDeliveryTier(){
@@ -371,6 +486,38 @@ class PracticeRevenueMaterializationServiceTest {
         assertEquals(PracticeRevenueAllocationService.SourceTier.CREDIT_SOURCE_INVOICE, evidence.tier());
     }
 
+    @Test void multiRowVoucherDependencySourceWithAGloballyUniqueControlIsValued(){
+        var service=new PracticeRevenueMaterializationService();
+        service.valuationService=new PracticeRevenueValuationService();
+        // A voucher with multiple REVENUE rows (the formerly forced-fallback path that skipped the guard).
+        var source=glBackedDocument("source","co",PracticeRevenueValuationService.DocumentType.INVOICE,
+                "co:2025:BOOKED:42",42,List.of("-60","-40"));
+        var unrelated=glBackedDocument("unrelated","co",PracticeRevenueValuationService.DocumentType.INVOICE,
+                "co:2025:BOOKED:99",99,List.of("-100"));
+
+        var valuation=service.valueDependencySource(source,List.of(source,unrelated));
+
+        assertEquals(new BigDecimal("100.00"),valuation.items().getFirst().itemControlDkk());
+        assertEquals(PracticeRevenueValuationService.ValuationStatus.CONFIRMED_GL,
+                valuation.items().getFirst().valuationStatus());
+    }
+
+    @Test void multiRowVoucherDependencySourceCollidingWithAnotherDocumentFailsClosed(){
+        var service=new PracticeRevenueMaterializationService();
+        service.valuationService=new PracticeRevenueValuationService();
+        var source=glBackedDocument("source","co",PracticeRevenueValuationService.DocumentType.INVOICE,
+                "co:2025:BOOKED:42",42,List.of("-60","-40"));
+        // Another eligible document resolves to the same inverse Booked voucher key.
+        var colliding=glBackedDocument("colliding","co",PracticeRevenueValuationService.DocumentType.INVOICE,
+                "co:2025:BOOKED:42",42,List.of("-100"));
+
+        var valuation=service.valueDependencySource(source,List.of(source,colliding));
+
+        assertNull(valuation.items().getFirst().itemControlDkk());
+        assertEquals(PracticeRevenueValuationService.ValuationStatus.UNAVAILABLE_AMBIGUOUS,
+                valuation.items().getFirst().valuationStatus());
+    }
+
     @Test void directSelfBilledAssignmentsPreserveHumanWorkPeriodsAndFractions(){
         var evidence=PracticeRevenueMaterializationService.selfBilledEvidence(List.of(
                 selfBilled("a1","pm",2025,12,"-20.00","PM","HUMAN"),
@@ -391,11 +538,193 @@ class PracticeRevenueMaterializationServiceTest {
         assertEquals(PracticeRevenueAllocationService.ReasonCode.ATTRIBUTION_INVALID,evidence.reason());
     }
 
+    @Test void zeroItemInANonZeroDocumentPersistsWithAPositiveDocumentSign(){
+        var valuation=new PracticeRevenueValuationService();
+        var document=document(valuation,"doc",PracticeRevenueValuationService.DocumentType.INVOICE,"0","100");
+        var rows=persistItems(document.items().stream()
+                .map(item->new PracticeRevenueMaterializationService.ItemEnvelope(
+                        "company","CREATED",item,document,null,null)).toList());
+
+        assertTrue(rows.stream().allMatch(row->row.documentSign==(short)1));
+        var zero=rows.stream().filter(row->row.sourceItemUuid.equals("item-0")).findFirst().orElseThrow();
+        assertEquals(new BigDecimal("0.00"),zero.itemControlDkk.setScale(2));
+    }
+
+    @Test void negativeInvoiceAdjustmentKeepsAPositiveDocumentSign(){
+        var valuation=new PracticeRevenueValuationService();
+        var document=document(valuation,"doc",PracticeRevenueValuationService.DocumentType.INVOICE,"-100");
+        var row=persistItems(List.of(new PracticeRevenueMaterializationService.ItemEnvelope(
+                "company","CREATED",document.items().getFirst(),document,null,null))).getFirst();
+
+        assertEquals((short)1,row.documentSign);
+        assertTrue(row.signedNativeControl.signum()<0);
+    }
+
+    @Test void creditReversalUsesNegativeDocumentSignRegardlessOfItemSign(){
+        var valuation=new PracticeRevenueValuationService();
+        var document=document(valuation,"doc",PracticeRevenueValuationService.DocumentType.CREDIT_NOTE,"-100");
+        var row=persistItems(List.of(new PracticeRevenueMaterializationService.ItemEnvelope(
+                "company","CREATED",document.items().getFirst(),document,null,null))).getFirst();
+
+        assertEquals((short)-1,row.documentSign);
+        assertTrue(row.signedNativeControl.signum()>0);
+    }
+
+    @Test void genuineAllZeroDocumentPersistsWithoutFailure(){
+        var valuation=new PracticeRevenueValuationService();
+        var document=document(valuation,"doc",PracticeRevenueValuationService.DocumentType.INVOICE,"0","0");
+        var rows=assertDoesNotThrow(()->persistItems(document.items().stream()
+                .map(item->new PracticeRevenueMaterializationService.ItemEnvelope(
+                        "company","CREATED",item,document,null,null)).toList()));
+
+        assertEquals(2,rows.size());
+        assertTrue(rows.stream().allMatch(row->row.documentSign==(short)1));
+        assertTrue(rows.stream().allMatch(row->row.itemControlDkk.signum()==0));
+    }
+
+    @Test void byteIdenticalCreditCopyEvidenceIsPersistedExactlyAsLoaded(){
+        var row=persistCreditRow(copyProof("BYTE_IDENTICAL","SOURCE_ITEM",
+                "1.000000000000000000","100.000000000000","fp-byte"));
+
+        assertEquals("BYTE_IDENTICAL",row.creditCopyKind);
+        assertEquals("SOURCE_ITEM",row.creditCopyScope);
+        assertEquals(new BigDecimal("1.000000000000000000"),row.creditCopyScale);
+        assertEquals(new BigDecimal("100.000000000000"),row.creditCopyOriginalSourceNativeAmount);
+        assertEquals("fp-byte",row.creditCopyFingerprint);
+    }
+
+    @Test void scaledCreditCopyEvidenceIsPersistedExactlyAsLoaded(){
+        var row=persistCreditRow(copyProof("SCALED","SOURCE_ITEM",
+                "0.500000000000000000","100.000000000000","fp-scaled"));
+
+        assertEquals("SCALED",row.creditCopyKind);
+        assertEquals("SOURCE_ITEM",row.creditCopyScope);
+        assertEquals(new BigDecimal("0.500000000000000000"),row.creditCopyScale);
+        assertEquals(new BigDecimal("100.000000000000"),row.creditCopyOriginalSourceNativeAmount);
+        assertEquals("fp-scaled",row.creditCopyFingerprint);
+    }
+
+    @Test void perItemResidualCreditCopyEvidenceIsPersistedExactlyAsLoaded(){
+        var row=persistCreditRow(copyProof("RESIDUAL","SOURCE_ITEM",
+                "0.250000000000000000","100.000000000000","fp-residual"));
+
+        assertEquals("RESIDUAL",row.creditCopyKind);
+        assertEquals("SOURCE_ITEM",row.creditCopyScope);
+        assertEquals(new BigDecimal("0.250000000000000000"),row.creditCopyScale);
+        assertEquals(new BigDecimal("100.000000000000"),row.creditCopyOriginalSourceNativeAmount);
+        assertEquals("fp-residual",row.creditCopyFingerprint);
+    }
+
+    @Test void invoiceLevelResidualCreditCopyEvidenceIsPersistedWithNullScaleAndSourceItem(){
+        var row=persistCreditRow(copyProof("RESIDUAL","SOURCE_INVOICE",
+                null,"400.000000000000","fp-invoice-residual"));
+
+        assertEquals("RESIDUAL",row.creditCopyKind);
+        assertEquals("SOURCE_INVOICE",row.creditCopyScope);
+        assertNull(row.creditCopyScale);
+        assertEquals(new BigDecimal("400.000000000000"),row.creditCopyOriginalSourceNativeAmount);
+        assertEquals("fp-invoice-residual",row.creditCopyFingerprint);
+    }
+
+    @Test void noneCreditCopyEvidenceStaysNoneWithNullSiblings(){
+        var explicitNone=persistCreditRow(copyProof("NONE",null,null,null,null));
+        var noProof=persistCreditRow(null);
+
+        for(var row:List.of(explicitNone,noProof)){
+            assertEquals("NONE",row.creditCopyKind);
+            assertNull(row.creditCopyScope);
+            assertNull(row.creditCopyScale);
+            assertNull(row.creditCopyOriginalSourceNativeAmount);
+            assertNull(row.creditCopyFingerprint);
+        }
+    }
+
+    @Test void zeroSourceByteIdenticalCreditCopyEvidencePersistsItsZeroOriginalAmount(){
+        var row=persistCreditRow(copyProof("BYTE_IDENTICAL","SOURCE_ITEM",
+                "1.000000000000000000","0.000000000000","fp-zero-source"));
+
+        assertEquals("BYTE_IDENTICAL",row.creditCopyKind);
+        assertEquals(new BigDecimal("0.000000000000"),row.creditCopyOriginalSourceNativeAmount);
+    }
+
+    @Test void creditCopyEvidenceIsPersistedVerbatimWithoutRevalidatingItsFingerprint(){
+        // Persist records the loaded proof exactly; it never recomputes or drops a stale fingerprint.
+        var row=persistCreditRow(copyProof("SCALED","SOURCE_ITEM",
+                "0.500000000000000000","100.000000000000","stale-but-persisted"));
+
+        assertEquals("stale-but-persisted",row.creditCopyFingerprint);
+    }
+
+    private static List<PracticeRevenueItem> persistItems(
+            List<PracticeRevenueMaterializationService.ItemEnvelope> envelopes){
+        var service=new PracticeRevenueMaterializationService();
+        service.em=mock(EntityManager.class);
+        var window=new PracticeRevenueMaterializationService.Window(false,"NO_WINDOW",null,null,null,null,null);
+        var attempt=new PracticeRevenueMaterializationService.Attempt("gen","owner",BigInteger.ZERO,
+                LocalDateTime.parse("2026-07-15T00:00:00"),"basis",BigInteger.ZERO,"vector",
+                BigInteger.ZERO,BigInteger.ZERO,Map.of());
+        var candidate=new PracticeRevenueMaterializationService.BuildCandidate(
+                LocalDateTime.parse("2026-07-15T00:00:00"),LocalDate.parse("2021-07-01"),
+                LocalDate.parse("2026-06-01"),window,window,envelopes.size(),envelopes,List.of(),List.of(),
+                0,0,0,0,0,0,0,0,BigDecimal.ZERO.setScale(2),BigDecimal.ZERO.setScale(2),null,null);
+        service.persist(attempt,candidate);
+        var captor=ArgumentCaptor.forClass(PracticeRevenueItem.class);
+        verify(service.em,atLeastOnce()).persist(captor.capture());
+        return captor.getAllValues();
+    }
+
+    private static PracticeRevenueItem persistCreditRow(
+            PracticeRevenueMaterializationService.CreditEvidence proof){
+        var valuation=new PracticeRevenueValuationService();
+        var document=document(valuation,"credit-document",
+                PracticeRevenueValuationService.DocumentType.CREDIT_NOTE,"100");
+        return persistItems(List.of(new PracticeRevenueMaterializationService.ItemEnvelope(
+                "company","CREATED",document.items().getFirst(),document,null,proof))).getFirst();
+    }
+
+    private static PracticeRevenueValuationService.DocumentValuation document(
+            PracticeRevenueValuationService valuation,String documentUuid,
+            PracticeRevenueValuationService.DocumentType type,String... rates){
+        var items=new java.util.ArrayList<PracticeRevenueValuationService.ItemInput>();
+        int index=0;
+        for(String rate:rates){
+            items.add(new PracticeRevenueValuationService.ItemInput("item-"+(index++),
+                    PracticeRevenueValuationService.ItemOrigin.BASE,"1.000000",rate,"consultant",true,
+                    null,null,null,false,null,null,null,null,null,null,null,null));
+        }
+        var input=new PracticeRevenueValuationService.DocumentInput(documentUuid,"company",type,"CREATED",
+                false,LocalDate.parse("2026-02-17"),"DKK","0",items,List.of(),List.of());
+        return valuation.value(List.of(input)).documents().getFirst();
+    }
+
+    private static PracticeRevenueMaterializationService.CreditEvidence copyProof(
+            String kind,String scope,String scale,String original,String fingerprint){
+        return new PracticeRevenueMaterializationService.CreditEvidence("credit-item",
+                "SOURCE_INVOICE".equals(scope)?null:"source-item",kind,scope,
+                scale==null?null:new BigDecimal(scale),original==null?null:new BigDecimal(original),
+                fingerprint,"credit-document","source-document",null,null,"BASE",
+                "consultant",null,null,null,null);
+    }
+
     private static PracticeRevenueMaterializationService.StoredAttribution stored(
             String source, String documentType, String consultantType) {
         return new PracticeRevenueMaterializationService.StoredAttribution("a-" + source,
                 "consultant", new BigDecimal("100.000000"), source, "PM", consultantType,
-                "HISTORICAL", documentType);
+                "HISTORICAL", documentType, null, null, null);
+    }
+
+    private static PracticeRevenueMaterializationService.StoredAttribution versionedAuto(
+            String uuid, String population) {
+        return versionedAuto(uuid, population, "PRACTICE_AUTO_ATTRIBUTION_V1",
+                "REGISTERED_WORK_DISTRIBUTION");
+    }
+
+    private static PracticeRevenueMaterializationService.StoredAttribution versionedAuto(
+            String uuid, String population, String algorithmVersion, String sourceKind) {
+        return new PracticeRevenueMaterializationService.StoredAttribution(uuid,
+                "consultant", new BigDecimal("50.000000"), "AUTO", "PM", "INTERNAL",
+                "HISTORICAL", "PHANTOM", algorithmVersion, sourceKind,
+                (population.endsWith("1") ? "a" : "b").repeat(64));
     }
 
     private static PracticeRevenueMaterializationService.StoredDelivery delivery(
@@ -508,17 +837,178 @@ class PracticeRevenueMaterializationServiceTest {
                 "consultant", null, null, null, null);
     }
 
+    private static PracticeRevenueValuationService.DocumentInput glBackedDocument(
+            String uuid,String company,PracticeRevenueValuationService.DocumentType type,
+            String voucherKey,long voucherNumber,List<String> amounts){
+        var item=new PracticeRevenueValuationService.ItemInput("item-"+uuid,
+                PracticeRevenueValuationService.ItemOrigin.BASE,"1.000000","100.000000",
+                "consultant",true,null,null,null,false,null,null,null,null,null,null,null,null);
+        var gl=new java.util.ArrayList<PracticeRevenueValuationService.GlEntry>();
+        for(String amount:amounts){
+            gl.add(new PracticeRevenueValuationService.GlEntry(voucherKey,company,2025,"BOOKED",
+                    voucherNumber,0,"REVENUE",amount,"voucher-"+voucherNumber));
+        }
+        return new PracticeRevenueValuationService.DocumentInput(uuid,company,type,"CREATED",false,
+                LocalDate.parse("2026-02-17"),"DKK","0",List.of(item),gl,List.of());
+    }
+
     private static PracticeRevenueMaterializationService.StoredSelfBilledAssignment selfBilled(
             String uuid,String consultant,int year,int month,String share,String practice,String source){
         return new PracticeRevenueMaterializationService.StoredSelfBilledAssignment("phantom-item",uuid,
                 consultant,year,month,new BigDecimal(share),source,practice,"INTERNAL","HISTORY",
                 new BigDecimal("100.000000000000"),new BigDecimal("-100.000000000000"));
     }
+    @Test void coverageMissWhenAConsumedDeliveryDateFallsBeforeCertifiedBasisCoverage(){
+        var service=new PracticeRevenueMaterializationService();
+        EntityManager em=mock(EntityManager.class);
+        service.em=em; service.queryTimeout=java.time.Duration.ofMinutes(2);
+        Query bounds=mock(Query.class);
+        when(em.createNativeQuery(org.mockito.ArgumentMatchers.anyString())).thenReturn(bounds);
+        when(bounds.setHint(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.setParameter(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.getSingleResult()).thenReturn(new Object[]{
+                java.sql.Date.valueOf("2021-07-01"),java.sql.Date.valueOf("2026-06-30"),"f".repeat(64)});
+
+        var miss=assertThrows(
+                PracticeRevenueMaterializationService.RevenueBasisCoverageMissException.class,
+                ()->service.assertConsumedDependenciesCovered(
+                        attempt("basis-1"),candidateWithDependencies(
+                                List.of(deliveryDependency("2020-01-15")))));
+        assertEquals(LocalDate.parse("2020-01-15"),miss.affectedStart());
+    }
+
+    @Test void coveredWhenEveryConsumedDateIsWithinTheCertifiedBasisCoverage(){
+        var service=new PracticeRevenueMaterializationService();
+        EntityManager em=mock(EntityManager.class);
+        service.em=em; service.queryTimeout=java.time.Duration.ofMinutes(2);
+        Query bounds=mock(Query.class);
+        when(em.createNativeQuery(org.mockito.ArgumentMatchers.anyString())).thenReturn(bounds);
+        when(bounds.setHint(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.setParameter(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.getSingleResult()).thenReturn(new Object[]{
+                java.sql.Date.valueOf("2021-07-01"),java.sql.Date.valueOf("2026-06-30"),"f".repeat(64)});
+
+        assertDoesNotThrow(()->service.assertConsumedDependenciesCovered(
+                attempt("basis-1"),candidateWithDependencies(
+                        List.of(deliveryDependency("2022-01-15")))));
+    }
+
+    @Test void capacityEnvelopeEndingExactlyAtCoveragePlusOneDayIsCoveredNotAMiss(){
+        // C1a: PracticeBasisMaterializationService clamps open capacity intervals to coverageEnd+1
+        // (2026-07-01). Treating that exclusive end inclusively would flag every active consultant.
+        assertDoesNotThrow(()->coverageService().assertConsumedDependenciesCovered(
+                attempt("basis-1"),candidateWithDependencies(List.of(intervalDependency(
+                        "2026-06-01","2026-06-01","2026-06-15","2026-06-01","2026-07-01")))));
+    }
+    @Test void deliveryEndExactlyAtCoveragePlusOneDayIsCoveredNotAMiss(){
+        assertDoesNotThrow(()->coverageService().assertConsumedDependenciesCovered(
+                attempt("basis-1"),candidateWithDependencies(List.of(intervalDependency(
+                        "2026-06-01","2026-06-15","2026-07-01",null,null)))));
+    }
+    @Test void deliveryEndTwoDaysAfterCoverageIsARealMiss(){
+        var miss=assertThrows(PracticeRevenueMaterializationService.RevenueBasisCoverageMissException.class,
+                ()->coverageService().assertConsumedDependenciesCovered(
+                        attempt("basis-1"),candidateWithDependencies(List.of(intervalDependency(
+                                "2026-06-01","2026-06-15","2026-07-02",null,null)))));
+        assertEquals(LocalDate.parse("2026-07-02"),miss.affectedStart());
+    }
+    @Test void deliveryStartBeforeCoverageStartStillMisses(){
+        var miss=assertThrows(PracticeRevenueMaterializationService.RevenueBasisCoverageMissException.class,
+                ()->coverageService().assertConsumedDependenciesCovered(
+                        attempt("basis-1"),candidateWithDependencies(List.of(intervalDependency(
+                                "2026-06-01","2021-06-30","2026-06-30",null,null)))));
+        assertEquals(LocalDate.parse("2021-06-30"),miss.affectedStart());
+    }
+
+    private static PracticeRevenueMaterializationService coverageService(){
+        var service=new PracticeRevenueMaterializationService();
+        EntityManager em=mock(EntityManager.class);
+        service.em=em; service.queryTimeout=java.time.Duration.ofMinutes(2);
+        Query bounds=mock(Query.class);
+        when(em.createNativeQuery(org.mockito.ArgumentMatchers.anyString())).thenReturn(bounds);
+        when(bounds.setHint(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.setParameter(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any()))
+                .thenReturn(bounds);
+        when(bounds.getSingleResult()).thenReturn(new Object[]{
+                java.sql.Date.valueOf("2021-07-01"),java.sql.Date.valueOf("2026-06-30"),"f".repeat(64)});
+        return service;
+    }
+    private static PracticeRevenueMaterializationService.DependencyEnvelope intervalDependency(
+            String recognizedMonth,String deliveryStart,String deliveryEndExclusive,
+            String capacityStart,String capacityEndExclusive){
+        return new PracticeRevenueMaterializationService.DependencyEnvelope(
+                "item-1","REGISTERED_WORK_DELIVERY","key-1",LocalDate.parse(recognizedMonth),
+                "DELIVERY_EVIDENCE","doc-1","srcitem-1",null,"work-1","user-1",null,null,null,null,null,
+                null,null,null,
+                capacityStart==null?null:LocalDate.parse(capacityStart),
+                capacityEndExclusive==null?null:LocalDate.parse(capacityEndExclusive),
+                deliveryStart==null?null:LocalDate.parse(deliveryStart),
+                deliveryEndExclusive==null?null:LocalDate.parse(deliveryEndExclusive),
+                null,"fp");
+    }
+    private static PracticeRevenueMaterializationService.Attempt attempt(String basisGenerationId){
+        return new PracticeRevenueMaterializationService.Attempt("gen-1","owner-1",BigInteger.ONE,
+                LocalDateTime.parse("2026-07-15T00:00:00"),basisGenerationId,BigInteger.TEN,"v".repeat(64),
+                BigInteger.ONE,BigInteger.ZERO,Map.of());
+    }
+    private static PracticeRevenueMaterializationService.DependencyEnvelope deliveryDependency(String deliveryDate){
+        return new PracticeRevenueMaterializationService.DependencyEnvelope(
+                "item-1","REGISTERED_WORK_DELIVERY","key-1",LocalDate.parse("2026-06-01"),
+                "DELIVERY_EVIDENCE","doc-1","srcitem-1",null,"work-1","user-1",null,null,null,null,null,
+                null,null,null,null,null,LocalDate.parse(deliveryDate),LocalDate.parse(deliveryDate),
+                null,"fp");
+    }
+    private static PracticeRevenueMaterializationService.BuildCandidate candidateWithDependencies(
+            List<PracticeRevenueMaterializationService.DependencyEnvelope> dependencies){
+        var window=new PracticeRevenueMaterializationService.Window(false,"NO_WINDOW",null,null,null,null,null);
+        return new PracticeRevenueMaterializationService.BuildCandidate(LocalDateTime.parse("2026-07-15T00:00:00"),
+                LocalDate.parse("2021-07-01"),LocalDate.parse("2026-06-01"),window,window,0,
+                List.of(),List.of(),dependencies,0,0,0,0,0,0,0,0,
+                new BigDecimal("0.00"),new BigDecimal("0.00"),null,null);
+    }
     private static PracticeRevenueMaterializationService.BuildCandidate candidate(String item,String allocation){
         var window=new PracticeRevenueMaterializationService.Window(false,"NO_WINDOW",null,null,null,null,null);
         return new PracticeRevenueMaterializationService.BuildCandidate(LocalDateTime.parse("2026-07-15T00:00:00"),
                 LocalDate.parse("2021-07-01"),LocalDate.parse("2026-06-01"),window,window,0,
                 List.of(),List.of(),List.of(),0,0,0,0,0,0,0,0,
-                new BigDecimal(item),new BigDecimal(allocation),BigDecimal.ZERO.setScale(2),BigDecimal.ZERO.setScale(2));
+                new BigDecimal(item),new BigDecimal(allocation),null,null);
+    }
+    private static PracticeRevenueMaterializationService.BuildCandidate glCandidate(String item,String allocation,
+                                                                                    String glControl,String gap){
+        var window=new PracticeRevenueMaterializationService.Window(false,"NO_WINDOW",null,null,null,null,null);
+        return new PracticeRevenueMaterializationService.BuildCandidate(LocalDateTime.parse("2026-07-15T00:00:00"),
+                LocalDate.parse("2021-07-01"),LocalDate.parse("2026-06-01"),window,window,0,
+                List.of(),List.of(),List.of(),0,0,0,0,0,0,0,0,
+                new BigDecimal(item),new BigDecimal(allocation),new BigDecimal(glControl),new BigDecimal(gap));
+    }
+
+    // economics_accounting_year is VARCHAR(20) in V338 with the documented "2025/2026" format; the
+    // JDBC driver returns a String, never a Number. Parsing must not crash the refresh: the leading
+    // fiscal-start year is the identifier, blank/null is absent (0), and a present-but-unparseable
+    // value is invalid (-1) so the cross-year guard fails closed to AMBIGUOUS instead of matching.
+    @Test void economicAccountingYearStringParsesToItsLeadingFiscalStartYear(){
+        assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart("2025/2026"));
+        assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart("2025"));
+        assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart(" 2025/2026 "));
+    }
+    @Test void economicAccountingYearAbsentValuesAreZero(){
+        assertEquals(0,PracticeRevenueMaterializationService.accountingYearStart(null));
+        assertEquals(0,PracticeRevenueMaterializationService.accountingYearStart(""));
+        assertEquals(0,PracticeRevenueMaterializationService.accountingYearStart("   "));
+        assertEquals(0,PracticeRevenueMaterializationService.accountingYearStart(0));
+        assertEquals(0,PracticeRevenueMaterializationService.accountingYearStart(-3));
+    }
+    @Test void economicAccountingYearNumericValuesStillParse(){
+        assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart(2025));
+        assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart(java.math.BigInteger.valueOf(2025)));
+    }
+    @Test void economicAccountingYearUnparseablePresentValueIsInvalidNotAbsent(){
+        assertEquals(-1,PracticeRevenueMaterializationService.accountingYearStart("not-a-year"));
+        assertEquals(-1,PracticeRevenueMaterializationService.accountingYearStart("25/26"));
     }
 }

@@ -72,6 +72,46 @@ class PracticeRevenueAllocationServiceTest {
     }
 
     @Test
+    void unvaluedItemResolvesEvidenceScopeWithoutAllocatingMoney() {
+        SourceEvidence human = source(SourceTier.HUMAN, AttributionSource.HUMAN,
+                AttributionStatus.CONFIRMED, false,
+                candidate("human", "consultant", "PM", "1"));
+        AllocationRequest request = new AllocationRequest(
+                unvaluedItem(ItemRowKind.SOURCE_ITEM), DocumentType.INVOICE, List.of(human));
+
+        EvidenceScope scope = service.resolveEvidenceScope(request);
+        AllocationResult allocation = service.allocate(request);
+
+        assertEquals(ScopeResolutionStatus.RESOLVED, scope.status());
+        assertEquals(SegmentId.PM, scope.resolvedSegment());
+        assertEquals("HISTORY", scope.practiceBasis());
+        assertEquals("INTERNAL", scope.consultantTypeBasis());
+        assertTrue(allocation.allocations().isEmpty());
+        assertEquals(BigDecimal.ZERO.setScale(2), allocation.allocatedControlDkk());
+    }
+
+    @Test
+    void zeroItemSentinelUsesTheSameEvidenceOnlyPrecedenceAndFailsClosedOnAmbiguity() {
+        SourceEvidence registered = source(SourceTier.REGISTERED_VALUE,
+                AttributionSource.REGISTERED_VALUE, AttributionStatus.ESTIMATED, false,
+                candidate("registered", "consultant", "BA", "1"));
+        EvidenceScope resolved = service.resolveEvidenceScope(new AllocationRequest(
+                unvaluedItem(ItemRowKind.DOCUMENT_EVIDENCE), DocumentType.INVOICE,
+                List.of(registered)));
+        EvidenceScope ambiguous = service.resolveEvidenceScope(new AllocationRequest(
+                unvaluedItem(ItemRowKind.DOCUMENT_EVIDENCE), DocumentType.INVOICE,
+                List.of(source(SourceTier.HUMAN, AttributionSource.HUMAN,
+                        AttributionStatus.CONFIRMED, false,
+                        candidate("pm", "pm-user", "PM", "0.5"),
+                        candidate("ba", "ba-user", "BA", "0.5")))));
+
+        assertEquals(ScopeResolutionStatus.RESOLVED, resolved.status());
+        assertEquals(SegmentId.BA, resolved.resolvedSegment());
+        assertEquals(ScopeResolutionStatus.AMBIGUOUS, ambiguous.status());
+        assertNull(ambiguous.resolvedSegment());
+    }
+
+    @Test
     void commercialAdjustmentUsesBaseDistributionNotDirectConsultant() {
         SourceEvidence base = source(SourceTier.BASE_DISTRIBUTION, AttributionSource.BASE_DISTRIBUTION,
                 AttributionStatus.CONFIRMED, false,
@@ -242,6 +282,19 @@ class PracticeRevenueAllocationServiceTest {
                 amount.setScale(4), BigDecimal.ZERO.setScale(4), BigDecimal.ONE.setScale(18),
                 true, amount, amount, BigDecimal.ZERO, false, null, false, residual,
                 PracticeRevenueValuationService.ReasonCode.NONE);
+    }
+
+    private static ItemControl unvaluedItem(ItemRowKind rowKind) {
+        return new ItemControl(rowKind + ":d:i",
+                rowKind == ItemRowKind.DOCUMENT_EVIDENCE ? null : "i", "d",
+                LocalDate.of(2026, 2, 1), rowKind,
+                rowKind == ItemRowKind.DOCUMENT_EVIDENCE ? null : ItemCategory.DELIVERY_BASE,
+                null, rowKind == ItemRowKind.DOCUMENT_EVIDENCE ? null : "EUR",
+                rowKind == ItemRowKind.DOCUMENT_EVIDENCE ? null : BigDecimal.TEN.setScale(12),
+                rowKind == ItemRowKind.DOCUMENT_EVIDENCE ? null : BigDecimal.TEN.setScale(12),
+                null, null, ControlSource.NONE, ValuationStatus.UNAVAILABLE_MISSING,
+                null, null, null, false, null, null, null, false,
+                null, false, false, PracticeRevenueValuationService.ReasonCode.GL_CONTROL_MISSING);
     }
 
     private static RegisteredDeliveryEvidenceResolver.ResolvedDelivery delivery(

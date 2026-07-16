@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Opt-in disposable MariaDB integration harness. The supplied schema must be
  * empty and disposable; the test intentionally never targets a configured
- * application datasource. It pauses at V410, applies V411/V412, then restarts
+ * application datasource. It pauses at V410, applies V411/V412, then V413, and restarts
  * Flyway to prove repeatable validation against the same schema history.
  */
 @EnabledIfEnvironmentVariable(named = "PRACTICES_MIGRATION_JDBC_URL", matches = ".+")
@@ -26,11 +26,28 @@ class PracticeContributionMigrationsMariaDbIT {
 
         createV410PredecessorFixture(url, user, password);
 
-        Flyway current = Flyway.configure()
+        Flyway throughV412 = Flyway.configure()
                 .dataSource(url, user, password)
                 .locations("classpath:db/migration")
                 .baselineOnMigrate(true)
                 .baselineVersion("410")
+                .target("412")
+                .load();
+        throughV412.migrate();
+        throughV412.validate();
+
+        try (var connection = DriverManager.getConnection(url, user, password);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    INSERT INTO fact_change_log(
+                        useruuid,affected_date,change_type,source_table,source_id,processed_at)
+                    VALUES('user-after-v412','2026-07-15','WORK','work','work-after-v412',UTC_TIMESTAMP(6))
+                    """);
+        }
+
+        Flyway current = Flyway.configure()
+                .dataSource(url, user, password)
+                .locations("classpath:db/migration")
                 .load();
         current.migrate();
         current.validate();
@@ -52,6 +69,26 @@ class PracticeContributionMigrationsMariaDbIT {
                 result.next();
                 assertEquals(5, result.getInt(1));
             }
+        }
+
+        try (var connection = DriverManager.getConnection(url, user, password);
+             var statement = connection.createStatement();
+             var result = statement.executeQuery("""
+                     SELECT w.last_fact_change_log_id=COALESCE((SELECT MAX(id) FROM fact_change_log),0),
+                            w.last_pruned_fact_change_log_id<=w.last_fact_change_log_id,
+                            p.booked_available,p.booked_reason,
+                            p.booked_plus_draft_available,p.booked_plus_draft_reason
+                     FROM practice_revenue_source_watermark w
+                     JOIN practice_operating_cost_publication p ON p.publication_id=1
+                     WHERE w.source_name='DELIVERY_EVIDENCE'
+                     """)) {
+            result.next();
+            assertEquals(1, result.getInt(1));
+            assertEquals(1, result.getInt(2));
+            assertEquals(0, result.getInt(3));
+            assertEquals("SELECTED_COST_SOURCE_NO_COMPLETE_WINDOW", result.getString(4));
+            assertEquals(0, result.getInt(5));
+            assertEquals("SELECTED_COST_SOURCE_NO_COMPLETE_WINDOW", result.getString(6));
         }
 
         try (var connection = DriverManager.getConnection(url, user, password);

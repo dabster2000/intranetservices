@@ -1,11 +1,18 @@
 package dk.trustworks.intranet.aggregates.invoice;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.services.RegisteredDeliveryEvidenceResolver;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.model.Company;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,8 +23,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -55,6 +68,8 @@ class InvoiceGeneratorTest {
     @Mock dk.trustworks.intranet.dao.crm.services.TaskService taskService;
     @Mock dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService invoiceAttributionService;
     @Mock dk.trustworks.intranet.dao.workservice.services.WorkService workService;
+    @Mock RegisteredDeliveryEvidenceResolver registeredDeliveryEvidenceResolver;
+    @Mock EntityManager em;
 
     private Contract contract;
     private Project  project;
@@ -207,5 +222,87 @@ class InvoiceGeneratorTest {
                 "Invoice date should default to today, not last-day-of-invoiced-month");
         assertEquals(LocalDate.now().plusMonths(1), invoice.getDuedate(),
                 "Due date should default to today + 1 month (will be overwritten by e-conomics)");
+    }
+
+    @Test
+    void contributionLineageCaptureUsesTheSharedBuildGate() {
+        Query query = org.mockito.Mockito.mock(Query.class);
+        when(em.createNativeQuery(InvoiceGenerator.CONTRIBUTION_CAPTURE_ENABLED_SQL)).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(false, true);
+
+        assertFalse(generator.contributionLineageCaptureEnabled());
+        assertTrue(generator.contributionLineageCaptureEnabled());
+    }
+
+    @Test
+    void disabledContributionLineageCaptureDoesNotValidateOrPersistDarkEvidence() {
+        InvoiceGenerator.ContributionLineagePlan plan = generator.prepareContributionDeliveryLineage(
+                false, List.of(baseItem("item-1")), Map.of());
+
+        assertTrue(plan.rows().isEmpty());
+    }
+
+    @Test
+    void contributionLineagePlanRejectsMissingGeneratedItemsBeforePersistence() {
+        InvoiceItem item = baseItem("item-1");
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> generator.planContributionDeliveryLineage(
+                        List.of(item), Map.of("missing-item", List.of(delivery("work-1", "effective-1")))));
+
+        assertEquals("generated delivery lineage does not match generated BASE items", failure.getMessage());
+    }
+
+    @Test
+    void contributionLineagePlanRejectsOneWorkMappedToDifferentEvidenceBeforePersistence() {
+        InvoiceItem item = baseItem("item-1");
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> generator.planContributionDeliveryLineage(List.of(item), Map.of("item-1", List.of(
+                        delivery("work-1", "effective-1"),
+                        delivery("work-1", "effective-2")))));
+
+        assertEquals("ambiguous generated delivery lineage for work work-1", failure.getMessage());
+    }
+
+    @Test
+    void contributionLineagePlanIsCompleteImmutableAndTimestampedBeforePersistence() {
+        InvoiceItem item = baseItem("item-1");
+
+        InvoiceGenerator.ContributionLineagePlan plan = generator.planContributionDeliveryLineage(
+                List.of(item), Map.of("item-1", List.of(delivery("work-1", "effective-1"))));
+
+        assertNotNull(plan.createdAt());
+        assertEquals(1, plan.rows().size());
+        InvoiceGenerator.PlannedLineageRow row = plan.rows().getFirst();
+        assertEquals("item-1", row.invoiceItemUuid());
+        assertEquals("work-1", row.seed().workUuid());
+        assertEquals(64, row.itemFingerprint().length());
+        assertEquals(64, row.distributionFingerprint().length());
+        assertThrows(UnsupportedOperationException.class, () -> plan.rows().clear());
+    }
+
+    @Test
+    void createDraftInvoiceJoinsTheGeneratorTransaction() throws Exception {
+        Transactional annotation = InvoiceService.class.getMethod("createDraftInvoice", Invoice.class)
+                .getAnnotation(Transactional.class);
+
+        assertNotNull(annotation);
+        assertEquals(Transactional.TxType.REQUIRED, annotation.value());
+    }
+
+    private static InvoiceItem baseItem(String uuid) {
+        return new InvoiceItem(uuid, "registrant-1", "Consulting", "Delivery", 1000.0, 8.0,
+                1, "invoice-1", InvoiceItemOrigin.BASE);
+    }
+
+    private static RegisteredDeliveryEvidenceResolver.ResolvedDelivery delivery(
+            String workUuid, String effectiveConsultantUuid) {
+        return new RegisteredDeliveryEvidenceResolver.ResolvedDelivery(
+                workUuid, "registrant-1", effectiveConsultantUuid, LocalDate.of(2026, 7, 1),
+                "task-1", "project-1", "contract-1", "contract-project-1",
+                "contract-consultant-1", new BigDecimal("8.000000"),
+                new BigDecimal("1000.000000"), new BigDecimal("8000.000000000000"),
+                RegisteredDeliveryEvidenceResolver.RateResolutionStatus.RESOLVED);
     }
 }

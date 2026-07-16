@@ -445,7 +445,13 @@ public class BatchTriggerResource {
                 .setParameter("requestKey", request.expectedRequestKey())
                 .setParameter("inputVector", request.expectedInputVectorFingerprint())
                 .getSingleResult();
-        if (eligible.longValue() != 1) return conflict("COST_BASIS_START_PRECONDITION_FAILED");
+        if (eligible.longValue() != 1) {
+            // A stale/mismatched/superseded target returns 409 with the safe successor request id so the
+            // operator/verifier can follow the supersession chain and explicitly retarget it (design line ~791).
+            BigInteger successor = safeSuccessor(request.expectedRequestId());
+            return Response.status(Response.Status.CONFLICT).entity(new CostBasisConflictResponse(
+                    "COST_BASIS_START_PRECONDITION_FAILED", successor)).build();
+        }
         if (isRunning(COST_JOB)) return conflict("JOB_ALREADY_RUNNING");
         Properties parameters = new PracticeCostBasisRefreshService.ExpectedRequest(
                 request.expectedRequestId(), request.expectedRequestKey(),
@@ -639,6 +645,22 @@ public class BatchTriggerResource {
         return names != null && names.contains(jobName) && !jobOperator.getRunningExecutions(jobName).isEmpty();
     }
 
+    /**
+     * Resolves the safe successor for a stale cost-basis start target: the explicit supersession pointer
+     * when the target is SUPERSEDED, otherwise the newest request beyond it, otherwise null.
+     */
+    private BigInteger safeSuccessor(BigInteger requestId) {
+        Object successor = em.createNativeQuery("""
+                SELECT COALESCE(
+                    (SELECT superseded_by_request_id FROM practice_cost_basis_refresh_request
+                      WHERE request_id=:id AND status='SUPERSEDED'),
+                    (SELECT MAX(request_id) FROM practice_cost_basis_refresh_request WHERE request_id > :id)
+                )
+                """).setParameter("id", requestId).getSingleResult();
+        if (successor == null) return null;
+        return successor instanceof BigInteger id ? id : new BigInteger(successor.toString());
+    }
+
     private static Response transition(String action, int updated) {
         if (updated != 1) return conflict(action + "_PRECONDITION_FAILED");
         return Response.ok(new ExecutionResponse(action, UUID.randomUUID().toString(), null)).build();
@@ -769,5 +791,9 @@ public class BatchTriggerResource {
     }
 
     public record ErrorResponse(String code) {
+    }
+
+    /** 409 cost-basis start payload that surfaces the safe successor request id for chain-following. */
+    public record CostBasisConflictResponse(String code, BigInteger successorRequestId) {
     }
 }

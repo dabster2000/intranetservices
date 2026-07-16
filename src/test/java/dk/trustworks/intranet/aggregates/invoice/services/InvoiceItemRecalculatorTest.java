@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.PracticeInvoiceItemDeliverySource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingRuleCatalog;
@@ -13,10 +14,12 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -216,6 +219,104 @@ class InvoiceItemRecalculatorTest {
         assertEquals(60_000.0, invoice.sumAfterDiscounts, EPS);
     }
 
+    @Test
+    void recalculation_restores_byte_identical_prospective_delivery_lineage() {
+        InvoiceItem item = base("Consultant", 1200.0, 50.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 1), item);
+        PracticeInvoiceItemDeliverySource original = deliveryLineage(item.getUuid());
+        AtomicReference<List<PracticeInvoiceItemDeliverySource>> restored =
+                new AtomicReference<>(List.of());
+        AtomicInteger dirtyMarks = new AtomicInteger();
+
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(original), restored, dirtyMarks);
+        recalc.recalculateInvoiceItems(invoice);
+
+        assertEquals(1, restored.get().size());
+        assertLineageEquals(original, restored.get().getFirst());
+        assertEquals(1, dirtyMarks.get(),
+                "delete-and-restore must advance INVOICE_ATTRIBUTION in the same transaction");
+    }
+
+    @Test
+    void recalculation_does_not_fabricate_a_new_fingerprint_for_changed_item() {
+        InvoiceItem item = base("Consultant", 1200.0, 55.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 1), item);
+        PracticeInvoiceItemDeliverySource original = deliveryLineage(item.getUuid());
+        original.itemFingerprint = "a".repeat(64);
+        AtomicReference<List<PracticeInvoiceItemDeliverySource>> restored =
+                new AtomicReference<>(List.of());
+        AtomicInteger dirtyMarks = new AtomicInteger();
+
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(original), restored, dirtyMarks);
+        recalc.recalculateInvoiceItems(invoice);
+
+        assertEquals("a".repeat(64), restored.get().getFirst().itemFingerprint,
+                "stale server proof must remain stale so materialization fails closed");
+        assertEquals(1, dirtyMarks.get());
+    }
+
+    @Test
+    void removed_item_lineage_is_not_reassigned_and_is_dirty_marked() {
+        InvoiceItem replacement = base("Replacement", 1200.0, 50.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 1), replacement);
+        PracticeInvoiceItemDeliverySource removed = deliveryLineage(UUID.randomUUID().toString());
+        AtomicReference<List<PracticeInvoiceItemDeliverySource>> restored =
+                new AtomicReference<>(List.of());
+        AtomicInteger dirtyMarks = new AtomicInteger();
+
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(removed), restored, dirtyMarks);
+        recalc.recalculateInvoiceItems(invoice);
+
+        assertTrue(restored.get().isEmpty(),
+                "lineage from a removed item must never be attached to a replacement UUID");
+        assertEquals(1, dirtyMarks.get());
+    }
+
+    @Test
+    void cross_month_recalculation_marks_old_and_new_attribution_months() {
+        InvoiceItem item = base("Consultant", 1200.0, 50.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 17), item);
+        List<LocalDate> markedMonths = new ArrayList<>();
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(deliveryLineage(item.getUuid())), new AtomicReference<>(List.of()),
+                new AtomicInteger(), markedMonths);
+
+        recalc.recalculateInvoiceItems(invoice, LocalDate.of(2025, 11, 30));
+
+        assertEquals(List.of(LocalDate.of(2025, 11, 1), LocalDate.of(2025, 12, 1)),
+                markedMonths);
+    }
+
+    @Test
+    void same_month_recalculation_marks_attribution_once() {
+        InvoiceItem item = base("Consultant", 1200.0, 50.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 17), item);
+        List<LocalDate> markedMonths = new ArrayList<>();
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(deliveryLineage(item.getUuid())), new AtomicReference<>(List.of()),
+                new AtomicInteger(), markedMonths);
+
+        recalc.recalculateInvoiceItems(invoice, LocalDate.of(2025, 12, 1));
+
+        assertEquals(List.of(LocalDate.of(2025, 12, 1)), markedMonths);
+    }
+
+    @Test
+    void cross_month_recalculation_without_lineage_does_not_mark_attribution() {
+        InvoiceItem item = base("Consultant", 1200.0, 50.0);
+        Invoice invoice = invoice("PERIOD", LocalDate.of(2025, 12, 17), item);
+        List<LocalDate> markedMonths = new ArrayList<>();
+        InvoiceItemRecalculator recalc = lineageAwareRecalculator(
+                List.of(), new AtomicReference<>(List.of()), new AtomicInteger(), markedMonths);
+
+        recalc.recalculateInvoiceItems(invoice, LocalDate.of(2025, 11, 1));
+
+        assertTrue(markedMonths.isEmpty());
+    }
+
     // ── test infrastructure ────────────────────────────────────────────────────
 
     /**
@@ -226,6 +327,11 @@ class InvoiceItemRecalculatorTest {
      */
     private static InvoiceItemRecalculator newRecalc() {
         InvoiceItemRecalculator r = new InvoiceItemRecalculator() {
+            @Override
+            protected List<PracticeInvoiceItemDeliverySource> loadDeliveryLineageByInvoiceUuid(
+                    String invoiceUuid) {
+                return List.of();
+            }
             @Override
             protected void deleteItemsByInvoiceUuid(String invoiceUuid) { /* no-op */ }
             @Override
@@ -245,6 +351,105 @@ class InvoiceItemRecalculatorTest {
         injectInto(engine, "catalog", new TestCatalog());
         injectInto(engine, "registry", new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         return engine;
+    }
+
+    private static InvoiceItemRecalculator lineageAwareRecalculator(
+            List<PracticeInvoiceItemDeliverySource> existing,
+            AtomicReference<List<PracticeInvoiceItemDeliverySource>> restored,
+            AtomicInteger dirtyMarks) {
+        return lineageAwareRecalculator(existing, restored, dirtyMarks, null);
+    }
+
+    private static InvoiceItemRecalculator lineageAwareRecalculator(
+            List<PracticeInvoiceItemDeliverySource> existing,
+            AtomicReference<List<PracticeInvoiceItemDeliverySource>> restored,
+            AtomicInteger dirtyMarks,
+            List<LocalDate> markedMonths) {
+        InvoiceItemRecalculator recalc = new InvoiceItemRecalculator() {
+            @Override
+            protected List<PracticeInvoiceItemDeliverySource> loadDeliveryLineageByInvoiceUuid(
+                    String invoiceUuid) {
+                return existing;
+            }
+
+            @Override
+            protected void deleteItemsByInvoiceUuid(String invoiceUuid) { /* no-op */ }
+
+            @Override
+            protected void persistItems(Iterable<InvoiceItem> items) { /* no-op */ }
+
+            @Override
+            protected void persistDeliveryLineage(
+                    Iterable<PracticeInvoiceItemDeliverySource> rows) {
+                List<PracticeInvoiceItemDeliverySource> captured = new ArrayList<>();
+                rows.forEach(captured::add);
+                restored.set(List.copyOf(captured));
+            }
+
+            @Override
+            protected void markDeliveryLineageChanged(
+                    Invoice changedInvoice, LocalDate sourceMonth) {
+                dirtyMarks.incrementAndGet();
+                if (markedMonths != null) markedMonths.add(sourceMonth);
+            }
+
+            @Override
+            protected Map<String, String> loadContractTypeItems(String contractuuid) {
+                return Map.of();
+            }
+        };
+        recalc.em = mock(EntityManager.class);
+        recalc.pricingEngine = realPricingEngine();
+        return recalc;
+    }
+
+    private static PracticeInvoiceItemDeliverySource deliveryLineage(String invoiceItemUuid) {
+        PracticeInvoiceItemDeliverySource row = new PracticeInvoiceItemDeliverySource();
+        row.invoiceItemUuid = invoiceItemUuid;
+        row.workUuid = "11111111-1111-4111-8111-111111111111";
+        row.registrantUuid = "22222222-2222-4222-8222-222222222222";
+        row.effectiveConsultantUuid = "33333333-3333-4333-8333-333333333333";
+        row.deliveryDate = LocalDate.of(2025, 11, 14);
+        row.taskUuid = "44444444-4444-4444-8444-444444444444";
+        row.projectUuid = "55555555-5555-4555-8555-555555555555";
+        row.contractUuid = "66666666-6666-4666-8666-666666666666";
+        row.contractProjectUuid = "77777777-7777-4777-8777-777777777777";
+        row.contractConsultantUuid = "88888888-8888-4888-8888-888888888888";
+        row.normalizedDuration = new BigDecimal("50.000000");
+        row.normalizedRate = new BigDecimal("1200.000000");
+        row.deliveryValue = new BigDecimal("60000.000000000000");
+        row.rateResolutionStatus = "RESOLVED";
+        row.contributionAlgorithmVersion = "PRACTICE_DELIVERY_LINEAGE_V1";
+        row.itemFingerprint = "b".repeat(64);
+        row.distributionFingerprint = "c".repeat(64);
+        row.createdAt = LocalDateTime.of(2026, 7, 14, 10, 11, 12, 123_000_000);
+        return row;
+    }
+
+    private static void assertLineageEquals(
+            PracticeInvoiceItemDeliverySource expected,
+            PracticeInvoiceItemDeliverySource actual) {
+        assertAll("delivery lineage",
+                () -> assertEquals(expected.invoiceItemUuid, actual.invoiceItemUuid),
+                () -> assertEquals(expected.workUuid, actual.workUuid),
+                () -> assertEquals(expected.registrantUuid, actual.registrantUuid),
+                () -> assertEquals(expected.effectiveConsultantUuid, actual.effectiveConsultantUuid),
+                () -> assertEquals(expected.deliveryDate, actual.deliveryDate),
+                () -> assertEquals(expected.taskUuid, actual.taskUuid),
+                () -> assertEquals(expected.projectUuid, actual.projectUuid),
+                () -> assertEquals(expected.contractUuid, actual.contractUuid),
+                () -> assertEquals(expected.contractProjectUuid, actual.contractProjectUuid),
+                () -> assertEquals(expected.contractConsultantUuid, actual.contractConsultantUuid),
+                () -> assertEquals(expected.normalizedDuration, actual.normalizedDuration),
+                () -> assertEquals(expected.normalizedRate, actual.normalizedRate),
+                () -> assertEquals(expected.deliveryValue, actual.deliveryValue),
+                () -> assertEquals(expected.rateResolutionStatus, actual.rateResolutionStatus),
+                () -> assertEquals(expected.contributionAlgorithmVersion,
+                        actual.contributionAlgorithmVersion),
+                () -> assertEquals(expected.itemFingerprint, actual.itemFingerprint),
+                () -> assertEquals(expected.distributionFingerprint,
+                        actual.distributionFingerprint),
+                () -> assertEquals(expected.createdAt, actual.createdAt));
     }
 
     /**
@@ -320,6 +525,8 @@ class InvoiceItemRecalculatorTest {
 
     private static void runRecalc(Invoice invoice, Map<String, String> contractTypeItems) {
         InvoiceItemRecalculator r = new InvoiceItemRecalculator() {
+            @Override protected List<PracticeInvoiceItemDeliverySource> loadDeliveryLineageByInvoiceUuid(
+                    String invoiceUuid) { return List.of(); }
             @Override protected void deleteItemsByInvoiceUuid(String uuid) { /* no-op */ }
             @Override protected void persistItems(Iterable<InvoiceItem> items) { /* no-op */ }
             @Override protected Map<String, String> loadContractTypeItems(String c) { return contractTypeItems; }
