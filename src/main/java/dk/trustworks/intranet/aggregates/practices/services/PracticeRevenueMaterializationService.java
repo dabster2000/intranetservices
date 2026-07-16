@@ -584,27 +584,26 @@ public class PracticeRevenueMaterializationService {
                     dependencies.add(DependencyEnvelope.document(item, attempt.basisGenerationId()));
                     if (document.documentType() != PracticeRevenueValuationService.DocumentType.CREDIT_NOTE) {
                         addDeliveryDependencies(dependencies, item,
-                                prospectiveDelivery.dependencies().getOrDefault(item.sourceItemUuid(), List.of()),
+                                prospectiveDelivery.dependenciesFor(item.sourceItemUuid()),
                                 attempt.basisGenerationId());
                         addDeliveryDependencies(dependencies, item,
-                                legacyDirect.dependencies().getOrDefault(item.sourceItemUuid(), List.of()),
+                                legacyDirect.dependenciesFor(item.sourceItemUuid()),
                                 attempt.basisGenerationId());
                         addDeliveryDependencies(dependencies, item,
-                                registeredDelivery.dependencies().getOrDefault(document.documentUuid(), List.of()),
+                                registeredDelivery.dependenciesFor(document.documentUuid()),
                                 attempt.basisGenerationId());
                     }
                     CreditEvidence credit=creditEvidence.get(item.sourceItemUuid());
                     if(credit!=null&&credit.sourceItemUuid()!=null) {
                         dependencies.add(DependencyEnvelope.credit(item,credit.linkedSourceDocumentUuid(),credit.sourceItemUuid(),attempt.basisGenerationId()));
                         addDeliveryDependencies(dependencies, item,
-                                prospectiveDelivery.dependencies().getOrDefault(credit.sourceItemUuid(), List.of()),
+                                prospectiveDelivery.dependenciesFor(credit.sourceItemUuid()),
                                 attempt.basisGenerationId());
                         addDeliveryDependencies(dependencies, item,
-                                legacyDirect.dependencies().getOrDefault(credit.sourceItemUuid(), List.of()),
+                                legacyDirect.dependenciesFor(credit.sourceItemUuid()),
                                 attempt.basisGenerationId());
                         addDeliveryDependencies(dependencies, item,
-                                registeredDelivery.dependencies().getOrDefault(
-                                        credit.linkedSourceDocumentUuid(), List.of()),
+                                registeredDelivery.dependenciesFor(credit.linkedSourceDocumentUuid()),
                                 attempt.basisGenerationId());
                     }
                     if(credit!=null&&credit.linkedSourceDocumentUuid()!=null){
@@ -612,16 +611,15 @@ public class PracticeRevenueMaterializationService {
                         if(sourceDocument!=null){
                             for(var sourceItem:sourceDocument.items){
                                 addDeliveryDependencies(dependencies,item,
-                                        prospectiveDelivery.dependencies().getOrDefault(
-                                                sourceItem.itemUuid(),List.of()),attempt.basisGenerationId());
+                                        prospectiveDelivery.dependenciesFor(sourceItem.itemUuid()),
+                                        attempt.basisGenerationId());
                                 addDeliveryDependencies(dependencies,item,
-                                        legacyDirect.dependencies().getOrDefault(
-                                                sourceItem.itemUuid(),List.of()),attempt.basisGenerationId());
+                                        legacyDirect.dependenciesFor(sourceItem.itemUuid()),
+                                        attempt.basisGenerationId());
                             }
                         }
                         addDeliveryDependencies(dependencies,item,
-                                registeredDelivery.dependencies().getOrDefault(
-                                        credit.linkedSourceDocumentUuid(),List.of()),
+                                registeredDelivery.dependenciesFor(credit.linkedSourceDocumentUuid()),
                                 attempt.basisGenerationId());
                     }
                 }
@@ -1993,6 +1991,9 @@ public class PracticeRevenueMaterializationService {
          */
         PracticeRevenueAllocationService.SourceEvidence evidenceFor(String key){
             return key==null?null:evidence.get(key);
+        }
+        List<DeliveryDependencySeed> dependenciesFor(String key){
+            return key==null?List.of():dependencies.getOrDefault(key,List.of());
         }
     }
     record DeliveryDependencySeed(String workUuid,String registrantUuid,String effectiveConsultantUuid,
