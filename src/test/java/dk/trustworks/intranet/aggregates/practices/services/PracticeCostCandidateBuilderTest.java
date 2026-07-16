@@ -78,6 +78,34 @@ class PracticeCostCandidateBuilderTest {
                 List.of(control("salary", "202609", "SALARIES", "23.45"))));
     }
 
+    /**
+     * Design section 10.2: a zero availability denominator makes the AFFECTED OPEX control
+     * unavailable, and section 10.4 tolerates an unallocated residue within max(DKK 1, 0.01%).
+     * A one-krone correction in a zero-capacity company-month is retained as disclosed
+     * unallocated evidence instead of failing the whole candidate (observed on staging:
+     * company e4b0a2a4/202412 amount -1.00 blocked every build).
+     */
+    @Test
+    void zeroDenominatorControlWithinTheReconciliationToleranceIsRetainedNotFatal() {
+        var result = builder.build(
+                List.of(), List.of(capacity("u1", "2026-01-15", "PM", "7.40")),
+                List.of(effective("u1", "2025-01-01", "2027-01-01", "PM")),
+                List.of(control("opex-other-company-month", "202412", "OPEX", "-1.00"),
+                        control("opex", "202601", "OPEX", "50.00")));
+        assertEquals(1, result.unallocatedWithinTolerance().size());
+        assertEquals("202412", result.unallocatedWithinTolerance().getFirst().monthKey());
+        assertEquals(new BigDecimal("50.00"), amount(result, "202601", "OPEX", "PM"));
+        assertEquals(true, result.costs().stream().noneMatch(c -> c.monthKey().equals("202412")));
+    }
+
+    @Test
+    void zeroDenominatorControlBeyondTheToleranceStillFailsClosed() {
+        assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
+                List.of(), List.of(capacity("u1", "2026-01-15", "PM", "7.40")),
+                List.of(effective("u1", "2025-01-01", "2027-01-01", "PM")),
+                List.of(control("opex-other-company-month", "202412", "OPEX", "-1.01"))));
+    }
+
     @Test
     void refusesToCertifyUnresolvedSalaryOrOpexWeights() {
         assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(

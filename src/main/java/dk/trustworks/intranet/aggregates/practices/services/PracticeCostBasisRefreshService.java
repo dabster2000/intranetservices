@@ -433,7 +433,11 @@ public class PracticeCostBasisRefreshService {
 
         var candidate = costCandidateBuilder.build(salaries, capacities, effective, controls);
         String candidateFingerprint = hash(candidate.costs().toString(), candidate.ftes().toString(),
-                candidate.salaryCoverage().toString());
+                candidate.salaryCoverage().toString(), candidate.unallocatedWithinTolerance().toString());
+        if (!candidate.unallocatedWithinTolerance().isEmpty()) {
+            log.warnf("practice cost controls unallocatable within reconciliation tolerance: %s",
+                    candidate.unallocatedWithinTolerance());
+        }
 
         for (var row : candidate.costs()) {
             em.createNativeQuery("""
