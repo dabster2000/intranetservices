@@ -10,6 +10,9 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamBonusProjectionDT
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamBonusProjectionDTO.PoolInfo;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamBonusProjectionDTO.ProductionBonusDetail;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadBonusConfigDTO;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetailDTO;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetailDTO.MemberDetail;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetailDTO.MonthDetail;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadAdjustmentType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadBonusAdjustment;
 import dk.trustworks.intranet.domain.user.entity.Team;
@@ -197,6 +200,74 @@ public class TeamBonusProjectionService {
 
         rankings.sort(Comparator.comparingDouble(AllTeamsBonusRankingDTO::rawPoints).reversed());
         return rankings;
+    }
+
+    /**
+     * Read-only month-by-month drill-down of the utilization inputs for one team, for admins to
+     * validate the collapsed dashboard figures. For every considered fiscal-year month it returns the
+     * per-member utilization rows using EXACTLY the same predicates as {@link #calculateMonthlyUtilization}
+     * (dated MEMBER teamroles, {@code CONSULTANT}/{@code ACTIVE}, leader-excluded), so the members sum
+     * 1:1 to the team totals the bonus math consumes. Each month also carries the leader holding the
+     * LEADER role for most of that month (null if none) and that leader's own registered revenue.
+     *
+     * @param teamId     the team UUID
+     * @param fiscalYear the fiscal year start year (e.g., 2025 for FY 2025-07-01 to 2026-06-30)
+     * @throws NotFoundException if the team does not exist
+     */
+    public TeamleadMonthlyDetailDTO getMonthlyDetail(String teamId, int fiscalYear) {
+        Team team = Team.findById(teamId);
+        if (team == null) {
+            throw new NotFoundException("Team not found: " + teamId);
+        }
+
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate fyEnd = LocalDate.of(fiscalYear + 1, 6, 30);
+        List<YearMonth> months = getConsideredMonths(fyStart, fyEnd);
+        if (months.isEmpty()) {
+            return new TeamleadMonthlyDetailDTO(team.getUuid(), team.getName(), fiscalYear, List.of());
+        }
+
+        List<String> monthKeys = months.stream().map(TeamBonusProjectionService::monthKey).toList();
+
+        Map<String, List<MemberDetail>> membersByMonth = loadMemberDetails(teamId, monthKeys);
+        List<LeaderPeriod> leaderPeriods = loadLeaderPeriods(teamId, fyStart, fyEnd);
+
+        Map<String, LeaderPeriod> leaderByMonth = new LinkedHashMap<>();
+        for (YearMonth ym : months) {
+            LeaderPeriod leader = resolveLeaderOfMonth(ym, leaderPeriods);
+            if (leader != null) {
+                leaderByMonth.put(monthKey(ym), leader);
+            }
+        }
+
+        Set<String> leaderUuids = new HashSet<>();
+        for (LeaderPeriod leader : leaderByMonth.values()) {
+            leaderUuids.add(leader.uuid());
+        }
+        Map<String, Double> leaderRevenueByMonthUser = loadLeaderMonthlyRevenue(leaderUuids, monthKeys);
+
+        List<MonthDetail> monthDetails = new ArrayList<>();
+        for (YearMonth ym : months) {
+            String key = monthKey(ym);
+            List<MemberDetail> members = membersByMonth.getOrDefault(key, List.of());
+
+            double teamBillable = round(members.stream().mapToDouble(MemberDetail::billableHours).sum(), 2);
+            double teamAvailable = round(members.stream().mapToDouble(MemberDetail::availableHours).sum(), 2);
+            Double teamUtil = utilizationOrNull(teamBillable, teamAvailable);
+
+            LeaderPeriod leader = leaderByMonth.get(key);
+            String leaderUuid = leader != null ? leader.uuid() : null;
+            String leaderName = leader != null ? leader.name() : null;
+            double leaderRevenue = leader != null
+                    ? leaderRevenueByMonthUser.getOrDefault(key + "|" + leader.uuid(), 0.0)
+                    : 0.0;
+
+            monthDetails.add(new MonthDetail(
+                    key, members.size(), teamBillable, teamAvailable, teamUtil,
+                    leaderUuid, leaderName, round(leaderRevenue, 2), members));
+        }
+
+        return new TeamleadMonthlyDetailDTO(team.getUuid(), team.getName(), fiscalYear, monthDetails);
     }
 
     // =====================================================================
@@ -518,6 +589,133 @@ public class TeamBonusProjectionService {
         return ((Number) result).doubleValue();
     }
 
+    // =====================================================================
+    // Monthly drill-down queries (validate-inputs view)
+    // =====================================================================
+
+    /**
+     * Per-member utilization rows for a team over the given months, keyed by month. Uses EXACTLY the
+     * predicates of {@link #calculateMonthlyUtilization} (dated MEMBER teamroles, {@code CONSULTANT}/
+     * {@code ACTIVE}, leader-excluded via {@code NOT EXISTS}) but additionally grouped per user, so the
+     * per-user rows sum back to the collapsed team totals. Hours are display-rounded to 2 decimals.
+     */
+    private Map<String, List<MemberDetail>> loadMemberDetails(String teamId, List<String> monthKeys) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
+                       fud.useruuid AS useruuid,
+                       u.firstname AS firstname,
+                       u.lastname AS lastname,
+                       SUM(fud.registered_billable_hours) AS billable,
+                       SUM(fud.net_available_hours) AS available
+                FROM fact_user_day fud
+                JOIN teamroles tr ON tr.useruuid = fud.useruuid
+                    AND tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= fud.document_date
+                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                JOIN user u ON u.uuid = fud.useruuid
+                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                  AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM teamroles ldr
+                        WHERE ldr.useruuid = fud.useruuid
+                          AND ldr.teamuuid = :teamId
+                          AND ldr.membertype = 'LEADER'
+                          AND ldr.startdate <= fud.document_date
+                          AND (ldr.enddate IS NULL OR ldr.enddate > fud.document_date)
+                  )
+                GROUP BY fud.year, fud.month, fud.useruuid, u.firstname, u.lastname
+                ORDER BY fud.year, fud.month, u.lastname, u.firstname
+                """)
+                .setParameter("teamId", teamId)
+                .setParameter("monthKeys", monthKeys)
+                .getResultList();
+
+        Map<String, List<MemberDetail>> byMonth = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            String monthKey = (String) row[0];
+            String useruuid = (String) row[1];
+            String firstName = (String) row[2];
+            String lastName = (String) row[3];
+            double billable = round(((Number) row[4]).doubleValue(), 2);
+            double available = round(((Number) row[5]).doubleValue(), 2);
+            MemberDetail member = new MemberDetail(
+                    useruuid, fullName(firstName, lastName),
+                    billable, available, utilizationOrNull(billable, available));
+            byMonth.computeIfAbsent(monthKey, k -> new ArrayList<>()).add(member);
+        }
+        return byMonth;
+    }
+
+    /**
+     * All LEADER teamroles for a team overlapping the fiscal-year window, as pure {@link LeaderPeriod}
+     * value objects (end is exclusive, {@code null} for open-ended). The per-month winner is resolved
+     * in-memory by {@link #resolveLeaderOfMonth}.
+     */
+    private List<LeaderPeriod> loadLeaderPeriods(String teamId, LocalDate fyStart, LocalDate fyEnd) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT tr.useruuid, u.firstname, u.lastname, tr.startdate, tr.enddate
+                FROM teamroles tr
+                JOIN user u ON u.uuid = tr.useruuid
+                WHERE tr.teamuuid = :teamId
+                  AND tr.membertype = 'LEADER'
+                  AND tr.startdate <= :fyEnd
+                  AND (tr.enddate > :fyStart OR tr.enddate IS NULL)
+                ORDER BY tr.startdate ASC
+                """)
+                .setParameter("teamId", teamId)
+                .setParameter("fyStart", fyStart)
+                .setParameter("fyEnd", fyEnd)
+                .getResultList();
+
+        List<LeaderPeriod> periods = new ArrayList<>();
+        for (Object[] row : rows) {
+            String uuid = (String) row[0];
+            String name = fullName((String) row[1], (String) row[2]);
+            LocalDate start = toLocalDate(row[3]);
+            LocalDate endExclusive = row[4] != null ? toLocalDate(row[4]) : null;
+            periods.add(new LeaderPeriod(uuid, name, start, endExclusive));
+        }
+        return periods;
+    }
+
+    /**
+     * A leader's own registered revenue per month (same {@code CONSULTANT}/{@code ACTIVE} filter as
+     * {@link #calculateLeaderOwnRevenue}), keyed by {@code "<monthKey>|<useruuid>"}. Returns an empty
+     * map when no month has a resolved leader.
+     */
+    private Map<String, Double> loadLeaderMonthlyRevenue(Set<String> leaderUuids, List<String> monthKeys) {
+        if (leaderUuids.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
+                       fud.useruuid AS useruuid,
+                       COALESCE(SUM(fud.registered_amount), 0) AS revenue
+                FROM fact_user_day fud
+                WHERE fud.useruuid IN (:leaderUuids)
+                  AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
+                  AND fud.consultant_type = 'CONSULTANT'
+                  AND fud.status_type = 'ACTIVE'
+                GROUP BY fud.year, fud.month, fud.useruuid
+                """)
+                .setParameter("leaderUuids", leaderUuids)
+                .setParameter("monthKeys", monthKeys)
+                .getResultList();
+
+        Map<String, Double> byMonthUser = new HashMap<>();
+        for (Object[] row : rows) {
+            String monthKey = (String) row[0];
+            String useruuid = (String) row[1];
+            double revenue = ((Number) row[2]).doubleValue();
+            byMonthUser.put(monthKey + "|" + useruuid, revenue);
+        }
+        return byMonthUser;
+    }
+
     /**
      * Finds the primary leader for a team during a fiscal year (longest tenure), clipping the LEADER
      * period to the FY and counting whole months (partial month = 1, capped at last completed month).
@@ -674,6 +872,57 @@ public class TeamBonusProjectionService {
         return leader == null || "unknown".equals(leader.uuid());
     }
 
+    /** Fiscal-month key in {@code YYYYMM} form, matching the {@code fact_user_day} month keys. */
+    static String monthKey(YearMonth ym) {
+        return String.format("%04d%02d", ym.getYear(), ym.getMonthValue());
+    }
+
+    /**
+     * Utilization ratio {@code billable / available} rounded to 4 decimals (dashboard convention),
+     * or {@code null} when the available-hours denominator is zero (graceful divide-by-zero guard).
+     */
+    static Double utilizationOrNull(double billable, double available) {
+        if (available <= 0.0) {
+            return null;
+        }
+        return round(billable / available, 4);
+    }
+
+    /**
+     * Selects the leader whose LEADER role covers the most days of {@code month}, or {@code null} when
+     * no role overlaps it. Overlap is computed against the leader period's half-open range
+     * {@code [start, endExclusive)} clipped to the month; ties (e.g. two roles splitting a month
+     * evenly) are broken deterministically by lowest UUID. Pure logic — unit-tested without a DB.
+     */
+    static LeaderPeriod resolveLeaderOfMonth(YearMonth month, List<LeaderPeriod> leaders) {
+        LocalDate monthFirst = month.atDay(1);
+        LocalDate monthEndExclusive = month.atEndOfMonth().plusDays(1);
+
+        LeaderPeriod best = null;
+        long bestDays = 0;
+        for (LeaderPeriod lp : leaders) {
+            LocalDate effStart = lp.start().isAfter(monthFirst) ? lp.start() : monthFirst;
+            LocalDate effEndExclusive = lp.endExclusive() == null || lp.endExclusive().isAfter(monthEndExclusive)
+                    ? monthEndExclusive
+                    : lp.endExclusive();
+            long days = java.time.temporal.ChronoUnit.DAYS.between(effStart, effEndExclusive);
+            if (days <= 0) {
+                continue;
+            }
+            boolean wins = days > bestDays
+                    || (days == bestDays && best != null && lp.uuid().compareTo(best.uuid()) < 0);
+            if (wins) {
+                best = lp;
+                bestDays = days;
+            }
+        }
+        return best;
+    }
+
+    private static String fullName(String firstName, String lastName) {
+        return ((firstName != null ? firstName : "") + " " + (lastName != null ? lastName : "")).trim();
+    }
+
     private static double round(double value, int scale) {
         return BigDecimal.valueOf(value).setScale(scale, RoundingMode.HALF_UP).doubleValue();
     }
@@ -691,6 +940,13 @@ public class TeamBonusProjectionService {
 
     private record LeaderInfo(String uuid, String name, int monthsAsLeader) {}
     private record LeaderCandidate(String uuid, String name, LocalDate start, LocalDate end) {}
+
+    /**
+     * A LEADER teamrole as a pure value object for per-month leader resolution. {@code endExclusive} is
+     * {@code null} for an open-ended role and otherwise the (exclusive) end date, matching the
+     * {@code startdate <= day AND (enddate IS NULL OR enddate > day)} predicate used across this class.
+     */
+    public record LeaderPeriod(String uuid, String name, LocalDate start, LocalDate endExclusive) {}
     private record TeamUtilizationResult(double avgUtilization, double avgTeamSize) {}
 
     private record TeamPoints(LeaderInfo leader, List<MonthlyUtilization> monthlyUtilization,

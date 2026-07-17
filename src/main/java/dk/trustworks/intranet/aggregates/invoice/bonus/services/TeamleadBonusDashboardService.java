@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadDashboardDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadDashboardDTO.LeaderRow;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadDashboardDTO.PayoutInfo;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadDashboardDTO.PoolSummary;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetailDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadBonusPayout;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.TeamBonusProjectionService.LeaderBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.TeamBonusProjectionService.TeamleadContext;
@@ -85,6 +86,15 @@ public class TeamleadBonusDashboardService {
                 ctx.consideredMonths().size());
 
         return new TeamleadDashboardDTO(fiscalYear, ctx.config(), poolSummary, leaders);
+    }
+
+    /**
+     * Read-only per-month utilization drill-down for a single team, used by the admin dashboard to
+     * validate the collapsed team figures against the underlying per-member inputs. Delegates to
+     * {@link TeamBonusProjectionService#getMonthlyDetail}, which reuses the exact bonus-math predicates.
+     */
+    public TeamleadMonthlyDetailDTO getMonthlyDetail(String teamId, int fiscalYear) {
+        return projectionService.getMonthlyDetail(teamId, fiscalYear);
     }
 
     private LeaderRow toLeaderRow(LeaderBonusRow row, PayoutInfo payout) {

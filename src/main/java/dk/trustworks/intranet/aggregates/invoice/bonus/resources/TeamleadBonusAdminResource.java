@@ -50,6 +50,14 @@ public class TeamleadBonusAdminResource {
         return dashboardService.getDashboard(requireFiscalYear(fiscalYear));
     }
 
+    @GET
+    @Path("/{teamId}/monthly-detail")
+    @Operation(summary = "Per-month utilization drill-down for a team (validate bonus inputs)")
+    public TeamleadMonthlyDetailDTO getMonthlyDetail(@PathParam("teamId") String teamId,
+                                                     @QueryParam("fiscalYear") Integer fiscalYear) {
+        return dashboardService.getMonthlyDetail(teamId, requireFiscalYear(fiscalYear));
+    }
+
     // =====================================================================
     // Config
     // =====================================================================
