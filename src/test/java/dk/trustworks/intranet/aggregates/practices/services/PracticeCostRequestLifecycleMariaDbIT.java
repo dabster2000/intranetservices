@@ -404,7 +404,14 @@ class PracticeCostRequestLifecycleMariaDbIT {
                     "CREATE TABLE contracts (uuid VARCHAR(36) PRIMARY KEY)",
                     "CREATE TABLE contract_consultants (uuid VARCHAR(36) PRIMARY KEY, "
                             + "contractuuid VARCHAR(36), useruuid VARCHAR(36), activefrom DATE NOT NULL, "
-                            + "activeto DATE NULL, rate DOUBLE, hours DOUBLE)"
+                            + "activeto DATE NULL, rate DOUBLE, hours DOUBLE)",
+                    // Platform table (V143, reshaped by V145/V267); V414 registers a settings tab in it.
+                    "CREATE TABLE page_registry (id INT AUTO_INCREMENT PRIMARY KEY, "
+                            + "page_key VARCHAR(50) NOT NULL UNIQUE, page_label VARCHAR(100) NOT NULL, "
+                            + "is_visible BOOLEAN NOT NULL DEFAULT FALSE, react_route VARCHAR(100) NOT NULL, "
+                            + "required_roles VARCHAR(255) NOT NULL DEFAULT 'USER', "
+                            + "display_order INT NOT NULL DEFAULT 0, section VARCHAR(50), icon_name VARCHAR(50), "
+                            + "is_external BOOLEAN NOT NULL DEFAULT FALSE, external_url VARCHAR(500) NULL)"
             }) {
                 statement.execute(ddl);
             }
