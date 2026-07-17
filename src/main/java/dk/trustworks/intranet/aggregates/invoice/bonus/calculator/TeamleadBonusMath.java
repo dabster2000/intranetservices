@@ -120,4 +120,97 @@ public final class TeamleadBonusMath {
             return poolAmount + productionAmount + splitAmount;
         }
     }
+
+    // =====================================================================
+    // Hybrid per-leader split (spec §4)
+    // =====================================================================
+
+    /**
+     * Splits a team's payable pool between its leaders proportionally to
+     * {@code weight_L = ownWindowPoints_L × monthsAsLeader_L}. Returns one slice per leader in the
+     * input order, each in {@code [0, 1]} and summing to 1 (barring the all-zero edge case).
+     *
+     * <ul>
+     *   <li>A single leader always gets the whole slice ({@code 1.0}).</li>
+     *   <li>When {@code ΣW = 0} (e.g. every leader sat at/below the utilization threshold) but the
+     *       team still has a payable pool, the split falls back to being proportional to the
+     *       months-as-leader counts, so leaderless-driven proration is still honoured.</li>
+     *   <li>When both the weights and the month counts are all zero, every slice is {@code 0}
+     *       (the covered fraction is zero anyway, so nothing is payable).</li>
+     * </ul>
+     *
+     * Negative weights/months are clamped to zero before the ratio. Pure logic — unit-tested
+     * without a DB.
+     *
+     * @param weights per-leader {@code ownWindowPoints × monthsAsLeader} (same order as {@code months})
+     * @param months  per-leader considered-months-as-leader counts
+     * @return per-leader slices in input order
+     * @throws IllegalArgumentException when the two arrays differ in length
+     */
+    public static double[] hybridSlices(double[] weights, int[] months) {
+        if (weights.length != months.length) {
+            throw new IllegalArgumentException("weights and months must have the same length");
+        }
+        int n = weights.length;
+        double[] slices = new double[n];
+        if (n == 0) return slices;
+        if (n == 1) {
+            slices[0] = 1.0;
+            return slices;
+        }
+
+        double sumWeights = 0.0;
+        for (double w : weights) sumWeights += Math.max(w, 0.0);
+        if (sumWeights > 0.0) {
+            for (int i = 0; i < n; i++) slices[i] = Math.max(weights[i], 0.0) / sumWeights;
+            return slices;
+        }
+
+        // ΣW = 0 fallback: proportional to months-as-leader.
+        long sumMonths = 0;
+        for (int m : months) sumMonths += Math.max(m, 0);
+        if (sumMonths > 0) {
+            for (int i = 0; i < n; i++) slices[i] = Math.max(months[i], 0) / (double) sumMonths;
+        }
+        return slices;
+    }
+
+    /**
+     * Recomposes a team's fiscal-year utilization as the month-count-weighted average over each
+     * leader window's <em>effective</em> utilization (admin override applied) plus the measured
+     * monthly utilizations of any leaderless (unassigned) months.
+     *
+     * <pre>teamUtil = (Σ effectiveUtil_L × windowMonths_L + Σ unassignedUtil_m) / (Σ windowMonths_L + #unassigned)</pre>
+     *
+     * With no overrides each window's effective utilization is the equal-weight mean of its months,
+     * so this collapses to the plain equal-weight monthly average (backward compatible). With a sole
+     * full-coverage leader whose utilization is overridden it equals the override exactly. Only
+     * months that actually carry member data should be passed in (empty months have no utilization).
+     * Returns {@code 0} when there are no contributing months. Pure logic — unit-tested without a DB.
+     *
+     * @param windowEffectiveUtil per-leader-window effective utilization (override applied)
+     * @param windowMonthCounts   per-leader-window count of data-carrying months (same order)
+     * @param unassignedMonthlyUtil measured utilizations of leaderless data-carrying months
+     * @return the recomposed team utilization
+     * @throws IllegalArgumentException when the two window arrays differ in length
+     */
+    public static double recomposedUtilization(double[] windowEffectiveUtil, int[] windowMonthCounts,
+                                               double[] unassignedMonthlyUtil) {
+        if (windowEffectiveUtil.length != windowMonthCounts.length) {
+            throw new IllegalArgumentException("window arrays must have the same length");
+        }
+        double weightedSum = 0.0;
+        long totalMonths = 0;
+        for (int i = 0; i < windowEffectiveUtil.length; i++) {
+            int count = Math.max(windowMonthCounts[i], 0);
+            weightedSum += windowEffectiveUtil[i] * count;
+            totalMonths += count;
+        }
+        for (double util : unassignedMonthlyUtil) {
+            weightedSum += util;
+            totalMonths += 1;
+        }
+        if (totalMonths == 0) return 0.0;
+        return weightedSum / totalMonths;
+    }
 }

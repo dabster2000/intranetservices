@@ -39,6 +39,8 @@ public record TeamleadMonthlyDetailDTO(
             @Schema(description = "Full name of the month's leader; null when none") String leaderName,
             @Schema(description = "Leader's own registered revenue for the month (DKK, CONSULTANT/ACTIVE)")
             double leaderRegisteredRevenueDkk,
+            @Schema(description = "The resolved month-leader is excluded from this FY's teamlead bonus")
+            boolean leaderExcluded,
             @Schema(description = "Per-member utilization rows that sum to the team totals")
             List<MemberDetail> members
     ) {}
@@ -48,9 +50,18 @@ public record TeamleadMonthlyDetailDTO(
     public record MemberDetail(
             @Schema(description = "Member user UUID") String useruuid,
             @Schema(description = "Member full name") String name,
-            @Schema(description = "Member billable hours") double billableHours,
-            @Schema(description = "Member net available hours") double availableHours,
+            @Schema(description = "Member billable hours (ACTIVE rows only)") double billableHours,
+            @Schema(description = "Member net available hours (ACTIVE rows only)") double availableHours,
             @Schema(description = "Member utilization = billable / available; null when available is 0")
-            Double utilizationPct
+            Double utilizationPct,
+            // Editable-calculation-source fields (spec §2):
+            @Schema(description = "null | FULL_LEAVE | PARTIAL_LEAVE") String leaveStatus,
+            @Schema(description = "Dominant leave type (MATERNITY_LEAVE|PAID_LEAVE|NON_PAY_LEAVE), else null")
+            String leaveType,
+            @Schema(description = "ACTIVE-status calendar-day row count in the month") int activeDays,
+            @Schema(description = "Leave-status calendar-day row count in the month") int leaveDays,
+            @Schema(description = "Effective inclusion after default + override") boolean includedInCalculation,
+            @Schema(description = "An override row exists for this (team, user, month)") boolean overridden,
+            @Schema(description = "Override note (null when no override)") String overrideNote
     ) {}
 }

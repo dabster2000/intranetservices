@@ -139,20 +139,32 @@ public class TeamleadBonusPayoutService {
      * across the teams and the per-user components (production, split, prepaid) are counted once —
      * mirroring {@link TeamleadBonusDashboardService}'s dual-leadership guard — so the single
      * (fiscal_year, useruuid) payout covers every led team.
+     *
+     * <p>Excluded (team, leader) rows are dropped: an excluded slice is never paid. A leader excluded
+     * on every team they lead cannot be paid at all (400).</p>
      */
     private LeaderBonusRow recomputeLeaderRow(String userUuid, int fiscalYear) {
         TeamleadContext ctx = projectionService.buildContext(fiscalYear);
-        List<LeaderBonusRow> rows = new ArrayList<>();
+        List<LeaderBonusRow> allRows = new ArrayList<>();
+        List<LeaderBonusRow> payableRows = new ArrayList<>();
         for (Team team : Team.<Team>list("teamleadbonus = true")) {
-            LeaderBonusRow row = projectionService.computeLeaderRow(team, ctx);
-            if (userUuid.equals(row.leaderUuid())) {
-                rows.add(row);
+            for (LeaderBonusRow row : projectionService.computeLeaderRows(team, ctx)) {
+                if (userUuid.equals(row.leaderUuid())) {
+                    allRows.add(row);
+                    if (!row.excluded()) {
+                        payableRows.add(row);
+                    }
+                }
             }
         }
-        if (rows.isEmpty()) {
+        if (allRows.isEmpty()) {
             throw new BadRequestException("User " + userUuid + " is not a teamlead-bonus leader for FY " + fiscalYear);
         }
-        return TeamBonusProjectionService.combineLeaderRows(rows);
+        if (payableRows.isEmpty()) {
+            throw new BadRequestException(
+                    "Leader " + userUuid + " is excluded from teamlead bonus for FY " + fiscalYear);
+        }
+        return TeamBonusProjectionService.combineLeaderRows(payableRows);
     }
 
     /**

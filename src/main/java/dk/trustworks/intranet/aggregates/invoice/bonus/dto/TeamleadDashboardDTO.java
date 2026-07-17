@@ -56,7 +56,19 @@ public record TeamleadDashboardDTO(
             double prepaidAuto,
             double prepaidManual,
             double totalBonus,
-            PayoutInfo payout
+            PayoutInfo payout,
+            // Editable-calculation-source fields (spec §6/§4):
+            @Schema(description = "This (team, leader) is excluded from the teamlead bonus this FY")
+            boolean excluded,
+            @Schema(description = "Exclusion note (null when not excluded)") String excludedNote,
+            @Schema(description = "Every leader of the team is excluded → team removed entirely")
+            boolean teamFullyExcluded,
+            @Schema(description = "Full-FY team raw points (same value on all of the team's rows)")
+            double teamRawPoints,
+            @Schema(description = "Considered months attributed to ANY leader of this team")
+            int coveredMonths,
+            @Schema(description = "This leader's hybrid slice = weight_L / ΣW (0..1); 1.0 for a sole leader")
+            double sharePct
     ) {}
 
     @Schema(name = "TeamleadPayoutInfo", description = "Existing payout for a leader (null when unpaid)")

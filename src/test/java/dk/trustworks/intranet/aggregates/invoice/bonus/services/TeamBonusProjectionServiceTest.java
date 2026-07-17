@@ -118,4 +118,33 @@ class TeamBonusProjectionServiceTest {
                 YearMonth.of(2025, 7), List.of(carol));
         assertEquals("carol", winner.uuid());
     }
+
+    // --- month attribution edge: mid-month leadership swap (majority rule) ---
+
+    @Test
+    void resolveLeaderOfMonth_midMonthSwap_majorityGoesToOutgoingLeader() {
+        // July (31 days): Zoe hands over on the 20th (endExclusive 20 → covers 1..19 = 19 days),
+        // Adam takes over from the 20th (20..31 = 12 days) → Zoe holds the majority even though her
+        // UUID sorts later, so the tie-break is NOT what decides it.
+        LeaderPeriod zoe = new LeaderPeriod("zoe", "Zoe Z",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2025, 7, 20));
+        LeaderPeriod adam = new LeaderPeriod("adam", "Adam A",
+                LocalDate.of(2025, 7, 20), null);
+        LeaderPeriod winner = TeamBonusProjectionService.resolveLeaderOfMonth(
+                YearMonth.of(2025, 7), List.of(zoe, adam));
+        assertEquals("zoe", winner.uuid(), "majority-of-days wins over UUID tie-break");
+    }
+
+    @Test
+    void resolveLeaderOfMonth_midMonthSwap_majorityGoesToIncomingLeader() {
+        // July (31 days): incumbent leaves on the 8th (endExclusive 8 → 7 days); successor takes the
+        // remaining 24 days from the 8th → successor wins by majority.
+        LeaderPeriod incumbent = new LeaderPeriod("aaa", "Ann A",
+                LocalDate.of(2024, 1, 1), LocalDate.of(2025, 7, 8));
+        LeaderPeriod successor = new LeaderPeriod("zzz", "Zed Z",
+                LocalDate.of(2025, 7, 8), null);
+        LeaderPeriod winner = TeamBonusProjectionService.resolveLeaderOfMonth(
+                YearMonth.of(2025, 7), List.of(incumbent, successor));
+        assertEquals("zzz", winner.uuid());
+    }
 }

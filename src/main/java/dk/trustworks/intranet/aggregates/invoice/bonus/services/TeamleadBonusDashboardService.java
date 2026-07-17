@@ -38,18 +38,21 @@ public class TeamleadBonusDashboardService {
         TeamleadContext ctx = projectionService.buildContext(fiscalYear);
 
         List<Team> teams = Team.list("teamleadbonus = true");
+        // One row per (team, leader) — every user who held the LEADER role in the FY — plus an
+        // "unknown" row for teams with no LEADER role.
         List<LeaderBonusRow> rows = new ArrayList<>();
         for (Team team : teams) {
-            rows.add(projectionService.computeLeaderRow(team, ctx));
+            rows.addAll(projectionService.computeLeaderRows(team, ctx));
         }
 
         // Dual-leadership guard: if one user leads several teamleadbonus teams, the per-user
         // components (production, split, prepaid) are kept on the deterministic primary row only
         // and stripped from the secondary rows, so KPI/footer totals never double-count them
-        // (mirrors TeamleadBonusPayoutService, which pays the combined row once).
+        // (mirrors TeamleadBonusPayoutService, which pays the combined row once). Excluded rows
+        // already carry zeroed components, so they are ignored when picking the primary.
         Map<String, List<LeaderBonusRow>> rowsByLeader = new HashMap<>();
         for (LeaderBonusRow row : rows) {
-            if (!"unknown".equals(row.leaderUuid())) {
+            if (!"unknown".equals(row.leaderUuid()) && !row.excluded()) {
                 rowsByLeader.computeIfAbsent(row.leaderUuid(), k -> new ArrayList<>()).add(row);
             }
         }
@@ -64,7 +67,7 @@ public class TeamleadBonusDashboardService {
         List<LeaderRow> leaders = new ArrayList<>();
         for (LeaderBonusRow row : rows) {
             String primaryTeamId = primaryTeamIdByLeader.get(row.leaderUuid());
-            LeaderBonusRow effective = primaryTeamId != null && !primaryTeamId.equals(row.teamId())
+            LeaderBonusRow effective = primaryTeamId != null && !primaryTeamId.equals(row.teamId()) && !row.excluded()
                     ? TeamBonusProjectionService.stripPerUserComponents(row)
                     : row;
             leaders.add(toLeaderRow(effective, findPayout(fiscalYear, effective.leaderUuid())));
@@ -119,7 +122,13 @@ public class TeamleadBonusDashboardService {
                 row.prepaidAuto(),
                 row.prepaidManual(),
                 row.totalBonus(),
-                payout);
+                payout,
+                row.excluded(),
+                row.excludedNote(),
+                row.teamFullyExcluded(),
+                row.teamRawPoints(),
+                row.coveredMonths(),
+                row.sharePct());
     }
 
     private PayoutInfo findPayout(int fiscalYear, String leaderUuid) {

@@ -15,6 +15,8 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetail
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamleadMonthlyDetailDTO.MonthDetail;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadAdjustmentType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadBonusAdjustment;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadBonusLeaderExclusion;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.TeamleadBonusMemberOverride;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.userservice.model.TeamRole;
@@ -22,6 +24,7 @@ import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
@@ -35,17 +38,27 @@ import java.util.*;
 /**
  * Read-only query service (CQRS query side) for team-lead bonus projections. All constants are now
  * config-driven ({@link TeamleadBonusConfigService}); the pool basis comes from
- * {@link TeamleadOverskudService}; admin util-overrides and split/prepaid adjustments are applied
- * consistently across the per-team calculation, the Σpoints denominator and the team-dashboard tab.
+ * {@link TeamleadOverskudService}; admin util-overrides, split/prepaid adjustments and — new in the
+ * editable-calculation-sources feature — per-member inclusion overrides and per-leader exclusions
+ * are applied consistently across the per-team calculation, the Σpoints denominator and the
+ * team-dashboard tab.
  *
- * <p>The pure formulas live in {@link TeamleadBonusMath}; this class only assembles inputs (SQL,
- * temporal leader resolution) and rounds outputs for display.</p>
+ * <p>The pure formulas (raw points, pool share, hybrid split, recomposed utilization) live in
+ * {@link TeamleadBonusMath}; this class only assembles inputs (SQL, temporal leader resolution) and
+ * rounds outputs for display.</p>
+ *
+ * <p>One grid row is emitted per (team, leader) — every user who held the LEADER role on a
+ * teamleadbonus team during the FY — plus an {@code "unknown"} row for teams with no LEADER role.
+ * The team's payable pool is split between its leaders by the hybrid rule in spec §4.</p>
  *
  * @see TeamBonusProjectionDTO
  */
 @JBossLog
 @ApplicationScoped
 public class TeamBonusProjectionService {
+
+    private static final String LEAVE_STATUS_SQL = "'MATERNITY_LEAVE','PAID_LEAVE','NON_PAY_LEAVE'";
+    private static final String UNKNOWN_LEADER_UUID = "unknown";
 
     @Inject
     EntityManager em;
@@ -101,7 +114,8 @@ public class TeamBonusProjectionService {
 
     /**
      * Calculates the full bonus projection for a specific team leader in a fiscal year, including
-     * the admin adjustments summary and pool-basis provenance.
+     * the admin adjustments summary and pool-basis provenance. Compatibility path for the teamlead's
+     * own tab: returns the team's primary (longest-attributed) leader row.
      *
      * @param teamId     the team UUID
      * @param fiscalYear the fiscal year start year (e.g., 2025 for FY 2025-07-01 to 2026-06-30)
@@ -164,16 +178,22 @@ public class TeamBonusProjectionService {
 
     /**
      * Returns bonus ranking data for all bonus-eligible teams, sorted by rawPoints descending. Uses
-     * the effective config and admin util-overrides.
+     * the effective config, admin util-overrides, member overrides (via the fact predicate) and
+     * skips fully-excluded teams; the primary leader is shown as today.
      */
     public List<AllTeamsBonusRankingDTO> getAllTeamsBonusRanking(String currentTeamId, int fiscalYear) {
         List<Team> bonusTeams = Team.list("teamleadbonus = true");
 
+        // Deliberately NOT buildContext(): the ranking consumes only points/factor/util/size and the
+        // exclusion set, so skip the pool-basis (Overskud/OPEX/GL), company-revenue and Σpoints
+        // machinery — this endpoint backs every teamlead's own tab and must stay cheap.
         LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
         LocalDate fyEnd = LocalDate.of(fiscalYear + 1, 6, 30);
         List<YearMonth> consideredMonths = getConsideredMonths(fyStart, fyEnd);
         TeamleadBonusConfigDTO config = configService.getEffectiveConfig(fiscalYear);
         Map<String, AdjustmentAggregate> adjustments = loadAdjustments(fiscalYear);
+        Map<String, Map<String, String>> leaderExclusions = loadLeaderExclusions(fiscalYear);
+        Set<String> fullyExcludedTeamIds = computeFullyExcludedTeams(leaderExclusions, fyStart, fyEnd);
 
         if (consideredMonths.isEmpty()) {
             return bonusTeams.stream()
@@ -186,15 +206,19 @@ public class TeamBonusProjectionService {
 
         List<AllTeamsBonusRankingDTO> rankings = new ArrayList<>();
         for (Team team : bonusTeams) {
-            TeamPoints tp = computeTeamPoints(team, config, consideredMonths, fyStart, fyEnd, adjustments);
+            if (fullyExcludedTeamIds.contains(team.getUuid())) continue;
+            TeamAggregate agg = computeTeamAggregate(team, consideredMonths, config, fyStart, fyEnd, adjustments);
+            String leaderName = agg.leaderWindows().isEmpty()
+                    ? findLeaderNameForTeam(team.getUuid(), fyStart, fyEnd)
+                    : primaryWindow(agg.leaderWindows()).leaderName();
             rankings.add(new AllTeamsBonusRankingDTO(
                     team.getUuid(),
                     team.getName(),
-                    tp.leader().name(),
-                    round(tp.rawPoints(), 6),
-                    tp.teamFactor(),
-                    round(tp.teamUtil(), 4),
-                    (int) Math.round(tp.avgTeamSize()),
+                    leaderName,
+                    round(agg.teamRawPoints(), 6),
+                    agg.teamFactor(),
+                    round(agg.recomposedTeamUtil(), 4),
+                    (int) Math.round(agg.teamAvgSize()),
                     team.getUuid().equals(currentTeamId)));
         }
 
@@ -206,9 +230,12 @@ public class TeamBonusProjectionService {
      * Read-only month-by-month drill-down of the utilization inputs for one team, for admins to
      * validate the collapsed dashboard figures. For every considered fiscal-year month it returns the
      * per-member utilization rows using EXACTLY the same predicates as {@link #calculateMonthlyUtilization}
-     * (dated MEMBER teamroles, {@code CONSULTANT}/{@code ACTIVE}, leader-excluded), so the members sum
-     * 1:1 to the team totals the bonus math consumes. Each month also carries the leader holding the
-     * LEADER role for most of that month (null if none) and that leader's own registered revenue.
+     * (dated MEMBER teamroles, {@code CONSULTANT}, leader-excluded, member-override applied), so the
+     * <em>included</em> members sum 1:1 to the team totals the bonus math consumes. The roster now
+     * also surfaces full-leave members (default-excluded, toggleable); members whose only rows are
+     * {@code TERMINATED}/{@code PREBOARDING} stay hidden. Each month also carries the leader holding
+     * the LEADER role for most of that month (null if none), that leader's own registered revenue and
+     * whether that leader is excluded for the FY.
      *
      * @param teamId     the team UUID
      * @param fiscalYear the fiscal year start year (e.g., 2025 for FY 2025-07-01 to 2026-06-30)
@@ -229,7 +256,10 @@ public class TeamBonusProjectionService {
 
         List<String> monthKeys = months.stream().map(TeamBonusProjectionService::monthKey).toList();
 
-        Map<String, List<MemberDetail>> membersByMonth = loadMemberDetails(teamId, monthKeys);
+        Map<String, MemberOverrideInfo> teamOverrides = loadTeamMemberOverrides(teamId, monthKeys);
+        Set<String> excludedLeaders = loadTeamLeaderExclusions(fiscalYear, teamId);
+
+        Map<String, List<MemberDetail>> membersByMonth = loadMemberDetails(teamId, monthKeys, teamOverrides);
         List<LeaderPeriod> leaderPeriods = loadLeaderPeriods(teamId, fyStart, fyEnd);
 
         Map<String, LeaderPeriod> leaderByMonth = new LinkedHashMap<>();
@@ -250,9 +280,10 @@ public class TeamBonusProjectionService {
         for (YearMonth ym : months) {
             String key = monthKey(ym);
             List<MemberDetail> members = membersByMonth.getOrDefault(key, List.of());
+            List<MemberDetail> included = members.stream().filter(MemberDetail::includedInCalculation).toList();
 
-            double teamBillable = round(members.stream().mapToDouble(MemberDetail::billableHours).sum(), 2);
-            double teamAvailable = round(members.stream().mapToDouble(MemberDetail::availableHours).sum(), 2);
+            double teamBillable = round(included.stream().mapToDouble(MemberDetail::billableHours).sum(), 2);
+            double teamAvailable = round(included.stream().mapToDouble(MemberDetail::availableHours).sum(), 2);
             Double teamUtil = utilizationOrNull(teamBillable, teamAvailable);
 
             LeaderPeriod leader = leaderByMonth.get(key);
@@ -261,10 +292,11 @@ public class TeamBonusProjectionService {
             double leaderRevenue = leader != null
                     ? leaderRevenueByMonthUser.getOrDefault(key + "|" + leader.uuid(), 0.0)
                     : 0.0;
+            boolean leaderExcluded = leader != null && excludedLeaders.contains(leader.uuid());
 
             monthDetails.add(new MonthDetail(
-                    key, members.size(), teamBillable, teamAvailable, teamUtil,
-                    leaderUuid, leaderName, round(leaderRevenue, 2), members));
+                    key, included.size(), teamBillable, teamAvailable, teamUtil,
+                    leaderUuid, leaderName, round(leaderRevenue, 2), leaderExcluded, members));
         }
 
         return new TeamleadMonthlyDetailDTO(team.getUuid(), team.getName(), fiscalYear, monthDetails);
@@ -276,8 +308,10 @@ public class TeamBonusProjectionService {
 
     /**
      * Builds the fiscal-year-wide context shared by every leader row: effective config, considered
-     * months, pool basis (Overskud), total pool amount, Σpoints across all teamleadbonus teams, the
-     * derived price-per-point, and the admin adjustments keyed by leader UUID.
+     * months, leader exclusions + the derived fully-excluded team set, pool basis (Overskud, with
+     * disabled member-months and fully-excluded teams removed from its team-revenue), total pool
+     * amount, Σpoints across all non-fully-excluded teamleadbonus teams, the derived price-per-point,
+     * and the admin adjustments keyed by leader UUID.
      */
     public TeamleadContext buildContext(int fiscalYear) {
         LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
@@ -286,81 +320,75 @@ public class TeamBonusProjectionService {
         TeamleadBonusConfigDTO config = configService.getEffectiveConfig(fiscalYear);
         Map<String, AdjustmentAggregate> adjustments = loadAdjustments(fiscalYear);
 
+        Map<String, Map<String, String>> leaderExclusions = loadLeaderExclusions(fiscalYear);
+        Set<String> fullyExcludedTeamIds = computeFullyExcludedTeams(leaderExclusions, fyStart, fyEnd);
+
         LocalDate consideredEnd = consideredMonths.isEmpty()
                 ? fyStart.minusDays(1)
                 : consideredMonths.getLast().atEndOfMonth();
-        double teamRevenue = consideredMonths.isEmpty() ? 0.0 : calculateCompanyRevenue(fyStart, consideredEnd);
+        double teamRevenue = consideredMonths.isEmpty()
+                ? 0.0
+                : calculateCompanyRevenue(fyStart, consideredEnd, fullyExcludedTeamIds);
 
         PoolBasisBreakdown poolBasis = overskudService.computePoolBasis(fiscalYear, teamRevenue, config, consideredMonths);
         double poolAmount = TeamleadBonusMath.poolAmount(poolBasis.poolBasis(), config.poolSharePercent());
-        double sumRawPoints = calculateSumRawPoints(consideredMonths, config, fyStart, fyEnd, adjustments);
+        double sumRawPoints = calculateSumRawPoints(consideredMonths, config, fyStart, fyEnd, adjustments, fullyExcludedTeamIds);
         double pricePerPoint = TeamleadBonusMath.pricePerPoint(poolAmount, sumRawPoints);
 
         return new TeamleadContext(fiscalYear, fyStart, fyEnd, consideredMonths, config,
-                poolBasis, poolAmount, sumRawPoints, pricePerPoint, adjustments);
+                poolBasis, poolAmount, sumRawPoints, pricePerPoint, adjustments,
+                leaderExclusions, fullyExcludedTeamIds);
     }
 
     /**
-     * Computes the full per-team leader bonus row (pool + production + adjustments) using the shared
-     * {@code ctx}. All monetary/ratio fields are rounded for display.
+     * Computes the per-team leader bonus rows (one per leader that held the LEADER role in the FY,
+     * plus an {@code "unknown"} row for teams with none). The team's points stay computed on full-FY
+     * performance (recomposed utilization); the payable pool is {@code teamPoolShare × coveredMonths/12}
+     * and is split between the leaders by the hybrid rule (spec §4). Excluded leaders keep their
+     * informational figures but zero every payable component.
+     */
+    public List<LeaderBonusRow> computeLeaderRows(Team team, TeamleadContext ctx) {
+        TeamAggregate agg = computeTeamAggregate(team, ctx);
+        double ppp = ctx.pricePerPoint();
+        Map<String, String> exclusionNotes = ctx.leaderExclusionsByTeam().getOrDefault(team.getUuid(), Map.of());
+        boolean teamFullyExcluded = ctx.fullyExcludedTeamIds().contains(team.getUuid());
+
+        double teamPoolShare = TeamleadBonusMath.poolShare(agg.teamRawPoints(), ppp);
+        double coveredFraction = (double) agg.coveredMonths() / TeamleadBonusMath.MONTHS_IN_YEAR;
+
+        List<LeaderWindow> windows = agg.leaderWindows();
+        if (windows.isEmpty()) {
+            return List.of(buildUnknownRow(agg, ctx));
+        }
+
+        double[] weights = new double[windows.size()];
+        int[] months = new int[windows.size()];
+        for (int i = 0; i < windows.size(); i++) {
+            weights[i] = windows.get(i).ownWindowPoints() * windows.get(i).monthsAsLeader();
+            months[i] = windows.get(i).monthsAsLeader();
+        }
+        double[] slices = TeamleadBonusMath.hybridSlices(weights, months);
+
+        List<LeaderBonusRow> rows = new ArrayList<>();
+        for (int i = 0; i < windows.size(); i++) {
+            LeaderWindow w = windows.get(i);
+            boolean excluded = teamFullyExcluded || exclusionNotes.containsKey(w.leaderUuid());
+            String excludedNote = excluded ? exclusionNotes.get(w.leaderUuid()) : null;
+            rows.add(buildLeaderRow(agg, w, ctx, slices[i], teamPoolShare, coveredFraction,
+                    excluded, excludedNote, teamFullyExcluded));
+        }
+        return rows;
+    }
+
+    /**
+     * Compatibility helper for the teamlead's own tab: the primary (longest-attributed) leader row of
+     * the team, tie-broken by leader UUID.
      */
     public LeaderBonusRow computeLeaderRow(Team team, TeamleadContext ctx) {
-        TeamPoints tp = computeTeamPoints(team, ctx.config(), ctx.consideredMonths(), ctx.fyStart(), ctx.fyEnd(),
-                ctx.adjustmentsByLeader());
-        LeaderInfo leader = tp.leader();
-        AdjustmentAggregate adj = ctx.adjustmentsByLeader().get(leader.uuid());
-
-        double utilAboveMin = Math.max(tp.teamUtil() - ctx.config().minUtilThreshold(), 0.0);
-        double poolShare = TeamleadBonusMath.poolShare(tp.rawPoints(), ctx.pricePerPoint());
-        double adjustedPoolBonus = TeamleadBonusMath.adjustedPoolBonus(poolShare, leader.monthsAsLeader());
-
-        double ownRevenue = calculateLeaderOwnRevenue(leader.uuid(), ctx.fyStart(), ctx.fyEnd());
-        double proratedThreshold = TeamleadBonusMath.proratedThreshold(
-                ctx.config().productionThresholdAnnual(), leader.monthsAsLeader());
-        double productionBonus = TeamleadBonusMath.productionBonus(
-                ownRevenue, proratedThreshold, ctx.config().productionCommissionPercent());
-        double annualizedRevenue = ctx.consideredMonths().isEmpty()
-                ? 0.0
-                : (ownRevenue / ctx.consideredMonths().size()) * 12.0;
-
-        double splitBonus = adj != null ? adj.splitBonus() : 0.0;
-        double prepaidManual = adj != null ? adj.prepaidManual() : 0.0;
-        double prepaidAuto = isUnknownLeader(leader)
-                ? 0.0
-                : partnerBonusPayoutService.calculatePrepaidBonuses(leader.uuid(), ctx.fiscalYear());
-
-        double rPool = round(adjustedPoolBonus, 2);
-        double rProd = round(productionBonus, 2);
-        double rSplit = round(splitBonus, 2);
-        double rPrepaidAuto = round(prepaidAuto, 2);
-        double rPrepaidManual = round(prepaidManual, 2);
-        double total = round(TeamleadBonusMath.totalBonus(rPool, rProd, rSplit, rPrepaidAuto + rPrepaidManual), 2);
-
-        return new LeaderBonusRow(
-                team.getUuid(),
-                team.getName(),
-                leader.uuid(),
-                leader.name(),
-                leader.monthsAsLeader(),
-                round(tp.teamUtil(), 4),
-                round(utilAboveMin, 4),
-                tp.overridden(),
-                adj != null ? adj.utilOverrideNote() : null,
-                round(tp.avgTeamSize(), 1),
-                tp.teamFactor(),
-                round(tp.rawPoints(), 6),
-                ctx.pricePerPoint(),
-                round(poolShare, 2),
-                rPool,
-                round(ownRevenue, 2),
-                round(proratedThreshold, 2),
-                rProd,
-                round(annualizedRevenue, 2),
-                rSplit,
-                rPrepaidAuto,
-                rPrepaidManual,
-                total,
-                tp.monthlyUtilization());
+        return computeLeaderRows(team, ctx).stream()
+                .max(Comparator.comparingInt(LeaderBonusRow::monthsAsLeader)
+                        .thenComparing(LeaderBonusRow::leaderUuid))
+                .orElseThrow();
     }
 
     // ---- adjustments ----
@@ -399,6 +427,56 @@ public class TeamBonusProjectionService {
         return result;
     }
 
+    // ---- leader exclusions / fully-excluded teams ----
+
+    /** Leader exclusions for the FY, keyed {@code teamuuid → (useruuid → note)}. */
+    private Map<String, Map<String, String>> loadLeaderExclusions(int fiscalYear) {
+        Map<String, Map<String, String>> result = new HashMap<>();
+        for (TeamleadBonusLeaderExclusion e : TeamleadBonusLeaderExclusion.listByFiscalYear(fiscalYear)) {
+            result.computeIfAbsent(e.teamuuid, k -> new HashMap<>()).put(e.useruuid, e.note);
+        }
+        return result;
+    }
+
+    /**
+     * Teams whose every real leader (a user holding the LEADER role during the FY) is excluded. Teams
+     * with no LEADER role at all (only an {@code "unknown"} leader) are never fully excluded.
+     */
+    private Set<String> computeFullyExcludedTeams(Map<String, Map<String, String>> leaderExclusions,
+                                                  LocalDate fyStart, LocalDate fyEnd) {
+        if (leaderExclusions.isEmpty()) return Set.of();
+        Map<String, Set<String>> leadersByTeam = loadTeamLeaderUuids(fyStart, fyEnd);
+        Set<String> fully = new HashSet<>();
+        for (Map.Entry<String, Set<String>> e : leadersByTeam.entrySet()) {
+            Set<String> excluded = leaderExclusions.getOrDefault(e.getKey(), Map.of()).keySet();
+            if (!e.getValue().isEmpty() && excluded.containsAll(e.getValue())) {
+                fully.add(e.getKey());
+            }
+        }
+        return fully;
+    }
+
+    /** Distinct LEADER user UUIDs per teamleadbonus team overlapping the FY window. */
+    private Map<String, Set<String>> loadTeamLeaderUuids(LocalDate fyStart, LocalDate fyEnd) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT tr.teamuuid, tr.useruuid
+                FROM teamroles tr
+                JOIN team t ON t.uuid = tr.teamuuid AND t.teamleadbonus = 1
+                WHERE tr.membertype = 'LEADER'
+                  AND tr.startdate <= :fyEnd
+                  AND (tr.enddate > :fyStart OR tr.enddate IS NULL)
+                """)
+                .setParameter("fyEnd", fyEnd)
+                .setParameter("fyStart", fyStart)
+                .getResultList();
+        Map<String, Set<String>> result = new HashMap<>();
+        for (Object[] r : rows) {
+            result.computeIfAbsent((String) r[0], k -> new HashSet<>()).add((String) r[1]);
+        }
+        return result;
+    }
+
     // =====================================================================
     // Private calculation
     // =====================================================================
@@ -426,33 +504,238 @@ public class TeamBonusProjectionService {
         return months;
     }
 
+    private TeamAggregate computeTeamAggregate(Team team, TeamleadContext ctx) {
+        return computeTeamAggregate(team, ctx.consideredMonths(), ctx.config(),
+                ctx.fyStart(), ctx.fyEnd(), ctx.adjustmentsByLeader());
+    }
+
     /**
-     * Computes the raw points and intermediate values for one team, applying the leader's admin
-     * util-override when present.
+     * Computes the team-level aggregate for the hybrid split: the recomposed FY utilization (spec §7)
+     * and full-FY {@code teamRawPoints}, plus one leader window per real leader (own-window effective
+     * utilization, own-window average size/factor and own-window points). Member overrides are applied
+     * inside {@link #calculateMonthlyUtilization} via SQL; util-overrides are applied per leader window.
      */
-    private TeamPoints computeTeamPoints(Team team, TeamleadBonusConfigDTO config, List<YearMonth> consideredMonths,
-                                         LocalDate fyStart, LocalDate fyEnd,
-                                         Map<String, AdjustmentAggregate> adjustments) {
-        LeaderInfo leader = findLeaderForTeam(team.getUuid(), fyStart, fyEnd);
-        List<MonthlyUtilization> monthlyUtil = calculateMonthlyUtilization(team.getUuid(), consideredMonths);
-        TeamUtilizationResult utilResult = aggregateUtilization(monthlyUtil);
+    private TeamAggregate computeTeamAggregate(Team team, List<YearMonth> consideredMonths,
+                                               TeamleadBonusConfigDTO config, LocalDate fyStart, LocalDate fyEnd,
+                                               Map<String, AdjustmentAggregate> adjustments) {
+        String teamId = team.getUuid();
+        List<MonthUtilRow> utilRows = calculateMonthlyUtilization(teamId, consideredMonths);
 
-        AdjustmentAggregate adj = adjustments.get(leader.uuid());
-        boolean overridden = adj != null && adj.utilOverride() != null;
-        double teamUtil = overridden ? adj.utilOverride() : utilResult.avgUtilization();
+        // Months carrying member data, keyed by YearMonth (row month is "YYYY-MM", ISO-parseable).
+        // A row without ACTIVE data (only force-included leave members) contributes headcount to the
+        // size averages but must NEVER contribute a utilization observation (spec §2: enabling a
+        // full-leave member leaves utilization untouched) — pre-override such months produced no row.
+        Map<YearMonth, MonthUtilRow> dataByMonth = new LinkedHashMap<>();
+        for (MonthUtilRow mu : utilRows) {
+            dataByMonth.put(YearMonth.parse(mu.month()), mu);
+        }
 
-        double teamFactor = computeTeamFactor(utilResult.avgTeamSize(), config);
-        double rawPoints = TeamleadBonusMath.rawPoints(teamUtil, config.minUtilThreshold(), teamFactor);
+        // Display list for the own-tab DTO: exactly the months with ACTIVE data (old behavior).
+        List<MonthlyUtilization> monthlyUtil = utilRows.stream()
+                .filter(MonthUtilRow::hasActiveData)
+                .map(mu -> new MonthlyUtilization(mu.month(), mu.utilization(), mu.memberCount()))
+                .toList();
 
-        return new TeamPoints(leader, monthlyUtil, utilResult.avgTeamSize(), teamUtil, overridden, teamFactor, rawPoints);
+        List<LeaderPeriod> leaderPeriods = loadLeaderPeriods(teamId, fyStart, fyEnd);
+
+        // Distinct real leaders in first-appearance order (stable output).
+        LinkedHashMap<String, String> leaderNames = new LinkedHashMap<>();
+        for (LeaderPeriod lp : leaderPeriods) {
+            leaderNames.putIfAbsent(lp.uuid(), lp.name());
+        }
+
+        // Month attribution (majority rule) over the considered months.
+        Map<String, Integer> monthsAsLeader = new LinkedHashMap<>();
+        Map<String, List<String>> attributedMonthKeys = new LinkedHashMap<>();
+        Map<String, List<YearMonth>> dataMonthsByLeader = new LinkedHashMap<>();
+        List<YearMonth> unassignedDataMonths = new ArrayList<>();
+        int coveredMonths = 0;
+
+        for (YearMonth ym : consideredMonths) {
+            LeaderPeriod leader = resolveLeaderOfMonth(ym, leaderPeriods);
+            if (leader != null) {
+                String uuid = leader.uuid();
+                monthsAsLeader.merge(uuid, 1, Integer::sum);
+                attributedMonthKeys.computeIfAbsent(uuid, k -> new ArrayList<>()).add(monthKey(ym));
+                coveredMonths++;
+                if (dataByMonth.containsKey(ym)) {
+                    dataMonthsByLeader.computeIfAbsent(uuid, k -> new ArrayList<>()).add(ym);
+                }
+            } else if (dataByMonth.containsKey(ym)) {
+                unassignedDataMonths.add(ym);
+            }
+        }
+
+        double minUtil = config.minUtilThreshold();
+
+        // Team-wide average size (over months with members, incl. headcount-only leave months)
+        // → team factor.
+        List<MonthUtilRow> nonEmpty = utilRows.stream().filter(m -> m.memberCount() > 0).toList();
+        double teamAvgSize = nonEmpty.isEmpty() ? 0.0
+                : nonEmpty.stream().mapToInt(MonthUtilRow::memberCount).average().orElse(0.0);
+        double teamFactor = TeamleadBonusMath.teamFactor(teamAvgSize, config);
+
+        // Per-leader windows. Size averages use every data month; utilization averages and the
+        // recomposition weights use only months with ACTIVE data.
+        List<LeaderWindow> windows = new ArrayList<>();
+        List<Double> effUtils = new ArrayList<>();
+        List<Integer> windowDataCounts = new ArrayList<>();
+        for (Map.Entry<String, String> e : leaderNames.entrySet()) {
+            String uuid = e.getKey();
+            List<YearMonth> dm = dataMonthsByLeader.getOrDefault(uuid, List.of());
+            List<YearMonth> dmActive = dm.stream()
+                    .filter(ym -> dataByMonth.get(ym).hasActiveData()).toList();
+            double measuredUtil = dmActive.isEmpty() ? 0.0
+                    : dmActive.stream().mapToDouble(ym -> dataByMonth.get(ym).utilization()).average().orElse(0.0);
+            AdjustmentAggregate adj = adjustments.get(uuid);
+            boolean overridden = adj != null && adj.utilOverride() != null;
+            double effUtil = overridden ? adj.utilOverride() : measuredUtil;
+            double ownAvgSize = dm.isEmpty() ? 0.0
+                    : dm.stream().mapToInt(ym -> dataByMonth.get(ym).memberCount()).average().orElse(0.0);
+            double ownFactor = TeamleadBonusMath.teamFactor(ownAvgSize, config);
+            double ownPoints = TeamleadBonusMath.rawPoints(effUtil, minUtil, ownFactor);
+            windows.add(new LeaderWindow(uuid, e.getValue(), monthsAsLeader.getOrDefault(uuid, 0),
+                    effUtil, overridden, overridden ? adj.utilOverrideNote() : null,
+                    ownAvgSize, ownFactor, ownPoints, attributedMonthKeys.getOrDefault(uuid, List.of())));
+            effUtils.add(effUtil);
+            windowDataCounts.add(dmActive.size());
+        }
+
+        // Recomposed FY utilization (active-data-month-count-weighted over windows + unassigned months).
+        double[] effArr = effUtils.stream().mapToDouble(Double::doubleValue).toArray();
+        int[] cntArr = windowDataCounts.stream().mapToInt(Integer::intValue).toArray();
+        double[] unassignedArr = unassignedDataMonths.stream()
+                .filter(ym -> dataByMonth.get(ym).hasActiveData())
+                .mapToDouble(ym -> dataByMonth.get(ym).utilization()).toArray();
+        double recomposedTeamUtil = TeamleadBonusMath.recomposedUtilization(effArr, cntArr, unassignedArr);
+        double teamRawPoints = TeamleadBonusMath.rawPoints(recomposedTeamUtil, minUtil, teamFactor);
+
+        return new TeamAggregate(teamId, team.getName(), monthlyUtil, recomposedTeamUtil, teamAvgSize,
+                teamFactor, teamRawPoints, List.copyOf(windows), coveredMonths);
+    }
+
+    /** Builds a single leader's bonus row from the team aggregate and the leader's hybrid slice. */
+    private LeaderBonusRow buildLeaderRow(TeamAggregate agg, LeaderWindow w, TeamleadContext ctx,
+                                          double slice, double teamPoolShare, double coveredFraction,
+                                          boolean excluded, String excludedNote, boolean teamFullyExcluded) {
+        double minUtil = ctx.config().minUtilThreshold();
+        AdjustmentAggregate adj = ctx.adjustmentsByLeader().get(w.leaderUuid());
+        double utilAboveMin = Math.max(w.ownWindowUtil() - minUtil, 0.0);
+
+        double rowRawPoints = agg.teamRawPoints() * coveredFraction * slice;
+        double rowPoolShare = teamPoolShare * slice;
+        double rowAdjustedPoolBonus = teamPoolShare * coveredFraction * slice;
+
+        double ownRevenue = calculateLeaderOwnRevenueInMonths(w.leaderUuid(), w.attributedMonthKeys());
+        double proratedThreshold = TeamleadBonusMath.proratedThreshold(
+                ctx.config().productionThresholdAnnual(), w.monthsAsLeader());
+        double productionBonus = TeamleadBonusMath.productionBonus(
+                ownRevenue, proratedThreshold, ctx.config().productionCommissionPercent());
+        double annualizedRevenue = w.monthsAsLeader() > 0 ? (ownRevenue / w.monthsAsLeader()) * 12.0 : 0.0;
+
+        double splitBonus = adj != null ? adj.splitBonus() : 0.0;
+        double prepaidManual = adj != null ? adj.prepaidManual() : 0.0;
+        double prepaidAuto = partnerBonusPayoutService.calculatePrepaidBonuses(w.leaderUuid(), ctx.fiscalYear());
+
+        if (excluded) {
+            // Keep informational fields; zero every payable component so KPI/footer sums stay correct.
+            rowRawPoints = 0.0;
+            rowPoolShare = 0.0;
+            rowAdjustedPoolBonus = 0.0;
+            productionBonus = 0.0;
+            splitBonus = 0.0;
+            prepaidAuto = 0.0;
+            prepaidManual = 0.0;
+        }
+
+        double rPool = round(rowAdjustedPoolBonus, 2);
+        double rProd = round(productionBonus, 2);
+        double rSplit = round(splitBonus, 2);
+        double rPrepaidAuto = round(prepaidAuto, 2);
+        double rPrepaidManual = round(prepaidManual, 2);
+        double total = excluded
+                ? 0.0
+                : round(TeamleadBonusMath.totalBonus(rPool, rProd, rSplit, rPrepaidAuto + rPrepaidManual), 2);
+
+        return new LeaderBonusRow(
+                agg.teamId(),
+                agg.teamName(),
+                w.leaderUuid(),
+                w.leaderName(),
+                w.monthsAsLeader(),
+                round(w.ownWindowUtil(), 4),
+                round(utilAboveMin, 4),
+                w.overridden(),
+                w.overrideNote(),
+                round(w.ownWindowAvgSize(), 1),
+                w.ownFactor(),
+                round(rowRawPoints, 6),
+                ctx.pricePerPoint(),
+                round(rowPoolShare, 2),
+                rPool,
+                round(ownRevenue, 2),
+                round(proratedThreshold, 2),
+                rProd,
+                round(annualizedRevenue, 2),
+                rSplit,
+                rPrepaidAuto,
+                rPrepaidManual,
+                total,
+                agg.monthlyUtilization(),
+                excluded,
+                excludedNote,
+                teamFullyExcluded,
+                round(agg.teamRawPoints(), 6),
+                agg.coveredMonths(),
+                round(slice, 6));
+    }
+
+    /** Informational-only row for a team that had no LEADER role in the FY. */
+    private LeaderBonusRow buildUnknownRow(TeamAggregate agg, TeamleadContext ctx) {
+        double minUtil = ctx.config().minUtilThreshold();
+        double utilAboveMin = Math.max(agg.recomposedTeamUtil() - minUtil, 0.0);
+        return new LeaderBonusRow(
+                agg.teamId(),
+                agg.teamName(),
+                UNKNOWN_LEADER_UUID,
+                "Unknown Leader",
+                0,
+                round(agg.recomposedTeamUtil(), 4),
+                round(utilAboveMin, 4),
+                false,
+                null,
+                round(agg.teamAvgSize(), 1),
+                agg.teamFactor(),
+                0.0,
+                ctx.pricePerPoint(),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                agg.monthlyUtilization(),
+                false,
+                null,
+                false,
+                round(agg.teamRawPoints(), 6),
+                0,
+                0.0);
     }
 
     /**
      * Monthly utilization for a team over the considered months, from {@code fact_user_day} joined
-     * to teamroles MEMBER. Rows of users who additionally hold an active LEADER role on the SAME
-     * team that day are excluded (guards against dual MEMBER+LEADER rows).
+     * to teamroles MEMBER. Rows of users who additionally hold an active LEADER role on the SAME team
+     * that day are excluded (guards against dual MEMBER+LEADER rows). Member-overrides are applied:
+     * force-excluded member-months (included = 0) drop out entirely, and force-included leave months
+     * (included = 1, status MATERNITY/PAID/NON_PAY_LEAVE) count toward the headcount only (their fact
+     * rows carry 0 billable/available so utilization is untouched).
      */
-    private List<MonthlyUtilization> calculateMonthlyUtilization(String teamId, List<YearMonth> months) {
+    private List<MonthUtilRow> calculateMonthlyUtilization(String teamId, List<YearMonth> months) {
         if (months.isEmpty()) return List.of();
 
         List<String> monthKeys = months.stream()
@@ -462,16 +745,24 @@ public class TeamBonusProjectionService {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
-                       SUM(fud.registered_billable_hours) AS total_billable,
-                       SUM(fud.net_available_hours) AS total_available,
-                       COUNT(DISTINCT fud.useruuid) AS member_count
+                       SUM(CASE WHEN fud.status_type = 'ACTIVE' THEN fud.registered_billable_hours ELSE 0 END) AS total_billable,
+                       SUM(CASE WHEN fud.status_type = 'ACTIVE' THEN fud.net_available_hours ELSE 0 END) AS total_available,
+                       COUNT(DISTINCT fud.useruuid) AS member_count,
+                       SUM(fud.status_type = 'ACTIVE') AS active_rows
                 FROM fact_user_day fud
                 JOIN teamroles tr ON tr.useruuid = fud.useruuid
                     AND tr.teamuuid = :teamId
                     AND tr.membertype = 'MEMBER'
                     AND tr.startdate <= fud.document_date
                     AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
-                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                LEFT JOIN teamlead_bonus_member_override o
+                    ON o.teamuuid = tr.teamuuid
+                    AND o.useruuid = fud.useruuid
+                    AND o.month = CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0'))
+                WHERE fud.consultant_type = 'CONSULTANT'
+                  AND (o.uuid IS NULL OR o.included = 1)
+                  AND (fud.status_type = 'ACTIVE'
+                       OR (o.included = 1 AND fud.status_type IN (%s)))
                   AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
                   AND NOT EXISTS (
                         SELECT 1 FROM teamroles ldr
@@ -483,7 +774,7 @@ public class TeamBonusProjectionService {
                   )
                 GROUP BY fud.year, fud.month
                 ORDER BY fud.year, fud.month
-                """)
+                """.formatted(LEAVE_STATUS_SQL))
                 .setParameter("teamId", teamId)
                 .setParameter("monthKeys", monthKeys)
                 .getResultList();
@@ -493,46 +784,23 @@ public class TeamBonusProjectionService {
             double billable = ((Number) row[1]).doubleValue();
             double available = ((Number) row[2]).doubleValue();
             int memberCount = ((Number) row[3]).intValue();
+            boolean hasActiveData = ((Number) row[4]).intValue() > 0;
             double utilization = available > 0 ? billable / available : 0.0;
             String formattedMonth = monthKey.substring(0, 4) + "-" + monthKey.substring(4);
-            return new MonthlyUtilization(formattedMonth, utilization, memberCount);
+            return new MonthUtilRow(formattedMonth, utilization, memberCount, hasActiveData);
         }).toList();
     }
 
-    /**
-     * Aggregates monthly utilization into equal-weight team averages (KEEP equal-weight per spec).
-     * Team size is the average active member count over non-empty months.
-     */
-    private TeamUtilizationResult aggregateUtilization(List<MonthlyUtilization> monthlyUtil) {
-        if (monthlyUtil.isEmpty()) {
-            return new TeamUtilizationResult(0.0, 0.0);
-        }
-
-        double sumUtil = monthlyUtil.stream().mapToDouble(MonthlyUtilization::utilization).sum();
-        double avgUtil = sumUtil / monthlyUtil.size();
-
-        List<MonthlyUtilization> nonEmptyMonths = monthlyUtil.stream()
-                .filter(m -> m.memberCount() > 0)
-                .toList();
-        double avgTeamSize = nonEmptyMonths.isEmpty() ? 0.0 :
-                nonEmptyMonths.stream().mapToInt(MonthlyUtilization::memberCount).average().orElse(0.0);
-
-        return new TeamUtilizationResult(avgUtil, avgTeamSize);
-    }
-
-    /** Config-driven team factor bracket. */
-    private double computeTeamFactor(double avgTeamSize, TeamleadBonusConfigDTO config) {
-        return TeamleadBonusMath.teamFactor(avgTeamSize, config);
-    }
-
-    /** Σ raw points across all teamleadbonus teams (config-driven, util-overrides applied). */
+    /** Config-driven Σ raw points across all non-fully-excluded teamleadbonus teams. */
     private double calculateSumRawPoints(List<YearMonth> consideredMonths, TeamleadBonusConfigDTO config,
                                          LocalDate fyStart, LocalDate fyEnd,
-                                         Map<String, AdjustmentAggregate> adjustments) {
+                                         Map<String, AdjustmentAggregate> adjustments,
+                                         Set<String> fullyExcludedTeamIds) {
         List<Team> bonusTeams = Team.list("teamleadbonus = true");
         double sumPoints = 0.0;
         for (Team team : bonusTeams) {
-            sumPoints += computeTeamPoints(team, config, consideredMonths, fyStart, fyEnd, adjustments).rawPoints();
+            if (fullyExcludedTeamIds.contains(team.getUuid())) continue;
+            sumPoints += computeTeamAggregate(team, consideredMonths, config, fyStart, fyEnd, adjustments).teamRawPoints();
         }
         return sumPoints;
     }
@@ -540,10 +808,13 @@ public class TeamBonusProjectionService {
     /**
      * Registered revenue of teamleadbonus-team MEMBERs over the considered window, EXCLUDING rows of
      * users who hold an active LEADER role on ANY teamleadbonus team that day (the pool excludes
-     * teamleads' own production). Feeds the pool-basis estimate as {@code teamRevenue}.
+     * teamleads' own production), force-excluded member-months and fully-excluded teams' members.
+     * Feeds the pool-basis estimate as {@code teamRevenue}.
      */
-    private double calculateCompanyRevenue(LocalDate from, LocalDate to) {
-        Object result = em.createNativeQuery("""
+    private double calculateCompanyRevenue(LocalDate from, LocalDate to, Set<String> excludedTeamIds) {
+        boolean hasExclusions = excludedTeamIds != null && !excludedTeamIds.isEmpty();
+        String excludeClause = hasExclusions ? "  AND tr.teamuuid NOT IN (:excludedTeamIds)\n" : "";
+        String sql = """
                 SELECT COALESCE(SUM(fud.registered_amount), 0)
                 FROM fact_user_day fud
                 JOIN teamroles tr ON tr.useruuid = fud.useruuid
@@ -552,10 +823,19 @@ public class TeamBonusProjectionService {
                     AND (tr.enddate > fud.document_date OR tr.enddate IS NULL)
                 JOIN team t ON t.uuid = tr.teamuuid
                     AND t.teamleadbonus = 1
+                LEFT JOIN teamlead_bonus_member_override o
+                    ON o.teamuuid = tr.teamuuid
+                    AND o.useruuid = fud.useruuid
+                    AND o.month = CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0'))
                 WHERE fud.document_date >= :from
                   AND fud.document_date <= :to
                   AND fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
+                  AND (o.uuid IS NULL OR o.included = 1)
+                  AND (fud.status_type = 'ACTIVE'
+                       OR (o.included = 1 AND fud.status_type IN (%s)))
+                """.formatted(LEAVE_STATUS_SQL)
+                + excludeClause
+                + """
                   AND NOT EXISTS (
                         SELECT 1 FROM teamroles ldr
                         JOIN team lt ON lt.uuid = ldr.teamuuid AND lt.teamleadbonus = 1
@@ -564,27 +844,30 @@ public class TeamBonusProjectionService {
                           AND ldr.startdate <= fud.document_date
                           AND (ldr.enddate IS NULL OR ldr.enddate > fud.document_date)
                   )
-                """)
+                """;
+
+        Query q = em.createNativeQuery(sql)
                 .setParameter("from", from)
-                .setParameter("to", to)
-                .getSingleResult();
-        return ((Number) result).doubleValue();
+                .setParameter("to", to);
+        if (hasExclusions) {
+            q.setParameter("excludedTeamIds", excludedTeamIds);
+        }
+        return ((Number) q.getSingleResult()).doubleValue();
     }
 
-    /** A leader's own billable revenue within the fiscal year. */
-    private double calculateLeaderOwnRevenue(String leaderUuid, LocalDate fyStart, LocalDate fyEnd) {
+    /** A leader's own registered revenue within the given (attributed) months only. */
+    private double calculateLeaderOwnRevenueInMonths(String leaderUuid, List<String> monthKeys) {
+        if (monthKeys == null || monthKeys.isEmpty()) return 0.0;
         Object result = em.createNativeQuery("""
                 SELECT COALESCE(SUM(fud.registered_amount), 0)
                 FROM fact_user_day fud
                 WHERE fud.useruuid = :leaderUuid
-                  AND fud.document_date >= :fyStart
-                  AND fud.document_date <= :fyEnd
+                  AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
                 """)
                 .setParameter("leaderUuid", leaderUuid)
-                .setParameter("fyStart", fyStart)
-                .setParameter("fyEnd", fyEnd)
+                .setParameter("monthKeys", monthKeys)
                 .getSingleResult();
         return ((Number) result).doubleValue();
     }
@@ -594,20 +877,28 @@ public class TeamBonusProjectionService {
     // =====================================================================
 
     /**
-     * Per-member utilization rows for a team over the given months, keyed by month. Uses EXACTLY the
-     * predicates of {@link #calculateMonthlyUtilization} (dated MEMBER teamroles, {@code CONSULTANT}/
-     * {@code ACTIVE}, leader-excluded via {@code NOT EXISTS}) but additionally grouped per user, so the
-     * per-user rows sum back to the collapsed team totals. Hours are display-rounded to 2 decimals.
+     * Per-member rows for a team over the given months, keyed by month. Uses the SAME MEMBER-teamrole,
+     * {@code CONSULTANT} and leader-excluded predicates as {@link #calculateMonthlyUtilization}, but
+     * additionally surfaces full-leave members and per-member day counts so the admin can toggle them.
+     * Hours are ACTIVE-status only (leave rows carry 0 hours), display-rounded to 2 decimals. Effective
+     * inclusion (default {@code activeDays > 0}, flipped by an override) matches the collapsed query
+     * 1:1, so the included members here sum to the team totals the bonus math consumes.
      */
-    private Map<String, List<MemberDetail>> loadMemberDetails(String teamId, List<String> monthKeys) {
+    private Map<String, List<MemberDetail>> loadMemberDetails(String teamId, List<String> monthKeys,
+                                                              Map<String, MemberOverrideInfo> teamOverrides) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
                        fud.useruuid AS useruuid,
                        u.firstname AS firstname,
                        u.lastname AS lastname,
-                       SUM(fud.registered_billable_hours) AS billable,
-                       SUM(fud.net_available_hours) AS available
+                       SUM(CASE WHEN fud.status_type = 'ACTIVE' THEN fud.registered_billable_hours ELSE 0 END) AS billable,
+                       SUM(CASE WHEN fud.status_type = 'ACTIVE' THEN fud.net_available_hours ELSE 0 END) AS available,
+                       SUM(CASE WHEN fud.status_type = 'ACTIVE' THEN 1 ELSE 0 END) AS active_days,
+                       SUM(CASE WHEN fud.status_type IN (%1$s) THEN 1 ELSE 0 END) AS leave_days,
+                       SUM(CASE WHEN fud.status_type = 'MATERNITY_LEAVE' THEN 1 ELSE 0 END) AS maternity_days,
+                       SUM(CASE WHEN fud.status_type = 'PAID_LEAVE' THEN 1 ELSE 0 END) AS paid_days,
+                       SUM(CASE WHEN fud.status_type = 'NON_PAY_LEAVE' THEN 1 ELSE 0 END) AS nonpay_days
                 FROM fact_user_day fud
                 JOIN teamroles tr ON tr.useruuid = fud.useruuid
                     AND tr.teamuuid = :teamId
@@ -615,7 +906,8 @@ public class TeamBonusProjectionService {
                     AND tr.startdate <= fud.document_date
                     AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
                 JOIN user u ON u.uuid = fud.useruuid
-                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                WHERE fud.consultant_type = 'CONSULTANT'
+                  AND fud.status_type IN ('ACTIVE',%1$s)
                   AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
                   AND NOT EXISTS (
                         SELECT 1 FROM teamroles ldr
@@ -627,7 +919,7 @@ public class TeamBonusProjectionService {
                   )
                 GROUP BY fud.year, fud.month, fud.useruuid, u.firstname, u.lastname
                 ORDER BY fud.year, fud.month, u.lastname, u.firstname
-                """)
+                """.formatted(LEAVE_STATUS_SQL))
                 .setParameter("teamId", teamId)
                 .setParameter("monthKeys", monthKeys)
                 .getResultList();
@@ -640,12 +932,63 @@ public class TeamBonusProjectionService {
             String lastName = (String) row[3];
             double billable = round(((Number) row[4]).doubleValue(), 2);
             double available = round(((Number) row[5]).doubleValue(), 2);
+            int activeDays = ((Number) row[6]).intValue();
+            int leaveDays = ((Number) row[7]).intValue();
+            int maternityDays = ((Number) row[8]).intValue();
+            int paidDays = ((Number) row[9]).intValue();
+            int nonpayDays = ((Number) row[10]).intValue();
+
+            MemberOverrideInfo override = teamOverrides.get(useruuid + "|" + monthKey);
+            boolean overridden = override != null;
+            boolean included = overridden ? override.included() : activeDays > 0;
+
+            String leaveStatus = leaveDays > 0
+                    ? (activeDays == 0 ? "FULL_LEAVE" : "PARTIAL_LEAVE")
+                    : null;
+            String leaveType = dominantLeaveType(maternityDays, paidDays, nonpayDays);
+
             MemberDetail member = new MemberDetail(
                     useruuid, fullName(firstName, lastName),
-                    billable, available, utilizationOrNull(billable, available));
+                    billable, available, utilizationOrNull(billable, available),
+                    leaveStatus, leaveType, activeDays, leaveDays,
+                    included, overridden, overridden ? override.note() : null);
             byMonth.computeIfAbsent(monthKey, k -> new ArrayList<>()).add(member);
         }
         return byMonth;
+    }
+
+    /** Member overrides for a team over the given months, keyed {@code "<useruuid>|<monthKey>"}. */
+    private Map<String, MemberOverrideInfo> loadTeamMemberOverrides(String teamId, List<String> monthKeys) {
+        Map<String, MemberOverrideInfo> result = new HashMap<>();
+        for (TeamleadBonusMemberOverride o : TeamleadBonusMemberOverride.listByTeamAndMonths(teamId, monthKeys)) {
+            result.put(o.useruuid + "|" + o.month, new MemberOverrideInfo(o.included, o.note));
+        }
+        return result;
+    }
+
+    /** Excluded leader UUIDs for one team in a fiscal year. */
+    private Set<String> loadTeamLeaderExclusions(int fiscalYear, String teamId) {
+        Set<String> result = new HashSet<>();
+        for (TeamleadBonusLeaderExclusion e :
+                TeamleadBonusLeaderExclusion.<TeamleadBonusLeaderExclusion>list("fiscalYear = ?1 and teamuuid = ?2", fiscalYear, teamId)) {
+            result.add(e.useruuid);
+        }
+        return result;
+    }
+
+    /** Dominant leave type of a month (highest day count); {@code null} when there is no leave. */
+    private static String dominantLeaveType(int maternityDays, int paidDays, int nonpayDays) {
+        if (maternityDays <= 0 && paidDays <= 0 && nonpayDays <= 0) return null;
+        String type = "MATERNITY_LEAVE";
+        int best = maternityDays;
+        if (paidDays > best) {
+            best = paidDays;
+            type = "PAID_LEAVE";
+        }
+        if (nonpayDays > best) {
+            type = "NON_PAY_LEAVE";
+        }
+        return type;
     }
 
     /**
@@ -683,8 +1026,8 @@ public class TeamBonusProjectionService {
 
     /**
      * A leader's own registered revenue per month (same {@code CONSULTANT}/{@code ACTIVE} filter as
-     * {@link #calculateLeaderOwnRevenue}), keyed by {@code "<monthKey>|<useruuid>"}. Returns an empty
-     * map when no month has a resolved leader.
+     * {@link #calculateLeaderOwnRevenueInMonths}), keyed by {@code "<monthKey>|<useruuid>"}. Returns an
+     * empty map when no month has a resolved leader.
      */
     private Map<String, Double> loadLeaderMonthlyRevenue(Set<String> leaderUuids, List<String> monthKeys) {
         if (leaderUuids.isEmpty()) {
@@ -719,6 +1062,7 @@ public class TeamBonusProjectionService {
     /**
      * Finds the primary leader for a team during a fiscal year (longest tenure), clipping the LEADER
      * period to the FY and counting whole months (partial month = 1, capped at last completed month).
+     * Used for ranking display names only.
      */
     private LeaderInfo findLeaderForTeam(String teamId, LocalDate fyStart, LocalDate fyEnd) {
         @SuppressWarnings("unchecked")
@@ -740,7 +1084,7 @@ public class TeamBonusProjectionService {
                 .getResultList();
 
         if (rows.isEmpty()) {
-            return new LeaderInfo("unknown", "Unknown Leader", 0);
+            return new LeaderInfo(UNKNOWN_LEADER_UUID, "Unknown Leader", 0);
         }
 
         Map<String, LeaderCandidate> candidates = new LinkedHashMap<>();
@@ -804,9 +1148,9 @@ public class TeamBonusProjectionService {
     // Dual-leadership guards
     // =====================================================================
     // The spec assumes one leader per teamleadbonus team, but nothing in the data model prevents a
-    // user from holding LEADER roles on TWO such teams in the same FY. Per-user components
-    // (production bonus, split bonus, prepaid auto/manual) are keyed by user, so they must only ever
-    // count ONCE across that user's team rows — both in the admin dashboard totals and in a payout.
+    // user from holding LEADER roles on TWO such teams in the same FY. Per-user components (production
+    // bonus, split bonus, prepaid auto/manual) are keyed by user, so they must only ever count ONCE
+    // across that user's team rows — both in the admin dashboard totals and in a payout.
 
     /**
      * Deterministic primary row among one user's team rows: longest leadership tenure, tie-broken by
@@ -834,7 +1178,9 @@ public class TeamBonusProjectionService {
                 row.annualizedRevenue(),
                 0.0, 0.0, 0.0,           // splitBonus, prepaidAuto, prepaidManual — idem
                 row.adjustedPoolBonus(), // totalBonus = pool component only
-                row.monthlyUtilization());
+                row.monthlyUtilization(),
+                row.excluded(), row.excludedNote(), row.teamFullyExcluded(),
+                row.teamRawPoints(), row.coveredMonths(), row.sharePct());
     }
 
     /**
@@ -861,15 +1207,21 @@ public class TeamBonusProjectionService {
                 adjustedPoolBonus, primary.ownRevenue(), primary.proratedThreshold(),
                 primary.productionBonus(), primary.annualizedRevenue(), primary.splitBonus(),
                 primary.prepaidAuto(), primary.prepaidManual(), total,
-                primary.monthlyUtilization());
+                primary.monthlyUtilization(),
+                primary.excluded(), primary.excludedNote(), primary.teamFullyExcluded(),
+                primary.teamRawPoints(), primary.coveredMonths(), primary.sharePct());
     }
 
     // =====================================================================
     // Helpers
     // =====================================================================
 
-    private static boolean isUnknownLeader(LeaderInfo leader) {
-        return leader == null || "unknown".equals(leader.uuid());
+    /** Primary window among a team's leader windows: most attributed months, tie-broken by UUID. */
+    private static LeaderWindow primaryWindow(List<LeaderWindow> windows) {
+        return windows.stream()
+                .max(Comparator.comparingInt(LeaderWindow::monthsAsLeader)
+                        .thenComparing(LeaderWindow::leaderUuid))
+                .orElseThrow();
     }
 
     /** Fiscal-month key in {@code YYYYMM} form, matching the {@code fact_user_day} month keys. */
@@ -947,21 +1299,43 @@ public class TeamBonusProjectionService {
      * {@code startdate <= day AND (enddate IS NULL OR enddate > day)} predicate used across this class.
      */
     public record LeaderPeriod(String uuid, String name, LocalDate start, LocalDate endExclusive) {}
-    private record TeamUtilizationResult(double avgUtilization, double avgTeamSize) {}
-
-    private record TeamPoints(LeaderInfo leader, List<MonthlyUtilization> monthlyUtilization,
-                              double avgTeamSize, double teamUtil, boolean overridden,
-                              double teamFactor, double rawPoints) {}
 
     /** Admin adjustments aggregated for one leader/FY. */
     public record AdjustmentAggregate(Double utilOverride, String utilOverrideNote,
                                       double splitBonus, double prepaidManual) {}
 
+    /** A member override's effective state for the drill-down roster. */
+    private record MemberOverrideInfo(boolean included, String note) {}
+
+    /**
+     * One considered month's collapsed team inputs. {@code hasActiveData} is false when the month's
+     * only qualifying rows are force-included leave members (0/0 hours): such a month contributes
+     * headcount to the size averages but never a utilization observation.
+     */
+    private record MonthUtilRow(String month, double utilization, int memberCount, boolean hasActiveData) {}
+
+    /**
+     * A single leader's own-window inputs for the hybrid split: months attributed by majority rule,
+     * the own-window effective utilization (admin override applied), own-window average size/factor
+     * and the resulting own-window points, plus the attributed month keys used for production revenue.
+     */
+    private record LeaderWindow(String leaderUuid, String leaderName, int monthsAsLeader,
+                                double ownWindowUtil, boolean overridden, String overrideNote,
+                                double ownWindowAvgSize, double ownFactor, double ownWindowPoints,
+                                List<String> attributedMonthKeys) {}
+
+    /** Team-level aggregate feeding the hybrid split for one team. */
+    private record TeamAggregate(String teamId, String teamName, List<MonthlyUtilization> monthlyUtilization,
+                                 double recomposedTeamUtil, double teamAvgSize, double teamFactor,
+                                 double teamRawPoints, List<LeaderWindow> leaderWindows, int coveredMonths) {}
+
     /** Fiscal-year-wide computation context shared by every leader row. */
     public record TeamleadContext(int fiscalYear, LocalDate fyStart, LocalDate fyEnd,
                                   List<YearMonth> consideredMonths, TeamleadBonusConfigDTO config,
                                   PoolBasisBreakdown poolBasis, double poolAmount, double sumRawPoints,
-                                  double pricePerPoint, Map<String, AdjustmentAggregate> adjustmentsByLeader) {}
+                                  double pricePerPoint, Map<String, AdjustmentAggregate> adjustmentsByLeader,
+                                  Map<String, Map<String, String>> leaderExclusionsByTeam,
+                                  Set<String> fullyExcludedTeamIds) {}
 
     /** Fully-computed per-team leader bonus row (display-rounded). */
     public record LeaderBonusRow(String teamId, String teamName, String leaderUuid, String leaderName,
@@ -971,5 +1345,7 @@ public class TeamBonusProjectionService {
                                  double adjustedPoolBonus, double ownRevenue, double proratedThreshold,
                                  double productionBonus, double annualizedRevenue, double splitBonus,
                                  double prepaidAuto, double prepaidManual, double totalBonus,
-                                 List<MonthlyUtilization> monthlyUtilization) {}
+                                 List<MonthlyUtilization> monthlyUtilization,
+                                 boolean excluded, String excludedNote, boolean teamFullyExcluded,
+                                 double teamRawPoints, int coveredMonths, double sharePct) {}
 }

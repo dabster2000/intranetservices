@@ -118,6 +118,67 @@ public class TeamleadBonusAdminResource {
     }
 
     // =====================================================================
+    // Member overrides (editable calculation sources)
+    // =====================================================================
+
+    @PUT
+    @Path("/{teamId}/member-overrides")
+    @RolesAllowed({"partnerbonus:write"})
+    @Operation(summary = "Upsert a member-month inclusion override for a team")
+    public TeamleadMemberOverrideDTO upsertMemberOverride(@PathParam("teamId") String teamId,
+                                                          @Valid @NotNull TeamleadMemberOverrideRequest request) {
+        return adminService.upsertMemberOverride(teamId, request, requestedBy());
+    }
+
+    @DELETE
+    @Path("/{teamId}/member-overrides/{useruuid}/{month}")
+    @RolesAllowed({"partnerbonus:write"})
+    @Operation(summary = "Delete a member-month inclusion override (idempotent)")
+    public Response deleteMemberOverride(@PathParam("teamId") String teamId,
+                                         @PathParam("useruuid") String useruuid,
+                                         @PathParam("month") String month) {
+        adminService.deleteMemberOverride(teamId, useruuid, month);
+        return Response.noContent().build();
+    }
+
+    // =====================================================================
+    // Leader exclusions (editable calculation sources)
+    // =====================================================================
+
+    @GET
+    @Path("/leader-exclusions")
+    @Operation(summary = "List leader exclusions for a fiscal year")
+    public List<TeamleadLeaderExclusionDTO> listLeaderExclusions(@QueryParam("fiscalYear") Integer fiscalYear) {
+        return adminService.listLeaderExclusions(requireFiscalYear(fiscalYear));
+    }
+
+    @POST
+    @Path("/leader-exclusions")
+    @RolesAllowed({"partnerbonus:write"})
+    @Operation(summary = "Create a leader exclusion (idempotent)")
+    public Response createLeaderExclusion(@Valid @NotNull TeamleadLeaderExclusionRequest request) {
+        requireFiscalYear(request.fiscalYear());
+        TeamleadBonusAdminService.LeaderExclusionResult result =
+                adminService.createLeaderExclusion(request, requestedBy());
+        Response.Status status = result.created() ? Response.Status.CREATED : Response.Status.OK;
+        return Response.status(status).entity(result.dto()).build();
+    }
+
+    @DELETE
+    @Path("/leader-exclusions")
+    @RolesAllowed({"partnerbonus:write"})
+    @Operation(summary = "Delete a leader exclusion (idempotent)")
+    public Response deleteLeaderExclusion(@QueryParam("fiscalYear") Integer fiscalYear,
+                                          @QueryParam("teamId") String teamId,
+                                          @QueryParam("useruuid") String useruuid) {
+        int fy = requireFiscalYear(fiscalYear);
+        if (teamId == null || teamId.isBlank()) throw new BadRequestException("teamId is required");
+        if (useruuid == null || useruuid.isBlank()) throw new BadRequestException("useruuid is required");
+        adminService.deleteLeaderExclusion(fy, teamId, useruuid);
+        return Response.noContent().build();
+    }
+
+    // =====================================================================
     // Salary exclusions
     // =====================================================================
 

@@ -301,4 +301,122 @@ class TeamleadBonusMathTest {
         assertEquals(56_204.87, production, DELTA);
         assertEquals(42_093.85, total, DELTA);
     }
+
+    // =====================================================================
+    // Hybrid per-leader split (spec §4)
+    // =====================================================================
+
+    @Test
+    void hybridSlices_singleLeader_getsWholeSlice() {
+        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0}, new int[]{0});
+        assertEquals(1, slices.length);
+        assertEquals(1.0, slices[0], EXACT);
+    }
+
+    @Test
+    void hybridSlices_normal_isWeightProportional() {
+        // weights 2 / 3 / 5 → 0.2 / 0.3 / 0.5
+        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0, 5.0}, new int[]{12, 12, 12});
+        assertEquals(0.2, slices[0], EXACT);
+        assertEquals(0.3, slices[1], EXACT);
+        assertEquals(0.5, slices[2], EXACT);
+        assertEquals(1.0, slices[0] + slices[1] + slices[2], EXACT);
+    }
+
+    @Test
+    void hybridSlices_sumWeightsZero_fallsBackToMonthsProportional() {
+        // Both leaders at/below threshold → ΣW = 0; split by months-as-leader (8 vs 4 → 2/3 vs 1/3).
+        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0, 0.0}, new int[]{8, 4});
+        assertEquals(8.0 / 12.0, slices[0], EXACT);
+        assertEquals(4.0 / 12.0, slices[1], EXACT);
+    }
+
+    @Test
+    void hybridSlices_allWeightsAndMonthsZero_areAllZero() {
+        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0, 0.0}, new int[]{0, 0});
+        assertEquals(0.0, slices[0], EXACT);
+        assertEquals(0.0, slices[1], EXACT);
+    }
+
+    @Test
+    void hybridSlices_negativeWeightsClampedToZero() {
+        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{-1.0, 3.0}, new int[]{12, 12});
+        assertEquals(0.0, slices[0], EXACT);
+        assertEquals(1.0, slices[1], EXACT);
+    }
+
+    @Test
+    void hybridSlices_lengthMismatch_throws() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TeamleadBonusMath.hybridSlices(new double[]{1.0, 2.0}, new int[]{12}));
+    }
+
+    @Test
+    void hybridSlices_excludedLeaderNotRedistributed_othersUnchanged() {
+        // The excluded leader is handled by the caller ZEROING its payable component AFTER the split,
+        // never by recomputing the split. So the three-leader slices are weight-proportional over ALL
+        // three, and A/B stay strictly smaller than the two-leader split they would get if C were
+        // actually removed — proving the excluded slice is not redistributed.
+        double[] threeWay = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0, 5.0}, new int[]{12, 12, 12});
+        double[] twoWay = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0}, new int[]{12, 12});
+        assertEquals(0.2, threeWay[0], EXACT);
+        assertEquals(0.3, threeWay[1], EXACT);
+        assertEquals(0.4, twoWay[0], EXACT);
+        assertEquals(0.6, twoWay[1], EXACT);
+        assertTrue(threeWay[0] < twoWay[0], "excluding C must not raise A's slice");
+        assertTrue(threeWay[1] < twoWay[1], "excluding C must not raise B's slice");
+    }
+
+    // =====================================================================
+    // Recomposed team utilization (spec §7)
+    // =====================================================================
+
+    @Test
+    void recomposedUtilization_noOverrides_equalsPlainMonthlyAverage() {
+        // Window A: mean 0.8 over 2 months; window B: mean 0.6 over 1 month; unassigned month 0.7.
+        double recomposed = TeamleadBonusMath.recomposedUtilization(
+                new double[]{0.8, 0.6}, new int[]{2, 1}, new double[]{0.7});
+        // Plain equal-weight monthly average of [0.8, 0.8, 0.6, 0.7].
+        double plainAverage = (0.8 + 0.8 + 0.6 + 0.7) / 4.0;
+        assertEquals(plainAverage, recomposed, EXACT);
+        assertEquals(0.725, recomposed, EXACT);
+    }
+
+    @Test
+    void recomposedUtilization_soleLeaderFullCoverageOverride_equalsOverride() {
+        // One window covering all months, effective utilization = the override, no unassigned months.
+        double recomposed = TeamleadBonusMath.recomposedUtilization(
+                new double[]{0.9}, new int[]{3}, new double[]{});
+        assertEquals(0.9, recomposed, EXACT);
+    }
+
+    @Test
+    void recomposedUtilization_overrideWeightedByWindowMonths() {
+        // Window A overridden to 1.0 over 3 months; window B measured 0.5 over 1 month.
+        double recomposed = TeamleadBonusMath.recomposedUtilization(
+                new double[]{1.0, 0.5}, new int[]{3, 1}, new double[]{});
+        assertEquals((1.0 * 3 + 0.5) / 4.0, recomposed, EXACT);
+        assertEquals(0.875, recomposed, EXACT);
+    }
+
+    @Test
+    void recomposedUtilization_noContributingMonths_isZero() {
+        assertEquals(0.0, TeamleadBonusMath.recomposedUtilization(
+                new double[]{}, new int[]{}, new double[]{}), EXACT);
+    }
+
+    @Test
+    void recomposedUtilization_zeroCountWindowsIgnored() {
+        // A leader window with no data months (count 0) contributes nothing, even with an override.
+        double recomposed = TeamleadBonusMath.recomposedUtilization(
+                new double[]{1.4, 0.6}, new int[]{0, 2}, new double[]{});
+        assertEquals(0.6, recomposed, EXACT);
+    }
+
+    @Test
+    void recomposedUtilization_lengthMismatch_throws() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TeamleadBonusMath.recomposedUtilization(
+                        new double[]{0.8, 0.6}, new int[]{2}, new double[]{}));
+    }
 }
