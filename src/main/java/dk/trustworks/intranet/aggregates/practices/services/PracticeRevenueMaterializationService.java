@@ -699,12 +699,17 @@ public class PracticeRevenueMaterializationService {
                     key.segment() == PracticeRevenueAllocationService.SegmentId.EXTERNAL
                             ? PracticeRevenueAllocationService.ConsultantType.EXTERNAL
                             : PracticeRevenueAllocationService.ConsultantType.INTERNAL;
+            // The reference persists into source_allocation_reference VARCHAR(220): a raw comma-join
+            // of source ids overflows it (6+ UUIDs); the digest form is bounded and the full id list
+            // is persisted separately in contributing_source_ids.
+            String baseReference =
+                    "BASE:" + sha256(String.join("|", entry.getValue().sourceIds.stream().sorted().toList()));
             candidates.add(new PracticeRevenueAllocationService.RecipientCandidate(
-                    "BASE:" + sha256(String.join("|", entry.getValue().sourceIds.stream().sorted().toList())),
+                    baseReference,
                     key.consultantUuid(), key.practiceCode(), consultantType,
                     key.deliveryStart(), key.deliveryEndExclusive(), "BASE_DISTRIBUTION", share,
                     key.practiceResolutionMethod(), key.historicalPracticeFallback(), false,
-                    key.segment(), String.join(",", entry.getValue().sourceIds.stream().sorted().toList()),
+                    key.segment(), baseReference,
                     null, false));
         }
         if (candidates.isEmpty()) {
@@ -936,13 +941,17 @@ public class PracticeRevenueMaterializationService {
             BaseRecipientKey key=entry.getKey();
             BigDecimal share=entry.getValue().amount.divide(source.authoritativeControlDkk(),
                     java.math.MathContext.DECIMAL128).setScale(18,java.math.RoundingMode.HALF_UP);
+            // Bounded digest reference — the raw comma-join overflows source_allocation_reference
+            // VARCHAR(220); the full id list lives in contributing_source_ids.
+            String creditReference =
+                    "SOURCE_INVOICE:"+sha256(String.join("|",entry.getValue().sourceIds.stream().sorted().toList()));
             recipients.add(new PracticeRevenueAllocationService.RecipientCandidate(
-                    "SOURCE_INVOICE:"+sha256(String.join("|",entry.getValue().sourceIds.stream().sorted().toList())),
+                    creditReference,
                     key.consultantUuid(),key.practiceCode(),key.segment()==PracticeRevenueAllocationService.SegmentId.EXTERNAL
                     ?PracticeRevenueAllocationService.ConsultantType.EXTERNAL
                     :PracticeRevenueAllocationService.ConsultantType.INTERNAL,key.deliveryStart(),key.deliveryEndExclusive(),
                     "CREDIT_SOURCE_INVOICE",share,key.practiceResolutionMethod(),key.historicalPracticeFallback(),
-                    true,key.segment(),String.join(",",entry.getValue().sourceIds.stream().sorted().toList()),
+                    true,key.segment(),creditReference,
                     source.documentUuid(),false));
         }
         if(recipients.isEmpty())return invalidCredit(PracticeRevenueAllocationService.SourceTier.CREDIT_SOURCE_INVOICE);
@@ -1601,8 +1610,21 @@ public class PracticeRevenueMaterializationService {
         }
     }
 
+    // Flush-and-clear cadence for the generation persist: bounds the Hibernate action queue and
+    // first-level cache while writing hundreds of thousands of write-only rows in one transaction
+    // (an unbounded queue drove the JVM into OutOfMemoryError on both staging and production).
+    private static final int PERSIST_BATCH_SIZE = 500;
+
+    private int drainPersistBatch(int pending) {
+        if (pending < PERSIST_BATCH_SIZE) return pending;
+        em.flush();
+        em.clear();
+        return 0;
+    }
+
     void persist(Attempt attempt, BuildCandidate candidate) {
         LocalDateTime now = candidate.snapshotAt();
+        int pending = 0;
         Map<String, PracticeRevenueAllocationService.AttributionStatus> attributionStatusByItem =
                 candidate.allocations().stream().collect(java.util.stream.Collectors.toMap(
                         AllocationEnvelope::itemControlKey, envelope -> envelope.result().status()));
@@ -1645,6 +1667,7 @@ public class PracticeRevenueMaterializationService {
             row.sourceFingerprint=hash(source.toString(),String.valueOf(scope));
             row.validationReasonCode=source.reasonCode().name();
             row.createdAt=now; row.refreshedAt=now; em.persist(row);
+            pending = drainPersistBatch(pending + 1);
         }
         for (AllocationEnvelope envelope : candidate.allocations()) for (var source : envelope.result().allocations()) {
             PracticeRevenueAllocation row = new PracticeRevenueAllocation();
@@ -1662,6 +1685,7 @@ public class PracticeRevenueMaterializationService {
             row.allocationDkk=source.allocationDkk(); row.deliveryStartDate=source.deliveryStart();
             row.deliveryEndDate=source.deliveryEndExclusive(); row.historicalPracticeFallback=source.historicalPracticeFallback();
             row.residualReason=source.residualReason()==null?null:source.residualReason().name(); row.createdAt=now; row.refreshedAt=now; em.persist(row);
+            pending = drainPersistBatch(pending + 1);
         }
         int sequence=0;
         for (DependencyEnvelope source : candidate.dependencies()) {
@@ -1684,8 +1708,10 @@ public class PracticeRevenueMaterializationService {
             row.deliveryStartDate=source.deliveryStartDate(); row.deliveryEndDate=source.deliveryEndDate();
             row.bookedVoucherKey=source.bookedVoucherKey(); row.dependencyFingerprint=source.fingerprint();
             row.createdAt=now; em.persist(row);
+            pending = drainPersistBatch(pending + 1);
         }
         em.flush();
+        em.clear();
     }
 
     BuildCandidate summarize(int documentCount, List<ItemEnvelope> items, List<AllocationEnvelope> allocations,
