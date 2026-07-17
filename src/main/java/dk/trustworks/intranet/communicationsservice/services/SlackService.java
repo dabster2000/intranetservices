@@ -5,9 +5,15 @@ import com.slack.api.methods.SlackApiException;
 import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 import com.slack.api.methods.response.conversations.*;
 import com.slack.api.methods.response.users.UsersLookupByEmailResponse;
+import com.slack.api.model.block.ContextBlock;
+import com.slack.api.model.block.HeaderBlock;
+import com.slack.api.model.block.LayoutBlock;
+import com.slack.api.model.block.SectionBlock;
+import com.slack.api.model.block.composition.TextObject;
 import dk.trustworks.intranet.communicationsservice.dto.NewLeadNotificationDTO;
 import dk.trustworks.intranet.domain.user.entity.User;
 import lombok.extern.jbosslog.JBossLog;
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -15,7 +21,10 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static com.slack.api.model.block.Blocks.*;
 import static com.slack.api.model.block.composition.BlockCompositions.*;
@@ -24,6 +33,12 @@ import static com.slack.api.model.block.element.BlockElements.*;
 @JBossLog
 @ApplicationScoped
 public class SlackService {
+
+    /** Slack rejects a message with {@code invalid_blocks} if any text object exceeds this. */
+    private static final int SLACK_TEXT_OBJECT_MAX_CHARS = 3000;
+
+    /** Slack's hard cap on notification text is 40.000; it recommends staying under 4.000. */
+    private static final int SLACK_FALLBACK_TEXT_MAX_CHARS = 4000;
 
     @ConfigProperty(name = "slack.motherSlackBotToken")
     String motherSlackBotToken;
@@ -182,29 +197,58 @@ public class SlackService {
 
         log.info("Sending new lead notification to " + channel + " for client: " + dto.getClientName());
 
+        List<LayoutBlock> blocks = buildNewLeadBlocks(dto);
+        String fallbackText = newLeadFallback(dto);
+
+        // Send the message
+        ChatPostMessageResponse response = slack.methods(motherSlackBotToken).chatPostMessage(req -> req
+            .channel(channel)
+            .text(fallbackText) // Fallback text for notifications
+            .blocks(blocks)
+        );
+
+        if (!response.isOk()) {
+            logNewLeadRejection(response, blocks);
+            throw new RuntimeException("Slack API error: " + response.getError());
+        }
+
+        log.info("New lead notification sent successfully. Message ts: " + response.getTs());
+    }
+
+    /**
+     * Builds the Block Kit layout for a new lead. Package-private so the layout can be asserted in a
+     * unit test without a Slack client — {@link LayoutBlock}s are plain objects until they are sent.
+     *
+     * <p>Lead free-text arrives from {@code sales_lead.description} and
+     * {@code sales_lead.detailed_description}, both {@code TEXT} columns, so every text object that
+     * embeds them is clamped to Slack's limit before it is added — see {@link #clampText}.
+     */
+    List<LayoutBlock> buildNewLeadBlocks(NewLeadNotificationDTO dto) {
         // Construct the deep link URL to the lead
         String leadUrl = constructLeadUrl(dto.getLeadUuid());
 
         // Build the Block Kit message with blocks list
-        java.util.List<com.slack.api.model.block.LayoutBlock> blocks = new java.util.ArrayList<>();
+        List<LayoutBlock> blocks = new ArrayList<>();
 
         // Header
         blocks.add(header(h -> h.text(plainText("🎯 New Sales Lead Created"))));
 
         // Client and description section
-        blocks.add(section(s -> s.text(markdownText(
+        String clientText = clampText(
             "*" + dto.getClientName() + "*\n" +
-            (dto.getDescription() != null ? dto.getDescription() : "No description provided")
-        ))));
+            (dto.getDescription() != null ? dto.getDescription() : "No description provided"),
+            SLACK_TEXT_OBJECT_MAX_CHARS, "description");
+        blocks.add(section(s -> s.text(markdownText(clientText))));
 
         // Divider
         blocks.add(divider());
 
         // Detailed description (if available)
         if (dto.getDetailedDescription() != null && !dto.getDetailedDescription().trim().isEmpty()) {
-            blocks.add(section(s -> s.text(markdownText(
-                "*Detailed Description:*\n" + dto.getDetailedDescription()
-            ))));
+            String detailedText = clampText(
+                "*Detailed Description:*\n" + dto.getDetailedDescription(),
+                SLACK_TEXT_OBJECT_MAX_CHARS, "detailedDescription");
+            blocks.add(section(s -> s.text(markdownText(detailedText))));
         }
 
         // Key information in two-column layout
@@ -244,19 +288,88 @@ public class SlackService {
             log.warn("Lead UUID not provided or base URL not configured - button will not be included");
         }
 
-        // Send the message
-        ChatPostMessageResponse response = slack.methods(motherSlackBotToken).chatPostMessage(req -> req
-            .channel(channel)
-            .text("New Sales Lead: " + dto.getClientName() + " - " + dto.getDescription()) // Fallback text for notifications
-            .blocks(blocks)
-        );
+        return blocks;
+    }
 
-        if (!response.isOk()) {
-            log.error("Failed to send new lead notification: " + response.getError());
-            throw new RuntimeException("Slack API error: " + response.getError());
+    /**
+     * Builds the notification/preview text shown where blocks cannot render. Package-private for test.
+     */
+    String newLeadFallback(NewLeadNotificationDTO dto) {
+        return clampText("New Sales Lead: " + dto.getClientName() + " - " + dto.getDescription(),
+                SLACK_FALLBACK_TEXT_MAX_CHARS, "fallback text");
+    }
+
+    /**
+     * Clamps an assembled Block Kit string to a Slack character limit.
+     *
+     * <p>Slack rejects the <em>entire</em> message with {@code invalid_blocks} when a single text
+     * object overflows, so an over-long lead field would otherwise cost the whole notification.
+     * Truncating is the deliberate trade: a shortened notification beats a silently lost one.
+     *
+     * <p>Clamps the assembled string rather than the raw field, because the literal labels
+     * ({@code "*Detailed Description:*\n"}) count against the same budget.
+     *
+     * @param label field name for the warning — never the field's value, which is customer content
+     */
+    private String clampText(String text, int maxChars, String label) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
         }
+        log.warnf("New lead notification: %s clamped from %d to %d chars to fit Slack's limit",
+                label, text.length(), maxChars);
+        return StringUtils.abbreviate(text, maxChars);
+    }
 
-        log.info("New lead notification sent successfully. Message ts: " + response.getTs());
+    /**
+     * Explains a Slack rejection well enough to act on without a data hunt. {@code response_metadata}
+     * carries Slack's per-block complaint (e.g. {@code "[ERROR] must be less than 3001 characters
+     * [json-pointer:/blocks/2/text/text]"}), which is the only pointer to the offending block.
+     *
+     * <p>Lead free-text is customer content, so blocks are described by type and text <em>length</em>
+     * only. Never serialize the payload here — that would put the lead's description in the logs.
+     */
+    private void logNewLeadRejection(ChatPostMessageResponse response, List<LayoutBlock> blocks) {
+        List<String> messages = response.getResponseMetadata() != null
+                && response.getResponseMetadata().getMessages() != null
+                ? response.getResponseMetadata().getMessages().stream()
+                        // Slack authors these, but clamp in case a complaint echoes the offending value.
+                        .map(m -> StringUtils.abbreviate(m, 300))
+                        .collect(Collectors.toList())
+                : Collections.emptyList();
+
+        log.errorf("Failed to send new lead notification: error=%s, warning=%s, messages=%s, blocks=%s",
+                response.getError(), response.getWarning(), messages, describeBlockShape(blocks));
+    }
+
+    /**
+     * Renders the shape of a block list for diagnostics — types and text lengths, never text.
+     */
+    private static String describeBlockShape(List<LayoutBlock> blocks) {
+        return java.util.stream.IntStream.range(0, blocks.size())
+                .mapToObj(i -> i + ":" + blocks.get(i).getType() + textLengthsOf(blocks.get(i)))
+                .collect(Collectors.joining(", ", "[", "]"));
+    }
+
+    private static String textLengthsOf(LayoutBlock block) {
+        if (block instanceof SectionBlock section) {
+            String text = section.getText() != null ? "(text=" + section.getText().getText().length() + ")" : "";
+            String fields = section.getFields() != null
+                    ? section.getFields().stream()
+                            .map(f -> String.valueOf(f.getText().length()))
+                            .collect(Collectors.joining(",", "(fields=", ")"))
+                    : "";
+            return text + fields;
+        }
+        if (block instanceof HeaderBlock header && header.getText() != null) {
+            return "(text=" + header.getText().getText().length() + ")";
+        }
+        if (block instanceof ContextBlock context && context.getElements() != null) {
+            return context.getElements().stream()
+                    .filter(TextObject.class::isInstance)
+                    .map(e -> String.valueOf(((TextObject) e).getText().length()))
+                    .collect(Collectors.joining(",", "(elements=", ")"));
+        }
+        return "";
     }
 
     /**
