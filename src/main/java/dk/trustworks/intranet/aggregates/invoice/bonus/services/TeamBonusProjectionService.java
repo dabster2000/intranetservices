@@ -309,9 +309,10 @@ public class TeamBonusProjectionService {
     /**
      * Builds the fiscal-year-wide context shared by every leader row: effective config, considered
      * months, leader exclusions + the derived fully-excluded team set, pool basis (Overskud, with
-     * disabled member-months and fully-excluded teams removed from its team-revenue), total pool
-     * amount, Σpoints across all non-fully-excluded teamleadbonus teams, the derived price-per-point,
-     * and the admin adjustments keyed by leader UUID.
+     * disabled member-months and fully-excluded teams removed from its team-revenue and the excluded
+     * teams' member salaries added back on the cost side), total pool amount, Σpoints across all
+     * non-fully-excluded teamleadbonus teams, the derived price-per-point, and the admin adjustments
+     * keyed by leader UUID.
      */
     public TeamleadContext buildContext(int fiscalYear) {
         LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
@@ -330,7 +331,7 @@ public class TeamBonusProjectionService {
                 ? 0.0
                 : calculateCompanyRevenue(fyStart, consideredEnd, fullyExcludedTeamIds);
 
-        PoolBasisBreakdown poolBasis = overskudService.computePoolBasis(fiscalYear, teamRevenue, config, consideredMonths);
+        PoolBasisBreakdown poolBasis = overskudService.computePoolBasis(fiscalYear, teamRevenue, config, consideredMonths, fullyExcludedTeamIds);
         double poolAmount = TeamleadBonusMath.poolAmount(poolBasis.poolBasis(), config.poolSharePercent());
         double sumRawPoints = calculateSumRawPoints(consideredMonths, config, fyStart, fyEnd, adjustments, fullyExcludedTeamIds);
         double pricePerPoint = TeamleadBonusMath.pricePerPoint(poolAmount, sumRawPoints);

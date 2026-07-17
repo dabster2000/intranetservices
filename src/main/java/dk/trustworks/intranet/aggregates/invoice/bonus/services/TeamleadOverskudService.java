@@ -30,8 +30,9 @@ import java.util.Set;
  *       + external GL direct costs (finance_details × accounting_accounts cost_type='DIRECT_COSTS',
  *       intercompany transfer-price accounts excluded), summed over the considered months.</li>
  *   <li>{@code excludedSalaries} = salaries of the excluded group per month (active LEADER on any team
- *       OR career_track PARTNER/C_LEVEL), adjusted by the admin EXCLUDE_SALARY/INCLUDE_SALARY
- *       overrides.</li>
+ *       OR career_track PARTNER/C_LEVEL OR active MEMBER of a fully-excluded team — mirroring the
+ *       removal of those teams' revenue from {@code teamRevenue}), adjusted by the admin
+ *       EXCLUDE_SALARY/INCLUDE_SALARY overrides.</li>
  * </ul>
  *
  * When {@code config.overskudOverride} is set it wins and {@code basisSource = "OVERRIDE"}.
@@ -47,14 +48,18 @@ public class TeamleadOverskudService {
     DistributionAwareOpexProvider opexProvider;
 
     /**
-     * @param fiscalYear       fiscal year start year
-     * @param teamRevenue      registered revenue of teamleadbonus-team MEMBERs (teamleads excluded)
-     * @param config           effective configuration (supplies the optional override)
-     * @param consideredMonths completed months of the FY (empty ⇒ everything but the override is 0)
+     * @param fiscalYear           fiscal year start year
+     * @param teamRevenue          registered revenue of teamleadbonus-team MEMBERs (teamleads excluded)
+     * @param config               effective configuration (supplies the optional override)
+     * @param consideredMonths     completed months of the FY (empty ⇒ everything but the override is 0)
+     * @param fullyExcludedTeamIds teams whose every FY leader is excluded; their members' revenue is
+     *                             already removed from {@code teamRevenue}, so their salaries are
+     *                             added back symmetrically
      */
     public PoolBasisBreakdown computePoolBasis(int fiscalYear, double teamRevenue,
                                                TeamleadBonusConfigDTO config,
-                                               List<YearMonth> consideredMonths) {
+                                               List<YearMonth> consideredMonths,
+                                               Set<String> fullyExcludedTeamIds) {
         if (consideredMonths.isEmpty()) {
             return buildBreakdown(teamRevenue, 0.0, 0.0, config);
         }
@@ -68,7 +73,7 @@ public class TeamleadOverskudService {
         double opexSalaries = sumOpexSalaries(fromKey, toKey, monthKeys);
         double glDirectCosts = sumGlDirectCosts(fromKey, toKey);
         double totalCosts = opexSalaries + glDirectCosts;
-        double excludedSalaries = sumExcludedSalaries(fiscalYear, monthKeys);
+        double excludedSalaries = sumExcludedSalaries(fiscalYear, monthKeys, fullyExcludedTeamIds);
 
         return buildBreakdown(teamRevenue, totalCosts, excludedSalaries, config);
     }
@@ -112,11 +117,15 @@ public class TeamleadOverskudService {
 
     /**
      * Σ over considered months of {@code fact_salary_monthly.salary_sum} for users in the excluded
-     * group that month: (active LEADER teamrole on any team) OR (career_track PARTNER/C_LEVEL),
-     * then adjusted by admin overrides (EXCLUDE_SALARY adds a user, INCLUDE_SALARY removes a
-     * derived user). Temporal resolution uses the month boundaries derived from {@code month_key}.
+     * group that month: (active LEADER teamrole on any team) OR (career_track PARTNER/C_LEVEL) OR
+     * (active MEMBER teamrole on a fully-excluded team — those teams' revenue is removed from the
+     * basis, so their member salaries leave the cost side symmetrically), then adjusted by admin
+     * overrides (EXCLUDE_SALARY adds a user, INCLUDE_SALARY removes a derived user). Temporal
+     * resolution uses the month boundaries derived from {@code month_key}.
      */
-    private double sumExcludedSalaries(int fiscalYear, List<String> monthKeys) {
+    private double sumExcludedSalaries(int fiscalYear, List<String> monthKeys,
+                                       Set<String> fullyExcludedTeamIds) {
+        boolean hasExcludedTeams = fullyExcludedTeamIds != null && !fullyExcludedTeamIds.isEmpty();
         Set<String> forceExclude = new HashSet<>();
         Set<String> forceInclude = new HashSet<>();
         for (TeamleadBonusSalaryExclusion ex : TeamleadBonusSalaryExclusion.listByFiscalYear(fiscalYear)) {
@@ -149,11 +158,23 @@ public class TeamleadOverskudService {
                           )
                     )
                 """);
+        if (hasExcludedTeams) sql.append("""
+                    OR EXISTS (
+                        SELECT 1 FROM teamroles trm
+                        WHERE trm.useruuid = fsm.useruuid
+                          AND trm.teamuuid IN (:excludedTeamIds)
+                          AND trm.membertype = 'MEMBER'
+                          AND trm.startdate <= LAST_DAY(STR_TO_DATE(CONCAT(fsm.month_key, '01'), '%Y%m%d'))
+                          AND (trm.enddate IS NULL
+                               OR trm.enddate > STR_TO_DATE(CONCAT(fsm.month_key, '01'), '%Y%m%d'))
+                    )
+                """);
         if (!forceExclude.isEmpty()) sql.append("    OR fsm.useruuid IN (:forceExclude)\n");
         sql.append("  )\n");
         if (!forceInclude.isEmpty()) sql.append("  AND fsm.useruuid NOT IN (:forceInclude)\n");
 
         var query = em.createNativeQuery(sql.toString()).setParameter("monthKeys", monthKeys);
+        if (hasExcludedTeams) query.setParameter("excludedTeamIds", fullyExcludedTeamIds);
         if (!forceExclude.isEmpty()) query.setParameter("forceExclude", forceExclude);
         if (!forceInclude.isEmpty()) query.setParameter("forceInclude", forceInclude);
 
