@@ -4,19 +4,14 @@ import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
-import org.eclipse.microprofile.context.ManagedExecutor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,28 +20,15 @@ import static org.mockito.Mockito.*;
 class RecruitmentS3StorageServiceTest {
 
     private S3FileService s3FileService;
-    private ManagedExecutor managedExecutor;
     private RecruitmentS3StorageService service;
 
     @BeforeEach
     void setUp() throws Exception {
         s3FileService = mock(S3FileService.class);
-        // Direct (synchronous) executor stub: any Runnable handed to execute()
-        // is run inline on the calling thread. CompletableFuture.supplyAsync
-        // dispatches via Executor.execute(Runnable), so this gives the test
-        // deterministic "completion in dispatch order" semantics without real
-        // threads, while still exercising the parallel code path.
-        managedExecutor = mock(ManagedExecutor.class);
-        doAnswer(invocation -> {
-            Runnable r = invocation.getArgument(0);
-            r.run();
-            return null;
-        }).when(managedExecutor).execute(any(Runnable.class));
 
         service = new RecruitmentS3StorageService();
         // Inject mocks via reflection (no CDI in this unit test)
         injectField("s3FileService", s3FileService);
-        injectField("managedExecutor", managedExecutor);
     }
 
     private void injectField(String name, Object value) throws Exception {
@@ -185,86 +167,38 @@ class RecruitmentS3StorageServiceTest {
     }
 
     /**
-     * Verify that even when the executor completes futures out of order
-     * (here: index-2 finishes first, index-0 last), the returned list still
-     * matches the input order. Uses a real cached executor with deliberate
-     * per-task delays to force out-of-order completion.
+     * Regression guard for incident 2026-05-06: storeTemplatePdfs must run
+     * every S3 store sequentially on the calling thread. The previous
+     * executor-based parallel implementation shared the caller's Hibernate
+     * session across worker threads and corrupted it — see the javadoc on
+     * {@link RecruitmentS3StorageService#storeTemplatePdfs}.
      */
     @Test
-    void storeTemplatePdfs_preservesOrderWithRealConcurrencyAndOutOfOrderCompletion()
-            throws Exception {
+    void storeTemplatePdfs_runsSequentiallyOnCallingThread() {
         UUID candidateUuid = UUID.randomUUID();
-
-        // Real executor (cached) so tasks really run in parallel.
-        ManagedExecutor realExecutor = mock(ManagedExecutor.class);
-        java.util.concurrent.ExecutorService backing =
-                Executors.newCachedThreadPool();
+        Thread caller = Thread.currentThread();
+        List<Thread> saveThreads = new ArrayList<>();
         doAnswer(invocation -> {
-            Runnable r = invocation.getArgument(0);
-            backing.execute(r);
+            saveThreads.add(Thread.currentThread());
             return null;
-        }).when(realExecutor).execute(any(Runnable.class));
-        injectField("managedExecutor", realExecutor);
+        }).when(s3FileService).save(any(File.class));
 
-        // Make S3FileService.save(...) sleep different amounts based on the
-        // filename, so completion order is intentionally REVERSED relative to
-        // input order.
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-        try {
-            CountDownLatch firstStarted = new CountDownLatch(1);
-            AtomicInteger completionOrder = new AtomicInteger();
-            int[] completionIndex = new int[3];
+        DossierPdfGenerationService.GeneratedPdf p1 =
+                new DossierPdfGenerationService.GeneratedPdf(
+                        "first.pdf", null, "1".getBytes(), true, true);
+        DossierPdfGenerationService.GeneratedPdf p2 =
+                new DossierPdfGenerationService.GeneratedPdf(
+                        "second.pdf", null, "2".getBytes(), true, true);
+        DossierPdfGenerationService.GeneratedPdf p3 =
+                new DossierPdfGenerationService.GeneratedPdf(
+                        "third.pdf", null, "3".getBytes(), true, true);
 
-            doAnswer(invocation -> {
-                File f = invocation.getArgument(0);
-                long delayMs;
-                int idx;
-                switch (f.getFilename()) {
-                    case "first.pdf"  -> { delayMs = 200; idx = 0; }
-                    case "second.pdf" -> { delayMs = 100; idx = 1; }
-                    case "third.pdf"  -> { delayMs = 20;  idx = 2; }
-                    default -> throw new IllegalStateException("unexpected " + f.getFilename());
-                }
-                firstStarted.countDown();
-                Thread.sleep(delayMs);
-                completionIndex[idx] = completionOrder.incrementAndGet();
-                return null;
-            }).when(s3FileService).save(any(File.class));
+        service.storeTemplatePdfs(List.of(p1, p2, p3),
+                candidateUuid, RevisionKind.SIGNATURE);
 
-            DossierPdfGenerationService.GeneratedPdf p1 =
-                    new DossierPdfGenerationService.GeneratedPdf(
-                            "first.pdf", null, "1".getBytes(), true, true);
-            DossierPdfGenerationService.GeneratedPdf p2 =
-                    new DossierPdfGenerationService.GeneratedPdf(
-                            "second.pdf", null, "2".getBytes(), true, true);
-            DossierPdfGenerationService.GeneratedPdf p3 =
-                    new DossierPdfGenerationService.GeneratedPdf(
-                            "third.pdf", null, "3".getBytes(), true, true);
-
-            List<RevisionResponse.PdfArtifactRef> refs =
-                    service.storeTemplatePdfs(List.of(p1, p2, p3),
-                            candidateUuid, RevisionKind.SIGNATURE);
-
-            // Sanity: tasks ran. firstStarted counted down means the executor
-            // was actually invoked.
-            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
-
-            // Verify completion order was intentionally reversed.
-            // third.pdf (idx 2) finished first, first.pdf (idx 0) finished last.
-            assertEquals(1, completionIndex[2], "third.pdf should complete first");
-            assertEquals(2, completionIndex[1], "second.pdf should complete second");
-            assertEquals(3, completionIndex[0], "first.pdf should complete last");
-
-            // Despite reverse completion order, refs MUST be in input order.
-            assertEquals(3, refs.size());
-            assertEquals("first.pdf", refs.get(0).filename(),
-                    "refs must follow INPUT order, not completion order");
-            assertEquals("second.pdf", refs.get(1).filename());
-            assertEquals("third.pdf", refs.get(2).filename());
-        } finally {
-            scheduler.shutdownNow();
-            backing.shutdownNow();
-        }
+        assertEquals(3, saveThreads.size());
+        saveThreads.forEach(t -> assertSame(caller, t,
+                "S3 stores must run on the calling thread, never a worker"));
     }
 
     @Test
@@ -277,11 +211,10 @@ class RecruitmentS3StorageServiceTest {
                 new DossierPdfGenerationService.GeneratedPdf(
                         "x.pdf", null, "data".getBytes(), true, true);
 
-        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+        RuntimeException ex = assertThrows(RuntimeException.class, () ->
                 service.storeTemplatePdfs(List.of(p), candidateUuid, RevisionKind.SIGNATURE));
-        assertTrue(ex.getMessage().contains("Failed to store generated PDFs"));
-        assertNotNull(ex.getCause());
-        assertEquals("S3 unreachable", ex.getCause().getMessage());
+        assertEquals("S3 unreachable", ex.getMessage(),
+                "sequential implementation propagates the store failure unwrapped");
     }
 
     @Test
