@@ -1625,7 +1625,11 @@ public class PracticeRevenueMaterializationService {
             row.oneCentAwarded=source.oneCentAwarded(); row.fxNormalizationChanged=source.fxNormalizationChanged();
             row.matchedVoucherKey=document.matchedVoucherKey(); row.matchedGlRawDkk=document.matchedRawGlDkk();
             row.matchedGlCandidateCentDkk=document.matchedGlCandidateCentDkk(); row.controlSource=source.controlSource().name();
-            row.valuationStatus=source.valuationStatus().name(); row.residualControlReason=residual(source.reasonCode());
+            // chk_fpnri_row_semantics allows residual_control_reason only on DOCUMENT_RESIDUAL rows;
+            // companion SOURCE_ITEM rows disclose the same reason via validation_reason_code below.
+            row.valuationStatus=source.valuationStatus().name();
+            row.residualControlReason=source.rowKind()==PracticeRevenueValuationService.ItemRowKind.DOCUMENT_RESIDUAL
+                    ?residual(source.reasonCode()):null;
             row.attributionSourceStatus=attributionStatusByItem.getOrDefault(source.itemControlKey(),
                     PracticeRevenueAllocationService.AttributionStatus.UNASSIGNED).name();
             applyCreditCopyEvidence(row, envelope.creditEvidence());
