@@ -1823,6 +1823,8 @@ public class PracticeRevenueMaterializationService {
     void failAndCleanup(Attempt attempt,String reason) {
         Object[] owner=(Object[])nativeQuery("SELECT status,owner_token,attempt_generation_id FROM practice_revenue_publication WHERE publication_key='PRACTICE_CONTRIBUTION' FOR UPDATE").getSingleResult();
         if(!"RUNNING".equals(text(owner[0]))||!attempt.ownerToken().equals(text(owner[1]))||!attempt.generationId().equals(text(owner[2]))) return;
+        // Dependency rows have no FK cascade from the item table; delete them explicitly.
+        nativeQuery("DELETE FROM fact_practice_revenue_dependency_mat WHERE generation_id=:generation").setParameter("generation",attempt.generationId()).executeUpdate();
         nativeQuery("DELETE FROM fact_practice_net_revenue_item_mat WHERE generation_id=:generation").setParameter("generation",attempt.generationId()).executeUpdate();
         nativeQuery("""
                 UPDATE practice_revenue_publication SET status='FAILED',owner_token=NULL,attempt_generation_id=NULL,
@@ -1830,12 +1832,26 @@ public class PracticeRevenueMaterializationService {
                 WHERE publication_key='PRACTICE_CONTRIBUTION' AND status='RUNNING' AND owner_token=:owner AND attempt_generation_id=:generation
                 """).setParameter("reason",reason).setParameter("owner",attempt.ownerToken()).setParameter("generation",attempt.generationId()).executeUpdate();
     }
-    private void pruneOldGenerations(){nativeQuery("""
+    private void pruneOldGenerations(){
+        // The dependency table has no FK to the item table; prune it with the same retention rule
+        // or superseded generations' provenance rows accumulate without bound.
+        nativeQuery("""
+            DELETE d FROM fact_practice_revenue_dependency_mat d JOIN practice_revenue_publication p ON p.publication_key='PRACTICE_CONTRIBUTION'
+            WHERE d.generation_id NOT IN (COALESCE(p.published_generation_id,''),COALESCE(p.previous_generation_id,''),COALESCE(p.attempt_generation_id,''))
+            """).executeUpdate();
+        nativeQuery("""
             DELETE i FROM fact_practice_net_revenue_item_mat i JOIN practice_revenue_publication p ON p.publication_key='PRACTICE_CONTRIBUTION'
             WHERE i.generation_id NOT IN (COALESCE(p.published_generation_id,''),COALESCE(p.previous_generation_id,''),COALESCE(p.attempt_generation_id,''))
             """).executeUpdate();}
-    private boolean acquireLock(String name){return number(nativeQuery("SELECT GET_LOCK(:name,:seconds)").setParameter("name",name).setParameter("seconds",Math.toIntExact(lockWait.toSeconds())).getSingleResult()).intValue()==1;}
-    private void releaseLock(String name){try{nativeQuery("SELECT RELEASE_LOCK(:name)").setParameter("name",name).getSingleResult();}catch(RuntimeException e){log.warnf(e,"could not release %s",name);}}
+    /**
+     * Lock queries must never auto-flush: after a failed batch flush the Hibernate action queue is
+     * not cleared, so a flushing RELEASE_LOCK re-executes the queued inserts on the poisoned
+     * session — masking the original failure with a duplicate-key error and leaking the named lock
+     * (MariaDB named locks survive rollback, so an unreleased lock blocks every later attempt).
+     */
+    private Query lockQuery(String sql){return nativeQuery(sql).setFlushMode(jakarta.persistence.FlushModeType.COMMIT);}
+    private boolean acquireLock(String name){return number(lockQuery("SELECT GET_LOCK(:name,:seconds)").setParameter("name",name).setParameter("seconds",Math.toIntExact(lockWait.toSeconds())).getSingleResult()).intValue()==1;}
+    private void releaseLock(String name){try{lockQuery("SELECT RELEASE_LOCK(:name)").setParameter("name",name).getSingleResult();}catch(RuntimeException e){log.warnf(e,"could not release %s",name);}}
 
     Query nativeQuery(String sql){
         if(queryTimeout==null||queryTimeout.isZero()||queryTimeout.isNegative()
