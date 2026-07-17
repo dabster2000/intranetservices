@@ -36,6 +36,8 @@ import static dk.trustworks.intranet.aggregates.practices.services.ContributionU
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -193,15 +195,17 @@ class CxoPracticeContributionServiceTest {
                 LocalDate.of(2025, 7, 1), LocalDate.of(2026, 6, 1),
                 period, completeCost(), true, true);
 
-        assertEquals("UNAVAILABLE_REVENUE", pm.dto().contributionStatus());
+        // Serve-with-disclosed-gap: a scoped evidence gap discloses (INCOMPLETE source, missing
+        // native amounts, no deltas) but no longer withholds the understated GL-confirmed number.
         assertEquals("SOURCE_COUNT_INCOMPLETE", pm.dto().sourceReason());
-        assertNull(pm.dto().netAttributedRevenueDkk());
-        assertFalse(pm.deltaEligible());
+        assertEquals("INCOMPLETE", pm.dto().sourceStatus());
+        assertEquals("100.00", pm.dto().netAttributedRevenueDkk());
+        assertFalse(pm.deltaEligible(), "a practice with an evidence gap never serves deltas");
         assertEquals("CONFIRMED", ba.dto().contributionStatus());
         assertEquals("COMPLETE", ba.dto().sourceStatus());
         assertEquals("200.00", ba.dto().netAttributedRevenueDkk());
         assertTrue(ba.deltaEligible(), "the unrelated practice remains delta-eligible");
-        assertNull(portfolio.recognizedNetRevenueDkk());
+        assertEquals("300.00", portfolio.recognizedNetRevenueDkk());
         assertEquals(Map.of("EUR", "75"), portfolio.missingNativeAmountsByCurrency());
         assertEquals(Map.of("EUR", "75"),
                 contributionPeriod.evidence().missingNativeAmountsByCurrency());
@@ -219,8 +223,11 @@ class CxoPracticeContributionServiceTest {
                     new Class<?>[]{String.class, CxoPracticeContributionService.PeriodAggregate.class,
                             PracticeOperatingCostDTO.class, boolean.class, boolean.class, boolean.class, boolean.class},
                     practice, period, costRow(practice, 30, 20, 25, 15), true, true, true, true);
-            assertEquals("UNAVAILABLE_REVENUE", metrics.dto().contributionStatus(), practice);
-            assertNull(metrics.dto().netAttributedRevenueDkk(), practice);
+            // Serve-with-disclosed-gap: an unscopeable gap taints every practice's completeness
+            // disclosure and suppresses deltas, but the GL-confirmed numbers still serve.
+            assertNotEquals("UNAVAILABLE_REVENUE", metrics.dto().contributionStatus(), practice);
+            assertNotNull(metrics.dto().netAttributedRevenueDkk(), practice);
+            assertEquals("INCOMPLETE", metrics.dto().sourceStatus(), practice);
             assertFalse(metrics.deltaEligible(), practice);
         }
     }
@@ -328,8 +335,12 @@ class CxoPracticeContributionServiceTest {
                 period, completeCost(), true, true);
 
         assertEquals("CONFIRMED", pm.dto().contributionStatus());
-        assertEquals("UNAVAILABLE_REVENUE", ba.dto().contributionStatus());
+        // Serve-with-disclosed-gap: the sentinel-scoped gap keeps BA's disclosure INCOMPLETE
+        // without withholding its GL-confirmed number.
+        assertEquals("200.00", ba.dto().netAttributedRevenueDkk());
+        assertEquals("INCOMPLETE", ba.dto().sourceStatus());
         assertEquals("SOURCE_COUNT_INCOMPLETE", ba.dto().sourceReason());
+        assertFalse(ba.deltaEligible());
         assertEquals(0, contributionPeriod.evidence().missingDkkControlCount());
         assertEquals("SOURCE_COUNT_INCOMPLETE", contributionPeriod.sourceReason());
     }
@@ -386,11 +397,13 @@ class CxoPracticeContributionServiceTest {
         assertEquals("CONFIRMED", pm.dto().contributionStatus());
         assertEquals("100.00", pm.dto().netAttributedRevenueDkk());
         assertNull(pm.dto().provisionalNetAttributedRevenueDkk());
-        assertEquals("UNAVAILABLE", jk.dto().revenueDisplayStatus());
-        assertNull(jk.dto().displayRevenueDkk());
-        assertNull(jk.dto().netAttributedRevenueDkk());
+        // Serve-with-disclosed-gap: the provisional-only segment serves its GL-confirmed headline
+        // (zero) while the provisional value stays in its own disclosed field.
+        assertNotEquals("UNAVAILABLE", jk.dto().revenueDisplayStatus());
+        assertEquals("0.00", jk.dto().netAttributedRevenueDkk());
         assertEquals("25.00", jk.dto().provisionalNetAttributedRevenueDkk());
-        assertEquals("PROVISIONAL_NATIVE_DKK", jk.dto().availabilityReason());
+        assertEquals("PROVISIONAL", jk.dto().valuationStatus());
+        assertEquals("PROVISIONAL_NATIVE_DKK", jk.dto().valuationReason());
         assertEquals("CONFIRMED", contributionPeriod.contributionStatus(),
                 "Revenue-only provisional evidence must not change the core-practice contribution status");
         assertEquals("PROVISIONAL", contributionPeriod.fxStatus());
@@ -418,10 +431,13 @@ class CxoPracticeContributionServiceTest {
                         PracticeOperatingCostDTO.class, boolean.class, boolean.class, boolean.class, boolean.class},
                 "PM", period, costRow("PM", 30, 20, 25, 15), true, true, true, true);
 
-        assertEquals("UNAVAILABLE_REVENUE", metrics.dto().contributionStatus());
+        // Serve-with-disclosed-gap: the cancelled movement serves a zero headline, but never as a
+        // CONFIRMED_GL zero — the PROVISIONAL valuation status and suppressed deltas carry the
+        // original intent that cancellation is not confirmation.
         assertEquals("PROVISIONAL", metrics.dto().valuationStatus());
-        assertNull(metrics.dto().netAttributedRevenueDkk());
+        assertEquals("0.00", metrics.dto().netAttributedRevenueDkk());
         assertEquals("0.00", metrics.dto().provisionalNetAttributedRevenueDkk());
+        assertFalse(metrics.deltaEligible());
     }
 
     @Test
