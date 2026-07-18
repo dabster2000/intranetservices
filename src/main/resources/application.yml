@@ -397,6 +397,11 @@ openai:
   # Requires model access on the OpenAI project (enabled 2026-07-04); a 403 here means the
   # project/org lost access — OpenAIService logs the error body.
   invoice-status-model: ${OPENAI_INVOICE_STATUS_MODEL:gpt-5.4}
+  # Model for the personalised dashboard daily brief (DailyBriefService). Kept separate from
+  # openai.model because the brief is generated with a temperature (~0.8) for day-to-day warmth and
+  # variation, which the gpt-5 family rejects with HTTP 400 — so this defaults to a gpt-4o-family
+  # model the project can access. Override per env with OPENAI_DAILY_BRIEF_MODEL.
+  daily-brief-model: ${OPENAI_DAILY_BRIEF_MODEL:gpt-4o-mini}
 # Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false, INVOICE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
 # so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
 # does, cannot reuse production's idempotency keys.

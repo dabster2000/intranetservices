@@ -170,6 +170,12 @@ ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
 # Set the entry point to run the application
 #ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]
 
-ENV JAVA_OPTS="-Xmx2g -Xms1g"
-# keep or tweak as you like
+# Heap must scale with the ECS container's memory limit (UseContainerSupport is on
+# by default): a fixed -Xmx2g left half of the 4 GB prod task unused and the heap
+# OOM'd while the container sat at 63% utilization. Capped at 70% — not higher —
+# because LibreOffice conversions run as child processes inside the same cgroup and
+# need headroom alongside metaspace and thread stacks. ExitOnOutOfMemoryError makes
+# a future heap exhaustion kill the task immediately so ECS replaces it, instead of
+# a degraded JVM failing batch jobs one by one.
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=70.0 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"
 ENTRYPOINT ["sh","-c","exec java $JAVA_OPTS -Dquarkus.http.host=0.0.0.0 -jar /deployments/quarkus-run.jar"]

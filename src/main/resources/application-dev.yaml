@@ -171,6 +171,9 @@ openai:
   api:
     key: ${OPENAI_APIKEY:xx}
   model: gpt-4o-mini
+  # Model for the personalised dashboard daily brief (DailyBriefService); a gpt-4o-family model is
+  # required because the note is generated with a temperature the gpt-5 family rejects with HTTP 400.
+  daily-brief-model: ${OPENAI_DAILY_BRIEF_MODEL:gpt-4o-mini}
 dk:
   trustworks:
     intranet:

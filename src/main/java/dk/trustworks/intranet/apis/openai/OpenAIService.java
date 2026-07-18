@@ -80,6 +80,85 @@ public class OpenAIService {
     }
 
     /**
+     * Plain-text generation via the Responses API (text.format.type = "text"). Unlike
+     * {@link #askQuestion(String)} this imposes no JSON guardrail, so it is the right helper for
+     * short natural-language output (e.g. the personalised daily brief).
+     *
+     * <p>{@code temperature} is applied only when non-null: the gpt-5 family rejects it with HTTP
+     * 400, so callers that want temperature must point {@code modelOverride} at a gpt-4o-family
+     * model. On any upstream error, refusal, or empty output this returns {@code ""} (never the
+     * {@code "{}"} JSON sentinel), leaving the caller free to substitute a graceful fallback.
+     *
+     * @param system          system prompt (role: system); skipped when null/blank
+     * @param userMsg         user prompt (role: user)
+     * @param modelOverride   optional model id for this call only (null/blank → global {@code openai.model})
+     * @param maxOutputTokens positive value overrides the default 512 budget
+     * @param temperature     optional sampling temperature; null → omitted (safe for gpt-5 models)
+     * @param store           false disables Responses application-state storage (privacy-sensitive callers)
+     * @return the generated text, or {@code ""} on refusal/error/empty output
+     */
+    public String generatePlainText(String system, String userMsg, String modelOverride,
+                                    int maxOutputTokens, Double temperature, boolean store) {
+        String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", chosenModel);
+            req.put("max_output_tokens", maxOutputTokens > 0 ? maxOutputTokens : 512);
+            if (temperature != null) {
+                req.put("temperature", temperature);
+            }
+            req.put("store", store);
+
+            ObjectNode text = req.putObject("text");
+            text.putObject("format").put("type", "text");
+
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+            user.put("content", userMsg);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (plain text). model=%s, bodySize=%d", chosenModel, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                if (!store) {
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
+                            http.getStatus(), chosenModel);
+                } else {
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s",
+                            http.getStatus(), chosenModel, payload);
+                }
+                return "";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            if (extractRefusal(root) != null) {
+                log.warnf("[OpenAIService] Model refusal detected on plain-text call (model=%s)", chosenModel);
+                return "";
+            }
+            String out = extractOutputTextOrEmpty(root);
+            return out == null || out.isBlank() || out.equals("{}") ? "" : out.trim();
+
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            log.errorf("[OpenAIService] Plain-text request failed (model=%s): status=%s",
+                    chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?");
+            return "";
+        } catch (Exception e) {
+            log.errorf("[OpenAIService] Plain-text request failed (model=%s, errorType=%s)",
+                    chosenModel, e.getClass().getSimpleName());
+            return "";
+        }
+    }
+
+    /**
      * Strict structured output via JSON Schema (Structured Outputs).
      * text.format.type = "json_schema" with strict=true.
      */
