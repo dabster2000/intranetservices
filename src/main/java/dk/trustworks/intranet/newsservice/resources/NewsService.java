@@ -39,7 +39,7 @@ public class NewsService {
             return News.find("?1 between startDate and endDate AND newsType = ?2", LocalDateTime.now(), NewsType.BANNER).list();
             //5f6fac9d-f52d-462f-ab27-be7eeef1b3f3
         } else if("events".equals(newsCategory)) {
-            List<News> newsList = News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('BIRTHDAY', 'INFO', 'NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'HQ_BOOKING', 'CLIENT_EVENT', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
+            List<News> newsList = News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('BIRTHDAY', 'INFO', 'NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'HQ_BOOKING', 'CLIENT_EVENT', 'HQ', 'TW_WHEEL') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
             List<Employee> employees = em.createNativeQuery("select * from consultant where status like 'ACTIVE' and consultanttype not like 'EXTERNAL' and CURDATE() between DATE_SUB(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 1 MONTH ) and DATE_ADD(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 7 DAY)", Employee.class).getResultList();
             for (Employee employee : employees) {
                 LocalDate birthdayThisYear = employee.getBirthday().withYear(LocalDate.now().getYear());
