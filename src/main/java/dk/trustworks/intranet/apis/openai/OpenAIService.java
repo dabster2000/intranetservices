@@ -604,6 +604,18 @@ public class OpenAIService {
 
             return result;
 
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            // The REST client throws for 4xx/5xx before the status branch above runs; surface
+            // OpenAI's error body (e.g. "invalid_image_format") instead of the bare status line.
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            int status = e.getResponse() != null ? e.getResponse().getStatus() : -1;
+            log.errorf("[OpenAIService] Responses request failed (simple text + image): status=%d body=%s", status, errBody);
+            return "Validation error: OpenAI API returned status " + status;
         } catch (Exception e) {
             log.error("[OpenAIService] Responses request failed (simple text + image)", e);
             return "Validation error: " + e.getMessage();

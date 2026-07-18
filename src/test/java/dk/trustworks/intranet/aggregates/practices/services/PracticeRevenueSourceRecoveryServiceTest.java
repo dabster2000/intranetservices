@@ -244,10 +244,16 @@ class PracticeRevenueSourceRecoveryServiceTest {
         Query acquireOne=query(),acquireTwo=query(),acquireThree=query();
         Query releaseOne=query(),releaseTwo=query(),releaseThree=query();
         Query precondition=query(),target=query(),claim=query();
+        // bi_refresh coordinates with stored procedures and stays server-global; the two
+        // application-owned locks go through the schema-scoped SQL.
+        when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.ACQUIRE_GLOBAL_LOCK_SQL))
+                .thenReturn(acquireOne);
         when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.ACQUIRE_LOCK_SQL))
-                .thenReturn(acquireOne,acquireTwo,acquireThree);
+                .thenReturn(acquireTwo,acquireThree);
         when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.RELEASE_LOCK_SQL))
-                .thenReturn(releaseOne,releaseTwo,releaseThree);
+                .thenReturn(releaseOne,releaseTwo);
+        when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.RELEASE_GLOBAL_LOCK_SQL))
+                .thenReturn(releaseThree);
         when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.DELIVERY_RECOVERY_PRECONDITION_SQL))
                 .thenReturn(precondition);
         when(em.createNativeQuery(PracticeRevenueSourceRecoveryService.DELIVERY_TARGET_SQL)).thenReturn(target);

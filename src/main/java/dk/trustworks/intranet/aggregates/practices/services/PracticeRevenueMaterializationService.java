@@ -1848,10 +1848,21 @@ public class PracticeRevenueMaterializationService {
      * not cleared, so a flushing RELEASE_LOCK re-executes the queued inserts on the poisoned
      * session — masking the original failure with a duplicate-key error and leaking the named lock
      * (MariaDB named locks survive rollback, so an unreleased lock blocks every later attempt).
+     *
+     * Names are prefixed with DATABASE() because GET_LOCK names are server-scoped, not
+     * schema-scoped, and production and staging share one MariaDB server: an unscoped name lets a
+     * staging build starve the production build (2026-07-18 REVENUE_LOCK_TIMEOUT incident). The
+     * 'bi_refresh' lock taken by stored procedures stays unscoped — this prefix applies only to
+     * lock names acquired exclusively from application code.
      */
     private Query lockQuery(String sql){return nativeQuery(sql).setFlushMode(jakarta.persistence.FlushModeType.COMMIT);}
-    private boolean acquireLock(String name){return number(lockQuery("SELECT GET_LOCK(:name,:seconds)").setParameter("name",name).setParameter("seconds",Math.toIntExact(lockWait.toSeconds())).getSingleResult()).intValue()==1;}
-    private void releaseLock(String name){try{lockQuery("SELECT RELEASE_LOCK(:name)").setParameter("name",name).getSingleResult();}catch(RuntimeException e){log.warnf(e,"could not release %s",name);}}
+    private boolean acquireLock(String name){return number(lockQuery("SELECT GET_LOCK(CONCAT(DATABASE(),'/',:name),:seconds)").setParameter("name",name).setParameter("seconds",Math.toIntExact(lockWait.toSeconds())).getSingleResult()).intValue()==1;}
+    private void releaseLock(String name){
+        try{
+            Object released=lockQuery("SELECT RELEASE_LOCK(CONCAT(DATABASE(),'/',:name))").setParameter("name",name).getSingleResult();
+            if(released==null||number(released).intValue()!=1)log.errorf("release of %s returned %s — lock not held by this connection (leak on another pooled connection?)",name,released);
+        }catch(RuntimeException e){log.errorf(e,"could not release %s",name);}
+    }
 
     Query nativeQuery(String sql){
         if(queryTimeout==null||queryTimeout.isZero()||queryTimeout.isNegative()

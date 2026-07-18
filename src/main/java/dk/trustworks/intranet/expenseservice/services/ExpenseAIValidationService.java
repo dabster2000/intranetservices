@@ -99,13 +99,56 @@ public class ExpenseAIValidationService {
         return config.getPromptBody("VISION_EXTRACTION");
     }
 
+    /**
+     * Detects the actual content type of a stored receipt from its magic bytes.
+     * Returns the MIME type for formats the OpenAI Responses {@code input_image} accepts
+     * (JPEG, PNG, GIF, WebP), {@code "application/pdf"} for PDFs, or {@code null} for
+     * anything else — including content that is not decodable base64.
+     */
+    static String sniffReceiptMime(String base64) {
+        byte[] head = decodeBase64Head(base64);
+        if (head == null || head.length < 4) return null;
+        if ((head[0] & 0xFF) == 0xFF && (head[1] & 0xFF) == 0xD8 && (head[2] & 0xFF) == 0xFF) return "image/jpeg";
+        if ((head[0] & 0xFF) == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G') return "image/png";
+        if (head[0] == 'G' && head[1] == 'I' && head[2] == 'F' && head[3] == '8') return "image/gif";
+        if (head.length >= 12 && head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F'
+                && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P') return "image/webp";
+        if (head[0] == '%' && head[1] == 'P' && head[2] == 'D' && head[3] == 'F') return "application/pdf";
+        return null;
+    }
+
+    /** Decodes just enough of the (possibly data-URL-prefixed) base64 to read the magic bytes. */
+    private static byte[] decodeBase64Head(String base64) {
+        int start = 0;
+        if (base64.startsWith("data:")) {
+            int comma = base64.indexOf(',');
+            if (comma < 0) return null;
+            start = comma + 1;
+        }
+        // 16 base64 chars → 12 decoded bytes, enough for the longest signature (WebP).
+        StringBuilder head = new StringBuilder(16);
+        for (int i = start; i < base64.length() && head.length() < 16; i++) {
+            char c = base64.charAt(i);
+            if (!Character.isWhitespace(c)) head.append(c);
+        }
+        head.setLength(head.length() - (head.length() % 4));
+        try {
+            return java.util.Base64.getDecoder().decode(head.toString());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+
+    /** Decoded-size cap for vision calls — OpenAI rejects images above 20 MB. */
+    private static final long MAX_RECEIPT_IMAGE_BYTES = 20L * 1024 * 1024;
 
     /**
      * Extracts comprehensive unstructured text description from a RECEIPT IMAGE (base64).
      * Uses vision API without web search to describe everything visible in the receipt.
      * The resulting text will be used for subsequent validation instead of the image itself.
      *
-     * @param base64ReceiptImage Base64-encoded receipt image (JPEG format)
+     * @param base64ReceiptImage Base64-encoded receipt file (actual format is sniffed from content)
      * @return Unstructured text description of the receipt (all visible details)
      */
     public String extractExpenseData(String base64ReceiptImage) {
@@ -115,6 +158,25 @@ public class ExpenseAIValidationService {
             if (base64ReceiptImage == null || base64ReceiptImage.isEmpty()) {
                 log.warn("No image content provided for AI extraction");
                 return "Receipt image not provided or empty.";
+            }
+
+            // The upload flow discards the client MIME type, so the stored bytes are the only
+            // source of truth. Sniff them and skip the vision call for anything OpenAI's
+            // input_image rejects with HTTP 400 (PDFs, unknown formats, oversized files).
+            String detectedMime = sniffReceiptMime(base64ReceiptImage);
+            if ("application/pdf".equals(detectedMime)) {
+                log.warnf("[AI-Extract] Receipt is a PDF (base64 len=%d) — skipping vision extraction", contentLen);
+                return "Receipt file is a PDF document, not an image. The receipt content could not be read automatically.";
+            }
+            if (detectedMime == null) {
+                log.warnf("[AI-Extract] Receipt is not a supported image format (base64 len=%d) — skipping vision extraction", contentLen);
+                return "Receipt file is not a readable image (unsupported or corrupt file format). The receipt content could not be read automatically.";
+            }
+            long approxDecodedBytes = (long) contentLen * 3 / 4;
+            if (approxDecodedBytes > MAX_RECEIPT_IMAGE_BYTES) {
+                log.warnf("[AI-Extract] Receipt image too large for vision extraction (~%d bytes, mime=%s) — skipping",
+                        approxDecodedBytes, detectedMime);
+                return "Receipt image is too large to analyze automatically. The receipt content could not be read automatically.";
             }
 
             // System prompt for comprehensive unstructured extraction (loaded from AIConfigSnapshot)
@@ -127,7 +189,7 @@ public class ExpenseAIValidationService {
                     system,
                     userInstruction,
                     base64ReceiptImage,
-                    "image/jpeg"
+                    detectedMime
             );
 
             String result = description == null ? "" : description.trim();

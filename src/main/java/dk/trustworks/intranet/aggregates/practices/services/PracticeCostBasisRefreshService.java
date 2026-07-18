@@ -768,15 +768,24 @@ public class PracticeCostBasisRefreshService {
                 """).executeUpdate();
     }
 
+    // DATABASE() prefix: GET_LOCK names are server-scoped and prod + staging share one MariaDB
+    // server, so an unscoped name lets one environment's build starve the other's (2026-07-18
+    // REVENUE_LOCK_TIMEOUT incident). Must stay consistent with PracticeRevenueMaterializationService
+    // and PracticeRevenueSourceRecoveryService.
     private boolean acquireLock(String name) {
-        Object value = em.createNativeQuery("SELECT GET_LOCK(:name, :seconds)")
+        Object value = em.createNativeQuery("SELECT GET_LOCK(CONCAT(DATABASE(),'/',:name), :seconds)")
                 .setParameter("name", name).setParameter("seconds", Math.toIntExact(lockWait.toSeconds()))
                 .getSingleResult();
         return number(value).intValue() == 1;
     }
     private void releaseLock(String name) {
-        try { em.createNativeQuery("SELECT RELEASE_LOCK(:name)").setParameter("name", name).getSingleResult(); }
-        catch (RuntimeException releaseFailure) { log.warnf(releaseFailure, "could not release %s", name); }
+        try {
+            Object released = em.createNativeQuery("SELECT RELEASE_LOCK(CONCAT(DATABASE(),'/',:name))")
+                    .setParameter("name", name).getSingleResult();
+            if (released == null || number(released).intValue() != 1) {
+                log.errorf("release of %s returned %s — lock not held by this connection (leak on another pooled connection?)", name, released);
+            }
+        } catch (RuntimeException releaseFailure) { log.errorf(releaseFailure, "could not release %s", name); }
     }
 
     private static String hash(String... values) {
