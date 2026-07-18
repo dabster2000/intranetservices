@@ -27,8 +27,17 @@ import java.util.UUID;
 public class PracticeRevenueSourceRecoveryService {
 
     static final int LOCK_RELEASE_TIMEOUT_MS = 5_000;
-    static final String ACQUIRE_LOCK_SQL = "SELECT GET_LOCK(:lock, 0)";
-    static final String RELEASE_LOCK_SQL = "SELECT RELEASE_LOCK(:lock)";
+    // GET_LOCK names are server-scoped and prod + staging share one MariaDB server, so
+    // application-owned lock names are prefixed with DATABASE() (matching the acquire side in
+    // PracticeRevenueMaterializationService / PracticeCostBasisRefreshService — proof-of-death
+    // only works if recovery probes the exact name the owner acquired). 'bi_refresh' is the one
+    // exception: stored procedures (V411/V413) take it unscoped, so scoping it here would break
+    // mutual exclusion with them.
+    static final String ACQUIRE_LOCK_SQL = "SELECT GET_LOCK(CONCAT(DATABASE(),'/',:lock), 0)";
+    static final String RELEASE_LOCK_SQL = "SELECT RELEASE_LOCK(CONCAT(DATABASE(),'/',:lock))";
+    static final String ACQUIRE_GLOBAL_LOCK_SQL = "SELECT GET_LOCK(:lock, 0)";
+    static final String RELEASE_GLOBAL_LOCK_SQL = "SELECT RELEASE_LOCK(:lock)";
+    static final String BI_REFRESH_LOCK = "bi_refresh";
 
     static final String PUBLICATION_OWNER_SQL = """
             SELECT status, owner_token, attempt_generation_id,
@@ -115,7 +124,7 @@ public class PracticeRevenueSourceRecoveryService {
             """;
     static final String DELIVERY_TARGET_SQL="SELECT COALESCE(MAX(id),0) FROM fact_change_log";
     static final List<String> DELIVERY_RECOVERY_LOCKS=List.of(
-            "bi_refresh","practice_revenue","practice_revenue_source_delivery_evidence");
+            BI_REFRESH_LOCK,"practice_revenue","practice_revenue_source_delivery_evidence");
 
     @Inject
     EntityManager em;
@@ -336,7 +345,8 @@ public class PracticeRevenueSourceRecoveryService {
     }
 
     private void acquireRecoveryLock(String lockName) {
-        Object value = timed(em.createNativeQuery(ACQUIRE_LOCK_SQL))
+        String sql = BI_REFRESH_LOCK.equals(lockName) ? ACQUIRE_GLOBAL_LOCK_SQL : ACQUIRE_LOCK_SQL;
+        Object value = timed(em.createNativeQuery(sql))
                 .setParameter("lock", lockName)
                 .getSingleResult();
         if (!(value instanceof Number number) || number.intValue() != 1) {
@@ -345,7 +355,8 @@ public class PracticeRevenueSourceRecoveryService {
     }
 
     private void releaseRecoveryLock(String lockName) {
-        Object value = timed(em.createNativeQuery(RELEASE_LOCK_SQL))
+        String sql = BI_REFRESH_LOCK.equals(lockName) ? RELEASE_GLOBAL_LOCK_SQL : RELEASE_LOCK_SQL;
+        Object value = timed(em.createNativeQuery(sql))
                 .setParameter("lock", lockName)
                 .getSingleResult();
         if (!(value instanceof Number number) || number.intValue() != 1) {
