@@ -2,6 +2,8 @@ package dk.trustworks.intranet.apis.openai;
 
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
@@ -15,6 +17,9 @@ public class OpenAIResource {
 
     @Inject
     OpenAIService openAIService;
+
+    @Inject
+    DailyBriefService dailyBriefService;
 
     @POST
     @Path("/ask")
@@ -143,5 +148,23 @@ public class OpenAIResource {
         String text = (request.text() == null || request.text().isBlank()) ? "[Tom]" : request.text();
         String fullPrompt = template + "\n" + text;
         return openAIService.askQuestion(fullPrompt);
+    }
+
+    // =========================================================================
+    // Personalised daily brief — a short, warm morning note for the dashboard
+    // =========================================================================
+
+    /**
+     * Generates a 2-3 sentence personal morning note for the given employee. The body is fully
+     * caller-supplied (name, optional to-dos, events, utilisation, locale); {@link DailyBriefService}
+     * sanitizes and caps it before prompting. Returns the note as plain text, mirroring
+     * {@link #getProjectSuggestion} so the BFF consumes it identically.
+     */
+    @POST
+    @Path("/daily-brief")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.TEXT_PLAIN)
+    public String getDailyBrief(@Valid @NotNull DailyBriefRequest request) {
+        return dailyBriefService.generate(request);
     }
 }
