@@ -30,6 +30,7 @@ import dk.trustworks.intranet.fileservice.resources.UserSharePointDocumentResour
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.model.Certification;
 import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
+import dk.trustworks.intranet.knowledgeservice.model.KnowledgeBudgetSummary;
 import dk.trustworks.intranet.knowledgeservice.model.UserCertification;
 import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
@@ -303,6 +304,15 @@ public class UserResource {
     @Path("/{useruuid}/knowledge/expenses")
     public List<CKOExpense> findKnowledgeExpensesByUseruuid(@PathParam("useruuid") String useruuid) {
         return knowledgeExpenseAPI.findExpensesByUseruuid(useruuid);
+    }
+
+    @GET
+    @Path("/{useruuid}/knowledge/budgets")
+    public List<KnowledgeBudgetSummary> findKnowledgeBudgetsByUseruuid(
+            @PathParam("useruuid") String useruuid,
+            @QueryParam("fromyear") Integer fromYear,
+            @QueryParam("toyear") Integer toYear) {
+        return knowledgeExpenseAPI.calculateBudgets(useruuid, fromYear, toYear);
     }
 
     @GET
