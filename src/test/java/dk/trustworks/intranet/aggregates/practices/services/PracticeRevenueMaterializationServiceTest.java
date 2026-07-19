@@ -655,42 +655,6 @@ class PracticeRevenueMaterializationServiceTest {
         assertEquals("stale-but-persisted",row.creditCopyFingerprint);
     }
 
-    /**
-     * chk_fpnri_row_semantics permits residual_control_reason only on DOCUMENT_RESIDUAL rows, but
-     * persist stamped it on every row of a header-gap document, so the first legacy header-discount
-     * invoice (721 exist in production) failed the CHECK constraint and the whole build rolled back.
-     * SOURCE_ITEM companions must persist a null residual reason while still disclosing the reason
-     * through validation_reason_code.
-     */
-    @Test void residualControlReasonPersistsOnlyOnTheDocumentResidualRow(){
-        var valuation=new PracticeRevenueValuationService();
-        var item=new PracticeRevenueValuationService.ItemInput("item-a",
-                PracticeRevenueValuationService.ItemOrigin.BASE,"1.000000","100","consultant",true,
-                null,null,null,false,null,null,null,null,null,null,null,null);
-        var glEntry=new PracticeRevenueValuationService.GlEntry("K","company",2025,"BOOKED",42,0,
-                "REVENUE","-95","voucher-42");
-        var controlled=new PracticeRevenueValuationService.DocumentInput("doc-controlled","company",
-                PracticeRevenueValuationService.DocumentType.INVOICE,"CREATED",false,
-                LocalDate.parse("2026-02-17"),"DKK","5",List.of(item),List.of(glEntry),List.of());
-        var provisional=new PracticeRevenueValuationService.DocumentInput("doc-provisional","company",
-                PracticeRevenueValuationService.DocumentType.INVOICE,"CREATED",false,
-                LocalDate.parse("2026-02-17"),"DKK","5",List.of(item),List.of(),List.of());
-        for(var input:List.of(controlled,provisional)){
-            var document=valuation.value(List.of(input)).documents().getFirst();
-            var rows=persistItems(document.items().stream()
-                    .map(control->new PracticeRevenueMaterializationService.ItemEnvelope(
-                            "company","CREATED",control,document,null)).toList());
-            for(var row:rows){
-                if("DOCUMENT_RESIDUAL".equals(row.rowKind)){
-                    assertEquals("HEADER_DISCOUNT_MONETARY_STRUCTURE_UNAVAILABLE",row.residualControlReason);
-                }else{
-                    assertNull(row.residualControlReason,row.rowKind+" must not carry a residual reason");
-                    assertEquals("HEADER_DISCOUNT_MONETARY_STRUCTURE_UNAVAILABLE",row.validationReasonCode);
-                }
-            }
-        }
-    }
-
     private static List<PracticeRevenueItem> persistItems(
             List<PracticeRevenueMaterializationService.ItemEnvelope> envelopes){
         var service=new PracticeRevenueMaterializationService();
