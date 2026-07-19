@@ -1018,8 +1018,6 @@ class PracticeRevenueMaterializationServiceTest {
                 java.util.Map.of(),java.util.Map.of());
         assertNull(bundle.evidenceFor(null));
         assertNull(bundle.evidenceFor("missing"));
-        assertEquals(java.util.List.of(),bundle.dependenciesFor(null));
-        assertEquals(java.util.List.of(),bundle.dependenciesFor("missing"));
     }
 
     @Test void economicAccountingYearUnparseablePresentValueIsInvalidNotAbsent(){
