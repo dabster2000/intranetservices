@@ -1654,17 +1654,6 @@ public class CxoFinanceResource {
             @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds) {
 
-        LocalDate effectiveFrom = fromDate != null
-                ? fromDate.withDayOfMonth(1)
-                : LocalDate.now(dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.REPORTING_ZONE)
-                        .minusMonths(12).withDayOfMonth(1);
-        LocalDate effectiveTo = toDate != null
-                ? toDate
-                : LocalDate.now(dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.REPORTING_ZONE);
-        if (effectiveFrom.isAfter(effectiveTo) || effectiveFrom.plusMonths(36).isBefore(effectiveTo)) {
-            throw new BadRequestException("fromDate..toDate must be a forward range of at most 36 months");
-        }
-
         log.debugf("GET /finance/cxo/practice-utilization-history: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
                 fromDate, toDate, practices, companyIds);
 
