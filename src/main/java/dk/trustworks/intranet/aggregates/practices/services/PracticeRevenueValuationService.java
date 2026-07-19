@@ -649,13 +649,6 @@ public class PracticeRevenueValuationService {
             this(documentUuid, companyUuid, type, status, internalDebtorCredit, invoiceDate,
                     nativeCurrency, headerDiscountText, items, glEntries, fxRateTexts, false, false);
         }
-
-        /** Same document, but never recognized: it only participates in inverse voucher-key uniqueness. */
-        public DocumentInput asDependencyOnly() {
-            return new DocumentInput(documentUuid, companyUuid, type, status, internalDebtorCredit,
-                    invoiceDate, nativeCurrency, headerDiscountText, items, glEntries, fxRateTexts,
-                    true, glEvidenceConflict);
-        }
     }
 
     public record ItemControl(

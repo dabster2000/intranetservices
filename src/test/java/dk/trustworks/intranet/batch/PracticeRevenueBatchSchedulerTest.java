@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.batch;
 
 import dk.trustworks.intranet.aggregates.finance.services.OpexDistributionRefreshService;
-import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import jakarta.batch.operations.JobOperator;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
@@ -30,7 +29,6 @@ class PracticeRevenueBatchSchedulerTest {
     @Mock EntityManager em;
     @Mock Query query;
     @Mock OpexDistributionRefreshService opexDistributionRefreshService;
-    @Mock PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
 
     BatchScheduler scheduler;
 
@@ -40,8 +38,7 @@ class PracticeRevenueBatchSchedulerTest {
         scheduler.jobOperator = jobOperator;
         scheduler.em = em;
         scheduler.opexDistributionRefreshService = opexDistributionRefreshService;
-        scheduler.practiceRevenueDirtyMarker = practiceRevenueDirtyMarker;
-        org.mockito.Mockito.lenient().when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
         org.mockito.Mockito.lenient().when(jobOperator.getJobNames()).thenReturn(Collections.emptySet());
     }
 
@@ -72,7 +69,6 @@ class PracticeRevenueBatchSchedulerTest {
 
         scheduler.startPracticeRevenueIfEligible();
 
-        verify(practiceRevenueDirtyMarker).pollDeliveryEvidence();
         verify(jobOperator, never()).getRunningExecutions("practice-revenue-refresh");
         verify(jobOperator).start(anyString(), any(Properties.class));
     }
@@ -101,50 +97,6 @@ class PracticeRevenueBatchSchedulerTest {
 
         scheduler.startPracticeRevenueIfEligible();
 
-        verify(jobOperator, never()).start(anyString(), any(Properties.class));
-    }
-
-    @Test
-    void technicalRetryTransitionsTheLatestFailedRequestOnTheSameRow() {
-        var costService = org.mockito.Mockito.mock(
-                dk.trustworks.intranet.aggregates.practices.services.PracticeCostBasisRefreshService.class);
-        scheduler.practiceCostBasisRefreshService = costService;
-        when(query.setParameter(anyString(), any())).thenReturn(query);
-        when(query.getResultList()).thenReturn(java.util.Collections.singletonList(new Object[]{
-                BigInteger.valueOf(17), BigInteger.valueOf(4)}));
-
-        scheduler.retryStaleTechnicalCostFailure();
-
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(em).createNativeQuery(sql.capture());
-        assertTrue(sql.getValue().contains("r.status='FAILED'"));
-        assertTrue(sql.getValue().contains("r.attempt_count < :maxAttempts"));
-        assertTrue(sql.getValue().contains("r.request_id=p.latest_cost_basis_request_id"));
-        assertTrue(sql.getValue().contains("newer.request_id > r.request_id"));
-        verify(costService).retryTechnicalFailure(BigInteger.valueOf(17), 4L);
-    }
-
-    @Test
-    void technicalRetryIsSkippedWhenNoUniqueLatestFailedRequestExists() {
-        var costService = org.mockito.Mockito.mock(
-                dk.trustworks.intranet.aggregates.practices.services.PracticeCostBasisRefreshService.class);
-        scheduler.practiceCostBasisRefreshService = costService;
-        when(query.setParameter(anyString(), any())).thenReturn(query);
-        when(query.getResultList()).thenReturn(java.util.Collections.emptyList());
-
-        scheduler.retryStaleTechnicalCostFailure();
-
-        verify(costService, never()).retryTechnicalFailure(any(), org.mockito.ArgumentMatchers.anyLong());
-    }
-
-    @Test
-    void deliveryPollFailurePreventsRevenueEligibilityAndJobStart() {
-        when(practiceRevenueDirtyMarker.pollDeliveryEvidence())
-                .thenThrow(new IllegalStateException("simulated cursor failure"));
-
-        scheduler.startPracticeRevenueIfEligible();
-
-        verify(em, never()).createNativeQuery(anyString());
         verify(jobOperator, never()).start(anyString(), any(Properties.class));
     }
 }

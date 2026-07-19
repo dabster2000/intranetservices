@@ -59,19 +59,6 @@ public class ChangeLogRetentionBatchlet {
 
     int deleteOneChunk() {
         @SuppressWarnings("unchecked")
-        List<Object[]> deliveryRows = em.createNativeQuery("""
-                SELECT last_fact_change_log_id,recovery_token
-                FROM practice_revenue_source_watermark
-                WHERE source_name='DELIVERY_EVIDENCE' FOR UPDATE
-                """).getResultList();
-        if (deliveryRows.size() != 1) {
-            throw new IllegalStateException("DELIVERY_EVIDENCE_WATERMARK_MISSING");
-        }
-        // Recovery validates the complete target/event interval itself. Pruning underneath its
-        // owned cursor would strand the recovery token or erase evidence it still has to scan.
-        if (deliveryRows.getFirst()[1] != null) return 0;
-
-        @SuppressWarnings("unchecked")
         List<Object> candidateIds = em.createNativeQuery(
                 "SELECT id FROM fact_change_log " +
                 "WHERE processed_at IS NOT NULL " +

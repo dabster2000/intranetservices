@@ -47,7 +47,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.FlushModeType;
 import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
@@ -435,7 +434,7 @@ public class InvoiceService {
         return results;
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice createDraftInvoice(Invoice invoice) {
         log.debug("Persisting draft invoice");
         invoice.setStatus(InvoiceStatus.DRAFT);
@@ -491,28 +490,6 @@ public class InvoiceService {
 
         if (invoice.getStatus() != InvoiceStatus.DRAFT) throw new WebApplicationException(Response.Status.CONFLICT);
 
-        // Capture the authoritative old recognized month before the bulk header update. Once the
-        // update executes, neither the recalculator nor the watermark procedure can recover it.
-        LocalDate previousRecognizedMonth = loadPersistedRecognizedMonth(invoice.getUuid());
-        persistDraftHeader(invoice);
-
-        recalculateInvoiceItems(invoice, previousRecognizedMonth);
-        // Bonus calculation only for non-internal invoices
-        if (invoice.getType() != InvoiceType.INTERNAL) {
-            bonusService.recalcForInvoice(invoice.getUuid());
-        }
-        // Attribution computation (including the cross-company cascade to linked
-        // internal invoices) is expensive and was the main contributor to slow
-        // HTTP responses on draft save. Fire a post-commit event instead; the
-        // observer runs computeAttributions on a worker thread after this tx
-        // commits, so the response returns immediately with the priced items.
-        attributionDirtyEvent.fire(new InvoiceAttributionsDirtyEvent(invoice.getUuid()));
-        markRevenueDocumentChanged(invoice, null, previousRecognizedMonth);
-        return invoice;
-    }
-
-    /** Hook for pure tests: persists the client-editable draft header. */
-    protected void persistDraftHeader(Invoice invoice) {
         Invoice.update("attention = ?1, bookingdate = ?2, clientaddresse = ?3, contractref = ?4, clientname = ?5, cvr = ?6, " +
                         "discount = ?7, ean = ?8, invoicedate = ?9, invoiceref = ?10, invoiceRefUuid = ?11, month = ?12, otheraddressinfo = ?13, " +
                         "projectname = ?14, projectref = ?15, projectuuid = ?16, specificdescription = ?17, status = ?18, " +
@@ -550,37 +527,24 @@ public class InvoiceService {
                 invoice.getDuedate(),
                 invoice.getVat(),
                 invoice.getUuid());
-    }
 
-    /** Reads the persisted source month without materializing a possibly stale Invoice entity. */
-    protected LocalDate loadPersistedRecognizedMonth(String invoiceUuid) {
-        List<Object[]> rows = em.createQuery("""
-                        SELECT invoice.invoicedate, invoice.year, invoice.month
-                        FROM Invoice invoice
-                        WHERE invoice.uuid = :invoiceUuid
-                        """, Object[].class)
-                // This read must observe the persisted row before any caller-owned managed
-                // Invoice changes are flushed; a just-created row may legitimately be absent.
-                .setFlushMode(FlushModeType.COMMIT)
-                .setParameter("invoiceUuid", invoiceUuid)
-                .setMaxResults(1)
-                .getResultList();
-        if (rows.isEmpty()) return null;
-        Object[] row = rows.getFirst();
-        LocalDate invoiceDate = row[0] instanceof LocalDate date ? date : null;
-        int year = row[1] instanceof Number value ? value.intValue() : 0;
-        int month = row[2] instanceof Number value ? value.intValue() : 0;
-        if (invoiceDate != null) return invoiceDate.withDayOfMonth(1);
-        return year > 0 && month > 0 ? LocalDate.of(year, month, 1) : null;
+        recalculateInvoiceItems(invoice);
+        // Bonus calculation only for non-internal invoices
+        if (invoice.getType() != InvoiceType.INTERNAL) {
+            bonusService.recalcForInvoice(invoice.getUuid());
+        }
+        // Attribution computation (including the cross-company cascade to linked
+        // internal invoices) is expensive and was the main contributor to slow
+        // HTTP responses on draft save. Fire a post-commit event instead; the
+        // observer runs computeAttributions on a worker thread after this tx
+        // commits, so the response returns immediately with the priced items.
+        attributionDirtyEvent.fire(new InvoiceAttributionsDirtyEvent(invoice.getUuid()));
+        markRevenueDocumentChanged(invoice, null);
+        return invoice;
     }
 
     private void recalculateInvoiceItems(Invoice invoice) {
         invoiceItemRecalculator.recalculateInvoiceItems(invoice);
-    }
-
-    /** Hook for pure tests: threads the persisted month into contribution-lineage recalculation. */
-    protected void recalculateInvoiceItems(Invoice invoice, LocalDate previousRecognizedMonth) {
-        invoiceItemRecalculator.recalculateInvoiceItems(invoice, previousRecognizedMonth);
     }
 
     @Transactional
@@ -879,32 +843,18 @@ public class InvoiceService {
 
     /** Advances the invoice source watermark in the surrounding transaction. */
     void markRevenueDocumentChanged(Invoice invoice, String sourceItemUuid) {
-        markRevenueDocumentChanged(invoice, sourceItemUuid, null);
-    }
-
-    /**
-     * Advances both old and new owning months for a cross-month draft edit, deduplicating the
-     * normal same-month path. Every procedure call remains inside the surrounding transaction.
-     */
-    protected void markRevenueDocumentChanged(
-            Invoice invoice, String sourceItemUuid, LocalDate previousRecognizedMonth) {
         if (em == null || em.getDelegate() == null || invoice == null || invoice.getUuid() == null) return;
-        for (LocalDate sourceMonth : InvoiceItemRecalculator.affectedRecognizedMonths(
-                invoice, previousRecognizedMonth)) {
-            markRevenueDocumentMonthChanged(invoice.getUuid(), sourceItemUuid, sourceMonth);
+        LocalDate sourceDate = invoice.getInvoicedate();
+        if (sourceDate == null && invoice.getYear() > 0 && invoice.getMonth() > 0) {
+            sourceDate = LocalDate.of(invoice.getYear(), invoice.getMonth(), 1);
         }
-    }
-
-    /** Hook for tests: invokes the closed document/dependent marker for exactly one month. */
-    protected void markRevenueDocumentMonthChanged(
-            String invoiceUuid, String sourceItemUuid, LocalDate sourceMonth) {
         Query marker = em.createNativeQuery("""
                 CALL sp_mark_practice_revenue_document_and_credit_dependents_changed(
                     :documentUuid, :itemUuid, :sourceMonth)
                 """);
-        marker.setParameter("documentUuid", invoiceUuid);
+        marker.setParameter("documentUuid", invoice.getUuid());
         marker.setParameter("itemUuid", sourceItemUuid);
-        marker.setParameter("sourceMonth", sourceMonth);
+        marker.setParameter("sourceMonth", sourceDate == null ? null : sourceDate.withDayOfMonth(1));
         marker.executeUpdate();
     }
 

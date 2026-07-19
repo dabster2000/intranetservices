@@ -20,90 +20,19 @@ import java.util.Objects;
 @ApplicationScoped
 public class PracticeRevenueDependencyManifestProvider {
     static final int QUERY_TIMEOUT_MS = 120_000;
-    // Bounded pre-scan of every recognized document in the 60-month population (design §10 line 779).
-    // Each UNION branch yields an explicit dependency kind and its exact required date bounds; the basis
-    // union then covers the earliest evidence any recognized document actually consumes rather than the
-    // invoice recognition month alone. It stays a bounded, deterministic SQL scan — never a valuation.
-    //   DIRECT_BILLING_PERIOD    - an ordinary INVOICE/PHANTOM item's own recognized billing period.
-    //   CREDIT_SOURCE_DOCUMENT   - the exact one-hop source document/item a CREDIT_NOTE reverses.
-    //   REGISTERED_WORK_DELIVERY - the exact persisted registered-work delivery dates for an item.
-    //   SERVICE_MONTH_DELIVERY   - the invoice service-month (i.year/i.month) delivery window that the
-    //                              allocation loaders actually read from. Covering argument: both
-    //                              loadRegisteredDeliverySources and loadLegacyDirectSources window
-    //                              registered work by w.registered IN
-    //                              [STR_TO_DATE(year-month-01), STR_TO_DATE(year-month-01)+1 MONTH), and the
-    //                              legacy/registered fallback synthesizes a delivery interval spanning that
-    //                              same month (delivery date defaults to year-month-01 when no work exists).
-    //                              Every date those loaders can consume therefore lies in
-    //                              [first-of-service-month, LAST_DAY(service-month)] for the recognized
-    //                              document AND for the one-hop credit source (whose evidence a credit copies).
-    //                              The service month can be arrears/prepaid and fall outside the recognition
-    //                              window, so covering only i.invoicedate leaves a perpetual-miss blind spot.
-    //                              Invalid year/month values emit no row (the loaders' STR_TO_DATE yields NULL
-    //                              and their window filter then matches nothing, so nothing is consumed).
     static final String DOCUMENT_SCAN_SQL = """
-            SELECT recognized_document_uuid, recognized_item_uuid, recognized_document_type,
-                   recognized_month, dependency_kind, source_document_uuid, source_item_uuid,
-                   required_start_date, required_end_date
-            FROM (
-                SELECT i.uuid AS recognized_document_uuid, ii.uuid AS recognized_item_uuid,
-                       i.type AS recognized_document_type,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m-01') AS recognized_month,
-                       CASE WHEN i.type = 'CREDIT_NOTE' THEN 'CREDIT_SOURCE_DOCUMENT'
-                            ELSE 'DIRECT_BILLING_PERIOD' END AS dependency_kind,
-                       COALESCE(src.uuid, i.uuid) AS source_document_uuid,
-                       ii.source_item_uuid AS source_item_uuid,
-                       COALESCE(src.invoicedate, i.invoicedate) AS required_start_date,
-                       COALESCE(src.invoicedate, i.invoicedate) AS required_end_date
-                FROM invoices i
-                LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
-                LEFT JOIN invoices src ON src.uuid = i.creditnote_for_uuid
-                WHERE i.status = 'CREATED'
-                  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :recognizedStart
-                  AND i.invoicedate < :recognizedEndExclusive
-                UNION ALL
-                SELECT i.uuid, ii.uuid, i.type,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m-01'), 'REGISTERED_WORK_DELIVERY',
-                       i.uuid, ii.source_item_uuid,
-                       piids.delivery_date, piids.delivery_date
-                FROM invoices i
-                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
-                JOIN practice_invoice_item_delivery_source piids ON piids.invoice_item_uuid = ii.uuid
-                WHERE i.status = 'CREATED'
-                  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :recognizedStart
-                  AND i.invoicedate < :recognizedEndExclusive
-                UNION ALL
-                SELECT i.uuid, ii.uuid, i.type,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m-01'), 'SERVICE_MONTH_DELIVERY',
-                       i.uuid, ii.source_item_uuid,
-                       STR_TO_DATE(CONCAT(i.year, '-', LPAD(i.month, 2, '0'), '-01'), '%Y-%m-%d'),
-                       LAST_DAY(STR_TO_DATE(CONCAT(i.year, '-', LPAD(i.month, 2, '0'), '-01'), '%Y-%m-%d'))
-                FROM invoices i
-                LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
-                WHERE i.status = 'CREATED'
-                  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :recognizedStart
-                  AND i.invoicedate < :recognizedEndExclusive
-                  AND i.year BETWEEN 2000 AND 2100 AND i.month BETWEEN 1 AND 12
-                UNION ALL
-                SELECT i.uuid, ii.uuid, i.type,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m-01'), 'SERVICE_MONTH_DELIVERY',
-                       src.uuid, ii.source_item_uuid,
-                       STR_TO_DATE(CONCAT(src.year, '-', LPAD(src.month, 2, '0'), '-01'), '%Y-%m-%d'),
-                       LAST_DAY(STR_TO_DATE(CONCAT(src.year, '-', LPAD(src.month, 2, '0'), '-01'), '%Y-%m-%d'))
-                FROM invoices i
-                JOIN invoices src ON src.uuid = i.creditnote_for_uuid
-                LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
-                WHERE i.status = 'CREATED'
-                  AND i.type = 'CREDIT_NOTE'
-                  AND i.invoicedate >= :recognizedStart
-                  AND i.invoicedate < :recognizedEndExclusive
-                  AND src.year BETWEEN 2000 AND 2100 AND src.month BETWEEN 1 AND 12
-            ) document_scan
-            ORDER BY recognized_document_uuid, recognized_item_uuid, dependency_kind,
-                     required_start_date
+            SELECT i.uuid, ii.uuid, i.type,
+                   DATE_FORMAT(i.invoicedate, '%Y-%m-01'),
+                   COALESCE(src.uuid, i.uuid), ii.source_item_uuid,
+                   COALESCE(src.invoicedate, i.invoicedate)
+            FROM invoices i
+            LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+            LEFT JOIN invoices src ON src.uuid = i.creditnote_for_uuid
+            WHERE i.status = 'CREATED'
+              AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
+              AND i.invoicedate >= :recognizedStart
+              AND i.invoicedate < :recognizedEndExclusive
+            ORDER BY i.uuid, ii.uuid
             """;
 
     @Inject EntityManager em;
@@ -123,14 +52,15 @@ public class PracticeRevenueDependencyManifestProvider {
         List<Dependency> dependencies = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             LocalDate recognizedMonth = toDate(row[3]);
-            String dependencyKind = text(row[4]);
-            LocalDate requiredStart = toDate(row[7]);
-            LocalDate requiredEnd = toDate(row[8]);
+            LocalDate dependencyDate = toDate(row[6]);
+            String documentType = text(row[2]);
+            boolean credit = "CREDIT_NOTE".equals(documentType);
             dependencies.add(new Dependency(
-                    text(row[0]), text(row[1]), text(row[2]), recognizedMonth,
-                    dependencyKind, text(row[5]), text(row[6]), requiredStart, requiredEnd,
-                    fingerprintOf(List.of(text(row[0]), text(row[1]), dependencyKind, text(row[5]),
-                            text(row[6]), String.valueOf(requiredStart), String.valueOf(requiredEnd)))));
+                    text(row[0]), text(row[1]), documentType, recognizedMonth,
+                    credit ? "CREDIT_SOURCE_DOCUMENT" : "DIRECT_BILLING_PERIOD",
+                    text(row[4]), text(row[5]), dependencyDate, dependencyDate,
+                    fingerprintOf(List.of(text(row[0]), text(row[1]), text(row[4]), text(row[5]),
+                            String.valueOf(dependencyDate)))));
         }
         return fromDependencies(dependencies, firstRecognizedMonth.atDay(1),
                 lastRecognizedMonth.atEndOfMonth());

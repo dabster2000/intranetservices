@@ -4,7 +4,6 @@ import dk.trustworks.intranet.aggregates.invoice.services.RegisteredDeliveryEvid
 import dk.trustworks.intranet.aggregates.practices.model.PracticeRevenueAllocation;
 import dk.trustworks.intranet.aggregates.practices.model.PracticeRevenueDependency;
 import dk.trustworks.intranet.aggregates.practices.model.PracticeRevenueItem;
-import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -21,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
@@ -31,7 +29,6 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,8 +43,6 @@ import java.util.UUID;
 public class PracticeRevenueMaterializationService {
     static final String PUBLICATION_KEY = "PRACTICE_CONTRIBUTION";
     static final String REVENUE_LOCK = "practice_revenue";
-    static final String AUTO_ATTRIBUTION_ALGORITHM_VERSION = "PRACTICE_AUTO_ATTRIBUTION_V1";
-    static final String AUTO_ATTRIBUTION_SOURCE_KIND = "REGISTERED_WORK_DISTRIBUTION";
 
     @Inject EntityManager em;
     @Inject PracticeRevenueValuationService valuationService;
@@ -72,16 +67,6 @@ public class PracticeRevenueMaterializationService {
             Result result=QuarkusTransaction.requiringNew().call(() -> buildAndPublish(attempt));
             recordState(result.status());
             return result;
-        } catch (RevenueBasisCoverageMissException miss) {
-            // Fail closed and escalate: durably advance the manifest input version and enqueue a cost-first
-            // DEPENDENCY_MANIFEST_INPUT request. Both steps commit independently of the aborted attempt so
-            // the endpoint stays unavailable only until cost rebuilds an expanded basis and revenue reruns.
-            try {
-                QuarkusTransaction.requiringNew().run(() -> escalateDependencyManifestMiss(miss));
-                QuarkusTransaction.requiringNew().run(() -> failAndCleanup(attempt, "BASIS_COVERAGE_MISS"));
-            } catch (RuntimeException cleanupFailure) { miss.addSuppressed(cleanupFailure); }
-            recordState("BASIS_COVERAGE_MISS");
-            throw miss;
         } catch (RuntimeException failure) {
             try { QuarkusTransaction.requiringNew().run(() -> failAndCleanup(attempt, safeFailure(failure))); }
             catch (RuntimeException cleanupFailure) { failure.addSuppressed(cleanupFailure); }
@@ -90,71 +75,6 @@ public class PracticeRevenueMaterializationService {
         } finally {
             recordDuration(started);
         }
-    }
-
-    /**
-     * Proves every consumed dependency date is inside the certified basis coverage interval. A date outside
-     * that interval means the basis was built before this evidence was introduced (a BASIS_COVERAGE_MISS):
-     * the attempt fails closed rather than silently widening the basis or publishing an uncovered generation.
-     */
-    void assertConsumedDependenciesCovered(Attempt attempt, BuildCandidate candidate) {
-        Object[] bounds = (Object[]) nativeQuery("""
-                SELECT coverage_start_date, coverage_end_date, dependency_manifest_fingerprint
-                FROM practice_basis_generation WHERE generation_id=:generation
-                """).setParameter("generation", attempt.basisGenerationId()).getSingleResult();
-        LocalDate coverageStart = localDate(bounds[0]);
-        LocalDate coverageEnd = localDate(bounds[1]);
-        // recognizedMonth and the *start* of a delivery/capacity interval are inclusive instants. The
-        // delivery/capacity *end* fields are EXCLUSIVE bounds: PracticeBasisMaterializationService clamps
-        // open capacity intervals to coverageEnd.plusDays(1) and delivery ends are deliveryDate.plusDays(1),
-        // so an exclusive end up to and including coverageEnd+1 is fully covered. Comparing them inclusively
-        // (isAfter(coverageEnd)) would flag every active consultant's clamped capacity envelope and every
-        // last-coverage-day work row as a miss — a guaranteed BASIS_COVERAGE_MISS loop.
-        LocalDate coverageEndExclusive = coverageEnd.plusDays(1);
-        Bounds miss = new Bounds();
-        for (DependencyEnvelope dependency : candidate.dependencies()) {
-            for (LocalDate inclusive : new LocalDate[]{dependency.recognizedMonth(),
-                    dependency.deliveryStartDate(), dependency.sourceCapacityStartDate()}) {
-                if (inclusive == null) continue;
-                if (inclusive.isBefore(coverageStart) || inclusive.isAfter(coverageEnd)) miss.add(inclusive);
-            }
-            for (LocalDate exclusiveEnd : new LocalDate[]{dependency.deliveryEndDate(),
-                    dependency.sourceCapacityEndDate()}) {
-                if (exclusiveEnd == null) continue;
-                if (exclusiveEnd.isBefore(coverageStart) || exclusiveEnd.isAfter(coverageEndExclusive)) {
-                    miss.add(exclusiveEnd);
-                }
-            }
-        }
-        if (miss.min != null) throw new RevenueBasisCoverageMissException(miss.min, miss.max);
-    }
-
-    private static final class Bounds {
-        LocalDate min;
-        LocalDate max;
-        void add(LocalDate date) {
-            min = (min == null || date.isBefore(min)) ? date : min;
-            max = (max == null || date.isAfter(max)) ? date : max;
-        }
-    }
-
-    /**
-     * Escalates a revenue-detected coverage miss to a cost-first DEPENDENCY_MANIFEST_INPUT request. The
-     * fingerprint is left null so the cost owner recomputes and certifies the authoritative expanded manifest.
-     */
-    void escalateDependencyManifestMiss(RevenueBasisCoverageMissException miss) {
-        nativeQuery("CALL sp_advance_practice_dependency_manifest_input(:start, :end, :fingerprint)")
-                .setParameter("start", miss.affectedStart())
-                .setParameter("end", miss.affectedEnd())
-                .setParameter("fingerprint", null)
-                .executeUpdate();
-    }
-
-    private static LocalDate localDate(Object value) {
-        if (value == null) return null;
-        if (value instanceof LocalDate date) return date;
-        if (value instanceof java.sql.Date date) return date.toLocalDate();
-        return LocalDate.parse(String.valueOf(value));
     }
 
     Attempt startAttempt() {
@@ -245,20 +165,15 @@ public class PracticeRevenueMaterializationService {
         try {
             requireNotInterrupted();
             verifyAttempt(attempt);
+            Object highWaterRaw = nativeQuery("SELECT COALESCE(MAX(id),0) FROM fact_change_log")
+                    .getSingleResult();
+            BigInteger factHighWater = integer(highWaterRaw);
             BuildCandidate candidate = buildCandidate(attempt);
             requireNotInterrupted();
             validate(candidate);
-            // Design §10 point 5/6: prove the consumed dependency set is covered by the certified basis
-            // before publishing. A miss fails closed here and escalates DEPENDENCY_MANIFEST_INPUT in refresh().
-            assertConsumedDependenciesCovered(attempt, candidate);
             recordCandidateMetrics(candidate);
             persist(attempt, candidate);
             requireNotInterrupted();
-            PracticeRevenueDirtyMarker.DeliveryPollResult deliveryScan=
-                    dirtyMarker.finalDeliveryEvidenceScan(attempt.generationId());
-            if(supersedeForDeliveryAdvance(attempt,deliveryScan)){
-                return new Result(true,attempt.generationId(),"SUPERSEDED",0,0);
-            }
             verifyAttempt(attempt);
 
             int published = nativeQuery("""
@@ -323,8 +238,7 @@ public class PracticeRevenueMaterializationService {
                                 END
                       )
                     """)
-                    .setParameter("snapshotAt", candidate.snapshotAt())
-                    .setParameter("highWater", deliveryScan.observedCursor())
+                    .setParameter("snapshotAt", candidate.snapshotAt()).setParameter("highWater", factHighWater)
                     .setParameter("coverageStart", candidate.coverageStart()).setParameter("coverageEnd", candidate.coverageEnd())
                     .setParameter("bookedAvailable", candidate.booked().available()).setParameter("bookedReason", candidate.booked().reason())
                     .setParameter("bookedAnchor", candidate.booked().anchor()).setParameter("bookedCurrentStart", candidate.booked().currentStart())
@@ -352,15 +266,6 @@ public class PracticeRevenueMaterializationService {
             pruneOldGenerations();
             return new Result(true, attempt.generationId(), "READY", candidate.items().size(), candidate.allocations().size());
         } finally { releaseLock(REVENUE_LOCK); }
-    }
-
-    /** Keep the delivery cursor/version update in the successful transaction; throwing here
-     * would roll the invalidation back and permit the stale candidate to be retried forever. */
-    boolean supersedeForDeliveryAdvance(Attempt attempt,
-                                        PracticeRevenueDirtyMarker.DeliveryPollResult scan){
-        if(!scan.relevant())return false;
-        failAndCleanup(attempt,"DELIVERY_EVIDENCE_ADVANCED");
-        return true;
     }
 
     private void recordCandidateMetrics(BuildCandidate candidate){
@@ -393,9 +298,8 @@ public class PracticeRevenueMaterializationService {
 
     /** Bounded default source adapter. Domain logic stays in valuation/allocation services. */
     BuildCandidate buildCandidate(Attempt attempt) {
-        RevenueCoverage coverage = revenueCoverage(Instant.now());
-        YearMonth first = coverage.first();
-        YearMonth last = coverage.last();
+        YearMonth last = YearMonth.from(LocalDate.now(ZoneOffset.UTC)).minusMonths(1);
+        YearMonth first = last.minusMonths(59);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = nativeQuery("""
                 SELECT i.uuid, i.companyuuid, i.type, i.status, i.invoicedate, i.currency, i.discount,
@@ -450,11 +354,11 @@ public class PracticeRevenueMaterializationService {
                 attempt.basisGenerationId(), evidenceStart, last.atEndOfMonth());
         Map<String, PracticeRevenueAllocationService.SourceEvidence> selfBilledAssignments =
                 loadSelfBilledAssignments(attempt.basisGenerationId(), evidenceStart, last.atEndOfMonth());
-        DeliveryEvidenceBundle prospectiveDelivery =
+        Map<String, PracticeRevenueAllocationService.SourceEvidence> prospectiveDelivery =
                 loadProspectiveDeliverySources(attempt.basisGenerationId(), evidenceStart, last.atEndOfMonth());
-        DeliveryEvidenceBundle legacyDirect =
+        Map<String, PracticeRevenueAllocationService.SourceEvidence> legacyDirect =
                 loadLegacyDirectSources(attempt.basisGenerationId(), evidenceStart, last.atEndOfMonth());
-        DeliveryEvidenceBundle registeredDelivery =
+        Map<String, PracticeRevenueAllocationService.SourceEvidence> registeredDelivery =
                 loadRegisteredDeliverySources(attempt.basisGenerationId(), evidenceStart, last.atEndOfMonth());
         List<ItemEnvelope> items = new ArrayList<>(); List<AllocationEnvelope> allocations = new ArrayList<>();
         List<DependencyEnvelope> dependencies = new ArrayList<>();
@@ -486,7 +390,7 @@ public class PracticeRevenueMaterializationService {
                         PracticeRevenueValuationService.DocumentValuation sourceValuation=
                                 recognizedValuationByDocument.get(proof.linkedSourceDocumentUuid());
                         if(sourceValuation==null&&sourceRaw!=null){
-                            sourceValuation=valueDependencySource(sourceRaw.toInput(),valuationInputs);
+                            sourceValuation=valueDependencySource(sourceRaw,documents.values());
                         }
                         itemSources.add(sourceInvoiceCreditEvidence(item,proof,sourceRaw,sourceValuation,
                                 sourceAllocationsByDocument.getOrDefault(proof.linkedSourceDocumentUuid(),List.of())));
@@ -499,7 +403,7 @@ public class PracticeRevenueMaterializationService {
                                     recognizedValuationByDocument.get(proof.linkedSourceDocumentUuid());
                             MutableDocument sourceRaw=documents.get(proof.linkedSourceDocumentUuid());
                             if(sourceValuation==null&&sourceRaw!=null){
-                                sourceValuation=valueDependencySource(sourceRaw.toInput(),valuationInputs);
+                                sourceValuation=valueDependencySource(sourceRaw,documents.values());
                             }
                             itemSources.add(completeSourceInvoiceDistribution(sourceValuation,
                                     sourceAllocationsByDocument.getOrDefault(
@@ -524,7 +428,7 @@ public class PracticeRevenueMaterializationService {
                         } else {
                             adjustmentEvidence = baseDistributionEvidence(baseAllocations);
                             PracticeRevenueAllocationService.SourceEvidence fallback =
-                                    registeredDelivery.evidence().get(document.documentUuid());
+                                    registeredDelivery.get(document.documentUuid());
                             if (adjustmentEvidence.state()
                                     == PracticeRevenueAllocationService.EvidenceState.ABSENT
                                     && fallback != null) {
@@ -545,9 +449,9 @@ public class PracticeRevenueMaterializationService {
                         }else{
                             itemSources.addAll(storedSources);
                         }
-                        PracticeRevenueAllocationService.SourceEvidence delivery = prospectiveDelivery.evidence().get(item.sourceItemUuid());
+                        PracticeRevenueAllocationService.SourceEvidence delivery = prospectiveDelivery.get(item.sourceItemUuid());
                         if (delivery != null) itemSources.add(delivery);
-                        PracticeRevenueAllocationService.SourceEvidence direct = legacyDirect.evidence().get(item.sourceItemUuid());
+                        PracticeRevenueAllocationService.SourceEvidence direct = legacyDirect.get(item.sourceItemUuid());
                         if (direct != null) {
                             if (direct.state()==PracticeRevenueAllocationService.EvidenceState.INVALID
                                     && direct.reason()==PracticeRevenueAllocationService.ReasonCode.DELIVERY_EVIDENCE_AMBIGUOUS) {
@@ -557,17 +461,12 @@ public class PracticeRevenueMaterializationService {
                             itemSources.add(direct);
                         }
                         PracticeRevenueAllocationService.SourceEvidence fallback =
-                                registeredDelivery.evidence().get(document.documentUuid());
+                                registeredDelivery.get(document.documentUuid());
                         if (fallback != null) itemSources.add(fallback);
                     }
                 }
-                var allocationRequest = new PracticeRevenueAllocationService.AllocationRequest(
-                        item, document.documentType(), itemSources);
-                PracticeRevenueAllocationService.EvidenceScope evidenceScope = item.itemControlDkk() == null
-                        && (item.rowKind() == PracticeRevenueValuationService.ItemRowKind.SOURCE_ITEM
-                        || item.rowKind() == PracticeRevenueValuationService.ItemRowKind.DOCUMENT_EVIDENCE)
-                        ? allocationService.resolveEvidenceScope(allocationRequest) : null;
-                var allocated = allocationService.allocate(allocationRequest);
+                var allocated = allocationService.allocate(new PracticeRevenueAllocationService.AllocationRequest(
+                        item, document.documentType(), itemSources));
                 if (document.documentType() == PracticeRevenueValuationService.DocumentType.INVOICE
                         && item.itemCategory() == PracticeRevenueValuationService.ItemCategory.DELIVERY_BASE) {
                     baseAllocations.add(allocated);
@@ -578,67 +477,20 @@ public class PracticeRevenueMaterializationService {
                             .add(allocated);
                 }
                 if(raw.recognized){
-                    items.add(new ItemEnvelope(raw.companyUuid, "CREATED", item, document, evidenceScope,
-                            creditEvidence.get(item.sourceItemUuid())));
+                    items.add(new ItemEnvelope(raw.companyUuid, "CREATED", item, document));
                     allocations.add(new AllocationEnvelope(item.itemControlKey(), allocated));
                     dependencies.add(DependencyEnvelope.document(item, attempt.basisGenerationId()));
-                    if (document.documentType() != PracticeRevenueValuationService.DocumentType.CREDIT_NOTE) {
-                        addDeliveryDependencies(dependencies, item,
-                                prospectiveDelivery.dependencies().getOrDefault(item.sourceItemUuid(), List.of()),
-                                attempt.basisGenerationId());
-                        addDeliveryDependencies(dependencies, item,
-                                legacyDirect.dependencies().getOrDefault(item.sourceItemUuid(), List.of()),
-                                attempt.basisGenerationId());
-                        addDeliveryDependencies(dependencies, item,
-                                registeredDelivery.dependencies().getOrDefault(document.documentUuid(), List.of()),
-                                attempt.basisGenerationId());
-                    }
                     CreditEvidence credit=creditEvidence.get(item.sourceItemUuid());
-                    if(credit!=null&&credit.sourceItemUuid()!=null) {
+                    if(credit!=null&&credit.sourceItemUuid()!=null)
                         dependencies.add(DependencyEnvelope.credit(item,credit.linkedSourceDocumentUuid(),credit.sourceItemUuid(),attempt.basisGenerationId()));
-                        addDeliveryDependencies(dependencies, item,
-                                prospectiveDelivery.dependencies().getOrDefault(credit.sourceItemUuid(), List.of()),
-                                attempt.basisGenerationId());
-                        addDeliveryDependencies(dependencies, item,
-                                legacyDirect.dependencies().getOrDefault(credit.sourceItemUuid(), List.of()),
-                                attempt.basisGenerationId());
-                        addDeliveryDependencies(dependencies, item,
-                                registeredDelivery.dependencies().getOrDefault(
-                                        credit.linkedSourceDocumentUuid(), List.of()),
-                                attempt.basisGenerationId());
-                    }
-                    if(credit!=null&&credit.linkedSourceDocumentUuid()!=null){
-                        MutableDocument sourceDocument=documents.get(credit.linkedSourceDocumentUuid());
-                        if(sourceDocument!=null){
-                            for(var sourceItem:sourceDocument.items){
-                                addDeliveryDependencies(dependencies,item,
-                                        prospectiveDelivery.dependencies().getOrDefault(
-                                                sourceItem.itemUuid(),List.of()),attempt.basisGenerationId());
-                                addDeliveryDependencies(dependencies,item,
-                                        legacyDirect.dependencies().getOrDefault(
-                                                sourceItem.itemUuid(),List.of()),attempt.basisGenerationId());
-                            }
-                        }
-                        addDeliveryDependencies(dependencies,item,
-                                registeredDelivery.dependencies().getOrDefault(
-                                        credit.linkedSourceDocumentUuid(),List.of()),
-                                attempt.basisGenerationId());
-                    }
                 }
             }
         }
-        Window booked = window(costSnapshotProvider.getSnapshot(CostSource.BOOKED).canonical());
-        Window draft = window(costSnapshotProvider.getSnapshot(CostSource.BOOKED_PLUS_DRAFT).canonical());
+        Window booked = window(costSnapshotProvider.getSnapshot(CostSource.BOOKED).response());
+        Window draft = window(costSnapshotProvider.getSnapshot(CostSource.BOOKED_PLUS_DRAFT).response());
         int recognizedDocuments=(int)documents.values().stream().filter(document->document.recognized).count();
         return summarize(recognizedDocuments, List.copyOf(items), allocations, dependencies,
                 first.atDay(1), last.atDay(1), booked, draft);
-    }
-
-    static RevenueCoverage revenueCoverage(Instant now) {
-        Objects.requireNonNull(now, "now");
-        LocalDate reportingToday = now.atZone(UtilizationCalculationHelper.REPORTING_ZONE).toLocalDate();
-        YearMonth last = YearMonth.from(reportingToday).minusMonths(1);
-        return new RevenueCoverage(last.minusMonths(59), last);
     }
 
     static PracticeRevenueAllocationService.SourceEvidence baseDistributionEvidence(
@@ -848,21 +700,15 @@ public class PracticeRevenueMaterializationService {
                 proof.pricingInputFingerprint(),proof.pricingOutputFingerprint());
     }
 
-    PracticeRevenueValuationService.DocumentValuation valueDependencySource(
-            PracticeRevenueValuationService.DocumentInput source,
-            Collection<PracticeRevenueValuationService.DocumentInput> population){
-        // Value this one bounded ONE-HOP source within the exact recognized-plus-dependency control
-        // population so the generation-wide inverse Booked voucher-key uniqueness the main path enforces
-        // also gates every dependency source, regardless of how many REVENUE rows its voucher has. Every
-        // other document participates as dependency-only, so none of them is re-recognized as revenue.
-        List<PracticeRevenueValuationService.DocumentInput> inputs=new ArrayList<>();
-        inputs.add(source);
-        for(PracticeRevenueValuationService.DocumentInput document:population){
-            if(Objects.equals(document.documentUuid(),source.documentUuid()))continue;
-            inputs.add(document.asDependencyOnly());
+    private PracticeRevenueValuationService.DocumentValuation valueDependencySource(
+            MutableDocument source,Collection<MutableDocument> population){
+        if(source.glEntries.size()==1){
+            String key=source.glEntries.getFirst().voucherKey();
+            long matches=population.stream().filter(document->document.glEntries.stream()
+                    .anyMatch(gl->Objects.equals(gl.voucherKey(),key))).count();
+            if(matches!=1)return null;
         }
-        return valuationService.value(inputs).documents().stream()
-                .filter(value->Objects.equals(value.documentUuid(),source.documentUuid()))
+        return valuationService.value(List.of(source.toInput(false))).documents().stream()
                 .findFirst().orElse(null);
     }
 
@@ -1025,44 +871,35 @@ public class PracticeRevenueMaterializationService {
     private static GlSelection selectGl(MutableDocument document, List<StoredGl> all,
                                         Map<String,List<StoredGl>> byGroup) {
         int fiscal = document.date.getMonthValue()>=7?document.date.getYear():document.date.getYear()-1;
-        PracticeRevenueGlVoucherResolver.Resolution resolution;
+        List<Set<String>> candidates = new ArrayList<>();
         if (document.type == PracticeRevenueValuationService.DocumentType.PHANTOM) {
-            // != 0 (not > 0): a present-but-unparseable stored year is -1 and must conflict, not match.
-            if (document.economicsAccountingYear != 0 && document.economicsAccountingYear != fiscal) {
+            if (document.economicsEntryNumber > 0) {
+                candidates.add(groups(all, document.companyUuid, fiscal, document.economicsEntryNumber, false));
+            }
+            if (document.economicsAccountingYear > 0 && document.economicsAccountingYear != fiscal) {
                 return new GlSelection(true, List.of());
             }
-            if (document.economicsEntryNumber <= 0) {
-                return new GlSelection(false, List.of());
-            }
-            resolution = PracticeRevenueGlVoucherResolver.resolve(
-                    PracticeRevenueGlVoucherResolver.DocumentKind.PHANTOM, document.companyUuid, fiscal,
-                    List.of(new PracticeRevenueGlVoucherResolver.Identifier(
-                            PracticeRevenueGlVoucherResolver.IdentifierKind.ECONOMICS_ENTRY_NUMBER,
-                            document.economicsEntryNumber)), all);
         } else {
-            List<PracticeRevenueGlVoucherResolver.Identifier> identifiers = new ArrayList<>();
             if (document.economicsBookedNumber > 0)
-                identifiers.add(new PracticeRevenueGlVoucherResolver.Identifier(
-                        PracticeRevenueGlVoucherResolver.IdentifierKind.ECONOMICS_BOOKED_NUMBER,
-                        document.economicsBookedNumber));
+                candidates.add(groups(all, document.companyUuid, fiscal, document.economicsBookedNumber, true));
             if (document.referenceNumber > 0)
-                identifiers.add(new PracticeRevenueGlVoucherResolver.Identifier(
-                        PracticeRevenueGlVoucherResolver.IdentifierKind.REFERENCE_NUMBER,
-                        document.referenceNumber));
+                candidates.add(groups(all, document.companyUuid, fiscal, document.referenceNumber, true));
             if (document.economicsVoucherNumber > 0)
-                identifiers.add(new PracticeRevenueGlVoucherResolver.Identifier(
-                        PracticeRevenueGlVoucherResolver.IdentifierKind.ECONOMICS_VOUCHER_NUMBER,
-                        document.economicsVoucherNumber));
-            resolution = PracticeRevenueGlVoucherResolver.resolve(
-                    PracticeRevenueGlVoucherResolver.DocumentKind.ORDINARY, document.companyUuid, fiscal,
-                    identifiers, all);
+                candidates.add(groups(all, document.companyUuid, fiscal, document.economicsVoucherNumber, false));
         }
-        return switch (resolution.outcome()) {
-            case MISSING -> new GlSelection(false, List.of());
-            case AMBIGUOUS -> new GlSelection(true, List.of());
-            case USABLE -> new GlSelection(false,
-                    PracticeRevenueGlVoucherResolver.voucherGroup(resolution.voucherGroupKey(), byGroup));
-        };
+        if (candidates.isEmpty()) return new GlSelection(false, List.of());
+        if (candidates.stream().anyMatch(keys -> keys.size()!=1)) return new GlSelection(true, List.of());
+        String key = candidates.getFirst().iterator().next();
+        if (candidates.stream().anyMatch(keys -> !keys.contains(key))) return new GlSelection(true, List.of());
+        return new GlSelection(false, byGroup.getOrDefault(key, List.of()));
+    }
+
+    private static Set<String> groups(List<StoredGl> rows,String company,int fiscal,long identifier,
+                                      boolean invoiceIdentifier){
+        return rows.stream().filter(row -> Objects.equals(company,row.companyUuid())
+                        && fiscal==row.financialYearStart()
+                        && identifier==(invoiceIdentifier?row.invoiceNumber():row.voucherNumber()))
+                .map(StoredGl::groupKey).collect(java.util.stream.Collectors.toSet());
     }
 
     private Map<String, List<PracticeRevenueAllocationService.SourceEvidence>> loadAttributionSources(
@@ -1070,9 +907,7 @@ public class PracticeRevenueMaterializationService {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = nativeQuery("""
                 SELECT a.uuid, a.invoiceitem_uuid, a.consultant_uuid, a.share_pct, a.source,
-                       b.practice_code, b.consultant_type, b.attribution_basis, i.type,
-                       a.attribution_algorithm_version, a.attribution_source_kind,
-                       a.attribution_dependency_fingerprint
+                       b.practice_code, b.consultant_type, b.attribution_basis, i.type
                 FROM invoice_item_attributions a
                 JOIN invoiceitems ii ON ii.uuid=a.invoiceitem_uuid
                 JOIN invoices i ON i.uuid=ii.invoiceuuid
@@ -1088,8 +923,7 @@ public class PracticeRevenueMaterializationService {
         for (Object[] row : rows) {
             candidates.computeIfAbsent(text(row[1]), ignored -> new ArrayList<>()).add(
                     new StoredAttribution(text(row[0]), text(row[2]), decimalOrNull(row[3]), text(row[4]),
-                            text(row[5]), text(row[6]), text(row[7]), text(row[8]),
-                            text(row[9]), text(row[10]), text(row[11])));
+                            text(row[5]), text(row[6]), text(row[7]), text(row[8])));
         }
         Map<String,List<PracticeRevenueAllocationService.SourceEvidence>> result = new HashMap<>();
         candidates.forEach((item, values) -> result.put(item, List.of(evidenceForStoredAttributions(values))));
@@ -1188,7 +1022,7 @@ public class PracticeRevenueMaterializationService {
                 true,recipients,PracticeRevenueAllocationService.ReasonCode.NONE);
     }
 
-    private DeliveryEvidenceBundle loadLegacyDirectSources(
+    private Map<String, PracticeRevenueAllocationService.SourceEvidence> loadLegacyDirectSources(
             String basisGeneration, LocalDate start, LocalDate end) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = nativeQuery("""
@@ -1202,11 +1036,7 @@ public class PracticeRevenueMaterializationService {
                              AND w.registered>=STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d')
                              AND w.registered<DATE_ADD(STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d'),INTERVAL 1 MONTH)
                              AND NULLIF(TRIM(w.workas),'') IS NOT NULL AND w.workas<>w.useruuid
-                       ) AS work_as_conflict,
-                       i.projectuuid,i.contractuuid,
-                       STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d'),
-                       DATE_ADD(STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d'),INTERVAL 1 MONTH),
-                       b.effective_from_date,b.effective_to_date_exclusive
+                       ) AS work_as_conflict
                 FROM invoiceitems ii
                 JOIN invoices i ON i.uuid=ii.invoiceuuid
                 LEFT JOIN practice_user_effective_basis_mat b
@@ -1218,13 +1048,8 @@ public class PracticeRevenueMaterializationService {
                 """).setParameter("basis", basisGeneration).setParameter("start", start).setParameter("end", end)
                 .getResultList();
         Map<String, PracticeRevenueAllocationService.SourceEvidence> result = new HashMap<>();
-        Map<String,List<DeliveryDependencySeed>> dependencies = new HashMap<>();
         for (Object[] row : rows) {
             String item = text(row[0]);
-            dependencies.put(item,List.of(new DeliveryDependencySeed(null,text(row[1]),text(row[1]),
-                    toDate(row[8]),toDate(row[9]),null,text(row[6]),null,text(row[7]),null,
-                    row[10]==null?toDate(row[8]):toDate(row[10]),
-                    row[11]==null?toDate(row[9]):toDate(row[11]))));
             if (bool(row[5])) {
                 result.put(item, PracticeRevenueAllocationService.SourceEvidence.invalid(
                         PracticeRevenueAllocationService.SourceTier.LEGACY_DIRECT,
@@ -1246,24 +1071,23 @@ public class PracticeRevenueMaterializationService {
                     PracticeRevenueAllocationService.AttributionStatus.ESTIMATED,false,List.of(candidate),
                     PracticeRevenueAllocationService.ReasonCode.NONE));
         }
-        return new DeliveryEvidenceBundle(result,dependencies);
+        return result;
     }
 
-    private DeliveryEvidenceBundle loadRegisteredDeliverySources(
+    private Map<String, PracticeRevenueAllocationService.SourceEvidence> loadRegisteredDeliverySources(
             String basisGeneration, LocalDate start, LocalDate end) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = nativeQuery("""
                 SELECT i.uuid,w.uuid,w.useruuid,COALESCE(NULLIF(TRIM(w.workas),''),w.useruuid),
                        w.registered,w.taskuuid,p.uuid,c.uuid,cp.uuid,cc.uuid,
                        CAST(w.workduration AS DECIMAL(24,6)),CAST(cc.rate AS DECIMAL(24,6)),
-                       b.practice_code,b.consultant_type,b.attribution_basis,
-                       b.effective_from_date,b.effective_to_date_exclusive,i.year,i.month
+                       b.practice_code,b.consultant_type,b.attribution_basis
                 FROM invoices i
                 JOIN project p ON p.uuid=i.projectuuid
                 JOIN contract_project cp ON cp.projectuuid=p.uuid AND cp.contractuuid=i.contractuuid
                 JOIN contracts c ON c.uuid=cp.contractuuid
-                LEFT JOIN task t ON t.projectuuid=p.uuid
-                LEFT JOIN work w ON w.taskuuid=t.uuid
+                JOIN task t ON t.projectuuid=p.uuid
+                JOIN work w ON w.taskuuid=t.uuid
                  AND w.registered>=STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d')
                  AND w.registered<DATE_ADD(STR_TO_DATE(CONCAT(i.year,'-',LPAD(i.month,2,'0'),'-01'),'%Y-%m-%d'),INTERVAL 1 MONTH)
                 LEFT JOIN contract_consultants cc
@@ -1283,29 +1107,16 @@ public class PracticeRevenueMaterializationService {
                 .setParameter("end",end).getResultList();
         Map<String,List<RegisteredDeliveryEvidenceResolver.RawDeliveryRow>> byDocument=new LinkedHashMap<>();
         Map<String,Set<PracticeRevenueAllocationService.RecipientIdentity>> identities=new HashMap<>();
-        Map<String,List<DeliveryDependencySeed>> dependencies=new HashMap<>();
         for(Object[] row:rows){
             String document=text(row[0]);
-            if(row[1]!=null){
-                byDocument.computeIfAbsent(document,ignored->new ArrayList<>()).add(
-                        new RegisteredDeliveryEvidenceResolver.RawDeliveryRow(text(row[1]),text(row[2]),
-                                text(row[3]),toDate(row[4]),text(row[5]),text(row[6]),text(row[7]),
-                                text(row[8]),text(row[9]),text(row[10]),text(row[11])));
-                PracticeRevenueAllocationService.RecipientIdentity identity=recipientIdentity(
-                        text(row[3]),text(row[12]),text(row[13]),text(row[14]));
-                identities.computeIfAbsent(document+":"+text(row[1]),ignored->new java.util.LinkedHashSet<>())
-                        .add(identity);
-            }
-            LocalDate deliveryDate=row[4]==null
-                    ?LocalDate.of(number(row[17]).intValue(),number(row[18]).intValue(),1)
-                    :toDate(row[4]);
-            LocalDate deliveryEnd=row[4]==null?deliveryDate.plusMonths(1):deliveryDate.plusDays(1);
-            LocalDate capacityStart=row[15]==null?deliveryDate:toDate(row[15]);
-            LocalDate capacityEnd=row[16]==null?deliveryEnd:toDate(row[16]);
-            dependencies.computeIfAbsent(document,ignored->new ArrayList<>()).add(
-                    new DeliveryDependencySeed(text(row[1]),text(row[2]),text(row[3]),
-                            deliveryDate,deliveryEnd,text(row[5]),text(row[6]),
-                            text(row[8]),text(row[7]),text(row[9]),capacityStart,capacityEnd));
+            byDocument.computeIfAbsent(document,ignored->new ArrayList<>()).add(
+                    new RegisteredDeliveryEvidenceResolver.RawDeliveryRow(text(row[1]),text(row[2]),
+                            text(row[3]),toDate(row[4]),text(row[5]),text(row[6]),text(row[7]),
+                            text(row[8]),text(row[9]),text(row[10]),text(row[11])));
+            PracticeRevenueAllocationService.RecipientIdentity identity=recipientIdentity(
+                    text(row[3]),text(row[12]),text(row[13]),text(row[14]));
+            identities.computeIfAbsent(document+":"+text(row[1]),ignored->new java.util.LinkedHashSet<>())
+                    .add(identity);
         }
         Map<String,PracticeRevenueAllocationService.SourceEvidence> result=new HashMap<>();
         byDocument.forEach((document,raw)->{
@@ -1317,7 +1128,7 @@ public class PracticeRevenueMaterializationService {
                 return candidates.size()==1?candidates.iterator().next():null;
             }));
         });
-        return new DeliveryEvidenceBundle(result,immutableDependencyMap(dependencies));
+        return result;
     }
 
     private static PracticeRevenueAllocationService.RecipientIdentity recipientIdentity(
@@ -1335,7 +1146,7 @@ public class PracticeRevenueMaterializationService {
                 "CURRENT_PRACTICE_FALLBACK".equals(attributionBasis));
     }
 
-    private DeliveryEvidenceBundle loadProspectiveDeliverySources(
+    private Map<String, PracticeRevenueAllocationService.SourceEvidence> loadProspectiveDeliverySources(
             String basisGeneration, LocalDate start, LocalDate end) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = nativeQuery("""
@@ -1346,8 +1157,7 @@ public class PracticeRevenueMaterializationService {
                        d.rate_resolution_status,d.contribution_algorithm_version,
                        d.item_fingerprint,d.distribution_fingerprint,
                        ii.hours,ii.rate,ii.origin,ii.rule_id,
-                       b.practice_code,b.consultant_type,b.attribution_basis,
-                       b.effective_from_date,b.effective_to_date_exclusive
+                       b.practice_code,b.consultant_type,b.attribution_basis
                 FROM practice_invoice_item_delivery_source d
                 JOIN invoiceitems ii ON ii.uuid=d.invoice_item_uuid
                 JOIN invoices i ON i.uuid=ii.invoiceuuid
@@ -1360,7 +1170,6 @@ public class PracticeRevenueMaterializationService {
                 """).setParameter("basis", basisGeneration).setParameter("start", start).setParameter("end", end)
                 .getResultList();
         Map<String,List<StoredDelivery>> grouped = new LinkedHashMap<>();
-        Map<String,List<DeliveryDependencySeed>> dependencies=new HashMap<>();
         for (Object[] row : rows) {
             StoredDelivery value = new StoredDelivery(text(row[0]), text(row[1]), text(row[2]), text(row[3]),
                     toDate(row[4]), text(row[5]), text(row[6]), text(row[7]), text(row[8]), text(row[9]),
@@ -1369,19 +1178,11 @@ public class PracticeRevenueMaterializationService {
                     deliveryOperand(row[18]), text(row[19]), text(row[20]), text(row[21]), text(row[22]),
                     text(row[23]));
             grouped.computeIfAbsent(value.invoiceItemUuid(), ignored -> new ArrayList<>()).add(value);
-            LocalDate capacityStart=row[24]==null?value.deliveryDate():toDate(row[24]);
-            LocalDate capacityEnd=row[25]==null?value.deliveryDate().plusDays(1):toDate(row[25]);
-            dependencies.computeIfAbsent(value.invoiceItemUuid(),ignored->new ArrayList<>()).add(
-                    new DeliveryDependencySeed(value.workUuid(),value.registrantUuid(),
-                            value.effectiveConsultantUuid(),value.deliveryDate(),
-                            value.deliveryDate().plusDays(1),value.taskUuid(),value.projectUuid(),
-                            value.contractProjectUuid(),value.contractUuid(),value.contractConsultantUuid(),
-                            capacityStart,capacityEnd));
         }
         Map<String, PracticeRevenueAllocationService.SourceEvidence> result = new HashMap<>();
         grouped.forEach((item, values) -> result.put(item,
                 prospectiveEvidenceForStoredRows(values, allocationService)));
-        return new DeliveryEvidenceBundle(result,immutableDependencyMap(dependencies));
+        return result;
     }
 
     /** Future generated lineage must remain byte-identical to its server-owned item and row proof. */
@@ -1479,11 +1280,6 @@ public class PracticeRevenueMaterializationService {
         Set<String> kinds = stored.stream().map(StoredAttribution::source).filter(Objects::nonNull)
                 .map(String::trim).map(String::toUpperCase).collect(java.util.stream.Collectors.toSet());
         boolean phantom = stored.stream().allMatch(value -> "PHANTOM".equals(value.documentType()));
-        if (kinds.equals(Set.of("AUTO")) && !hasCoherentVersionedAutoProvenance(stored)) {
-            return PracticeRevenueAllocationService.SourceEvidence.absent(
-                    phantom ? PracticeRevenueAllocationService.SourceTier.PHANTOM_AUTO
-                            : PracticeRevenueAllocationService.SourceTier.PERSISTED);
-        }
         PracticeRevenueAllocationService.SourceTier tier;
         PracticeRevenueAllocationService.AttributionSource source;
         PracticeRevenueAllocationService.AttributionStatus status;
@@ -1546,26 +1342,6 @@ public class PracticeRevenueMaterializationService {
                 recipients, PracticeRevenueAllocationService.ReasonCode.NONE);
     }
 
-    private static boolean hasCoherentVersionedAutoProvenance(List<StoredAttribution> stored) {
-        Set<String> algorithms = stored.stream().map(StoredAttribution::algorithmVersion)
-                .filter(PracticeRevenueMaterializationService::notBlank)
-                .collect(java.util.stream.Collectors.toSet());
-        Set<String> sourceKinds = stored.stream().map(StoredAttribution::sourceKind)
-                .filter(PracticeRevenueMaterializationService::notBlank)
-                .collect(java.util.stream.Collectors.toSet());
-        Set<String> fingerprints = stored.stream().map(StoredAttribution::dependencyFingerprint)
-                .filter(PracticeRevenueMaterializationService::notBlank)
-                .collect(java.util.stream.Collectors.toSet());
-        return algorithms.equals(Set.of(AUTO_ATTRIBUTION_ALGORITHM_VERSION))
-                && sourceKinds.equals(Set.of(AUTO_ATTRIBUTION_SOURCE_KIND))
-                && fingerprints.size() == 1
-                && stored.stream().allMatch(row -> notBlank(row.algorithmVersion())
-                        && notBlank(row.sourceKind()) && notBlank(row.dependencyFingerprint()))
-                && fingerprints.iterator().next().matches("[a-f0-9]{64}");
-    }
-
-    private static boolean notBlank(String value) { return value != null && !value.isBlank(); }
-
     void validate(BuildCandidate candidate) {
         Map<String,BigDecimal> allocated = new HashMap<>();
         for (AllocationEnvelope envelope : candidate.allocations()) {
@@ -1581,14 +1357,8 @@ public class PracticeRevenueMaterializationService {
         if (candidate.itemControlTotal().compareTo(candidate.allocationTotal()) != 0) {
             throw new StructuralValidationException("PORTFOLIO_CONSERVATION_FAILED");
         }
-        if (candidate.reconciliationGap() != null) {
-            // Section 8.3: reconcile within max(DKK 1.00, ABS(control_dkk) * 0.0001). The GL-controlled
-            // subset total is the candidate control; a null gap means no GL-controlled subset exists.
-            BigDecimal tolerance = new BigDecimal("1.00").max(
-                    candidate.glControlTotal().abs().multiply(new BigDecimal("0.0001")));
-            if (candidate.reconciliationGap().abs().compareTo(tolerance) > 0) {
-                throw new StructuralValidationException("GL_RECONCILIATION_FAILED");
-            }
+        if (candidate.reconciliationGap() != null && candidate.reconciliationGap().abs().compareTo(new BigDecimal("1.00")) > 0) {
+            throw new StructuralValidationException("GL_RECONCILIATION_FAILED");
         }
     }
 
@@ -1606,7 +1376,8 @@ public class PracticeRevenueMaterializationService {
             row.sourceDocumentType=document.documentType().name(); row.sourceDocumentStatus=envelope.documentStatus();
             row.recognizedMonth=source.recognizedMonth(); row.itemCategory=source.itemCategory()==null?null:source.itemCategory().name();
             row.adjustmentSubtype=adjustment(source.adjustmentSubtype()); row.nativeCurrency=source.nativeCurrency();
-            row.nativeItemAmount=source.nativeItemAmount(); row.documentSign=documentSign(document.documentType());
+            row.nativeItemAmount=source.nativeItemAmount(); row.documentSign=source.signedNativeControl()==null?null:
+                    (short)Math.max(-1,Math.min(1,source.signedNativeControl().signum()));
             row.signedNativeControl=source.signedNativeControl(); row.itemControlDkk=source.itemControlDkk();
             row.documentControlDkk=source.documentControlDkk(); row.documentGlRevenueDkk=source.rawGlControlDkk();
             row.itemCentAdjustmentDkk=source.glCentAdjustmentDkk(); row.effectiveDocumentRatio=source.effectiveDocumentRatio();
@@ -1618,19 +1389,9 @@ public class PracticeRevenueMaterializationService {
             row.matchedGlCandidateCentDkk=document.matchedGlCandidateCentDkk(); row.controlSource=source.controlSource().name();
             row.valuationStatus=source.valuationStatus().name(); row.residualControlReason=residual(source.reasonCode());
             row.attributionSourceStatus=attributionStatusByItem.getOrDefault(source.itemControlKey(),
-                    PracticeRevenueAllocationService.AttributionStatus.UNASSIGNED).name();
-            applyCreditCopyEvidence(row, envelope.creditEvidence());
-            var scope=envelope.evidenceScope();
-            row.evidenceResolvedSegment=scope==null||scope.resolvedSegment()==null?null:scope.resolvedSegment().name();
-            row.evidencePracticeBasis=scope==null?null:scope.practiceBasis();
-            row.evidenceConsultantTypeBasis=scope==null?null:scope.consultantTypeBasis();
-            row.scopeResolutionStatus=scope==null?null:scope.status().name();
-            row.scopeResolutionReason=scope==null||scope.reason()==PracticeRevenueAllocationService.ReasonCode.NONE
-                    ?null:scope.reason().name();
-            row.duplicateRiskStatus=duplicateRiskStatus(source.reasonCode());
-            row.syntheticResidual=source.syntheticResidual();
-            row.sourceFingerprint=hash(source.toString(),String.valueOf(scope));
-            row.validationReasonCode=source.reasonCode().name();
+                    PracticeRevenueAllocationService.AttributionStatus.UNASSIGNED).name(); row.creditCopyKind="NONE";
+            row.duplicateRiskStatus="NONE"; row.syntheticResidual=source.syntheticResidual();
+            row.sourceFingerprint=hash(source.toString()); row.validationReasonCode=source.reasonCode().name();
             row.createdAt=now; row.refreshedAt=now; em.persist(row);
         }
         for (AllocationEnvelope envelope : candidate.allocations()) for (var source : envelope.result().allocations()) {
@@ -1657,20 +1418,7 @@ public class PracticeRevenueMaterializationService {
             row.dependencyKind=source.kind(); row.dependencyKey=source.key(); row.dependencySequence=sequence++;
             row.dependentRecognizedMonth=source.recognizedMonth(); row.dependencySourceCategory=source.sourceCategory();
             row.sourceDocumentUuid=source.sourceDocumentUuid(); row.sourceItemUuid=source.sourceItemUuid();
-            row.sourceAttributionUuid=source.sourceAttributionUuid(); row.sourceWorkUuid=source.sourceWorkUuid();
-            row.sourceUserUuid=source.sourceUserUuid(); row.sourceTaskUuid=source.sourceTaskUuid();
-            row.sourceProjectUuid=source.sourceProjectUuid();
-            row.sourceContractProjectUuid=source.sourceContractProjectUuid();
-            row.sourceContractUuid=source.sourceContractUuid();
-            row.sourceContractConsultantUuid=source.sourceContractConsultantUuid();
-            row.sourceSelfBilledUuid=source.sourceSelfBilledUuid(); row.sourcePhantomUuid=source.sourcePhantomUuid();
-            row.sourcePracticeBasisGenerationId=attempt.basisGenerationId();
-            row.sourceCapacityUserUuid=source.sourceCapacityUserUuid();
-            row.sourceCapacityStartDate=source.sourceCapacityStartDate();
-            row.sourceCapacityEndDate=source.sourceCapacityEndDate();
-            row.deliveryStartDate=source.deliveryStartDate(); row.deliveryEndDate=source.deliveryEndDate();
-            row.bookedVoucherKey=source.bookedVoucherKey(); row.dependencyFingerprint=source.fingerprint();
-            row.createdAt=now; em.persist(row);
+            row.sourcePracticeBasisGenerationId=attempt.basisGenerationId(); row.dependencyFingerprint=source.fingerprint(); row.createdAt=now; em.persist(row);
         }
         em.flush();
     }
@@ -1678,70 +1426,29 @@ public class PracticeRevenueMaterializationService {
     BuildCandidate summarize(int documentCount, List<ItemEnvelope> items, List<AllocationEnvelope> allocations,
                              List<DependencyEnvelope> dependencies, LocalDate coverageStart, LocalDate coverageEnd,
                              Window booked, Window draft) {
-        BigDecimal itemTotal=BigDecimal.ZERO.setScale(2), allocationTotal=BigDecimal.ZERO.setScale(2),
-                gl=BigDecimal.ZERO.setScale(2), glAllocated=BigDecimal.ZERO.setScale(2);
-        Set<String> glControlledItems = new HashSet<>();
-        Set<String> duplicateRiskDocuments = new HashSet<>();
-        int valued=0,missing=0,provisional=0,residual=0,confirmed=0,estimated=0,unassigned=0,glCount=0;
+        BigDecimal itemTotal=BigDecimal.ZERO.setScale(2), allocationTotal=BigDecimal.ZERO.setScale(2), gl=BigDecimal.ZERO.setScale(2);
+        int valued=0,missing=0,provisional=0,residual=0,confirmed=0,estimated=0,unassigned=0,duplicates=0,glCount=0;
         for (ItemEnvelope item : items) {
             if (item.item().itemControlDkk()!=null) { valued++; itemTotal=itemTotal.add(item.item().itemControlDkk().setScale(2)); }
             else missing++;
             if (item.item().controlSource()==PracticeRevenueValuationService.ControlSource.ECONOMIC_GL && item.item().itemControlDkk()!=null) {
                 gl=gl.add(item.item().itemControlDkk().setScale(2));
-                glControlledItems.add(item.item().itemControlKey());
                 glCount++;
             }
             if (item.item().controlSource()==PracticeRevenueValuationService.ControlSource.NATIVE_DKK
                     || item.item().controlSource()==PracticeRevenueValuationService.ControlSource.MONTHLY_FX) provisional++;
             if (item.item().syntheticResidual()) residual++;
-            if (item.item().reasonCode()==PracticeRevenueValuationService.ReasonCode.MANUAL_PHANTOM_DUPLICATE_RISK) {
-                duplicateRiskDocuments.add(item.item().sourceDocumentUuid());
-            }
+            if (item.item().valuationStatus()==PracticeRevenueValuationService.ValuationStatus.UNAVAILABLE_DUPLICATE_RISK) duplicates++;
         }
         for (AllocationEnvelope envelope : allocations) for (var allocation : envelope.result().allocations()) {
             allocationTotal=allocationTotal.add(allocation.allocationDkk());
-            if (glControlledItems.contains(envelope.itemControlKey())) {
-                glAllocated=glAllocated.add(allocation.allocationDkk());
-            }
             switch(allocation.status()) { case CONFIRMED -> confirmed++; case ESTIMATED -> estimated++; case UNASSIGNED -> unassigned++; }
         }
         BigDecimal glControl=glCount==0?null:gl;
-        BigDecimal gap=glControl==null?null:glAllocated.subtract(glControl);
+        BigDecimal gap=glControl==null?null:allocationTotal.subtract(glControl);
         return new BuildCandidate(LocalDateTime.now(ZoneOffset.UTC), coverageStart, coverageEnd, booked, draft,
                 documentCount, items, allocations, dependencies, valued, missing, provisional, confirmed, estimated,
-                unassigned, residual, duplicateRiskDocuments.size(), itemTotal, allocationTotal, glControl, gap);
-    }
-
-    static String duplicateRiskStatus(PracticeRevenueValuationService.ReasonCode reason) {
-        return reason == PracticeRevenueValuationService.ReasonCode.MANUAL_PHANTOM_DUPLICATE_RISK
-                ? "PHANTOM_DUPLICATE_RISK" : "NONE";
-    }
-
-    /** Section 4.1: the document sign is a property of the document type, never of an item's own value. */
-    static Short documentSign(PracticeRevenueValuationService.DocumentType type){
-        return switch(type){
-            case CREDIT_NOTE -> (short)-1;
-            case INVOICE, PHANTOM -> (short)1;
-            default -> null;
-        };
-    }
-
-    /**
-     * Section 6.1: persist the immutable server-owned credit-copy proof exactly as it was loaded at
-     * build time. Non-credit or no-proof rows stay NONE with null siblings; a non-NONE proof carries all
-     * four sibling columns verbatim. Mutable source state is never re-read here.
-     */
-    static void applyCreditCopyEvidence(PracticeRevenueItem row, CreditEvidence proof){
-        String kind = proof == null ? null : proof.copyKind();
-        if(kind == null || "NONE".equals(kind)){
-            row.creditCopyKind="NONE";
-            return;
-        }
-        row.creditCopyKind=kind;
-        row.creditCopyScope=proof.copyScope();
-        row.creditCopyScale=proof.copyScale();
-        row.creditCopyOriginalSourceNativeAmount=proof.originalSourceNativeAmount();
-        row.creditCopyFingerprint=proof.copyFingerprint();
+                unassigned, residual, duplicates, itemTotal, allocationTotal, glControl, gap);
     }
 
     private void verifyAttempt(Attempt attempt) {
@@ -1813,34 +1520,10 @@ public class PracticeRevenueMaterializationService {
         }
     }
 
-    private static Window window(PracticeCostSnapshotProvider.CanonicalSnapshot response){
-        boolean available=response.windowAvailable();
-        return new Window(available,response.windowReason(),ym(response.reportingThroughMonthKey()),ym(response.currentPeriodStartMonthKey()),ym(response.currentPeriodEndMonthKey()),ym(response.priorPeriodStartMonthKey()),ym(response.priorPeriodEndMonthKey()));}
+    private static Window window(dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeOperatingCostResponseDTO response){
+        boolean available=response.complete()&&response.reportingThroughMonthKey()!=null;
+        return new Window(available,available?null:"SELECTED_COST_SOURCE_NO_COMPLETE_WINDOW",ym(response.reportingThroughMonthKey()),ym(response.currentPeriodStartMonthKey()),ym(response.currentPeriodEndMonthKey()),ym(response.priorPeriodStartMonthKey()),ym(response.priorPeriodEndMonthKey()));}
     private static LocalDate ym(String value){if(value==null)return null;return YearMonth.parse(value.substring(0,4)+"-"+value.substring(4,6)).atDay(1);}
-
-    private static Map<String,List<DeliveryDependencySeed>> immutableDependencyMap(
-            Map<String,List<DeliveryDependencySeed>> source){
-        Map<String,List<DeliveryDependencySeed>> result=new HashMap<>();
-        source.forEach((key,value)->result.put(key,List.copyOf(value)));
-        return Map.copyOf(result);
-    }
-
-    private static void addDeliveryDependencies(List<DependencyEnvelope> target,
-                                                PracticeRevenueValuationService.ItemControl item,
-                                                List<DeliveryDependencySeed> seeds,
-                                                String basisGeneration){
-        if(seeds==null||seeds.isEmpty())return;
-        Set<String> existing=target.stream().filter(row->row.itemControlKey().equals(item.itemControlKey()))
-                .map(row->row.sourceCategory()+"|"+row.kind()+"|"+row.key()+"|"+row.fingerprint())
-                .collect(java.util.stream.Collectors.toSet());
-        for(DeliveryDependencySeed seed:seeds){
-            for(DependencyEnvelope dependency:DependencyEnvelope.delivery(item,seed,basisGeneration)){
-                String key=dependency.sourceCategory()+"|"+dependency.kind()+"|"+dependency.key()+"|"
-                        +dependency.fingerprint();
-                if(existing.add(key))target.add(dependency);
-            }
-        }
-    }
     private static String adjustment(PracticeRevenueValuationService.AdjustmentSubtype v){return v==null?null:v.name();}
     private static String residual(PracticeRevenueValuationService.ReasonCode reason){return switch(reason){case NEAR_ZERO_SIGNED_NATIVE_DENOMINATOR->"NEAR_ZERO_SIGNED_NATIVE_DENOMINATOR";case HEADER_DISCOUNT_MONETARY_STRUCTURE_UNAVAILABLE->"HEADER_DISCOUNT_MONETARY_STRUCTURE_UNAVAILABLE";default->null;};}
     private static PracticeRevenueValuationService.ItemOrigin itemOrigin(Object value){try{return PracticeRevenueValuationService.ItemOrigin.valueOf(text(value));}catch(Exception e){return PracticeRevenueValuationService.ItemOrigin.UNKNOWN;}}
@@ -1851,21 +1534,6 @@ public class PracticeRevenueMaterializationService {
     private static Number number(Object value){return (Number)value;} private static String text(Object value){return value==null?null:String.valueOf(value);} private static boolean bool(Object value){return value instanceof Boolean b?b:number(value).intValue()!=0;}
     private static BigInteger integer(Object value){return value instanceof BigInteger i?i:new BigInteger(value.toString());} private static BigDecimal decimalOrNull(Object value){return value==null?null:value instanceof BigDecimal d?d:new BigDecimal(value.toString());}
     private static long positiveLong(Object value){if(value==null)return 0;long parsed=number(value).longValue();return Math.max(0,parsed);}
-    /**
-     * V338's {@code economics_accounting_year} is VARCHAR(20) holding e-conomic's "2025/2026" form;
-     * the identifier is its leading fiscal-start year. Null/blank/non-positive is absent (0). A
-     * present-but-unparseable value returns -1 so the cross-year guard fails closed to AMBIGUOUS
-     * rather than crashing the refresh or silently matching.
-     */
-    static int accountingYearStart(Object value){
-        if(value==null)return 0;
-        if(value instanceof Number parsed)return Math.max(0,parsed.intValue());
-        String raw=String.valueOf(value).trim();
-        if(raw.isEmpty())return 0;
-        java.util.regex.Matcher leadingYear=java.util.regex.Pattern.compile("^(\\d{4})(\\D.*)?$").matcher(raw);
-        if(!leadingYear.matches())return -1;
-        return Math.max(0,Integer.parseInt(leadingYear.group(1)));
-    }
     private static BigDecimal deliveryOperand(Object value){return value==null?null:BigDecimal.valueOf(number(value).doubleValue()).setScale(6,java.math.RoundingMode.HALF_UP);}
     private static LocalDate toDate(Object value){return value instanceof LocalDate d?d:((java.sql.Date)value).toLocalDate();} private static LocalDateTime toDateTime(Object value){return value instanceof LocalDateTime d?d:((java.sql.Timestamp)value).toLocalDateTime();}
     private static Map<PracticeRevenueDirtyMarker.Source,BigInteger> vector(Object[] row,int offset){Map<PracticeRevenueDirtyMarker.Source,BigInteger> result=new EnumMap<>(PracticeRevenueDirtyMarker.Source.class);for(int i=0;i<9;i++)result.put(PracticeRevenueDirtyMarker.Source.values()[i],integer(row[offset+i]));return Map.copyOf(result);}
@@ -1887,7 +1555,7 @@ public class PracticeRevenueMaterializationService {
             date=toDate(r[4]);currency=text(r[5]);discount=text(r[6]);
             economicsBookedNumber=positiveLong(r[23]);referenceNumber=positiveLong(r[24]);
             economicsVoucherNumber=positiveLong(r[25]);economicsEntryNumber=positiveLong(r[26]);
-            economicsAccountingYear=accountingYearStart(r[27]);
+            economicsAccountingYear=(int)positiveLong(r[27]);
             internalDebtorCredit=type==PracticeRevenueValuationService.DocumentType.CREDIT_NOTE && r[28]!=null;
         }
         PracticeRevenueValuationService.DocumentInput toInput(){
@@ -1925,8 +1593,7 @@ public class PracticeRevenueMaterializationService {
     }
     record StoredAttribution(String uuid,String consultantUuid,BigDecimal sharePct,String source,
                              String practiceCode,String consultantType,String attributionBasis,
-                             String documentType,String algorithmVersion,String sourceKind,
-                             String dependencyFingerprint){}
+                             String documentType){}
     record StoredSelfBilledAssignment(String itemUuid,String assignmentUuid,String consultantUuid,
                                       int workYear,int workMonth,BigDecimal shareAmount,String source,
                                       String practiceCode,String consultantType,String attributionBasis,
@@ -1965,109 +1632,15 @@ public class PracticeRevenueMaterializationService {
                    String basisGenerationId,BigInteger costRequestId,String costRequestVector,
                    BigInteger fullRefreshVersion,BigInteger incrementalRefreshVersion,
                    Map<PracticeRevenueDirtyMarker.Source,BigInteger> sourceVersions){}
-    record ItemEnvelope(String companyUuid,String documentStatus,
-                        PracticeRevenueValuationService.ItemControl item,
-                        PracticeRevenueValuationService.DocumentValuation document,
-                        PracticeRevenueAllocationService.EvidenceScope evidenceScope,
-                        CreditEvidence creditEvidence){
-        ItemEnvelope(String companyUuid,String documentStatus,
-                     PracticeRevenueValuationService.ItemControl item,
-                     PracticeRevenueValuationService.DocumentValuation document){
-            this(companyUuid,documentStatus,item,document,null,null);
-        }
-        ItemEnvelope(String companyUuid,String documentStatus,
-                     PracticeRevenueValuationService.ItemControl item,
-                     PracticeRevenueValuationService.DocumentValuation document,
-                     PracticeRevenueAllocationService.EvidenceScope evidenceScope){
-            this(companyUuid,documentStatus,item,document,evidenceScope,null);
-        }
-    }
+    record ItemEnvelope(String companyUuid,String documentStatus,PracticeRevenueValuationService.ItemControl item,PracticeRevenueValuationService.DocumentValuation document){}
     record AllocationEnvelope(String itemControlKey,PracticeRevenueAllocationService.AllocationResult result){}
-    record DeliveryEvidenceBundle(Map<String,PracticeRevenueAllocationService.SourceEvidence> evidence,
-                                  Map<String,List<DeliveryDependencySeed>> dependencies){
-        DeliveryEvidenceBundle{evidence=Map.copyOf(evidence);dependencies=Map.copyOf(dependencies);}
+    record DependencyEnvelope(String itemControlKey,String kind,String key,LocalDate recognizedMonth,String sourceCategory,String sourceDocumentUuid,String sourceItemUuid,String fingerprint){
+        static DependencyEnvelope document(PracticeRevenueValuationService.ItemControl i,String basis){return new DependencyEnvelope(i.itemControlKey(),"SOURCE_DOCUMENT",i.sourceDocumentUuid(),i.recognizedMonth(),"INVOICE_DOCUMENT",i.sourceDocumentUuid(),i.sourceItemUuid(),hash(i.sourceDocumentUuid(),String.valueOf(i.sourceItemUuid()),basis));}
+        static DependencyEnvelope credit(PracticeRevenueValuationService.ItemControl i,String sourceDocument,String sourceItem,String basis){return new DependencyEnvelope(i.itemControlKey(),"CREDIT_SOURCE_ITEM",sourceItem,i.recognizedMonth(),"INVOICE_DOCUMENT",sourceDocument,sourceItem,hash(sourceDocument,sourceItem,basis));}
     }
-    record DeliveryDependencySeed(String workUuid,String registrantUuid,String effectiveConsultantUuid,
-                                  LocalDate deliveryStart,LocalDate deliveryEndExclusive,String taskUuid,
-                                  String projectUuid,String contractProjectUuid,String contractUuid,
-                                  String contractConsultantUuid,LocalDate capacityStart,
-                                  LocalDate capacityEndExclusive){}
-    record DependencyEnvelope(String itemControlKey,String kind,String key,LocalDate recognizedMonth,
-                              String sourceCategory,String sourceDocumentUuid,String sourceItemUuid,
-                              String sourceAttributionUuid,String sourceWorkUuid,String sourceUserUuid,
-                              String sourceTaskUuid,String sourceProjectUuid,String sourceContractProjectUuid,
-                              String sourceContractUuid,String sourceContractConsultantUuid,
-                              String sourceSelfBilledUuid,String sourcePhantomUuid,
-                              String sourceCapacityUserUuid,LocalDate sourceCapacityStartDate,
-                              LocalDate sourceCapacityEndDate,LocalDate deliveryStartDate,
-                              LocalDate deliveryEndDate,String bookedVoucherKey,String fingerprint){
-        static DependencyEnvelope document(PracticeRevenueValuationService.ItemControl i,String basis){
-            return new DependencyEnvelope(i.itemControlKey(),"SOURCE_DOCUMENT",i.sourceDocumentUuid(),
-                    i.recognizedMonth(),"INVOICE_DOCUMENT",i.sourceDocumentUuid(),i.sourceItemUuid(),
-                    null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                    hash(i.sourceDocumentUuid(),String.valueOf(i.sourceItemUuid()),basis));
-        }
-        static DependencyEnvelope credit(PracticeRevenueValuationService.ItemControl i,String sourceDocument,
-                                         String sourceItem,String basis){
-            return new DependencyEnvelope(i.itemControlKey(),"CREDIT_SOURCE_ITEM",sourceItem,
-                    i.recognizedMonth(),"INVOICE_DOCUMENT",sourceDocument,sourceItem,null,null,null,
-                    null,null,null,null,null,null,null,null,null,null,null,null,null,
-                    hash(sourceDocument,sourceItem,basis));
-        }
-        static List<DependencyEnvelope> delivery(PracticeRevenueValuationService.ItemControl item,
-                                                 DeliveryDependencySeed seed,String basis){
-            Map<String,String> keys=new LinkedHashMap<>();
-            if(seed.workUuid()!=null)keys.put("WORK",seed.workUuid());
-            keys.put("DELIVERY_INTERVAL",hash(String.valueOf(seed.registrantUuid()),
-                    String.valueOf(seed.deliveryStart()),String.valueOf(seed.deliveryEndExclusive()),
-                    String.valueOf(seed.projectUuid()),String.valueOf(seed.contractUuid())));
-            if(seed.taskUuid()!=null)keys.put("TASK",seed.taskUuid());
-            if(seed.projectUuid()!=null)keys.put("PROJECT",seed.projectUuid());
-            if(seed.contractProjectUuid()!=null)keys.put("CONTRACT_PROJECT",seed.contractProjectUuid());
-            if(seed.contractUuid()!=null)keys.put("CONTRACT",seed.contractUuid());
-            if(seed.contractConsultantUuid()!=null)
-                keys.put("CONTRACT_CONSULTANT",seed.contractConsultantUuid());
-            List<DependencyEnvelope> result=new ArrayList<>();
-            keys.forEach((kind,key)->result.add(ofDelivery(item,seed,basis,kind,key,"DELIVERY_EVIDENCE")));
-            if(seed.effectiveConsultantUuid()!=null){
-                String key=hash(seed.effectiveConsultantUuid(),String.valueOf(seed.capacityStart()),
-                        String.valueOf(seed.capacityEndExclusive()),basis);
-                result.add(ofDelivery(item,seed,basis,"PRACTICE_BASIS",key,"PRACTICE_BASIS_INPUT"));
-            }
-            return List.copyOf(result);
-        }
-        private static DependencyEnvelope ofDelivery(PracticeRevenueValuationService.ItemControl item,
-                                                      DeliveryDependencySeed seed,String basis,
-                                                      String kind,String key,String category){
-            String fingerprint=hash(item.itemControlKey(),kind,key,String.valueOf(seed.workUuid()),
-                    String.valueOf(seed.registrantUuid()),String.valueOf(seed.effectiveConsultantUuid()),
-                    String.valueOf(seed.deliveryStart()),String.valueOf(seed.deliveryEndExclusive()),
-                    String.valueOf(seed.taskUuid()),String.valueOf(seed.projectUuid()),
-                    String.valueOf(seed.contractProjectUuid()),String.valueOf(seed.contractUuid()),
-                    String.valueOf(seed.contractConsultantUuid()),String.valueOf(seed.capacityStart()),
-                    String.valueOf(seed.capacityEndExclusive()),basis);
-            return new DependencyEnvelope(item.itemControlKey(),kind,key,item.recognizedMonth(),category,
-                    item.sourceDocumentUuid(),item.sourceItemUuid(),null,seed.workUuid(),
-                    seed.registrantUuid(),seed.taskUuid(),seed.projectUuid(),seed.contractProjectUuid(),
-                    seed.contractUuid(),seed.contractConsultantUuid(),null,null,
-                    seed.effectiveConsultantUuid(),seed.capacityStart(),seed.capacityEndExclusive(),
-                    seed.deliveryStart(),seed.deliveryEndExclusive(),null,fingerprint);
-        }
-    }
-    record RevenueCoverage(YearMonth first,YearMonth last){}
     record Window(boolean available,String reason,LocalDate anchor,LocalDate currentStart,LocalDate currentEnd,LocalDate priorStart,LocalDate priorEnd){}
     record BuildCandidate(LocalDateTime snapshotAt,LocalDate coverageStart,LocalDate coverageEnd,Window booked,Window bookedPlusDraft,int documentCount,List<ItemEnvelope> items,List<AllocationEnvelope> allocations,List<DependencyEnvelope> dependencies,int valuedItemCount,int missingControlCount,int provisionalControlCount,int confirmedAttributionCount,int estimatedAttributionCount,int unassignedAllocationCount,int residualControlCount,int duplicateRiskCount,BigDecimal itemControlTotal,BigDecimal allocationTotal,BigDecimal glControlTotal,BigDecimal reconciliationGap){BuildCandidate{items=List.copyOf(items);allocations=List.copyOf(allocations);dependencies=List.copyOf(dependencies);}}
     public record Result(boolean started,String generationId,String status,int itemCount,int allocationCount){static Result notStarted(){return new Result(false,null,"NOT_STARTED",0,0);}}
     public static class PublicationConflictException extends IllegalStateException{public PublicationConflictException(String m){super(m);}}
     public static class StructuralValidationException extends IllegalStateException{public StructuralValidationException(String m){super(m);}}
-    /** A consumed dependency date fell outside the certified basis coverage: fail closed and escalate. */
-    public static class RevenueBasisCoverageMissException extends PublicationConflictException{
-        private final transient LocalDate affectedStart;
-        private final transient LocalDate affectedEnd;
-        public RevenueBasisCoverageMissException(LocalDate affectedStart,LocalDate affectedEnd){
-            super("BASIS_COVERAGE_MISS");this.affectedStart=affectedStart;this.affectedEnd=affectedEnd;
-        }
-        public LocalDate affectedStart(){return affectedStart;}
-        public LocalDate affectedEnd(){return affectedEnd;}
-    }
 }

@@ -6,7 +6,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
-import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.EqualsAndHashCode;
@@ -18,7 +17,6 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 
 @Getter @Setter @Entity
 @IdClass(PracticeInvoiceItemDeliverySource.Key.class)
@@ -41,13 +39,7 @@ public class PracticeInvoiceItemDeliverySource extends PanacheEntityBase {
     @Column(name = "contribution_algorithm_version") public String contributionAlgorithmVersion;
     @Column(name = "item_fingerprint") public String itemFingerprint;
     @Column(name = "distribution_fingerprint") public String distributionFingerprint;
-    @Column(name = "created_at", nullable = false, updatable = false)
-    public LocalDateTime createdAt;
-
-    @PrePersist
-    void initializeCreatedAt() {
-        if (createdAt == null) createdAt = LocalDateTime.now(ZoneOffset.UTC);
-    }
+    @Column(name = "created_at") public LocalDateTime createdAt;
 
     @NoArgsConstructor @AllArgsConstructor @EqualsAndHashCode
     public static class Key implements Serializable {

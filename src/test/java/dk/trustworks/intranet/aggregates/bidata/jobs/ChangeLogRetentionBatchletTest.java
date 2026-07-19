@@ -40,9 +40,6 @@ class ChangeLogRetentionBatchletTest {
     Query selectQuery;
 
     @Mock
-    Query lockQuery;
-
-    @Mock
     Query watermarkQuery;
 
     @Mock
@@ -58,14 +55,11 @@ class ChangeLogRetentionBatchletTest {
         batchlet = Mockito.spy(real);
         when(em.createNativeQuery(anyString())).thenAnswer(invocation -> {
             String sql = invocation.getArgument(0);
-            if (sql.contains("SELECT last_fact_change_log_id")) return lockQuery;
             if (sql.startsWith("SELECT id")) return selectQuery;
             if (sql.contains("UPDATE practice_revenue_source_watermark")) return watermarkQuery;
             return deleteQuery;
         });
         when(selectQuery.setParameter(eq("days"), org.mockito.ArgumentMatchers.any())).thenReturn(selectQuery);
-        when(lockQuery.getResultList()).thenReturn(java.util.Collections.singletonList(
-                new Object[]{BigInteger.ZERO, null}));
         when(selectQuery.setMaxResults(ChangeLogRetentionBatchlet.DELETE_CHUNK_SIZE)).thenReturn(selectQuery);
         when(watermarkQuery.setParameter(eq("highest"), org.mockito.ArgumentMatchers.any())).thenReturn(watermarkQuery);
         when(watermarkQuery.executeUpdate()).thenReturn(1);
@@ -130,9 +124,7 @@ class ChangeLogRetentionBatchletTest {
 
         assertEquals(3, batchlet.deleteOneChunk());
 
-        var order = Mockito.inOrder(lockQuery, selectQuery, watermarkQuery, deleteQuery);
-        order.verify(lockQuery).getResultList();
-        order.verify(selectQuery).getResultList();
+        var order = Mockito.inOrder(watermarkQuery, deleteQuery);
         order.verify(watermarkQuery).setParameter("highest", BigInteger.valueOf(42));
         order.verify(watermarkQuery).executeUpdate();
         order.verify(deleteQuery).setParameter("highest", BigInteger.valueOf(42));
@@ -141,24 +133,12 @@ class ChangeLogRetentionBatchletTest {
 
     @Test
     void deleteOneChunk_missingWatermarkAbortsBeforeDelete() {
-        when(lockQuery.getResultList()).thenReturn(List.of());
+        when(selectQuery.getResultList()).thenReturn(List.of(5L));
+        when(watermarkQuery.executeUpdate()).thenReturn(0);
 
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> batchlet.deleteOneChunk());
 
-        verify(selectQuery, never()).getResultList();
-        verify(deleteQuery, never()).executeUpdate();
-    }
-
-    @Test
-    void deleteOneChunk_activeDeliveryRecoveryDefersPruning() {
-        when(lockQuery.getResultList()).thenReturn(java.util.Collections.singletonList(
-                new Object[]{BigInteger.ZERO, "recovery-owner"}));
-
-        assertEquals(0, batchlet.deleteOneChunk());
-
-        verify(selectQuery, never()).getResultList();
-        verify(watermarkQuery, never()).executeUpdate();
         verify(deleteQuery, never()).executeUpdate();
     }
 

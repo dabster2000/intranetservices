@@ -22,13 +22,6 @@ import java.util.UUID;
 public class PracticeRevenueDirtyMarker {
     @Inject EntityManager em;
 
-    /**
-     * Self client-proxy. The ordinary poll orchestrates two independent {@code REQUIRES_NEW}
-     * transactions (settle, then advance); calling them through the proxy makes each start its own
-     * transaction (a direct {@code this.} call would bypass the interceptor and share one transaction).
-     */
-    @Inject PracticeRevenueDirtyMarker self;
-
     @Transactional
     public void mark(Source source, YearMonth affectedMonth) {
         em.createNativeQuery("CALL sp_mark_practice_revenue_source_changed(:source, :month)")
@@ -47,178 +40,6 @@ public class PracticeRevenueDirtyMarker {
         em.createNativeQuery("CALL sp_mark_practice_revenue_dependency_changed(:source, :kind, :key)")
                 .setParameter("source", source.name()).setParameter("kind", dependencyKind)
                 .setParameter("key", dependencyKey).executeUpdate();
-    }
-
-    /**
-     * Consumes the shared BI change log for the currently published delivery dependency graph.
-     *
-     * <p>Two short {@code REQUIRES_NEW} transactions keep this off the hot INSERT path (see
-     * {@link DeliveryEvidencePoll}): TX1 ({@link #settleDeliveryHorizon()}) settles a commit-order-safe
-     * horizon under a bounded {@code fact_change_log} lock and commits immediately; TX2
-     * ({@link #advanceDeliveryCursor}/{@link #resolveDeliveryWatermark()}) computes relevance
-     * non-locking and advances the cursor under a watermark-only CAS. No lock is held across the heavy
-     * bounds join, and neither transaction ever holds the log while waiting for the watermark, so the
-     * poll cannot invert against the V412 contract-consultant triggers. A running revenue attempt owns
-     * the final union scan, so TX1 defers instead of advancing while an attempt is RUNNING.
-     */
-    public DeliveryPollResult pollDeliveryEvidence() {
-        return DeliveryEvidencePoll.poll(new DeliveryEvidencePoll.DeliveryPollTransactions() {
-            @Override
-            public DeliveryEvidencePoll.SettleOutcome settle() {
-                return self.settleDeliveryHorizon();
-            }
-
-            @Override
-            public DeliveryPollResult resolveWatermarkOnly() {
-                return self.resolveDeliveryWatermark();
-            }
-
-            @Override
-            public DeliveryPollResult advance(BigInteger cursor, BigInteger settledTarget) {
-                return self.advanceDeliveryCursor(cursor, settledTarget);
-            }
-        });
-    }
-
-    /** TX1: publication guard plus the bounded settle scan. Short; holds no lock across any join. */
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public DeliveryEvidencePoll.SettleOutcome settleDeliveryHorizon() {
-        return DeliveryEvidencePoll.settle(new EntityManagerDeliveryPollGateway(em));
-    }
-
-    /** TX2: watermark-only retention-gap/defer resolution for a non-advanceable snapshot. */
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public DeliveryPollResult resolveDeliveryWatermark() {
-        return DeliveryEvidencePoll.resolveWatermarkOnly(new EntityManagerDeliveryPollGateway(em));
-    }
-
-    /** TX2: non-locking bounds, then a watermark-only CAS advance over the settled range. */
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public DeliveryPollResult advanceDeliveryCursor(BigInteger cursor, BigInteger settledTarget) {
-        return DeliveryEvidencePoll.advance(new EntityManagerDeliveryPollGateway(em), cursor, settledTarget);
-    }
-
-    /** Final current-read scan over published plus candidate dependencies. Caller owns the attempt. */
-    @Transactional(Transactional.TxType.MANDATORY)
-    public DeliveryPollResult finalDeliveryEvidenceScan(String attemptGenerationId) {
-        if (attemptGenerationId == null || attemptGenerationId.isBlank()) {
-            throw new IllegalArgumentException("attempt generation is required");
-        }
-        return scanFinalDeliveryUnion(attemptGenerationId);
-    }
-
-    /**
-     * Attempt-owned final union scan over the published plus attempt dependency generations.
-     *
-     * <p>Lock order is {@code fact_change_log → watermark} to match the V412 contract-consultant
-     * triggers (which insert the log row then update the watermark); acquiring the watermark first
-     * inverted against them and could deadlock. The cursor is therefore read non-locking, the log
-     * range is locked, and then the watermark is X-locked and the cursor re-verified unchanged: the
-     * poll defers while an attempt is RUNNING, so the cursor is stable during a build, and any
-     * unexpected move aborts the attempt for retry. The shared cursor/retention/advance SQL is reused
-     * from {@link DeliveryEvidencePoll}; only the union bounds query is specific to this scan.
-     */
-    private DeliveryPollResult scanFinalDeliveryUnion(String attemptGenerationId) {
-        Object[] snapshot = (Object[]) em.createNativeQuery(DeliveryEvidencePoll.POLL_WATERMARK_SNAPSHOT_SQL)
-                .getSingleResult();
-        BigInteger cursorSnapshot = integer(snapshot[0]);
-
-        // Log range first (matching the trigger writers), so the watermark lock below cannot invert.
-        @SuppressWarnings("unchecked")
-        List<Object> currentRows = em.createNativeQuery(DeliveryEvidencePoll.LOG_HORIZON_LOCK_SQL)
-                .setParameter("cursor", cursorSnapshot).getResultList();
-
-        @SuppressWarnings("unchecked")
-        List<Object[]> watermarkRows = em.createNativeQuery(DeliveryEvidencePoll.WATERMARK_LOCK_SQL)
-                .getResultList();
-        if (watermarkRows.size() != 1) {
-            throw new WatermarkConflictException("DELIVERY_EVIDENCE_WATERMARK_MISSING");
-        }
-        Object[] watermark = watermarkRows.getFirst();
-        BigInteger cursor = integer(watermark[0]);
-        BigInteger pruned = integer(watermark[1]);
-        if (cursor.compareTo(cursorSnapshot) != 0) {
-            // The cursor moved between the non-locking read and the lock; abort so the attempt retries.
-            throw new WatermarkConflictException("DELIVERY_EVIDENCE_CURSOR_CONFLICT");
-        }
-        if (cursor.compareTo(pruned) < 0) {
-            if ("FAILED".equals(String.valueOf(watermark[2]))
-                    && "FACT_CHANGE_LOG_RETENTION_GAP".equals(value(watermark[4]))) {
-                return DeliveryPollResult.deferred(cursor);
-            }
-            int failed = em.createNativeQuery(DeliveryEvidencePoll.RETENTION_FAIL_SQL)
-                    .setParameter("cursor", cursor).setParameter("pruned", pruned).executeUpdate();
-            if (failed != 1) {
-                throw new WatermarkConflictException("DELIVERY_EVIDENCE_RETENTION_GAP_CONFLICT");
-            }
-            // A final attempt scan must clean up its candidate in this same transaction. The
-            // source version stays unchanged; explicit recovery is the only path that advances it.
-            return new DeliveryPollResult(false, true, cursor, cursor, null, null);
-        }
-        if (!"READY".equals(String.valueOf(watermark[2])) || watermark[3] != null
-                || watermark[4] != null) {
-            return DeliveryPollResult.deferred(cursor);
-        }
-
-        Object[] publication = (Object[]) em.createNativeQuery("""
-                SELECT status,published_generation_id,attempt_generation_id
-                FROM practice_revenue_publication
-                WHERE publication_key='PRACTICE_CONTRIBUTION'
-                """).getSingleResult();
-        String status = String.valueOf(publication[0]);
-        if (!"RUNNING".equals(status) || !attemptGenerationId.equals(value(publication[2]))) {
-            throw new WatermarkConflictException("REVENUE_ATTEMPT_OWNER_LOST");
-        }
-
-        BigInteger target = currentRows.isEmpty() ? cursor : integer(currentRows.getLast());
-        if (target.compareTo(cursor) <= 0) {
-            return new DeliveryPollResult(false, false, cursor, cursor, null, null);
-        }
-
-        Object[] bounds = (Object[]) em.createNativeQuery("""
-                SELECT MIN(d.dependent_recognized_month),MAX(d.dependent_recognized_month)
-                FROM fact_change_log f
-                JOIN practice_revenue_publication p
-                  ON p.publication_key='PRACTICE_CONTRIBUTION'
-                JOIN fact_practice_revenue_dependency_mat d
-                  ON d.generation_id=p.published_generation_id
-                  OR d.generation_id=p.attempt_generation_id
-                WHERE f.id>:cursor AND f.id<=:target
-                  AND f.change_type IN ('WORK','CONTRACT')
-                  AND d.dependency_source_category='DELIVERY_EVIDENCE'
-                  AND (
-                    (f.change_type='WORK' AND d.source_work_uuid=f.source_id)
-                    OR (f.change_type='CONTRACT'
-                        AND d.source_contract_consultant_uuid=f.source_id)
-                    OR (d.source_user_uuid=f.useruuid
-                        AND f.affected_date>=d.delivery_start_date
-                        AND f.affected_date<d.delivery_end_date)
-                    OR (f.affected_date>=d.delivery_start_date
-                        AND f.affected_date<d.delivery_end_date
-                        AND (
-                          (f.change_type='WORK' AND (
-                            d.source_task_uuid IS NOT NULL
-                            OR d.source_project_uuid IS NOT NULL
-                            OR d.source_contract_project_uuid IS NOT NULL
-                            OR d.source_contract_uuid IS NOT NULL))
-                          OR
-                          (f.change_type='CONTRACT' AND (
-                            d.source_contract_uuid IS NOT NULL
-                            OR d.source_capacity_user_uuid IS NOT NULL))
-                        ))
-                  )
-                FOR UPDATE
-                """).setParameter("cursor", cursor).setParameter("target", target).getSingleResult();
-        LocalDate affectedStart = date(bounds[0]);
-        LocalDate affectedEnd = date(bounds[1]);
-        boolean relevant = affectedStart != null;
-        int updated = em.createNativeQuery(DeliveryEvidencePoll.ADVANCE_SQL)
-                .setParameter("target", target).setParameter("cursor", cursor)
-                .setParameter("relevant", relevant ? 1 : 0)
-                .setParameter("affectedStart", affectedStart)
-                .setParameter("affectedEnd", affectedEnd).executeUpdate();
-        if (updated != 1) throw new WatermarkConflictException("DELIVERY_EVIDENCE_CURSOR_CONFLICT");
-        return new DeliveryPollResult(false, relevant, cursor, target, affectedStart, affectedEnd);
     }
 
     @Transactional
@@ -517,11 +338,6 @@ public class PracticeRevenueDirtyMarker {
                 SET latest_cost_basis_request_id=:id, latest_cost_basis_request_vector=:vector,
                     publication_version=publication_version+1 WHERE publication_id=1
                 """).setParameter("id", requestId).setParameter("vector", vector).executeUpdate();
-        // Defect 9: once this newer covering input is durably the latest, retire every dominated older
-        // PENDING request to SUPERSEDED pointing at it. Idempotent duplicate enqueues reuse the existing
-        // id and only supersede strictly-older rows, so a request can never supersede itself.
-        em.createNativeQuery("CALL sp_supersede_dominated_cost_requests(:id)")
-                .setParameter("id", requestId).executeUpdate();
         return requestId;
     }
 
@@ -540,12 +356,6 @@ public class PracticeRevenueDirtyMarker {
         } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
     private static BigInteger integer(Object value) { return value instanceof BigInteger i ? i : new BigInteger(value.toString()); }
-    private static String value(Object value) { return value == null ? null : String.valueOf(value); }
-    private static LocalDate date(Object value) {
-        if (value == null) return null;
-        if (value instanceof LocalDate date) return date;
-        return ((java.sql.Date) value).toLocalDate();
-    }
 
     /** Ordering matches the frozen columns on practice_revenue_publication. */
     public enum Source {
@@ -559,13 +369,6 @@ public class PracticeRevenueDirtyMarker {
     public record DirtyState(String publicationStatus, Map<Source, BigInteger> dirtyVersions,
                              boolean costFirstRequired) {
         public boolean dirty() { return !dirtyVersions.isEmpty(); }
-    }
-    public record DeliveryPollResult(boolean deferred, boolean relevant, BigInteger previousCursor,
-                                     BigInteger observedCursor, LocalDate affectedStart,
-                                     LocalDate affectedEnd) {
-        static DeliveryPollResult deferred(BigInteger cursor) {
-            return new DeliveryPollResult(true, false, cursor, cursor, null, null);
-        }
     }
     public static class WatermarkConflictException extends IllegalStateException {
         public WatermarkConflictException(String message) { super(message); }

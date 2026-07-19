@@ -9,9 +9,6 @@ quarkus:
     jdbc:
       url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?collation=utf8mb4_general_ci}
       driver: org.mariadb.jdbc.Driver
-      # Contribution publication reads verify this isolation inside every fresh
-      # transaction and fail closed if the runtime connection disagrees.
-      transaction-isolation-level: repeatable-read
       # Pool sizing — RDS parameter group mariadb10 allows max_connections=200.
       # Peak observed RDS connections to date is ~41, so 64 leaves headroom without
       # crowding other consumers (staging, Lambda, batch jobs).
