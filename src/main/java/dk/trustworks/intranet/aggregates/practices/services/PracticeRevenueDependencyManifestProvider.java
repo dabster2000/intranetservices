@@ -129,12 +129,8 @@ public class PracticeRevenueDependencyManifestProvider {
             dependencies.add(new Dependency(
                     text(row[0]), text(row[1]), text(row[2]), recognizedMonth,
                     dependencyKind, text(row[5]), text(row[6]), requiredStart, requiredEnd,
-                    // Arrays.asList, not List.of: recognized_item_uuid (zero-item documents) and
-                    // source_item_uuid are legitimately NULL in real data; fingerprintOf stringifies
-                    // each element null-safely and List.of would throw NPE before it could.
-                    fingerprintOf(java.util.Arrays.asList(text(row[0]), text(row[1]), dependencyKind,
-                            text(row[5]), text(row[6]), String.valueOf(requiredStart),
-                            String.valueOf(requiredEnd)))));
+                    fingerprintOf(List.of(text(row[0]), text(row[1]), dependencyKind, text(row[5]),
+                            text(row[6]), String.valueOf(requiredStart), String.valueOf(requiredEnd)))));
         }
         return fromDependencies(dependencies, firstRecognizedMonth.atDay(1),
                 lastRecognizedMonth.atEndOfMonth());
@@ -199,9 +195,6 @@ public class PracticeRevenueDependencyManifestProvider {
     }
 
     private static LocalDate toDate(Object value) {
-        // Null stays null so validate() rejects the dependency as INVALID_DEPENDENCY_BOUNDS
-        // (fail closed) instead of crashing the build on LocalDate.parse("null").
-        if (value == null) return null;
         if (value instanceof LocalDate date) return date;
         if (value instanceof java.sql.Date date) return date.toLocalDate();
         return LocalDate.parse(String.valueOf(value));
