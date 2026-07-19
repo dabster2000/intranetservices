@@ -52,11 +52,7 @@ final class PracticeCostCandidateBuilder {
             Map<String, BigDecimal> shares;
             if (userCapacity == null || sum(userCapacity).signum() == 0) {
                 String fallback = resolveMonthEnd(salary.userUuid(), salary.monthKey(), effective);
-                // The offending cell identity is diagnostic detail for the protected server log only;
-                // request/queue safe_reason stays the bare COST_BASIS_BUILD_FAILED code.
-                if (fallback == null) throw new CandidateIntegrityException(
-                        "SALARY_MONTH_END_PRACTICE_UNAVAILABLE user=" + salary.userUuid()
-                                + " company=" + salary.companyUuid() + " month=" + salary.monthKey());
+                if (fallback == null) throw new CandidateIntegrityException("SALARY_MONTH_END_PRACTICE_UNAVAILABLE");
                 shares = Map.of(fallback, DeterministicShareNormalizer.ONE);
                 monthEndFallbackEmployeeMonths.add(userCompanyMonth);
             } else {

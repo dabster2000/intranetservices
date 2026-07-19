@@ -132,9 +132,7 @@ public class PracticeBasisMaterializationService {
                     ? input.manifest().coverageEnd().plusDays(1) : history.getFirst().effectiveFrom();
             if (input.manifest().coverageStart().isBefore(fallbackEnd)) {
                 if (user.currentPractice() == null || user.currentPractice().isBlank()) {
-                    // Offending user identity is diagnostic detail for the protected server log only.
-                    throw new BasisMaterializationException(
-                            "CURRENT_PRACTICE_UNAVAILABLE user=" + user.userUuid());
+                    throw new BasisMaterializationException("CURRENT_PRACTICE_UNAVAILABLE");
                 }
                 addEffective(effectiveRows, new EffectiveRow(user.userUuid(), input.manifest().coverageStart(),
                         fallbackEnd, user.consultantType(), user.currentPractice(),
