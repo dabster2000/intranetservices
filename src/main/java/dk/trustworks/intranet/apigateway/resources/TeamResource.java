@@ -12,6 +12,9 @@ import dk.trustworks.intranet.aggregates.finance.services.TeamDashboardService;
 import dk.trustworks.intranet.aggregates.finance.services.TeamPeopleService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.Team;
+import dk.trustworks.intranet.model.TeamSetting;
+import dk.trustworks.intranet.services.PracticeService;
+import dk.trustworks.intranet.services.TeamSettingService;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -52,7 +55,19 @@ public class TeamResource {
     TeamDashboardService teamDashboardService;
 
     @Inject
+    PracticeService practiceService;
+
+    @Inject
+    TeamSettingService teamSettingService;
+
+    @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    public record UpdateTeamPracticeRequest(String practiceCode) {
+    }
+
+    public record UpdateTeamSettingRequest(String value) {
+    }
 
     @GET
     public List<Team> listAll() {
@@ -169,6 +184,40 @@ public class TeamResource {
     @RolesAllowed({"teams:write"})
     public void regenerateDescriptions() {
         teamService.updateTeamDescription();
+    }
+
+    // -----------------------------------------------------------------------
+    // Team → practice link and team-scoped settings (V418)
+    // -----------------------------------------------------------------------
+
+    @PUT
+    @Path("/{teamuuid}/practice")
+    @RolesAllowed({"teams:write"})
+    public Team updateTeamPractice(@PathParam("teamuuid") String teamuuid, UpdateTeamPracticeRequest body) {
+        String practiceCode = body == null ? null : body.practiceCode();
+        practiceService.validateTeamPracticeCode(practiceCode);
+        log.infof("TeamResource.updateTeamPractice teamuuid=%s practiceCode=%s updatedBy=%s",
+                teamuuid, practiceCode, requestHeaderHolder.getUserUuid());
+        return teamService.updateTeamPractice(teamuuid, practiceCode);
+    }
+
+    @GET
+    @Path("/settings")
+    public List<TeamSetting> getTeamSettings(@QueryParam("key") String key) {
+        if (key == null || key.isBlank()) throw new BadRequestException("Query parameter 'key' is required");
+        return teamSettingService.findByKey(key);
+    }
+
+    @PUT
+    @Path("/{teamuuid}/settings/{key}")
+    @RolesAllowed({"teams:write"})
+    public TeamSetting updateTeamSetting(@PathParam("teamuuid") String teamuuid,
+                                         @PathParam("key") String key,
+                                         UpdateTeamSettingRequest body) {
+        if (body == null || body.value() == null) throw new BadRequestException("value is required");
+        String updatedBy = requestHeaderHolder.getUserUuid();
+        log.infof("TeamResource.updateTeamSetting teamuuid=%s key=%s updatedBy=%s", teamuuid, key, updatedBy);
+        return teamSettingService.saveSetting(teamuuid, key, body.value(), updatedBy);
     }
 
     // -----------------------------------------------------------------------

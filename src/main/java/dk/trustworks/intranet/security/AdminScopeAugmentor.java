@@ -81,6 +81,9 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             // Teams
             "teams:read", "teams:write",
 
+            // Practices
+            "practices:read", "practices:write",
+
             // Career level
             "careerlevel:read", "careerlevel:write",
 

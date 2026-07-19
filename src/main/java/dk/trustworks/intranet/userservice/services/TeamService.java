@@ -12,6 +12,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
@@ -185,6 +186,18 @@ public class TeamService {
     @Transactional
     public void removeUserFromTeam(String teamroleuuid) {
         TeamRole.deleteById(teamroleuuid);
+    }
+
+    /**
+     * Sets (or clears, with {@code practiceCode == null}) a team's practice link (V418).
+     * The caller validates the code against the practice registry beforehand.
+     */
+    @Transactional
+    public Team updateTeamPractice(String teamuuid, String practiceCode) {
+        Team team = Team.findById(teamuuid);
+        if (team == null) throw new NotFoundException("Team not found: " + teamuuid);
+        team.setPracticeCode(practiceCode);
+        return team;
     }
 
     /**

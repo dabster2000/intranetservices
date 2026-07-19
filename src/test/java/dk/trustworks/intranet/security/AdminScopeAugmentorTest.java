@@ -34,6 +34,18 @@ class AdminScopeAugmentorTest {
     }
 
     @Test
+    void allScopes_contains_practices_scopes_for_bff_admin_expansion() {
+        assertTrue(
+                AdminScopeAugmentor.ALL_SCOPES.contains("practices:read"),
+                "The practice registry endpoints require practices:read; the BFF receives it via admin:* expansion"
+        );
+        assertTrue(
+                AdminScopeAugmentor.ALL_SCOPES.contains("practices:write"),
+                "Practice registry mutations require practices:write; the BFF receives it via admin:* expansion"
+        );
+    }
+
+    @Test
     void allScopes_has_reasonable_size() {
         assertTrue(
                 AdminScopeAugmentor.ALL_SCOPES.size() >= 50,
