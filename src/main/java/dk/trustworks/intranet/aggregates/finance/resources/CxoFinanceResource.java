@@ -7,9 +7,6 @@ import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapMonthlyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAbsenceWaterfallDTO;
-import dk.trustworks.intranet.aggregates.finance.dto.PracticeBenchFteDTO;
-import dk.trustworks.intranet.aggregates.finance.dto.PracticeForecastMonthDTO;
-import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.UtilizationConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantUtilizationRankingDTO;
@@ -1637,44 +1634,6 @@ public class CxoFinanceResource {
     // =========================================================================
 
     /**
-     * Returns monthly utilization per practice for the given date range.
-     * Replaces BFF route /api/cxo/practices/utilization-history.
-     *
-     * @param fromDate   Start date (ISO-8601, optional, defaults to 12 months ago)
-     * @param toDate     End date (ISO-8601, optional, defaults to today)
-     * @param practices  Comma-separated practice codes (optional, defaults to PM,BA,CYB,DEV,SA)
-     * @param companyIds Comma-separated company UUIDs (optional)
-     * @return List of per-practice monthly utilization data
-     */
-    @GET
-    @Path("/practice-utilization-history")
-    public List<PracticeUtilizationMonthDTO> getPracticeUtilizationHistory(
-            @QueryParam("fromDate") LocalDate fromDate,
-            @QueryParam("toDate") LocalDate toDate,
-            @QueryParam("practices") String practices,
-            @QueryParam("companyIds") String companyIds) {
-
-        LocalDate effectiveFrom = fromDate != null
-                ? fromDate.withDayOfMonth(1)
-                : LocalDate.now(dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.REPORTING_ZONE)
-                        .minusMonths(12).withDayOfMonth(1);
-        LocalDate effectiveTo = toDate != null
-                ? toDate
-                : LocalDate.now(dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.REPORTING_ZONE);
-        if (effectiveFrom.isAfter(effectiveTo) || effectiveFrom.plusMonths(36).isBefore(effectiveTo)) {
-            throw new BadRequestException("fromDate..toDate must be a forward range of at most 36 months");
-        }
-
-        log.debugf("GET /finance/cxo/practice-utilization-history: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
-                fromDate, toDate, practices, companyIds);
-
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
-
-        return cxoFinanceService.getPracticeUtilizationHistory(fromDate, toDate, practiceSet, companyIdSet);
-    }
-
-    /**
      * Returns budget hours per month from fact_revenue_budget_mat.
      * Replaces BFF direct SQL in /api/executive/utilization-trend.
      *
@@ -1759,29 +1718,6 @@ public class CxoFinanceResource {
     }
 
     /**
-     * Returns bench FTE count per practice for current and prior month.
-     * Replaces BFF route /api/cxo/practices/bench-fte.
-     *
-     * @param practices  Comma-separated practice codes (optional)
-     * @param companyIds Comma-separated company UUIDs (optional)
-     * @return List of bench FTE DTOs, one per practice
-     */
-    @GET
-    @Path("/bench-fte")
-    public List<PracticeBenchFteDTO> getBenchFte(
-            @QueryParam("practices") String practices,
-            @QueryParam("companyIds") String companyIds) {
-
-        log.debugf("GET /finance/cxo/bench-fte: practices=%s, companyIds=%s",
-                practices, companyIds);
-
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
-
-        return cxoFinanceService.getBenchFte(practiceSet, companyIdSet);
-    }
-
-    /**
      * Returns monthly absence breakdown showing how gross capacity is reduced.
      * Replaces BFF route /api/cxo/delivery/absence-waterfall.
      *
@@ -1803,29 +1739,6 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getAbsenceWaterfall(fromDate, toDate, companyIdSet);
-    }
-
-    /**
-     * Returns mixed actual+budget 12-month utilization forecast per practice.
-     * Replaces BFF route /api/cxo/practices/utilization-forecast.
-     *
-     * @param practices  Comma-separated practice codes (optional)
-     * @param companyIds Comma-separated company UUIDs (optional)
-     * @return List of forecast DTOs (12 months x N practices)
-     */
-    @GET
-    @Path("/practice-utilization-forecast")
-    public List<PracticeForecastMonthDTO> getPracticeUtilizationForecast(
-            @QueryParam("practices") String practices,
-            @QueryParam("companyIds") String companyIds) {
-
-        log.debugf("GET /finance/cxo/practice-utilization-forecast: practices=%s, companyIds=%s",
-                practices, companyIds);
-
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
-
-        return cxoFinanceService.getPracticeUtilizationForecast(practiceSet, companyIdSet);
     }
 
     /**

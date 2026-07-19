@@ -17,34 +17,23 @@ import dk.trustworks.intranet.dto.enums.ProjectSummaryType;
 import dk.trustworks.intranet.exceptions.InconsistantDataException;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
-import dk.trustworks.intranet.aggregates.invoice.model.PracticeInvoiceItemDeliverySource;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
-import dk.trustworks.intranet.aggregates.invoice.services.RegisteredDeliveryEvidenceResolver;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.YearMonth;
-import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -53,12 +42,6 @@ import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatu
 @JBossLog
 @ApplicationScoped
 public class InvoiceGenerator {
-
-    static final String CONTRIBUTION_CAPTURE_ENABLED_SQL = """
-            SELECT CASE WHEN refresh_enabled THEN 1 ELSE 0 END
-            FROM practice_contribution_publication_control
-            WHERE control_id=1
-            """;
 
     @Inject
     UserService userService;
@@ -86,12 +69,6 @@ public class InvoiceGenerator {
 
     @Inject
     EconomicsAgreementResolver agreements;
-
-    @Inject
-    RegisteredDeliveryEvidenceResolver registeredDeliveryEvidenceResolver;
-
-    @Inject
-    EntityManager em;
 
     @Transactional
     public List<ProjectSummary> loadProjectSummaryByYearAndMonth(LocalDate month) {
@@ -170,7 +147,6 @@ public class InvoiceGenerator {
         log.infof("createDraftInvoiceFromProject contract=%s project=%s month=%s type=%s",
                 contractuuid, projectuuid, month, type);
         Invoice invoice = null;
-        Map<String, List<RegisteredDeliveryEvidenceResolver.ResolvedDelivery>> contributionLineageByItem = new HashMap<>();
 
         if (!type.equals(ProjectSummaryType.RECEIPT.toString())) {
             if (type.equals(ProjectSummaryType.CONTRACT.toString())) {
@@ -187,32 +163,20 @@ public class InvoiceGenerator {
                 List<WorkFull> workFullList = workService.findByYearAndMonthAndProject(month.getYear(), month.getMonthValue(), projectuuid).stream()
                         .filter(w -> w.getWorkduration() > 0)
                         .filter(w -> w.getContractuuid().equals(contractuuid) && w.getProjectuuid().equals(projectuuid)).toList();
-                Map<String, WorkFull> workByUuid = workFullList.stream().collect(Collectors.toMap(
-                        WorkFull::getUuid, work -> work, (first, ignored) -> first, LinkedHashMap::new));
                 Map<String, InvoiceItem> invoiceItemMap = new HashMap<>();
 
                 Contract contract = contractService.findByUuid(contractuuid);
 
-                List<RegisteredDeliveryEvidenceResolver.ResolvedDelivery> canonicalDelivery =
-                        registeredDeliveryEvidenceResolver.resolve(
-                                new RegisteredDeliveryEvidenceResolver.QueryInput(
-                                        contractuuid, projectuuid, month.withDayOfMonth(1),
-                                        month.withDayOfMonth(1).plusMonths(1)));
-
-                for (RegisteredDeliveryEvidenceResolver.ResolvedDelivery delivery : canonicalDelivery) {
-                    WorkFull workFull = workByUuid.get(delivery.workUuid());
-                    if (workFull == null) {
-                        throw new IllegalStateException("canonical delivery work is outside the invoice candidate set");
-                    }
-                    if (delivery.normalizedDuration() == null || delivery.normalizedDuration().signum() <= 0) continue;
-                    Task task = taskService.findByUuid(delivery.taskUuid());
+                for (WorkFull workFull : workFullList) {
+                    if (workFull.getWorkduration() == 0) continue;
+                    Task task = taskService.findByUuid(workFull.getTaskuuid());
                     Project project = projectService.findByUuid(task.getProjectuuid());
 
                     //if (!contractService.findContractByWork(workFull, ContractStatus.TIME, ContractStatus.SIGNED, ContractStatus.CLOSED).getUuid().equals(contract.getUuid()))
                     if(workFull.getContractuuid()==null || workFull.getContractuuid().equals(""))
                         continue;
 
-                    User user = userService.findById(delivery.registrantUuid(), true);
+                    User user = userService.findById(workFull.getUseruuid(), true);
 
                     if (contract.getCompany() == null) {
                         log.error("Contract '" + contract.getUuid() + "' has no company assigned");
@@ -255,8 +219,7 @@ public class InvoiceGenerator {
                         log.info("Created new invoice: " + invoice);
                     }
 
-                    if (!delivery.usableForContribution() || delivery.normalizedRate() == null
-                            || delivery.normalizedRate().signum() <= 0) {
+                    if (workFull.getRate() == 0) {
                         log.error("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
                         Response response = Response
                                 .status(Response.Status.BAD_REQUEST)
@@ -265,30 +228,24 @@ public class InvoiceGenerator {
                                 .build();
                         throw new WebApplicationException(response);
                     }
-                    String itemKey = contract.getUuid() + project.getUuid()
-                            + delivery.registrantUuid() + delivery.taskUuid()
-                            + delivery.normalizedRate().toPlainString();
-                    if (!invoiceItemMap.containsKey(itemKey)) {
+                    if (!invoiceItemMap.containsKey(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid())) {
                         String invoiceItemName = (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFullname();
-                        if(!Objects.equals(delivery.effectiveConsultantUuid(), delivery.registrantUuid())) {
-                            User workAsUser = userService.findById(delivery.effectiveConsultantUuid(), true);
+                        if(workFull.getWorkas()!=null && !workFull.getWorkas().isEmpty()) {
+                            //User workAsUser = userService.findUserByUuid(workFull.getUseruuid(), true);
+                            User workAsUser = userService.findById(workFull.getWorkas(), true);
                             invoiceItemName = user.getFullname() + " (helped " + workAsUser.getFullname() + ")";
                         }
                         int nextPos = invoice.getInvoiceitems().size() + 1;
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
                                 task.getName(),
-                                delivery.normalizedRate().doubleValue(),
+                                workFull.getRate(),
                                 0.0, nextPos, invoice.uuid);
                         invoiceItem.uuid = UUID.randomUUID().toString();
-                        invoiceItemMap.put(itemKey, invoiceItem);
+                        invoiceItemMap.put(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid(), invoiceItem);
                         invoice.invoiceitems.add(invoiceItem);
                         log.info("Created new invoice item: " + invoiceItem);
                     }
-                    InvoiceItem groupedItem = invoiceItemMap.get(itemKey);
-                    groupedItem.hours = BigDecimal.valueOf(groupedItem.hours)
-                            .add(delivery.normalizedDuration()).doubleValue();
-                    contributionLineageByItem.computeIfAbsent(groupedItem.getUuid(), ignored -> new ArrayList<>())
-                            .add(delivery);
+                    invoiceItemMap.get(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid()).hours += workFull.getWorkduration();
                 }
             }
         }
@@ -314,203 +271,13 @@ public class InvoiceGenerator {
             throw new WebApplicationException(response);
         }
 
-        ContributionLineagePlan contributionLineagePlan = prepareContributionDeliveryLineage(
-                contributionLineageCaptureEnabled(), invoice.getInvoiceitems(), contributionLineageByItem);
-
         Invoice created = invoiceService.createDraftInvoice(invoice);
         log.info("Persisted draft invoice: " + created.getUuid());
         // Invoke pricing to add CALCULATED lines immediately
         Invoice priced = invoiceService.updateDraftInvoice(created);
         log.info("Priced draft invoice: " + priced.getUuid());
-        if (!contributionLineagePlan.rows().isEmpty()) {
-            persistContributionDeliveryLineage(contributionLineagePlan);
-            em.createNativeQuery("CALL sp_mark_practice_revenue_source_changed('INVOICE_ATTRIBUTION', :month)")
-                    .setParameter("month", month.withDayOfMonth(1))
-                    .executeUpdate();
-        }
         // Attribution computed inside updateDraftInvoice after flush+refresh
         return created;
-    }
-
-    /**
-     * Persists contribution-only Work As lineage for future generated items. This does not alter
-     * shared invoice attribution; it gives the Practices materializer immutable, canonical work
-     * UUID evidence and never accepts a recipient from an invoice client payload.
-     */
-    boolean contributionLineageCaptureEnabled() {
-        Object value = em.createNativeQuery(CONTRIBUTION_CAPTURE_ENABLED_SQL).getSingleResult();
-        if (value instanceof Boolean bool) return bool;
-        if (value instanceof Number number) return number.intValue() == 1;
-        return "1".equals(String.valueOf(value));
-    }
-
-    ContributionLineagePlan prepareContributionDeliveryLineage(
-            boolean captureEnabled,
-            List<InvoiceItem> generatedItems,
-            Map<String, List<RegisteredDeliveryEvidenceResolver.ResolvedDelivery>> lineageByItem) {
-        return captureEnabled
-                ? planContributionDeliveryLineage(generatedItems, lineageByItem)
-                : ContributionLineagePlan.empty();
-    }
-
-    ContributionLineagePlan planContributionDeliveryLineage(
-            List<InvoiceItem> generatedItems,
-            Map<String, List<RegisteredDeliveryEvidenceResolver.ResolvedDelivery>> lineageByItem) {
-        Objects.requireNonNull(generatedItems, "generatedItems");
-        Objects.requireNonNull(lineageByItem, "lineageByItem");
-
-        Map<String, InvoiceItem> itemsByUuid = new TreeMap<>();
-        for (InvoiceItem item : generatedItems) {
-            if (item == null || item.getOrigin() != InvoiceItemOrigin.BASE) {
-                continue;
-            }
-            if (item.getUuid() == null || item.getUuid().isBlank()
-                    || itemsByUuid.putIfAbsent(item.getUuid(), item) != null) {
-                throw new IllegalStateException("generated BASE items have invalid or duplicate ids");
-            }
-        }
-        if (!itemsByUuid.keySet().equals(lineageByItem.keySet())) {
-            throw new IllegalStateException("generated delivery lineage does not match generated BASE items");
-        }
-
-        LocalDateTime createdAt = LocalDateTime.now(ZoneOffset.UTC);
-        List<PlannedLineageRow> rows = new ArrayList<>();
-        Map<String, String> itemByWorkUuid = new HashMap<>();
-        for (Map.Entry<String, InvoiceItem> itemEntry : itemsByUuid.entrySet()) {
-            String itemUuid = itemEntry.getKey();
-            List<RegisteredDeliveryEvidenceResolver.ResolvedDelivery> deliveries =
-                    lineageByItem.get(itemUuid);
-            if (deliveries == null || deliveries.isEmpty()) {
-                throw new IllegalStateException("generated delivery lineage is empty for item " + itemUuid);
-            }
-            Map<String, LineageSeed> uniqueSeeds = new TreeMap<>();
-            for (RegisteredDeliveryEvidenceResolver.ResolvedDelivery delivery : deliveries) {
-                LineageSeed seed = lineageSeed(itemUuid, delivery);
-                LineageSeed prior = uniqueSeeds.putIfAbsent(seed.workUuid(), seed);
-                if (prior != null && !prior.equals(seed)) {
-                    throw new IllegalStateException("ambiguous generated delivery lineage for work " + seed.workUuid());
-                }
-                String priorItem = itemByWorkUuid.putIfAbsent(seed.workUuid(), itemUuid);
-                if (priorItem != null && !priorItem.equals(itemUuid)) {
-                    throw new IllegalStateException("generated work belongs to multiple invoice items: " + seed.workUuid());
-                }
-            }
-            List<LineageSeed> seeds = List.copyOf(uniqueSeeds.values());
-            String distributionFingerprint = fingerprint(seeds.stream()
-                    .map(LineageSeed::rowFingerprint)
-                    .collect(Collectors.joining("|")));
-            InvoiceItem generatedItem = itemEntry.getValue();
-            String itemFingerprint = fingerprint(String.join("|",
-                    itemUuid,
-                    normalizeDeliveryOperand(generatedItem.getHours()).toPlainString(),
-                    normalizeDeliveryOperand(generatedItem.getRate()).toPlainString(),
-                    generatedItem.getOrigin() == null ? "" : generatedItem.getOrigin().name(),
-                    generatedItem.getRuleId() == null ? "" : generatedItem.getRuleId(),
-                    distributionFingerprint));
-            for (LineageSeed seed : seeds) {
-                rows.add(new PlannedLineageRow(itemUuid, seed, itemFingerprint,
-                        distributionFingerprint));
-            }
-        }
-        return new ContributionLineagePlan(createdAt, List.copyOf(rows));
-    }
-
-    void persistContributionDeliveryLineage(ContributionLineagePlan plan) {
-        for (PlannedLineageRow planned : plan.rows()) {
-            LineageSeed seed = planned.seed();
-            PracticeInvoiceItemDeliverySource row = new PracticeInvoiceItemDeliverySource();
-            row.invoiceItemUuid = planned.invoiceItemUuid();
-            row.workUuid = seed.workUuid();
-            row.registrantUuid = seed.registrantUuid();
-            row.effectiveConsultantUuid = seed.effectiveConsultantUuid();
-            row.deliveryDate = seed.deliveryDate();
-            row.taskUuid = seed.taskUuid();
-            row.projectUuid = seed.projectUuid();
-            row.contractUuid = seed.contractUuid();
-            row.contractProjectUuid = seed.contractProjectUuid();
-            row.contractConsultantUuid = seed.contractConsultantUuid();
-            row.normalizedDuration = seed.duration();
-            row.normalizedRate = seed.rate();
-            row.deliveryValue = seed.value();
-            row.rateResolutionStatus = seed.rateStatus();
-            row.contributionAlgorithmVersion = "PRACTICE_DELIVERY_LINEAGE_V1";
-            row.itemFingerprint = planned.itemFingerprint();
-            row.distributionFingerprint = planned.distributionFingerprint();
-            row.createdAt = plan.createdAt();
-            PracticeInvoiceItemDeliverySource.persist(row);
-        }
-    }
-
-    private static LineageSeed lineageSeed(String itemUuid,
-                                           RegisteredDeliveryEvidenceResolver.ResolvedDelivery delivery) {
-        Objects.requireNonNull(delivery, "delivery");
-        if (delivery.rateResolutionStatus()
-                != RegisteredDeliveryEvidenceResolver.RateResolutionStatus.RESOLVED
-                || delivery.workUuid() == null || delivery.workUuid().isBlank()
-                || delivery.registrantUuid() == null || delivery.registrantUuid().isBlank()
-                || delivery.effectiveConsultantUuid() == null || delivery.effectiveConsultantUuid().isBlank()
-                || delivery.deliveryDate() == null
-                || delivery.taskUuid() == null || delivery.taskUuid().isBlank()
-                || delivery.projectUuid() == null || delivery.projectUuid().isBlank()
-                || delivery.normalizedDuration() == null || delivery.normalizedDuration().signum() <= 0
-                || delivery.normalizedRate() == null || delivery.normalizedRate().signum() <= 0
-                || delivery.deliveryValue() == null) {
-            throw new IllegalStateException("generated delivery lineage is incomplete for work "
-                    + delivery.workUuid());
-        }
-        BigDecimal duration = delivery.normalizedDuration();
-        BigDecimal rate = delivery.normalizedRate();
-        String status = delivery.rateResolutionStatus().name();
-        BigDecimal value = delivery.deliveryValue();
-        BigDecimal expectedValue = duration.multiply(rate).setScale(12, RoundingMode.UNNECESSARY);
-        if (value.compareTo(expectedValue) != 0) {
-            throw new IllegalStateException("generated delivery value is inconsistent for work "
-                    + delivery.workUuid());
-        }
-        String canonical = String.join("|",
-                itemUuid, delivery.workUuid(), delivery.registrantUuid(), delivery.effectiveConsultantUuid(),
-                String.valueOf(delivery.deliveryDate()), String.valueOf(delivery.taskUuid()),
-                String.valueOf(delivery.projectUuid()), String.valueOf(delivery.contractUuid()),
-                String.valueOf(delivery.contractProjectUuid()), String.valueOf(delivery.contractConsultantUuid()),
-                duration.toPlainString(), rate.toPlainString(), status);
-        return new LineageSeed(delivery.workUuid(), delivery.registrantUuid(), delivery.effectiveConsultantUuid(),
-                delivery.deliveryDate(), delivery.taskUuid(), delivery.projectUuid(), delivery.contractUuid(),
-                delivery.contractProjectUuid(), delivery.contractConsultantUuid(), duration, rate,
-                value, status, fingerprint(canonical));
-    }
-
-    private static BigDecimal normalizeDeliveryOperand(double value) {
-        if (!Double.isFinite(value)) throw new IllegalArgumentException("non-finite delivery evidence");
-        return BigDecimal.valueOf(value).setScale(6, RoundingMode.HALF_UP);
-    }
-
-    private static String fingerprint(String canonical) {
-        try {
-            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    record LineageSeed(String workUuid, String registrantUuid, String effectiveConsultantUuid,
-                       LocalDate deliveryDate, String taskUuid, String projectUuid, String contractUuid,
-                       String contractProjectUuid, String contractConsultantUuid,
-                       BigDecimal duration, BigDecimal rate, BigDecimal value, String rateStatus,
-                       String rowFingerprint) {}
-
-    record PlannedLineageRow(String invoiceItemUuid, LineageSeed seed, String itemFingerprint,
-                             String distributionFingerprint) {}
-
-    record ContributionLineagePlan(LocalDateTime createdAt, List<PlannedLineageRow> rows) {
-        ContributionLineagePlan {
-            Objects.requireNonNull(createdAt, "createdAt");
-            rows = List.copyOf(rows);
-        }
-
-        static ContributionLineagePlan empty() {
-            return new ContributionLineagePlan(LocalDateTime.now(ZoneOffset.UTC), List.of());
-        }
     }
 
     /**

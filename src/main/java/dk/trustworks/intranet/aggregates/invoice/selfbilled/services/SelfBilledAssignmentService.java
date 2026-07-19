@@ -13,7 +13,6 @@ import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.AssignmentSour
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssignment;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLine;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLineStatus;
-import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -56,7 +55,6 @@ public class SelfBilledAssignmentService {
     @Inject SelfBilledAttributionMirror mirror;
     @Inject EntityManager em;
     @Inject WorkService workService;
-    @Inject PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
 
     /** Replace the voucher's assignment set (1 = assign/edit, N = split). Cross-company allowed — this IS the human gate. */
     @Transactional
@@ -182,14 +180,12 @@ public class SelfBilledAssignmentService {
         mirror.syncVoucher(siblings, none, net(siblings));
         stamp(siblings, target);
         stampMark(siblings, actor);
-        markRevenueDirty();
         log.infof("mark voucher=%d -> %s by=%s", anchor.voucherNumber, target, actor);
     }
 
     /** Status projection (pure rules) + §6.3 mirror sync, after any mutation. */
     private void refreshVoucher(SelfBilledLine anchor, List<SelfBilledLine> siblings,
                                 List<SelfBilledAssignment> assignments, BigDecimal voucherNet) {
-        markRevenueDirty();
         boolean hasAssignments = !assignments.isEmpty();
         boolean allSameCompany = hasAssignments && assignments.stream().allMatch(a ->
                 anchor.debtorCompanyUuid.equals(
@@ -206,13 +202,6 @@ public class SelfBilledAssignmentService {
                 anchor.status, hasAssignments, allSameCompany, allSettled);
         stamp(siblings, nextStatus);
         mirror.syncVoucher(siblings, assignments, voucherNet);
-    }
-
-    private void markRevenueDirty() {
-        // Kept null-tolerant for existing direct-construction unit tests; CDI always injects it.
-        if (practiceRevenueDirtyMarker != null) {
-            practiceRevenueDirtyMarker.mark(PracticeRevenueDirtyMarker.Source.SELF_BILLED, null);
-        }
     }
 
     private static void stamp(List<SelfBilledLine> siblings, SelfBilledLineStatus status) {

@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.aggregates.invoice.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -44,34 +43,6 @@ public class InvoiceItemAttribution extends PanacheEntityBase {
 
     @Column(name = "updated_at")
     public LocalDateTime updatedAt;
-
-    @JsonIgnore
-    @Column(name = "source_item_uuid")
-    public String sourceItemUuid;
-
-    @JsonIgnore
-    @Column(name = "source_attribution_uuid")
-    public String sourceAttributionUuid;
-
-    @JsonIgnore
-    @Column(name = "copy_provenance")
-    public String copyProvenance;
-
-    @JsonIgnore
-    @Column(name = "source_distribution_fingerprint")
-    public String sourceDistributionFingerprint;
-
-    @JsonIgnore
-    @Column(name = "attribution_algorithm_version")
-    public String attributionAlgorithmVersion;
-
-    @JsonIgnore
-    @Column(name = "attribution_source_kind")
-    public String attributionSourceKind;
-
-    @JsonIgnore
-    @Column(name = "attribution_dependency_fingerprint")
-    public String attributionDependencyFingerprint;
 
     @Transient
     public String consultantName;

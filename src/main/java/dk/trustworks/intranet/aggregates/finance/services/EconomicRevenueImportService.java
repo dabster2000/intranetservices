@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.finance.dto.DryRunOutcome;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
-import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
@@ -25,7 +24,6 @@ import java.net.URI;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -148,12 +146,6 @@ public class EconomicRevenueImportService {
     @Inject
     EntityManager em;
 
-    @Inject
-    PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
-
-    @Inject
-    EconomicRevenueImportService self;
-
     /**
      * Walks the 3 companies × revenue accounts × accounting years in
      * {@code [from..to]}, runs the 4-layer dedup, and inserts surviving
@@ -164,24 +156,8 @@ public class EconomicRevenueImportService {
      * INSERTs live in {@link #insertInvoiceAndItem}'s nested REQUIRES_NEW
      * transaction so single-voucher failure cannot roll back the batch.
      */
-    public DryRunOutcome refresh(LocalDate from, LocalDate to) {
-        if(dryRun||practiceRevenueDirtyMarker==null){
-            return (self==null?this:self).refreshTransactional(from,to);
-        }
-        String token=practiceRevenueDirtyMarker.beginImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT);
-        try{
-            DryRunOutcome outcome=(self==null?this:self).refreshTransactional(from,to);
-            practiceRevenueDirtyMarker.completeImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT,token,
-                    YearMonth.from(from),YearMonth.from(to));
-            return outcome;
-        }catch(RuntimeException failure){
-            practiceRevenueDirtyMarker.failImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT,token);
-            throw failure;
-        }
-    }
-
     @Transactional
-    public DryRunOutcome refreshTransactional(LocalDate from, LocalDate to) {
+    public DryRunOutcome refresh(LocalDate from, LocalDate to) {
         log.infof("EconomicRevenueImportService.refresh begin: from=%s to=%s dryRun=%s",
                 from, to, dryRun);
 
