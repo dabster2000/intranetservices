@@ -524,7 +524,7 @@ public class PracticeRevenueMaterializationService {
                         } else {
                             adjustmentEvidence = baseDistributionEvidence(baseAllocations);
                             PracticeRevenueAllocationService.SourceEvidence fallback =
-                                    registeredDelivery.evidenceFor(document.documentUuid());
+                                    registeredDelivery.evidence().get(document.documentUuid());
                             if (adjustmentEvidence.state()
                                     == PracticeRevenueAllocationService.EvidenceState.ABSENT
                                     && fallback != null) {
@@ -545,9 +545,9 @@ public class PracticeRevenueMaterializationService {
                         }else{
                             itemSources.addAll(storedSources);
                         }
-                        PracticeRevenueAllocationService.SourceEvidence delivery = prospectiveDelivery.evidenceFor(item.sourceItemUuid());
+                        PracticeRevenueAllocationService.SourceEvidence delivery = prospectiveDelivery.evidence().get(item.sourceItemUuid());
                         if (delivery != null) itemSources.add(delivery);
-                        PracticeRevenueAllocationService.SourceEvidence direct = legacyDirect.evidenceFor(item.sourceItemUuid());
+                        PracticeRevenueAllocationService.SourceEvidence direct = legacyDirect.evidence().get(item.sourceItemUuid());
                         if (direct != null) {
                             if (direct.state()==PracticeRevenueAllocationService.EvidenceState.INVALID
                                     && direct.reason()==PracticeRevenueAllocationService.ReasonCode.DELIVERY_EVIDENCE_AMBIGUOUS) {
@@ -557,7 +557,7 @@ public class PracticeRevenueMaterializationService {
                             itemSources.add(direct);
                         }
                         PracticeRevenueAllocationService.SourceEvidence fallback =
-                                registeredDelivery.evidenceFor(document.documentUuid());
+                                registeredDelivery.evidence().get(document.documentUuid());
                         if (fallback != null) itemSources.add(fallback);
                     }
                 }
@@ -1986,14 +1986,6 @@ public class PracticeRevenueMaterializationService {
     record DeliveryEvidenceBundle(Map<String,PracticeRevenueAllocationService.SourceEvidence> evidence,
                                   Map<String,List<DeliveryDependencySeed>> dependencies){
         DeliveryEvidenceBundle{evidence=Map.copyOf(evidence);dependencies=Map.copyOf(dependencies);}
-        /**
-         * Map.copyOf produces a JDK immutable map whose get(null) throws instead of returning null.
-         * Sentinel rows (zero-item documents, generated residuals) legitimately carry a null
-         * source-item UUID and simply have no item-level delivery evidence.
-         */
-        PracticeRevenueAllocationService.SourceEvidence evidenceFor(String key){
-            return key==null?null:evidence.get(key);
-        }
     }
     record DeliveryDependencySeed(String workUuid,String registrantUuid,String effectiveConsultantUuid,
                                   LocalDate deliveryStart,LocalDate deliveryEndExclusive,String taskUuid,

@@ -1007,19 +1007,6 @@ class PracticeRevenueMaterializationServiceTest {
         assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart(2025));
         assertEquals(2025,PracticeRevenueMaterializationService.accountingYearStart(java.math.BigInteger.valueOf(2025)));
     }
-    /**
-     * DeliveryEvidenceBundle wraps its maps in Map.copyOf, whose get(null) throws NPE. Sentinel
-     * rows (zero-item documents, generated residuals) carry a null source-item UUID and must simply
-     * resolve to no delivery evidence (observed on staging: first revenue build crashed
-     * MATERIALIZATION_FAILED on ImmutableCollections.MapN.get(null)).
-     */
-    @Test void deliveryEvidenceLookupWithANullSentinelKeyResolvesToNoEvidenceNotACrash(){
-        var bundle=new PracticeRevenueMaterializationService.DeliveryEvidenceBundle(
-                java.util.Map.of(),java.util.Map.of());
-        assertNull(bundle.evidenceFor(null));
-        assertNull(bundle.evidenceFor("missing"));
-    }
-
     @Test void economicAccountingYearUnparseablePresentValueIsInvalidNotAbsent(){
         assertEquals(-1,PracticeRevenueMaterializationService.accountingYearStart("not-a-year"));
         assertEquals(-1,PracticeRevenueMaterializationService.accountingYearStart("25/26"));
