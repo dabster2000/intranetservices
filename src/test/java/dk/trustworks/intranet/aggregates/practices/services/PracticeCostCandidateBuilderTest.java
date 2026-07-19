@@ -69,20 +69,13 @@ class PracticeCostCandidateBuilderTest {
         assertEquals(new BigDecimal("23.45"), amount(result, "202607", "SALARIES", "CYB"));
     }
 
-    /**
-     * Design owner directive: a salary month whose practice is unknowable (here: entirely after the
-     * user's coverage) goes to the designated UNRESOLVED conservation bucket — counted as a
-     * disclosed fallback, never guessed onto a practice and never a build failure.
-     */
+    /** A salary month that starts entirely after the user's coverage stays unresolvable. */
     @Test
-    void salaryMonthWithUnknowablePracticeGoesToTheDesignatedUnresolvedBucket() {
-        var result = builder.build(
+    void salaryMonthEntirelyAfterTheUsersCoverageStillFailsClosed() {
+        assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
                 List.of(salary("u1", "202609", "100.00")), List.of(),
                 List.of(effective("u1", "2025-01-01", "2026-07-17", "CYB")),
-                List.of(control("salary", "202609", "SALARIES", "23.45")));
-        assertEquals(new BigDecimal("23.45"), amount(result, "202609", "SALARIES",
-                PracticeCostCandidateBuilder.UNRESOLVED_PRACTICE_BUCKET));
-        assertEquals(1, result.salaryCoverage().getFirst().costMonthEndPracticeFallbackEmployeeMonthCount());
+                List.of(control("salary", "202609", "SALARIES", "23.45"))));
     }
 
     /**
@@ -115,14 +108,9 @@ class PracticeCostCandidateBuilderTest {
 
     @Test
     void refusesToCertifyUnresolvedSalaryOrOpexWeights() {
-        // Unknowable salary practice now conserves into the designated UNRESOLVED bucket
-        // (design owner directive) instead of failing the candidate.
-        var unresolved = builder.build(
+        assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
                 List.of(salary("u1", "202601", "100.00")), List.of(), List.of(),
-                List.of(control("salary", "202601", "SALARIES", "23.45")));
-        assertEquals(new BigDecimal("23.45"), amount(unresolved, "202601", "SALARIES",
-                PracticeCostCandidateBuilder.UNRESOLVED_PRACTICE_BUCKET));
-        // An OPEX control beyond the reconciliation tolerance with no availability stays fatal.
+                List.of(control("salary", "202601", "SALARIES", "23.45"))));
         assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
                 List.of(), List.of(), List.of(),
                 List.of(control("opex", "202601", "OPEX", "23.45"))));
