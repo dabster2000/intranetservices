@@ -1323,19 +1323,14 @@ public class CxoPracticeContributionService {
                     || scopedEvidenceGapCounts.getOrDefault(id, 0) > 0
                     || scopedDuplicateRiskCounts.getOrDefault(id, 0) > 0;
         }
-        // Serve-with-disclosed-gap policy (design owner, 2026-07-17): evidence gaps, provisional
-        // valuations and blocking valuation reasons mark items that are EXCLUDED from every total,
-        // so serving despite them understates with disclosure (sourceStatus/valuationStatus/
-        // missing counts) — it can never overstate. Only duplicate risk (possible double count)
-        // and a reconciliation break (allocation != GL control) can make numbers WRONG; those two
-        // legs remain fail-closed.
         boolean revenueAvailable() {
-            return duplicateRiskCount == 0 && reconciled();
+            return !hasBlockingEvidence() && !hasProvisional()
+                    && blockingValuationReason(reasons) == null
+                    && reconciled();
         }
         boolean revenueAvailable(String id, SegmentAggregate segment) {
-            return unresolvedDuplicateRiskCount == 0
-                    && scopedDuplicateRiskCounts.getOrDefault(id, 0) == 0
-                    && reconciled();
+            return !hasBlockingEvidence(id) && segment.provisionalCount() == 0
+                    && blockingValuationReason(segment.reasons()) == null && reconciled();
         }
         boolean reconciled() {
             BigDecimal tolerance = glControl.abs().multiply(new BigDecimal("0.0001")).max(BigDecimal.ONE);
@@ -1371,9 +1366,7 @@ public class CxoPracticeContributionService {
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
         }
         BigDecimal provisionalRevenue(String id, SegmentAggregate segment) {
-            return segment.provisionalCount() > 0
-                    && unresolvedDuplicateRiskCount == 0
-                    && scopedDuplicateRiskCounts.getOrDefault(id, 0) == 0
+            return segment.provisionalCount() > 0 && !hasBlockingEvidence(id)
                     ? segment.authoritative().add(segment.provisional()) : null;
         }
         String sourceStatus() { return sourceReason() != null || hasBlockingEvidence()
