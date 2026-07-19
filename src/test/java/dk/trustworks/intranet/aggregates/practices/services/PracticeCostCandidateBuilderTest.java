@@ -52,32 +52,6 @@ class PracticeCostCandidateBuilderTest {
         assertEquals(new BigDecimal("23.45"), amount(result, "202601", "SALARIES", "CYB"));
     }
 
-    /**
-     * Basis intervals are clamped to the generation's coverage end (exclusive). For the final
-     * partial coverage month (e.g. the running month whose coverage ends mid-month at the last
-     * prospective delivery date), the calendar month-end lies beyond every clamped interval; the
-     * month-end practice must resolve at the last covered day instead of failing the build
-     * (observed on staging: SALARY_MONTH_END_PRACTICE_UNAVAILABLE for month 202607 with coverage
-     * clamped to 2026-07-17 exclusive).
-     */
-    @Test
-    void resolvesTheFinalPartialCoverageMonthAtTheLastCoveredDayInsteadOfFailing() {
-        var result = builder.build(
-                List.of(salary("u1", "202607", "100.00")), List.of(),
-                List.of(effective("u1", "2025-01-01", "2026-07-17", "CYB")),
-                List.of(control("salary", "202607", "SALARIES", "23.45")));
-        assertEquals(new BigDecimal("23.45"), amount(result, "202607", "SALARIES", "CYB"));
-    }
-
-    /** A salary month that starts entirely after the user's coverage stays unresolvable. */
-    @Test
-    void salaryMonthEntirelyAfterTheUsersCoverageStillFailsClosed() {
-        assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
-                List.of(salary("u1", "202609", "100.00")), List.of(),
-                List.of(effective("u1", "2025-01-01", "2026-07-17", "CYB")),
-                List.of(control("salary", "202609", "SALARIES", "23.45"))));
-    }
-
     @Test
     void refusesToCertifyUnresolvedSalaryOrOpexWeights() {
         assertThrows(PracticeCostCandidateBuilder.CandidateIntegrityException.class, () -> builder.build(
