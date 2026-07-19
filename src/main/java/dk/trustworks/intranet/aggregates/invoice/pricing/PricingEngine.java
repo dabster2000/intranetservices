@@ -13,9 +13,6 @@ import jakarta.inject.Inject;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.util.*;
 
@@ -24,12 +21,9 @@ public class PricingEngine {
 
     private static final int SCALE = 2;
     private static final RoundingMode RM = RoundingMode.HALF_UP;
-    static final String PRICING_POLICY_VERSION = "PRICING_PROVENANCE_V1";
-    static final String CALCULATION_ALGORITHM_VERSION = "PRICING_ENGINE_V1";
 
     @Inject PricingRuleCatalog catalog;
     @Inject MeterRegistry registry;
-    @Inject InvoiceDiscountNormalizer discountNormalizer;
 
     @Timed(value = "invoice.pricing.duration", description = "Pricing Engine timing") // Micrometer
     public PriceResult price(Invoice draft, Map<String, String> contractTypeItems) {
@@ -37,9 +31,6 @@ public class PricingEngine {
         final LocalDate date = draft.getInvoicedate() != null ? draft.getInvoicedate() : LocalDate.now();
 
         var ruleSet = catalog.select(draft.getContractType(), date);
-        var normalizedDiscount = (discountNormalizer != null
-                ? discountNormalizer : new InvoiceDiscountNormalizer())
-                .normalizeForNewInput(draft.getDiscount());
 
         BigDecimal sumBefore = draft.getInvoiceitems().stream()
                 .filter(ii -> !ii.isEffectivelyCalculated())
@@ -52,9 +43,7 @@ public class PricingEngine {
         final int SYN_BASE_POS = Integer.MAX_VALUE - 1000; // keep synthetic lines at the very end
         int synIndex = 0;
 
-        List<RuleStep> activeSteps = ruleSet.stepsFor(date);
-        for (int stepSequence = 0; stepSequence < activeSteps.size(); stepSequence++) {
-            RuleStep step = activeSteps.get(stepSequence);
+        for (RuleStep step : ruleSet.stepsFor(date)) {
             BigDecimal base = (step.base == StepBase.SUM_BEFORE_DISCOUNTS) ? sumBefore : current;
 
             BigDecimal delta = BigDecimal.ZERO;
@@ -83,7 +72,7 @@ public class PricingEngine {
                     delta = amt.setScale(SCALE, RM).negate();
                 }
                 case GENERAL_DISCOUNT_PERCENT -> {
-                    BigDecimal pct = normalizedDiscount.value();
+                    BigDecimal pct = BigDecimal.valueOf(Optional.ofNullable(draft.getDiscount()).orElse(0.0));
                     if (pct.compareTo(BigDecimal.ZERO) > 0) {
                         delta = base.multiply(pct).divide(BigDecimal.valueOf(100), SCALE + 2, RM).setScale(SCALE, RM).negate();
                         label = String.format("%s (%s%%)", step.label, pct.stripTrailingZeros().toPlainString());
@@ -108,21 +97,12 @@ public class PricingEngine {
                 line.base = base.setScale(SCALE, RM);
                 line.rateOrAmount = step.percent != null && step.type != RuleStepType.FIXED_DEDUCTION
                         ? step.percent : (step.type == RuleStepType.GENERAL_DISCOUNT_PERCENT
-                        ? normalizedDiscount.value() : step.amount);
+                        ? BigDecimal.valueOf(Optional.ofNullable(draft.getDiscount()).orElse(0.0)) : step.amount);
                 line.delta = delta;
                 line.cumulative = current;
-                line.pricingPolicyVersion = PRICING_POLICY_VERSION;
-                line.pricingStepId = step.id;
-                line.pricingStepSequence = stepSequence;
-                line.pricingRuleType = step.type.name();
-                line.pricingInputFingerprint = pricingFingerprint(
-                        draft, date, ruleSet.contractTypeCode, step, stepSequence,
-                        normalizedDiscount.value(), base, line.rateOrAmount);
-                line.pricingOutputFingerprint = outputFingerprint(delta, current);
-                line.calculationAlgorithmVersion = CALCULATION_ALGORITHM_VERSION;
                 breakdown.add(line);
 
-                InvoiceItem synLine = syntheticLine(draft, step, stepSequence, label, delta, line);
+                InvoiceItem synLine = syntheticLine(draft, step, label, delta);
                 synLine.setPosition(SYN_BASE_POS + synIndex++);
                 synthetic.add(synLine);
             }
@@ -140,19 +120,12 @@ public class PricingEngine {
         pr.grandTotal = grand;
         pr.breakdown = breakdown;
         pr.syntheticItems = synthetic;
-        pr.pricingPolicyVersion = PRICING_POLICY_VERSION;
-        pr.calculationAlgorithmVersion = CALCULATION_ALGORITHM_VERSION;
 
         registry.counter("invoice.pricing.applied_rules", "rules", String.valueOf(breakdown.size())).increment(); // Micrometer
         return pr;
     }
 
-    private static InvoiceItem syntheticLine(Invoice draft,
-                                             RuleStep step,
-                                             int stepSequence,
-                                             String label,
-                                             BigDecimal delta,
-                                             CalculationBreakdownLine evidence) {
+    private static InvoiceItem syntheticLine(Invoice draft, RuleStep step, String label, BigDecimal delta) {
         // Konvention: 1 x RATE (= ændringsbeløb). Delta er negativt => line.rate er negativ.
         InvoiceItem li = new InvoiceItem();
         li.setInvoiceuuid(draft.getUuid());
@@ -164,55 +137,7 @@ public class PricingEngine {
         li.setRuleId(step.id);
         li.setLabel(label);
         li.setCalculationRef(UUID.randomUUID().toString());
-        li.setPricingPolicyVersion(PRICING_POLICY_VERSION);
-        li.setPricingStepId(step.id);
-        li.setPricingStepSequence(stepSequence);
-        li.setPricingRuleType(step.type.name());
-        li.setPricingInputFingerprint(evidence.pricingInputFingerprint);
-        li.setPricingOutputFingerprint(evidence.pricingOutputFingerprint);
-        li.setPricingOutputAmount(delta.setScale(12, RoundingMode.UNNECESSARY));
-        li.setCalculationAlgorithmVersion(CALCULATION_ALGORITHM_VERSION);
         return li;
-    }
-
-    private static String pricingFingerprint(Invoice draft,
-                                             LocalDate date,
-                                             String contractTypeCode,
-                                             RuleStep step,
-                                             int sequence,
-                                             BigDecimal normalizedDiscount,
-                                             BigDecimal base,
-                                             BigDecimal consumedValue) {
-        return sha256(String.join("|",
-                PRICING_POLICY_VERSION,
-                nullSafe(draft.getUuid()),
-                date.toString(),
-                nullSafe(contractTypeCode),
-                nullSafe(step.id),
-                Integer.toString(sequence),
-                step.type.name(),
-                normalizedDiscount.toPlainString(),
-                base.toPlainString(),
-                consumedValue == null ? "" : consumedValue.toPlainString()));
-    }
-
-    private static String outputFingerprint(BigDecimal delta, BigDecimal cumulative) {
-        return sha256(CALCULATION_ALGORITHM_VERSION + "|" + delta.toPlainString()
-                + "|" + cumulative.toPlainString());
-    }
-
-    private static String sha256(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    private static String nullSafe(String value) {
-        return value == null ? "" : value;
     }
 
     private static BigDecimal resolvePercent(RuleStep s, Map<String, String> cti) {

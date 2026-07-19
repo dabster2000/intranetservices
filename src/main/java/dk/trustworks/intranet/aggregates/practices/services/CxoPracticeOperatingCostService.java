@@ -119,17 +119,10 @@ public class CxoPracticeOperatingCostService {
     @Inject
     EntityManager em;
 
-    @Inject
-    PracticeCostSnapshotProvider snapshotProvider;
-
     public PracticeOperatingCostResponseDTO getOperatingCost(CostSource requestedCostSource) {
         CostSource costSource = requestedCostSource == null ? CostSource.BOOKED : requestedCostSource;
         try {
-            // Keep direct construction usable by the existing pure Mockito tests while every CDI
-            // production consumer goes through the canonical provider.
-            return snapshotProvider == null
-                    ? readPublishedSnapshot(costSource)
-                    : snapshotProvider.getSnapshot(costSource).response();
+            return getOperatingCostFromPublishedSnapshot(costSource);
         } catch (ServiceUnavailableException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -138,21 +131,8 @@ public class CxoPracticeOperatingCostService {
         }
     }
 
-    PracticeOperatingCostResponseDTO readPublishedSnapshot(CostSource costSource) {
-        return readSnapshot(costSource, null, null, null);
-    }
-
-    PracticeOperatingCostResponseDTO readPublishedCanonicalSnapshot(
-            CostSource costSource, String basisGenerationId, Instant generationAt,
-            LocalDate coverageStart) {
-        if (basisGenerationId == null || generationAt == null) throw unavailable();
-        return readSnapshot(costSource, basisGenerationId, generationAt, coverageStart);
-    }
-
-    private PracticeOperatingCostResponseDTO readSnapshot(
-            CostSource costSource, String basisGenerationId, Instant canonicalGenerationAt,
-            LocalDate coverageStart) {
-        PublicationSnapshot before = basisGenerationId == null ? loadPublishedSnapshot() : null;
+    private PracticeOperatingCostResponseDTO getOperatingCostFromPublishedSnapshot(CostSource costSource) {
+        PublicationSnapshot before = loadPublishedSnapshot();
         Set<String> postingStatuses = new LinkedHashSet<>(costSource.postingStatusNames());
 
         LocalDate copenhagenToday = LocalDate.now(UtilizationCalculationHelper.REPORTING_ZONE);
@@ -160,11 +140,8 @@ public class CxoPracticeOperatingCostService {
         YearMonth earliestMetadataMonth = metadataStartMonth(latestCompletedMonth);
         List<SalaryCompletenessCell> salaryCompletenessCells;
         try {
-            salaryCompletenessCells = basisGenerationId == null
-                    ? loadSalaryCompletenessRows(
-                            costSource, monthKey(earliestMetadataMonth), monthKey(latestCompletedMonth))
-                    : loadCanonicalSalaryCompletenessRows(basisGenerationId, costSource,
-                            monthKey(earliestMetadataMonth), monthKey(latestCompletedMonth));
+            salaryCompletenessCells = loadSalaryCompletenessRows(
+                    costSource, monthKey(earliestMetadataMonth), monthKey(latestCompletedMonth));
         } catch (RuntimeException e) {
             log.errorf(e, "practice operating-cost completeness metadata query failed: source=%s", costSource);
             throw new ServiceUnavailableException(
@@ -181,12 +158,8 @@ public class CxoPracticeOperatingCostService {
         String priorStartKey = window.priorStartMonthKey();
         String priorEndKey = window.priorEndMonthKey();
 
-        List<Object[]> costRows = basisGenerationId == null
-                ? loadCostRows(priorStartKey, currentEndKey, postingStatuses)
-                : loadCanonicalCostRows(basisGenerationId, priorStartKey, currentEndKey, postingStatuses);
-        List<Object[]> fteRows = basisGenerationId == null
-                ? loadFteRows(priorStartKey, currentEndKey)
-                : loadCanonicalFteRows(basisGenerationId, priorStartKey, currentEndKey);
+        List<Object[]> costRows = loadCostRows(priorStartKey, currentEndKey, postingStatuses);
+        List<Object[]> fteRows = loadFteRows(priorStartKey, currentEndKey);
 
         Map<String, PracticeAccumulator> byPractice = new LinkedHashMap<>();
         PRACTICES.forEach(p -> byPractice.put(p, new PracticeAccumulator()));
@@ -286,7 +259,7 @@ public class CxoPracticeOperatingCostService {
                 currentEndKey,
                 priorStartKey,
                 priorEndKey,
-                basisGenerationId == null ? before.generationAt() : canonicalGenerationAt,
+                before.generationAt(),
                 currentSalaryMonths.size(),
                 currentOpexMonths.size(),
                 currentFteMonths.size(),
@@ -317,21 +290,17 @@ public class CxoPracticeOperatingCostService {
                 priorCompletenessStatus,
                 completenessStatus,
                 complete,
-                basisGenerationId == null ? "CURRENT_PRACTICE_AT_MATERIALIZATION" : "EFFECTIVE_DATED_PRACTICE",
-                coverageStart,
-                basisGenerationId == null
-                        ? "fact_opex_mat is distributed using current practice at materialization; "
-                            + "effective-dated practice snapshots are not applied to this historical fact."
-                        : "Salary, OPEX and FTE are allocated from the publication's immutable effective-practice basis.",
+                "CURRENT_PRACTICE_AT_MATERIALIZATION",
+                null,
+                "fact_opex_mat is distributed using current practice at materialization; "
+                        + "effective-dated practice snapshots are not applied to this historical fact.",
                 practices
         );
 
-        if (basisGenerationId == null) {
-            PublicationSnapshot after = loadPublishedSnapshot();
-            if (!samePublication(before, after)) {
-                log.warnf("practice operating-cost publication changed during read: source=%s", costSource);
-                throw unavailable();
-            }
+        PublicationSnapshot after = loadPublishedSnapshot();
+        if (!samePublication(before, after)) {
+            log.warnf("practice operating-cost publication changed during read: source=%s", costSource);
+            throw unavailable();
         }
         return response;
     }
@@ -365,28 +334,6 @@ public class CxoPracticeOperatingCostService {
         return rows;
     }
 
-    private List<Object[]> loadCanonicalCostRows(
-            String generationId, String fromKey, String toKey, Set<String> postingStatuses) {
-        Query query = em.createNativeQuery("""
-                SELECT company_id, practice_code, month_key, cost_type, SUM(allocated_amount_dkk)
-                FROM fact_practice_cost_generation_mat
-                WHERE generation_id=:generation AND month_key BETWEEN :fromKey AND :toKey
-                  AND company_id IN (:companies) AND practice_code IN (:practices)
-                  AND cost_type IN ('SALARIES','OPEX') AND posting_status IN (:postingStatuses)
-                GROUP BY company_id, practice_code, month_key, cost_type
-                ORDER BY company_id, practice_code, month_key, cost_type
-                """);
-        query.setParameter("generation", generationId);
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
-        query.setParameter("companies", PRODUCTION_COMPANY_SET);
-        query.setParameter("practices", PRACTICE_SET);
-        query.setParameter("postingStatuses", postingStatuses);
-        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
-        @SuppressWarnings("unchecked") List<Object[]> rows = query.getResultList();
-        return rows;
-    }
-
     private List<SalaryCompletenessCell> loadSalaryCompletenessRows(
             CostSource costSource, String fromKey, String toKey) {
         Query query = em.createNativeQuery(SALARY_COMPLETENESS_ROWS_SQL);
@@ -413,32 +360,6 @@ public class CxoPracticeOperatingCostService {
         return cells;
     }
 
-    private List<SalaryCompletenessCell> loadCanonicalSalaryCompletenessRows(
-            String generationId, CostSource costSource, String fromKey, String toKey) {
-        Query query = em.createNativeQuery("""
-                SELECT company_id, month_key, expected_salary_cell_count, actual_salary_cell_count,
-                       covered_salary_cell_count, missing_salary_cell_count,
-                       unexpected_salary_cell_count, complete
-                FROM fact_practice_cost_completeness_generation_mat
-                WHERE generation_id=:generation AND cost_source=:costSource
-                  AND month_key BETWEEN :fromKey AND :toKey
-                ORDER BY month_key, company_id
-                """);
-        query.setParameter("generation", generationId);
-        query.setParameter("costSource", costSource.name());
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
-        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
-        @SuppressWarnings("unchecked") List<Object[]> rows = query.getResultList();
-        List<SalaryCompletenessCell> cells = new ArrayList<>(rows.size());
-        for (Object[] row : rows) {
-            cells.add(new SalaryCompletenessCell(String.valueOf(row[0]), String.valueOf(row[1]),
-                    toInt(row[2]), toInt(row[3]), toInt(row[4]), toInt(row[5]), toInt(row[6]),
-                    toBoolean(row[7])));
-        }
-        return cells;
-    }
-
     private List<Object[]> loadFteRows(String fromKey, String toKey) {
         Query query = em.createNativeQuery("""
                 SELECT company_id, practice_id, month_key, SUM(fte_billable) AS monthly_fte
@@ -458,26 +379,6 @@ public class CxoPracticeOperatingCostService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
-        return rows;
-    }
-
-    private List<Object[]> loadCanonicalFteRows(String generationId, String fromKey, String toKey) {
-        Query query = em.createNativeQuery("""
-                SELECT company_id, practice_code, month_key, SUM(billable_fte)
-                FROM fact_practice_fte_generation_mat
-                WHERE generation_id=:generation AND month_key BETWEEN :fromKey AND :toKey
-                  AND company_id IN (:companies) AND practice_code IN (:practices)
-                  AND billable_fte > 0
-                GROUP BY company_id, practice_code, month_key
-                ORDER BY company_id, practice_code, month_key
-                """);
-        query.setParameter("generation", generationId);
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
-        query.setParameter("companies", PRODUCTION_COMPANY_SET);
-        query.setParameter("practices", PRACTICE_SET);
-        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
-        @SuppressWarnings("unchecked") List<Object[]> rows = query.getResultList();
         return rows;
     }
 

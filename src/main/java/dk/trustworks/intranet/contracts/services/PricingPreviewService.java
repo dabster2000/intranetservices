@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.contracts.services;
 
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
-import dk.trustworks.intranet.aggregates.invoice.pricing.InvoiceDiscountNormalizer;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
@@ -13,7 +12,6 @@ import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
 import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -47,9 +45,6 @@ import java.util.Objects;
 @JBossLog
 @ApplicationScoped
 public class PricingPreviewService {
-
-    @Inject
-    InvoiceDiscountNormalizer discountNormalizer;
 
     // Same constants as PricingEngine — the math below must stay line-for-line identical.
     private static final int SCALE = 2;
@@ -103,10 +98,7 @@ public class PricingPreviewService {
                                            BigDecimal vatPct, ContractTypeDefinition definition) {
 
         LocalDate invoiceDate = request.getInvoiceDate() != null ? request.getInvoiceDate() : LocalDate.now();
-        BigDecimal normalizedDiscount = (discountNormalizer != null
-                ? discountNormalizer : new InvoiceDiscountNormalizer())
-                .normalizeForNewInput(request.getDiscountPct()).value();
-        double discountPct = normalizedDiscount.doubleValue();
+        double discountPct = request.getDiscountPct() != null ? request.getDiscountPct() : 0.0;
         Map<String, String> contractTypeItems = loadContractTypeItems(request.getContractUuid());
 
         // Full rule set including disabled / out-of-window rows (the engine only sees

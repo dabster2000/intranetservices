@@ -7,9 +7,10 @@ import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.enums.CostType;
 import dk.trustworks.intranet.model.Company;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.Query;
-import org.junit.jupiter.api.BeforeEach;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import io.quarkus.test.junit.TestProfile;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -26,10 +27,6 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Tests verifying that OPEX distribution preserves the signed sign of GL
@@ -58,7 +55,20 @@ import static org.mockito.Mockito.when;
  * {@code intercompanyCalcService} @Inject inside the SUT can be wired by CDI.
  * No DB I/O occurs — all inputs to the method under test are built in memory.
  */
+@QuarkusTest
+@TestProfile(OpexDistributionRefreshServiceTest.Profile.class)
 class OpexDistributionRefreshServiceTest {
+
+    public static class Profile implements QuarkusTestProfile {
+        @Override
+        public Map<String, String> getConfigOverrides() {
+            return Map.of(
+                    "quarkus.s3.devservices.enabled", "false",
+                    "cvtool.username", "test-placeholder",
+                    "cvtool.password", "test-placeholder"
+            );
+        }
+    }
 
     private static final YearMonth TEST_MONTH = YearMonth.of(2099, 1);
 
@@ -69,40 +79,8 @@ class OpexDistributionRefreshServiceTest {
      */
     private static final String OPEX_GROUPNAME = "Variable omkostninger";
 
+    @Inject
     OpexDistributionRefreshService service;
-
-    @BeforeEach
-    void setUp() {
-        service = new OpexDistributionRefreshService();
-        service.intercompanyCalcService = new IntercompanyCalcService();
-    }
-
-    @Test
-    void readyChangedCostGenerationEmitsOneDurableSignal() {
-        EntityManager em = mock(EntityManager.class);
-        Query insert = mock(Query.class);
-        when(em.createNativeQuery(contains("INSERT IGNORE INTO practice_cost_generation_signal")))
-                .thenReturn(insert);
-        when(insert.executeUpdate()).thenReturn(1);
-        OpexDistributionRefreshService local = new OpexDistributionRefreshService();
-        local.em = em;
-
-        assertTrue(local.emitReadyCostGenerationSignal());
-        verify(insert).executeUpdate();
-    }
-
-    @Test
-    void noChangeOrAlreadyObservedGenerationEmitsNoSignal() {
-        EntityManager em = mock(EntityManager.class);
-        Query insert = mock(Query.class);
-        when(em.createNativeQuery(contains("INSERT IGNORE INTO practice_cost_generation_signal")))
-                .thenReturn(insert);
-        when(insert.executeUpdate()).thenReturn(0);
-        OpexDistributionRefreshService local = new OpexDistributionRefreshService();
-        local.em = em;
-
-        assertFalse(local.emitReadyCostGenerationSignal());
-    }
 
     // -----------------------------------------------------------------------
     // Test 1: SALARIES account with consistent positive postings — regression

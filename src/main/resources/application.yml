@@ -481,14 +481,6 @@ finance:
     enabled: ${FINANCE_INTERNAL_COST_TIMING_ALIGNMENT_ENABLED:false}
 pricingEngine:
   enabled: true
-practices:
-  contribution:
-    request-timeout: PT10S
-    query-timeout: PT2M
-    job-timeout: PT30M
-    named-lock-wait: PT30S
-    stale-owner-after: PT35M
-    source-quiescence: PT5M
 cvtool:
   username: ${CVTOOL_USERNAME:}
   password: ${CVTOOL_PASSWORD:}

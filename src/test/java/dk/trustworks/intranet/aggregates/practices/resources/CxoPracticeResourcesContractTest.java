@@ -1,16 +1,12 @@
 package dk.trustworks.intranet.aggregates.practices.resources;
 
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeOperatingCostResponseDTO;
-import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeContributionResponseDTO;
-import dk.trustworks.intranet.aggregates.practices.services.CxoPracticeContributionService;
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeStaffingResponseDTO;
 import dk.trustworks.intranet.aggregates.practices.services.CxoPracticeOperatingCostService;
 import dk.trustworks.intranet.aggregates.practices.services.CxoPracticeStaffingService;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.ws.rs.Path;
-import jakarta.ws.rs.core.MultivaluedHashMap;
-import jakarta.ws.rs.core.UriInfo;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -48,37 +44,6 @@ class CxoPracticeResourcesContractTest {
         resource.service = service;
 
         assertSame(expected, resource.getOperatingCost("booked_plus_draft"));
-    }
-
-    @Test
-    void contributionIsProtectedAndDefaultsOnlyOmissionToBooked() {
-        assertProtectedPath(CxoPracticeContributionResource.class, "/practices/cxo/contribution");
-        CxoPracticeContributionService service = mock(CxoPracticeContributionService.class);
-        PracticeContributionResponseDTO expected = mock(PracticeContributionResponseDTO.class);
-        when(service.getContribution(CostSource.BOOKED)).thenReturn(expected);
-        UriInfo uriInfo = mock(UriInfo.class);
-        when(uriInfo.getQueryParameters(false)).thenReturn(new MultivaluedHashMap<>());
-        CxoPracticeContributionResource resource = new CxoPracticeContributionResource();
-        resource.service = service;
-
-        assertSame(expected, resource.getContribution(uriInfo));
-        verify(service).getContribution(CostSource.BOOKED);
-    }
-
-    @Test
-    void contributionAcceptsOnlyTheExactBookedPlusDraftValue() {
-        CxoPracticeContributionService service = mock(CxoPracticeContributionService.class);
-        PracticeContributionResponseDTO expected = mock(PracticeContributionResponseDTO.class);
-        when(service.getContribution(CostSource.BOOKED_PLUS_DRAFT)).thenReturn(expected);
-        MultivaluedHashMap<String, String> parameters = new MultivaluedHashMap<>();
-        parameters.add("costSource", "BOOKED_PLUS_DRAFT");
-        UriInfo uriInfo = mock(UriInfo.class);
-        when(uriInfo.getQueryParameters(false)).thenReturn(parameters);
-        CxoPracticeContributionResource resource = new CxoPracticeContributionResource();
-        resource.service = service;
-
-        assertSame(expected, resource.getContribution(uriInfo));
-        verify(service).getContribution(CostSource.BOOKED_PLUS_DRAFT);
     }
 
     @Test

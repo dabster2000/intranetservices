@@ -119,34 +119,6 @@ public class OpexDistributionRefreshService {
                                  LocalDate windowFrom, LocalDate windowTo) {}
 
     /**
-     * Idempotently emits the durable revenue-scheduler edge for a newly published cost
-     * generation. A byte-identical NO_CHANGE request has no resulting generation and cannot
-     * satisfy this INSERT.
-     */
-    @Transactional
-    public boolean emitReadyCostGenerationSignal() {
-        int inserted = em.createNativeQuery("""
-                INSERT IGNORE INTO practice_cost_generation_signal (
-                    cost_generation_at, practice_basis_generation_id, cost_basis_request_id,
-                    input_vector_fingerprint, cause)
-                SELECT p.generation_at, p.practice_basis_generation_id, r.request_id,
-                       r.input_vector_fingerprint, r.cause
-                FROM practice_operating_cost_publication p
-                JOIN practice_cost_basis_refresh_request r
-                  ON r.request_id=p.certified_cost_basis_request_id
-                WHERE p.publication_id=1 AND p.refresh_state='READY'
-                  AND p.generation_at IS NOT NULL AND p.practice_basis_generation_id IS NOT NULL
-                  AND r.status='READY'
-                  AND r.resulting_cost_generation_at=p.generation_at
-                  AND r.resulting_basis_generation_id=p.practice_basis_generation_id
-                """).executeUpdate();
-        if (inserted < 0 || inserted > 1) {
-            throw new IllegalStateException("COST_GENERATION_SIGNAL_CARDINALITY_INVALID");
-        }
-        return inserted == 1;
-    }
-
-    /**
      * Rebuild all rows in the window [currentFY - fyBack, currentFY + 1).
      * Idempotent — safe to call any number of times.
      */

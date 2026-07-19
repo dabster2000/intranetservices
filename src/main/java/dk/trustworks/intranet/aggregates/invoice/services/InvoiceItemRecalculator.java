@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
-import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.CREDIT_NOTE;
 
 /**
  * Canonical home for the invoice line-item recalculation pipeline.
@@ -41,7 +40,16 @@ public class InvoiceItemRecalculator {
                 // A JPQL bulk delete only removes rows from the DB, not from the persistence
                 // context, so calling persist() on the original (still-managed) instances is
                 // silently ignored. Creating fresh instances guarantees an INSERT.
-                .map(ii -> cloneBaseItem(invoice, ii))
+                .map(ii -> new InvoiceItem(
+                        ii.getUuid(),           // preserve existing UUID
+                        ii.getConsultantuuid(),
+                        ii.getItemname(),
+                        ii.getDescription(),
+                        ii.getRate(),
+                        ii.getHours(),
+                        ii.getPosition(),
+                        invoice.getUuid(),
+                        BASE))
                 .toList();
 
         List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
@@ -77,39 +85,6 @@ public class InvoiceItemRecalculator {
         invoice.vatAmount          = pr.vatAmount.doubleValue();
         invoice.grandTotal         = pr.grandTotal.doubleValue();
         invoice.calculationBreakdown = pr.breakdown;
-    }
-
-    /**
-     * Clones a BASE line while retaining only server-written credit-copy evidence.  Pricing
-     * provenance belongs to calculated output and is intentionally not copied onto arbitrary
-     * base rows.  A client-created or unproven credit row therefore remains unlinked.
-     */
-    static InvoiceItem cloneBaseItem(Invoice invoice, InvoiceItem source) {
-        InvoiceItem clone = new InvoiceItem(
-                source.getUuid(),
-                source.getConsultantuuid(),
-                source.getItemname(),
-                source.getDescription(),
-                source.getRate(),
-                source.getHours(),
-                source.getPosition(),
-                invoice.getUuid(),
-                BASE);
-        if (invoice.getType() == CREDIT_NOTE
-                && source.getSourceItemUuid() != null
-                && !source.getSourceItemUuid().isBlank()
-                && source.getCreditCopyKind() != null
-                && !"NONE".equals(source.getCreditCopyKind())
-                && source.getCreditCopyFingerprint() != null) {
-            clone.setSourceItemUuid(source.getSourceItemUuid());
-            clone.setSourceAttributionUuid(source.getSourceAttributionUuid());
-            clone.setCreditCopyKind(source.getCreditCopyKind());
-            clone.setCreditCopyScope(source.getCreditCopyScope());
-            clone.setCreditCopyScale(source.getCreditCopyScale());
-            clone.setCreditCopyOriginalSourceNativeAmount(source.getCreditCopyOriginalSourceNativeAmount());
-            clone.setCreditCopyFingerprint(source.getCreditCopyFingerprint());
-        }
-        return clone;
     }
 
     /** Hook for tests: bulk-deletes invoice items via Panache. */
