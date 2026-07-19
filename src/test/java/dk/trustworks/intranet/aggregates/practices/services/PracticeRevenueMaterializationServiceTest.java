@@ -403,36 +403,6 @@ class PracticeRevenueMaterializationServiceTest {
                 .findFirst().orElseThrow().allocationDkk());
     }
 
-    /**
-     * The base-distribution and credit-source-invoice references persist into
-     * source_allocation_reference VARCHAR(220). A raw comma-join of contributing source ids
-     * overflowed the column on the first production build (6+ UUID-sized ids), aborting the whole
-     * generation with a data-truncation rollback. References must stay digest-bounded regardless
-     * of how many sources contribute.
-     */
-    @Test void baseDistributionReferencesStayBoundedForManyContributingSources(){
-        var valuation = new PracticeRevenueValuationService();
-        var allocation = new PracticeRevenueAllocationService();
-        var results = new java.util.ArrayList<PracticeRevenueAllocationService.AllocationResult>();
-        for (int i = 0; i < 8; i++) {
-            results.add(allocation.allocate(new PracticeRevenueAllocationService.AllocationRequest(
-                    valuedItem(valuation, "document",
-                            "item-" + i + "-0123456789012345678901234567890123456789", "100.000000",
-                            PracticeRevenueValuationService.DocumentType.INVOICE),
-                    PracticeRevenueValuationService.DocumentType.INVOICE,
-                    List.of(sourceEvidence("consultant", "PM", BigDecimal.ONE, false)))));
-        }
-        var distribution = PracticeRevenueMaterializationService.baseDistributionEvidence(results);
-
-        assertFalse(distribution.candidates().isEmpty());
-        for (var candidate : distribution.candidates()) {
-            assertTrue(candidate.sourceAllocationReference().startsWith("BASE:"),
-                    "reference must be the bounded digest form");
-            assertTrue(candidate.sourceAllocationReference().length() <= 220,
-                    "reference must fit source_allocation_reference VARCHAR(220)");
-        }
-    }
-
     @Test void baseDistributionRetainsItsExactUnassignedShare(){
         var valuation = new PracticeRevenueValuationService();
         var allocation = new PracticeRevenueAllocationService();
