@@ -77,6 +77,16 @@ public class User extends PanacheEntityBase {
     @Column(name = "practice")
     private PrimarySkillType practice;
 
+    /**
+     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Written only by
+     * the DB trigger mirror during the dual-key window (insertable/updatable
+     * false); no read path consumes it until Phase 3, and it is not serialized
+     * (byte-identical user payload this phase).
+     */
+    @JsonIgnore
+    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    private String practiceUuid;
+
     @Transient
     private List<Salary> salaries = new ArrayList<>();
 

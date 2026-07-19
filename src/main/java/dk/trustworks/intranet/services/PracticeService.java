@@ -83,6 +83,9 @@ public class PracticeService {
                 code, displayCode, name, resolvedType,
                 active == null || active,
                 sortOrder == null ? 0 : sortOrder);
+        // Surrogate identity (V424): existing rows are minted by the migration;
+        // new rows get their uuid here (the column is NOT NULL, insertable).
+        practice.setUuid(UUID.randomUUID().toString());
         Practice.persist(practice);
         return practice;
     }

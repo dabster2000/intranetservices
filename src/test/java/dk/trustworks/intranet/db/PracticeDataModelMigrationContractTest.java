@@ -139,7 +139,11 @@ class PracticeDataModelMigrationContractTest {
         assertTrue(guardedAdds >= 8, "every ADD COLUMN must be IF NOT EXISTS-guarded (found " + guardedAdds + ")");
         assertTrue(migration.contains("WHERE created_at IS NULL") || migration.contains("WHERE created_by IS NULL"),
                 "backfills must be guarded so re-runs are no-ops");
-        assertFalse(migration.toUpperCase().contains("DROP "), "V421 is additive only");
+        // Additive only — check for structural DROP DDL (mirrors migration_is_additive_only),
+        // not the bare word "DROP" which also appears in the rollback comment.
+        String upper = migration.toUpperCase();
+        assertFalse(upper.contains("DROP TABLE") || upper.contains("DROP COLUMN") || upper.contains("DROP INDEX"),
+                "V421 is additive only");
     }
 
     @Test
@@ -167,6 +171,105 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(migration.toUpperCase().contains("DROP TABLE"), "V423 drops views only");
     }
 
+    // ── Phase 1 migrations (V424 dual-key foundation, V425 new structures) ───
+
+    @Test
+    void v424_adds_practice_uuid_unique_and_populated() throws IOException {
+        String m = readV424();
+        assertTrue(m.contains("ADD COLUMN IF NOT EXISTS uuid VARCHAR(36)"), "practice.uuid added idempotently");
+        assertTrue(m.contains("SET uuid = UUID() WHERE uuid IS NULL"), "uuid populated only where NULL (converges on re-run)");
+        assertTrue(m.contains("MODIFY COLUMN uuid VARCHAR(36) NOT NULL"), "uuid becomes NOT NULL");
+        assertTrue(m.contains("uq_practice_uuid"), "uuid is UNIQUE (code stays the PK)");
+    }
+
+    @Test
+    void v424_adds_dual_practice_uuid_columns_on_the_five_durable_tables() throws IOException {
+        String m = readV424();
+        // A practice_uuid twin on each of the five durable tables.
+        int twinAdds = m.split("ADD COLUMN IF NOT EXISTS practice_uuid VARCHAR\\(36\\)", -1).length - 1;
+        assertTrue(twinAdds >= 5, "practice_uuid twin on user/uph/team/practice_lead/sales_lead (found " + twinAdds + ")");
+        // Every backfill derives the uuid from the code column via a registry join
+        // (converges under uuid re-mint) and is keyed on IS NULL (idempotent).
+        assertTrue(m.contains("JOIN practice p ON p.code = u.practice"), "user backfill joins code→uuid");
+        assertTrue(m.contains("WHERE u.practice_uuid IS NULL"), "user backfill keyed on IS NULL");
+        assertTrue(m.contains("idx_team_practice_uuid"), "team twin indexed (code column is indexed)");
+        assertTrue(m.contains("idx_practice_lead_practice_uuid"), "practice_lead twin indexed (code column is indexed)");
+    }
+
+    @Test
+    void v424_adds_the_provenance_columns() throws IOException {
+        String m = readV424();
+        assertTrue(m.contains("source_team_uuid VARCHAR(36) NULL"), "uph gains source_team_uuid");
+        assertTrue(m.contains("updated_by       VARCHAR(36) NULL")
+                || m.contains("updated_by VARCHAR(36) NULL"), "uph gains updated_by");
+    }
+
+    @Test
+    void v424_recreates_the_trigger_family_mirroring_both_keys() throws IOException {
+        String m = readV424();
+        // Two new BEFORE triggers mirror practice_uuid onto the row (NULL-safe).
+        assertTrue(m.contains("trg_user_practice_uuid_before_insert"), "BEFORE INSERT mirror trigger");
+        assertTrue(m.contains("trg_user_practice_uuid_before_update"), "BEFORE UPDATE mirror trigger");
+        assertTrue(m.contains("SET NEW.practice_uuid = (SELECT p.uuid FROM practice p WHERE p.code = NEW.practice)"),
+                "mirror derives uuid from the code (NULL-safe)");
+        // The three AFTER triggers are recreated and carry practice_uuid onto history.
+        assertTrue(m.contains("trg_user_practice_history_after_insert"), "AFTER INSERT recreated");
+        assertTrue(m.contains("trg_user_practice_history_after_update"), "AFTER UPDATE recreated");
+        assertTrue(m.contains("trg_user_practice_history_after_delete"), "AFTER DELETE recreated");
+        assertTrue(m.contains("OLD.practice <=> NEW.practice"), "change-detection preserved (code column)");
+        int dropTriggers = m.split("DROP TRIGGER IF EXISTS", -1).length - 1;
+        assertTrue(dropTriggers >= 5, "every trigger DROP IF EXISTS + CREATE for idempotency (found " + dropTriggers + ")");
+    }
+
+    @Test
+    void v425_creates_team_practice_assignment_temporal_and_seeded() throws IOException {
+        String m = readV425();
+        assertTrue(m.contains("CREATE TABLE IF NOT EXISTS team_practice_assignment"), "temporal assignment table");
+        assertTrue(m.contains("fk_tpa_team"), "FK team_uuid → team(uuid)");
+        assertTrue(m.contains("fk_tpa_practice"), "FK practice_uuid → practice(uuid)");
+        assertTrue(m.contains("REFERENCES practice (uuid)"), "FK targets the surrogate key");
+        // House audit columns (Phase 0 Auditable pattern).
+        assertTrue(m.contains("created_by") && m.contains("modified_by"), "house audit columns");
+        // Seed: one open row per practice-assigned team, startdate = the V418 backfill date.
+        assertTrue(m.contains("'2026-07-19'"), "seed startdate = the V418 backfill date");
+        assertTrue(m.contains("WHERE t.practice_code IS NOT NULL"), "seed only practice-assigned teams");
+        assertTrue(m.contains("NOT EXISTS (SELECT 1 FROM team_practice_assignment"), "seed idempotent (no duplicate rows)");
+    }
+
+    @Test
+    void v425_dual_keys_questionnaire_without_rewriting_the_code_array() throws IOException {
+        String m = readV425();
+        assertTrue(m.contains("ADD COLUMN IF NOT EXISTS target_practice_uuids"), "adds the uuid twin column");
+        assertTrue(m.contains("JSON_TABLE"), "backfill maps codes→uuids via JSON, preserving order");
+        // The code array stays authoritative — it must NOT be rewritten this phase.
+        assertFalse(m.contains("SET q.target_practices ="), "target_practices (codes) must stay authoritative");
+        assertFalse(m.contains("SET target_practices ="), "target_practices (codes) must stay authoritative");
+    }
+
+    @Test
+    void v425_rekeys_fact_pipeline_snapshot_and_drops_the_dead_code_column() throws IOException {
+        String m = readV425();
+        assertTrue(m.contains("ADD COLUMN IF NOT EXISTS practice_uuid VARCHAR(36) NULL AFTER practice"),
+                "fps gains practice_uuid");
+        assertTrue(m.contains("CREATE OR REPLACE PROCEDURE sp_snapshot_pipeline"), "snapshot proc recreated to write uuid");
+        assertTrue(m.contains("CREATE OR REPLACE PROCEDURE sp_backfill_pipeline_snapshots"), "backfill proc recreated");
+        assertTrue(m.contains("preg.uuid AS practice_uuid"), "procs resolve sl.practice→registry uuid at snapshot time");
+        // The dead code column + its index are dropped (Hans's clean-solution decision).
+        assertTrue(m.contains("DROP COLUMN IF EXISTS practice"), "dead practice column dropped");
+        assertTrue(m.contains("DROP INDEX IF EXISTS idx_fps_month_practice"), "old practice index dropped");
+        // The backfill is guarded so it no-ops once the column is gone (repair re-run).
+        assertTrue(m.contains("information_schema.COLUMNS") && m.contains("COLUMN_NAME = 'practice'"),
+                "fps backfill guarded by column-existence check");
+    }
+
+    @Test
+    void v425_drops_practice_settings_and_adds_the_lead_user_fk() throws IOException {
+        String m = readV425();
+        assertTrue(m.contains("DROP TABLE IF EXISTS practice_settings"), "empty practice_settings table dropped");
+        assertTrue(m.contains("fk_practice_lead_user"), "practice_lead.useruuid FK → user(uuid)");
+        assertTrue(m.contains("REFERENCES `user` (uuid)"), "FK targets user(uuid)");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
     }
@@ -185,5 +288,13 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV423() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V423__Drop_fact_historical_win_rates_and_fact_revenue_runoff.sql"));
+    }
+
+    private static String readV424() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V424__Practice_phase1_uuid_dual_key.sql"));
+    }
+
+    private static String readV425() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V425__Practice_phase1_new_structures.sql"));
     }
 }

@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
@@ -16,36 +15,32 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * A temporal practice-lead assignment (V418). Mirrors the {@code teamroles}
- * idiom: multiple concurrent leads possible, history preserved via
- * {@code enddate = null} meaning "current". Dates serialize as ISO yyyy-MM-dd
- * to match the team-membership editing contract the frontend already uses.
- * Audit fields follow the house {@link Auditable} pattern (V421): populated by
+ * Temporal team↔practice association (V425, Part 2 Phase 1). The source of truth
+ * for "which practice a team belonged to, when"; {@code team.practice_uuid} is
+ * the denormalized current value. Mirrors the temporal {@code teamroles} /
+ * {@code practice_lead} idiom: {@code enddate = null} means "current".
+ * <p>
+ * Phase 1 only <b>seeds and maps</b> this table — one open row per
+ * practice-assigned team. Nothing writes it until Phase 2's
+ * {@code PracticeSyncService} records team-practice transitions here. Audit
+ * fields follow the house {@link Auditable} pattern (V421), populated by
  * {@link AuditEntityListener} from the X-Requested-By header.
  */
 @Data
 @NoArgsConstructor
 @Entity
-@Table(name = "practice_lead")
+@Table(name = "team_practice_assignment")
 @EntityListeners(AuditEntityListener.class)
-public class PracticeLead extends PanacheEntityBase implements Auditable {
+public class TeamPracticeAssignment extends PanacheEntityBase implements Auditable {
 
     @Id
     private String uuid;
 
-    @Column(name = "practice_code")
-    private String practiceCode;
+    @Column(name = "team_uuid")
+    private String teamUuid;
 
-    /**
-     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Written only
-     * by the migration backfill this phase (insertable/updatable false); not
-     * serialized and not read until Phase 3.
-     */
-    @JsonIgnore
-    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    @Column(name = "practice_uuid")
     private String practiceUuid;
-
-    private String useruuid;
 
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
@@ -71,10 +66,10 @@ public class PracticeLead extends PanacheEntityBase implements Auditable {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String modifiedBy;
 
-    public PracticeLead(String uuid, String practiceCode, String useruuid, LocalDate startdate, LocalDate enddate) {
+    public TeamPracticeAssignment(String uuid, String teamUuid, String practiceUuid, LocalDate startdate, LocalDate enddate) {
         this.uuid = uuid;
-        this.practiceCode = practiceCode;
-        this.useruuid = useruuid;
+        this.teamUuid = teamUuid;
+        this.practiceUuid = practiceUuid;
         this.startdate = startdate;
         this.enddate = enddate;
     }

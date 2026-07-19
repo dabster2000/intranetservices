@@ -5,6 +5,7 @@ import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.domain.user.entity.User;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -50,6 +51,16 @@ public class SalesLead extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @Column(name = "practice")
     private PrimarySkillType practice;
+
+    /**
+     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Written only by
+     * the migration backfill this phase (insertable/updatable false); not
+     * serialized and not read until Phase 3.
+     */
+    @JsonIgnore
+    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    private String practiceUuid;
+
     private boolean extension;
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")

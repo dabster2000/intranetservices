@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.domain.user.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -30,5 +31,15 @@ public class Team extends PanacheEntityBase {
     /** Optional link to the practice registry (V418). NULL = no practice. */
     @Column(name = "practice_code")
     private String practiceCode;
+
+    /**
+     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Written only
+     * by the migration backfill this phase (insertable/updatable false); Phase 2's
+     * PracticeSyncService becomes its writer. Not serialized yet (byte-identical
+     * team payload); no read path consumes it until Phase 3.
+     */
+    @JsonIgnore
+    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    private String practiceUuid;
 
 }
