@@ -32,10 +32,16 @@ import static dk.trustworks.intranet.aggregates.utilization.services.Utilization
  * Provides per-consultant analytics: utilization rankings, time-to-first-contract,
  * bench consultants, unprofitable consultants, and budget-vs-actual gap.
  *
- * All queries filter to consultants in the five core practices (PM, BA, SA, CYB, DEV)
- * by default, with optional company filtering. Exception: the explicit-window
- * profitability variant treats an absent practice set as "no practice filter" —
- * the team dashboard filters by team membership instead.
+ * All queries filter to consultants in the five core practices
+ * ({@link dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper#BILLABLE_PRACTICES}),
+ * with optional company filtering. This is the population definition for these
+ * widgets, not a user-selectable filter: it is what keeps partners and management
+ * (stored practice {@code UD}) out of consultant-performance rankings. It is
+ * deliberately fixed — the CXO dashboard has no practice selector.
+ *
+ * <p>Exception: the explicit-window profitability variant takes a practice set and
+ * treats an absent one as "no practice filter" — the team dashboard filters by team
+ * membership instead and must also see members outside the five core practices.</p>
  */
 @JBossLog
 @ApplicationScoped
@@ -48,19 +54,16 @@ public class ConsultantInsightsService {
      * Returns consultants ranked by net utilization over the trailing 12 months.
      * Only includes consultants with > 100 net available hours to avoid noise.
      *
-     * @param practices  practice filter (defaults to all 5 core practices)
      * @param companyIds optional company filter
      * @param ascending  true for lowest-first, false for highest-first
      * @param limit      max results to return
      * @return ranked list of consultant utilization DTOs
      */
     public List<ConsultantUtilizationRankingDTO> getUtilizationRankings(
-            Set<String> practices,
             Set<String> companyIds,
             boolean ascending,
             int limit) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         // TTM boundaries: 12 complete months (exclusive of current month)
@@ -99,7 +102,7 @@ public class ConsultantInsightsService {
         sql.append(" LIMIT :resultLimit");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", effectivePractices);
+        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", toDate);
         query.setParameter("resultLimit", limit);
@@ -137,17 +140,14 @@ public class ConsultantInsightsService {
      * Returns time-to-first-contract data for consultants hired within the last N months.
      * Shows the gap between hire date (first ACTIVE/CONSULTANT status) and first contract assignment.
      *
-     * @param practices  practice filter
      * @param companyIds optional company filter
      * @param months     how far back to look for hires (default 24)
      * @return list of hire-to-contract DTOs, ordered by hire date ascending
      */
     public List<TimeToFirstContractDTO> getTimeToFirstContract(
-            Set<String> practices,
             Set<String> companyIds,
             int months) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
         LocalDate cutoffDate = LocalDate.now().minusMonths(months);
 
@@ -180,7 +180,7 @@ public class ConsultantInsightsService {
             """);
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", effectivePractices);
+        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("cutoffDate", cutoffDate);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -220,17 +220,14 @@ public class ConsultantInsightsService {
      * Returns consultants who have had no active contract for at least the specified number of months.
      * Only includes currently active consultants (latest userstatus = ACTIVE/CONSULTANT).
      *
-     * @param practices  practice filter
      * @param companyIds optional company filter
      * @param minMonths  minimum months without a contract (default 3)
      * @return list of bench consultant DTOs, ordered by days since contract descending
      */
     public List<ConsultantWithoutContractDTO> getConsultantsWithoutContract(
-            Set<String> practices,
             Set<String> companyIds,
             int minMonths) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
         LocalDate cutoffDate = LocalDate.now().minusMonths(minMonths);
 
@@ -261,7 +258,7 @@ public class ConsultantInsightsService {
             """);
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", effectivePractices);
+        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("cutoffDate", cutoffDate);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -301,15 +298,13 @@ public class ConsultantInsightsService {
      * Salary: SUM of monthly MAX(salary) from fact_user_day per user TTM.
      * Shared overhead: total non-salary OPEX from fact_opex_mat TTM / active consultant headcount.
      *
-     * @param practices  practice filter
      * @param companyIds optional company filter
      * @return list of unprofitable consultant DTOs, ordered by net profit ascending (worst first)
      */
     public List<UnprofitableConsultantDTO> getUnprofitableConsultants(
-            Set<String> practices,
             Set<String> companyIds) {
         // Backward-compatible: return only unprofitable consultants (netProfit < 0)
-        return getConsultantProfitability(practices, companyIds, "ttm").stream()
+        return getConsultantProfitability(companyIds, "ttm").stream()
                 .filter(dto -> dto.getNetProfit() < 0)
                 .collect(java.util.stream.Collectors.toList());
     }
@@ -321,16 +316,14 @@ public class ConsultantInsightsService {
      * <p>Unlike {@link #getUnprofitableConsultants}, this method returns ALL consultants
      * regardless of whether they are profitable or not, allowing callers to filter as needed.
      *
-     * <p>Practices default to the five core practices here (CXO dashboard semantics).
+     * <p>Scoped to the five core practices (CXO dashboard semantics).
      *
-     * @param practices  practice filter
      * @param companyIds optional company filter
      * @param period     "ttm" for trailing 12 months, "fytd" for fiscal-year-to-date
      *                   (current FY start → last complete month)
      * @return list of ALL consultant profitability DTOs, ordered by net profit ascending
      */
     public List<UnprofitableConsultantDTO> getConsultantProfitability(
-            Set<String> practices,
             Set<String> companyIds,
             String period) {
 
@@ -339,7 +332,7 @@ public class ConsultantInsightsService {
                 ? getCurrentFiscalYearRange().start()
                 : ttmStart();
         return getConsultantProfitability(
-                effectivePractices(practices), companyIds, periodFrom, firstOfCurrentMonth);
+                BILLABLE_PRACTICES, companyIds, periodFrom, firstOfCurrentMonth);
     }
 
     /**
@@ -519,17 +512,14 @@ public class ConsultantInsightsService {
      * Returns the per-consultant gap between budgeted hours and actual billable hours over TTM.
      * Identifies consultants driving the largest budget-actual discrepancy.
      *
-     * @param practices  practice filter
      * @param companyIds optional company filter
      * @param limit      max results to return (default 15)
      * @return list of budget-actual gap DTOs, ordered by gap descending (largest gap first)
      */
     public List<BudgetActualGapDTO> getBudgetActualGap(
-            Set<String> practices,
             Set<String> companyIds,
             int limit) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         // TTM boundaries
@@ -585,7 +575,7 @@ public class ConsultantInsightsService {
             """.formatted(budgetSub, actualSub);
 
         var query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("practices", effectivePractices);
+        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("ttmFrom", ttmFrom);
         query.setParameter("ttmTo", ttmTo);
         query.setParameter("resultLimit", limit);
@@ -726,13 +716,6 @@ public class ConsultantInsightsService {
         log.debugf("getBudgetActualGapMonthly: userId=%s, returned %s rows", userId, results.size());
 
         return results;
-    }
-
-    /**
-     * Returns effective practices set, defaulting to all 5 core practices if null/empty.
-     */
-    private Set<String> effectivePractices(Set<String> practices) {
-        return (practices != null && !practices.isEmpty()) ? practices : BILLABLE_PRACTICES;
     }
 
     /**
