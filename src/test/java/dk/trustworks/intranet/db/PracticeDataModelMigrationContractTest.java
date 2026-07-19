@@ -11,11 +11,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Contract test for V418 — the practice registry + team-settings migration.
- * Reads the SQL file and asserts the structural facts the frontend and the
- * runtime code depend on (tables, collation, FKs, seeds, display renames,
- * budget seeds, the user.practice default and the settings page registration),
- * plus that the migration is additive (no DROP).
+ * Contract tests for the Part 1 practice migrations: V418 (practice registry +
+ * team-settings, additive) and V419 (JK retirement, data-only). Reads the SQL
+ * files and asserts the structural facts the frontend and the runtime code
+ * depend on (tables, collation, FKs, seeds, display renames, budget seeds,
+ * the user.practice default, page registrations and the JK data flips).
  */
 class PracticeDataModelMigrationContractTest {
 
@@ -94,7 +94,42 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(migration.contains("DROP COLUMN"), "V418 must not drop columns");
     }
 
+    @Test
+    void v419_flips_every_jk_reference_to_ud() throws IOException {
+        String migration = readV419();
+
+        assertTrue(migration.contains("UPDATE `user` SET practice = 'UD' WHERE practice = 'JK'"),
+                "junior users must flip to UD");
+        assertTrue(migration.contains("UPDATE user_practice_history SET practice = 'UD' WHERE practice = 'JK'"),
+                "history sliver must be corrected");
+        assertTrue(migration.contains("UPDATE sales_lead SET practice = 'UD' WHERE practice = 'JK'"),
+                "sales-lead junior tag must be removed");
+        assertTrue(migration.contains("DELETE FROM practice WHERE code = 'JK'"),
+                "transitional JK registry row must be deleted");
+    }
+
+    @Test
+    void v419_retires_practice_settings_data_and_jk_dashboard_page() throws IOException {
+        String migration = readV419();
+
+        assertTrue(migration.contains("DELETE FROM practice_settings"),
+                "practice_settings data must be retired (table dropped in Part 2)");
+        assertTrue(migration.contains("DELETE FROM page_registry WHERE page_key = 'jk-team-dashboard'"),
+                "bespoke JK dashboard page entry must be removed");
+    }
+
+    @Test
+    void v419_is_data_only() throws IOException {
+        String migration = readV419().toUpperCase();
+        assertFalse(migration.contains("DROP TABLE"), "V419 must not drop tables");
+        assertFalse(migration.contains("ALTER TABLE"), "V419 must be data-only");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
+    }
+
+    private static String readV419() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V419__Retire_jk_practice_data.sql"));
     }
 }

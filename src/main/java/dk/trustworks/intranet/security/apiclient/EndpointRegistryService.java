@@ -33,7 +33,6 @@ public class EndpointRegistryService {
             Map.entry("userservice", "Users"),
             Map.entry("client", "Clients"),
             Map.entry("finance", "Finance"),
-            Map.entry("jkdashboard", "Finance"),
             Map.entry("revenue", "Revenue"),
             Map.entry("contracts", "Contracts"),
             Map.entry("knowledge", "Knowledge"),
