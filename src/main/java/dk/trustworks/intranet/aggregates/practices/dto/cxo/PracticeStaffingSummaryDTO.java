@@ -6,6 +6,6 @@ public record PracticeStaffingSummaryDTO(
         int plannedUnallocatedHeadcount,
         int priorPlannedUnallocatedHeadcount,
         int plannedHeadcountDelta,
-        Integer actualUnderutilizedHeadcount,
-        Double actualUnusedFte
+        int actualUnderutilizedHeadcount,
+        double actualUnusedFte
 ) {}

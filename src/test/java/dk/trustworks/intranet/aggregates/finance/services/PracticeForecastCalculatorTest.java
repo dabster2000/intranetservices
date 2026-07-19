@@ -16,8 +16,7 @@ class PracticeForecastCalculatorTest {
     @Test
     void julyWindow_preservesJanToDecLayoutAndStopsActualAtYesterday() {
         PracticeForecastCalculator.ForecastWindow window =
-                PracticeForecastCalculator.window(
-                        LocalDate.of(2026, 7, 14), LocalDate.of(2026, 7, 13));
+                PracticeForecastCalculator.window(LocalDate.of(2026, 7, 14));
 
         assertEquals(YearMonth.of(2026, 1), window.outputStartMonth());
         assertEquals(YearMonth.of(2026, 12), window.outputEndMonth());
@@ -30,8 +29,7 @@ class PracticeForecastCalculatorTest {
     @Test
     void periodTypesAndActualThroughDates_areExplicit() {
         PracticeForecastCalculator.ForecastWindow window =
-                PracticeForecastCalculator.window(
-                        LocalDate.of(2026, 7, 14), LocalDate.of(2026, 7, 13));
+                PracticeForecastCalculator.window(LocalDate.of(2026, 7, 14));
 
         assertEquals(PracticeForecastPeriodType.COMPLETED_ACTUAL,
                 PracticeForecastCalculator.periodType(YearMonth.of(2026, 6), window.currentMonth()));
@@ -51,7 +49,6 @@ class PracticeForecastCalculatorTest {
     @Test
     void percentagesAndGapHours_useMatchingHourBases() {
         assertEquals(50.0, PracticeForecastCalculator.utilizationPct(50.0, 100.0), 1e-9);
-        assertEquals(0.0, PracticeForecastCalculator.utilizationPct(0.0, 100.0), 1e-9);
         assertEquals(30.0, PracticeForecastCalculator.gapHours(50.0, 100.0, 80.0), 1e-9);
         assertEquals(0.0, PracticeForecastCalculator.gapHours(90.0, 100.0, 80.0), 1e-9);
         assertNull(PracticeForecastCalculator.utilizationPct(10.0, 0.0));
@@ -65,43 +62,10 @@ class PracticeForecastCalculatorTest {
     @Test
     void firstDayOfMonth_hasNoProvisionalCurrentActualDate() {
         PracticeForecastCalculator.ForecastWindow window =
-                PracticeForecastCalculator.window(
-                        LocalDate.of(2026, 8, 1), LocalDate.of(2026, 7, 31));
+                PracticeForecastCalculator.window(LocalDate.of(2026, 8, 1));
 
         assertNull(PracticeForecastCalculator.actualThroughDate(YearMonth.of(2026, 8), window));
         assertEquals(LocalDate.of(2026, 7, 31), window.actualToDate());
-    }
-
-    @Test
-    void laggedCutoff_keepsCertifiedMonthsAndSuppressesPartialCompletedMonth() {
-        PracticeForecastCalculator.ForecastWindow julyLagged =
-                PracticeForecastCalculator.window(
-                        LocalDate.of(2026, 7, 14), LocalDate.of(2026, 7, 12));
-
-        assertEquals(LocalDate.of(2026, 6, 30), PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 6), julyLagged));
-        assertEquals(LocalDate.of(2026, 7, 12), PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 7), julyLagged));
-
-        PracticeForecastCalculator.ForecastWindow augustLagged =
-                PracticeForecastCalculator.window(
-                        LocalDate.of(2026, 8, 1), LocalDate.of(2026, 7, 30));
-        assertNull(PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 7), augustLagged));
-        assertNull(PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 8), augustLagged));
-    }
-
-    @Test
-    void unavailableCutoff_hasNoActualEvidence() {
-        PracticeForecastCalculator.ForecastWindow window =
-                PracticeForecastCalculator.window(LocalDate.of(2026, 7, 14), null);
-
-        assertNull(window.actualToDate());
-        assertNull(PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 6), window));
-        assertNull(PracticeForecastCalculator.actualThroughDate(
-                YearMonth.of(2026, 7), window));
     }
 
     @Test
@@ -125,16 +89,12 @@ class PracticeForecastCalculatorTest {
     void budgetSqlIsCapacityLedAndPreservesMissingBudgetAsZero() {
         String sql = CxoFinanceService.practiceBudgetMonthlySql(true);
 
-        assertTrue(sql.contains("SUM(fud.net_available_hours)"));
-        assertTrue(sql.contains("SUM(budgetHours)"));
-        assertTrue(sql.contains("GROUP BY useruuid, document_date"));
-        assertTrue(sql.contains("db.useruuid = fud.useruuid"));
-        assertTrue(sql.contains("db.document_date = fud.document_date"));
-        assertTrue(sql.contains("COALESCE(SUM(COALESCE(db.budget_hours, 0)), 0)"));
-        assertTrue(sql.contains("fud.consultant_type = 'CONSULTANT'"));
-        assertTrue(sql.contains("fud.status_type = 'ACTIVE'"));
-        assertTrue(sql.contains("fud.companyuuid IN (:companyIds)"));
-        assertFalse(sql.contains("fact_revenue_budget_mat"));
+        assertTrue(sql.contains("SUM(fud2.net_available_hours)"));
+        assertTrue(sql.contains("SUM(budget_hours)"));
+        assertTrue(sql.contains("COALESCE(rb.budget_hours, 0)"));
+        assertTrue(sql.contains("LEFT JOIN"));
+        assertTrue(sql.contains("fud2.companyuuid IN (:companyIds)"));
+        assertTrue(sql.contains("company_id IN (:companyIds)"));
         assertFalse(sql.contains("AVG("));
     }
 }

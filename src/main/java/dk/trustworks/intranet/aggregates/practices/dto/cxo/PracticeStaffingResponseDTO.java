@@ -1,8 +1,5 @@
 package dk.trustworks.intranet.aggregates.practices.dto.cxo;
 
-import dk.trustworks.intranet.aggregates.utilization.dto.ActualDataStatus;
-
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -13,11 +10,6 @@ public record PracticeStaffingResponseDTO(
         LocalDate actualFromDate,
         LocalDate actualToDate,
         LocalDate actualThroughDate,
-        LocalDate requestedActualThroughDate,
-        LocalDate actualDataThroughDate,
-        ActualDataStatus actualDataStatus,
-        Integer actualSourceLagDays,
-        Instant sourceRefreshedAt,
         String practiceAttribution,
         LocalDate practiceAttributionCoverageStartDate,
         String attributionNote,

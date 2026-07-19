@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.aggregates.practices.dto.cxo;
 
+import java.time.LocalDateTime;
 import java.time.LocalDate;
-import java.time.Instant;
 import java.util.List;
 
-/** Group-only operating-cost response. The nullable freshness timestamp is the aggregate evidence refresh time in UTC. */
+/** Group-only operating-cost response. The freshness timestamp is a nullable best-effort table-write hint. */
 public record PracticeOperatingCostResponseDTO(
         String costSource,
         String reportingThroughMonthKey,
@@ -12,7 +12,7 @@ public record PracticeOperatingCostResponseDTO(
         String currentPeriodEndMonthKey,
         String priorPeriodStartMonthKey,
         String priorPeriodEndMonthKey,
-        Instant sourceRefreshedAt,
+        LocalDateTime sourceRefreshedAt,
         int currentSalaryMonthCount,
         int currentOpexMonthCount,
         int currentFteMonthCount,
@@ -29,18 +29,6 @@ public record PracticeOperatingCostResponseDTO(
         int priorCoveredSalaryCellCount,
         int priorMissingSalaryCellCount,
         int priorUnexpectedSalaryCellCount,
-        int currentExpectedFteCellCount,
-        int currentCoveredFteCellCount,
-        int currentMissingFteCellCount,
-        int priorExpectedFteCellCount,
-        int priorCoveredFteCellCount,
-        int priorMissingFteCellCount,
-        boolean currentCostComplete,
-        boolean currentFteComplete,
-        String currentCompletenessStatus,
-        boolean priorCostComplete,
-        boolean priorFteComplete,
-        String priorCompletenessStatus,
         String completenessStatus,
         boolean complete,
         String practiceAttribution,
