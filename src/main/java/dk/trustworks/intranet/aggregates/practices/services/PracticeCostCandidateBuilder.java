@@ -69,25 +69,13 @@ final class PracticeCostCandidateBuilder {
         }
 
         List<MonthlyCost> costs = new ArrayList<>();
-        List<GlControl> unallocatedWithinTolerance = new ArrayList<>();
         for (GlControl control : controls.stream().sorted(Comparator.comparing(GlControl::stableKey)).toList()) {
             BigDecimal target = control.signedAmountDkk().setScale(2, RoundingMode.HALF_UP);
             Map<String, BigDecimal> weights = "SALARIES".equals(control.costType())
                     ? intendedByCompanyMonth.get(key(control.companyUuid(), control.monthKey()))
                     : capacityByCompanyMonth.get(key(control.companyUuid(), control.monthKey()));
             if (weights == null || sum(weights).signum() == 0) {
-                // Design section 10.2/10.3: a zero availability/intended-weight denominator makes the
-                // AFFECTED control unavailable — never spread evenly or absorbed by core practices.
-                // Section 10.4's completeness contract proves reconciliation within max(DKK 1, 0.01%),
-                // so a residue inside that floor is retained as disclosed unallocated evidence (it
-                // participates in the certified content fingerprint); anything larger fails closed.
-                if (target.abs().compareTo(BigDecimal.ONE) <= 0) {
-                    unallocatedWithinTolerance.add(control);
-                    continue;
-                }
-                throw new CandidateIntegrityException(control.costType() + "_WEIGHT_DENOMINATOR_ZERO"
-                        + " company=" + control.companyUuid() + " month=" + control.monthKey()
-                        + " amount=" + target.toPlainString());
+                throw new CandidateIntegrityException(control.costType() + "_WEIGHT_DENOMINATOR_ZERO");
             }
             Map<String, BigDecimal> shares = normalize(weights);
             List<BalancedCentAllocator.Candidate<String>> unrounded = shares.entrySet().stream()
@@ -128,8 +116,7 @@ final class PracticeCostCandidateBuilder {
                             .filter(key -> key.endsWith("|" + parts[0] + "|" + parts[1]))
                             .count()));
         }).sorted(Comparator.comparing(SalaryCoverage::stableKey)).toList();
-        return new Result(List.copyOf(costs), ftes, salaryCoverage,
-                List.copyOf(unallocatedWithinTolerance));
+        return new Result(List.copyOf(costs), ftes, salaryCoverage);
     }
 
     private static Map<String, BigDecimal> normalize(Map<String, BigDecimal> weights) {
@@ -196,8 +183,7 @@ final class PracticeCostCandidateBuilder {
         }
         String stableKey() { return key(companyUuid, monthKey); }
     }
-    record Result(List<MonthlyCost> costs, List<MonthlyFte> ftes, List<SalaryCoverage> salaryCoverage,
-                  List<GlControl> unallocatedWithinTolerance) {}
+    record Result(List<MonthlyCost> costs, List<MonthlyFte> ftes, List<SalaryCoverage> salaryCoverage) {}
 
     static final class CandidateIntegrityException extends IllegalStateException {
         CandidateIntegrityException(String message) { super(message); }
