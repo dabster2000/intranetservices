@@ -47,9 +47,6 @@ public class PracticeCostBasisRefreshService {
     @ConfigProperty(name = "practices.contribution.named-lock-wait", defaultValue = "PT30S")
     Duration lockWait;
 
-    @ConfigProperty(name = "practices.contribution.build-transaction-timeout", defaultValue = "PT1H")
-    Duration buildTransactionTimeout;
-
     /**
      * Claims only the request identity carried by the job execution. This closes the interval
      * between the caller's eligibility check and the batchlet transaction: a newer request can
@@ -62,11 +59,7 @@ public class PracticeCostBasisRefreshService {
             throw new PublicationConflictException("EXPECTED_COST_REQUEST_NOT_CLAIMABLE");
         }
         try {
-            // Same atomic-build timeout as the revenue side: the staging cost build already uses
-            // 451s of Narayana's 600s default, so growth or contention would abort it mid-build.
-            return QuarkusTransaction.requiringNew()
-                    .timeout(PracticeRevenueMaterializationService.transactionTimeoutSeconds(buildTransactionTimeout))
-                    .call(() -> buildAndPublish(claim));
+            return QuarkusTransaction.requiringNew().call(() -> buildAndPublish(claim));
         } catch (DependencyManifestMissException miss) {
             // Fail closed on a manifest/coverage miss: durably advance the monotonic manifest input
             // version, enqueue the successor DEPENDENCY_MANIFEST_INPUT request, then retire this request

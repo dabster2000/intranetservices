@@ -59,8 +59,6 @@ public class PracticeRevenueMaterializationService {
 
     @ConfigProperty(name="practices.contribution.named-lock-wait", defaultValue="PT30S") Duration lockWait;
     @ConfigProperty(name="practices.contribution.query-timeout", defaultValue="PT2M") Duration queryTimeout;
-    @ConfigProperty(name="practices.contribution.build-transaction-timeout", defaultValue="PT1H")
-    Duration buildTransactionTimeout;
 
     public Result refresh() {
         long started=System.nanoTime();
@@ -71,11 +69,7 @@ public class PracticeRevenueMaterializationService {
             return Result.notStarted();
         }
         try {
-            // The build+persist is one atomic transaction whose real duration exceeds Narayana's
-            // 600s default (a staging run was reaper-aborted at 600s and surfaced ~953s in).
-            Result result=QuarkusTransaction.requiringNew()
-                    .timeout(transactionTimeoutSeconds(buildTransactionTimeout))
-                    .call(() -> buildAndPublish(attempt));
+            Result result=QuarkusTransaction.requiringNew().call(() -> buildAndPublish(attempt));
             recordState(result.status());
             return result;
         } catch (RevenueBasisCoverageMissException miss) {
@@ -1569,11 +1563,6 @@ public class PracticeRevenueMaterializationService {
     }
 
     private static boolean notBlank(String value) { return value != null && !value.isBlank(); }
-
-    /** Narayana takes whole seconds; clamp to [1s, 24h] so a misconfigured Duration cannot disable the reaper. */
-    static int transactionTimeoutSeconds(Duration configured) {
-        return (int) Math.max(1, Math.min(configured.toSeconds(), 86_400));
-    }
 
     void validate(BuildCandidate candidate) {
         Map<String,BigDecimal> allocated = new HashMap<>();
