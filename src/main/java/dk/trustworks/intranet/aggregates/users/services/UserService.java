@@ -11,8 +11,10 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
+import dk.trustworks.intranet.services.PracticeService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -54,6 +56,8 @@ public class UserService {
     LoginService loginService;
     @Inject
     ResumeParserService resumeParserService;
+    @Inject
+    PracticeService practiceService;
 
     /**
      * 1) Find user by Azure OID + issuer
@@ -381,6 +385,8 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {
         log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
+        // Registry-driven guard: reject JK and any non-active/non-UD practice on create (V418).
+        practiceService.validateUserPracticeAssignable(user.getPractice());
         if(User.find("uuid = ?1 or username = ?2", user.getUuid(), user.getUsername()).count() > 0) {
             log.infof("User already exists, skipping creation: uuid=%s username=%s", user.getUuid(), user.getUsername());
             return user;
@@ -414,12 +420,18 @@ public class UserService {
 
         // Preserve CPR: @JsonIgnore on User.cpr prevents Jackson deserialization,
         // so REST calls always have cpr=null. Read existing value to avoid erasing it.
+        User existing = User.findById(user.getUuid());
         String cprValue = user.getCpr();
-        if (cprValue == null) {
-            User existing = User.findById(user.getUuid());
-            if (existing != null) {
-                cprValue = existing.getCpr();
-            }
+        if (cprValue == null && existing != null) {
+            cprValue = existing.getCpr();
+        }
+
+        // Registry-driven guard: validate the practice only when it actually changes
+        // vs the stored value. No-op writes (incl. legacy JK) are tolerated so a
+        // whole-object employee PUT can't 400 during any migration window (V418).
+        PrimarySkillType previousPractice = existing != null ? existing.getPractice() : null;
+        if (user.getPractice() != previousPractice) {
+            practiceService.validateUserPracticeAssignable(user.getPractice());
         }
 
         User.update("email = ?1, " +

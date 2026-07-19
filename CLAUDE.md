@@ -29,7 +29,7 @@ Match the API path from the bug report to the resource class:
 /expenses                → expenseservice/resources/ExpenseResource.java
 /templates               → documentservice/resources/TemplateResource.java
 /knowledge/conferences   → aggregates/conference/resources/ConferenceResource.java
-/jk-dashboard            → aggregates/jkdashboard/resources/JkDashboardResource.java
+/practices               → resources/PracticeResource.java
 /accounting              → aggregates/accounting/resources/AccountingResource.java
 /auth                    → security/apiclient/TokenResource.java
 /auth/clients            → security/apiclient/ClientManagementResource.java

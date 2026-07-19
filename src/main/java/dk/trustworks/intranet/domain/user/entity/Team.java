@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -25,5 +26,9 @@ public class Team extends PanacheEntityBase {
     private String logouuid;
     private boolean teamleadbonus;
     private boolean teambonus;
+
+    /** Optional link to the practice registry (V418). NULL = no practice. */
+    @Column(name = "practice_code")
+    private String practiceCode;
 
 }
