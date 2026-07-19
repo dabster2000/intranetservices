@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -12,13 +14,15 @@ import java.time.LocalDateTime;
  * (PM/BA/SA/DEV/CYB/UD/JK); {@code displayCode} is the user-facing short code
  * (PM/IA/BU/TECH/CYB). {@code type} is stored as the ENUM('PRACTICE','SEGMENT')
  * mapped to a plain String — the practice pickers filter on {@code type = 'PRACTICE'}.
- * {@code createdAt}/{@code updatedAt} are DB-managed (defaults + ON UPDATE).
+ * Audit fields follow the house {@link Auditable} pattern (V421): populated by
+ * {@link AuditEntityListener} from the X-Requested-By header.
  */
 @Data
 @NoArgsConstructor
 @Entity
 @Table(name = "practice")
-public class Practice extends PanacheEntityBase {
+@EntityListeners(AuditEntityListener.class)
+public class Practice extends PanacheEntityBase implements Auditable {
 
     @Id
     private String code;
@@ -35,11 +39,21 @@ public class Practice extends PanacheEntityBase {
     @Column(name = "sort_order")
     private int sortOrder;
 
-    @Column(name = "created_at", insertable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private LocalDateTime createdAt;
 
-    @Column(name = "updated_at", insertable = false, updatable = false)
+    @Column(name = "updated_at", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private LocalDateTime updatedAt;
+
+    @Column(name = "created_by", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String createdBy;
+
+    @Column(name = "modified_by")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String modifiedBy;
 
     public Practice(String code, String displayCode, String name, String type, boolean active, int sortOrder) {
         this.code = code;

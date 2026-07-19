@@ -7,11 +7,14 @@ import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
+import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
@@ -179,8 +182,63 @@ public class TeamService {
 
     @Transactional
     public void addTeamroleToUser(String teamuuid, TeamRole teamrole) {
+        validateTeamroleWrite(teamuuid, teamrole);
         if(teamrole.getUuid()!=null && TeamRole.findByIdOptional(teamrole.getUuid()).isPresent()) TeamRole.deleteById(teamrole.getUuid());
         TeamRole.persist(new TeamRole(UUID.randomUUID().toString(), teamuuid, teamrole.getUseruuid(), teamrole.getStartdate(), teamrole.getEnddate(), teamrole.getTeammembertype()));
+    }
+
+    /**
+     * Phase 0 hardening of the {@code teamroles} write path (spec §4.2 / §1.6.E).
+     * Rejects rows that would recreate the dirty data cleaned by V422 (NULL
+     * useruuid, NULL startdate) and enforces the single-MEMBER invariant: a
+     * MEMBER role's half-open period [startdate, enddate) must not overlap
+     * another MEMBER role of the same user on a DIFFERENT team — using the
+     * canonical temporal predicate, so future-dated rows count too.
+     * LEADER/SPONSOR/GUEST roles are untouched.
+     */
+    private void validateTeamroleWrite(String teamuuid, TeamRole teamrole) {
+        if (teamrole == null) throw new BadRequestException("team role body is required");
+        if (teamrole.getUseruuid() == null || teamrole.getUseruuid().isBlank()) {
+            throw new BadRequestException("useruuid is required");
+        }
+        if (teamrole.getStartdate() == null) throw new BadRequestException("startdate is required");
+        if (teamrole.getTeammembertype() != TeamMemberType.MEMBER) return;
+        List<TeamRole> memberRoles = TeamRole.list("useruuid = ?1 and teammembertype = ?2",
+                teamrole.getUseruuid(), TeamMemberType.MEMBER);
+        TeamRole conflict = findOverlappingMemberRole(teamrole.getUuid(), teamuuid,
+                teamrole.getStartdate(), teamrole.getEnddate(), memberRoles);
+        if (conflict != null) {
+            Team conflictTeam = Team.findById(conflict.getTeamuuid());
+            String teamName = conflictTeam != null ? conflictTeam.getName() : conflict.getTeamuuid();
+            throw new BadRequestException("User is already a MEMBER of team '" + teamName + "' in this period ("
+                    + conflict.getStartdate() + " – "
+                    + (conflict.getEnddate() == null ? "open" : conflict.getEnddate())
+                    + "). A user can hold only one team membership at a time.");
+        }
+    }
+
+    /**
+     * Pure decision for the single-MEMBER invariant: returns the first MEMBER
+     * role of the same user on a different team whose [startdate, enddate)
+     * overlaps the candidate period, or {@code null} if the period is free.
+     * Same-team rows are ignored (re-joining or editing within one team is not
+     * a dual membership), as is the row being edited itself.
+     *
+     * @param editedRoleUuid the row being replaced by this write, or {@code null} on create
+     * @param targetTeamuuid the team the candidate role is written to
+     * @param memberRolesOfUser all MEMBER rows of the user (any team, any period)
+     */
+    static TeamRole findOverlappingMemberRole(String editedRoleUuid, String targetTeamuuid,
+                                              LocalDate startdate, LocalDate enddate,
+                                              List<TeamRole> memberRolesOfUser) {
+        for (TeamRole other : memberRolesOfUser) {
+            if (other.getUuid().equals(editedRoleUuid)) continue;
+            if (other.getTeamuuid().equals(targetTeamuuid)) continue;
+            if (DateUtils.periodsOverlap(startdate, enddate, other.getStartdate(), other.getEnddate())) {
+                return other;
+            }
+        }
+        return null;
     }
 
     @Transactional

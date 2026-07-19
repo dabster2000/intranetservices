@@ -1,0 +1,44 @@
+-- =============================================================================
+-- V423: Drop fact_historical_win_rates + fact_revenue_runoff (Part 2, Phase 0).
+--
+-- Second tranche of the practice data-model "Wave 3 trim"
+-- (docs/superpowers/specs/2026-07-19-practice-data-model-design.md §4.4;
+-- first tranche was V420). Both views lost their last Java consumer when the
+-- CXO Forecast unit was deleted (spec §1.6.C) and have had 0 references since.
+--
+-- Evidence (same verification gate as V420; verified against repo HEAD plus
+-- prod twservices4 and staging twservices4-staging, 2026-07-19):
+--
+--   1. fact_revenue_runoff (view, V231) — contract revenue projected 12
+--      months forward. Sole historical consumer was CxoForecastService
+--      (contract-runoff endpoint), deleted 2026-07-19 (§1.6.C).
+--   2. fact_historical_win_rates (view, V232) — calibrated win probabilities
+--      from resolved sales leads. Sole historical consumer was
+--      CxoForecastService (win-rates endpoint), deleted 2026-07-19 (§1.6.C).
+--
+--   * Zero Java references at HEAD (src/main + src/test), zero references in
+--     trustworks-intranet-v2/src, zero references in the live Vaadin v1 app
+--     checkout (trustworks-intranet/).
+--   * The only migration references are their own CREATE files (V231/V232) —
+--     no stored procedure, trigger or event body in any migration references
+--     either view, including the last recreations of the nightly BI-refresh
+--     procedures (V417). Migrations are the source of truth for routine
+--     bodies; the read-only DB account cannot see them — and note that its
+--     information_schema.views VIEW_DEFINITION is blank for ALL views (no
+--     SHOW VIEW privilege), so that check alone proves nothing.
+--   * View-on-view dependents ruled out via the full staging structure dump
+--     (local-env/dumps/structure.sql, mariadb-dump of twservices4-staging
+--     2026-07-15 with the actual definitions of all 38 views + 13 routines):
+--     both names appear only in their own definition blocks. The handful of
+--     legacy manually-created views not defined in any migration were checked
+--     individually (work/budget-shaped column sets; several already broken
+--     with ERROR 1356) — none can be a functional consumer.
+--
+-- Rollback strategy: both are plain views over surviving sources
+-- (fact_budget_day, sales_lead) — re-run the CREATE from V231/V232.
+-- Idempotent: DROP VIEW IF EXISTS.
+-- =============================================================================
+
+DROP VIEW IF EXISTS fact_historical_win_rates;
+
+DROP VIEW IF EXISTS fact_revenue_runoff;

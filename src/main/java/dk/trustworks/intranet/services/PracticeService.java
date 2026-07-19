@@ -4,6 +4,7 @@ import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.model.Practice;
 import dk.trustworks.intranet.model.PracticeLead;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
+import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.panache.common.Sort;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -110,13 +111,24 @@ public class PracticeService {
 
     @Transactional
     public PracticeLead startLead(String code, String useruuid, LocalDate startdate) {
-        if (Practice.findById(code) == null) throw new NotFoundException("Practice not found: " + code);
+        Practice practice = Practice.findById(code);
+        if (practice == null) throw new NotFoundException("Practice not found: " + code);
+        // Phase 0 hardening: leads attach only to active type='PRACTICE' rows
+        // (never UD/SEGMENT rows, never inactive rows).
+        String practiceRejection = leadPracticeRejection(code, practice.getType(), practice.isActive());
+        if (practiceRejection != null) throw new BadRequestException(practiceRejection);
         if (useruuid == null || useruuid.isBlank()) throw new BadRequestException("useruuid is required");
         // practice_lead.useruuid has no FK to user — validate existence here instead.
         if (dk.trustworks.intranet.domain.user.entity.User.findById(useruuid) == null) {
             throw new BadRequestException("Unknown user: " + useruuid);
         }
         if (startdate == null) throw new BadRequestException("startdate is required");
+        // A new lead is open-ended [startdate, ∞) — reject if it overlaps any
+        // existing row for the same user + practice. Concurrent leads across
+        // DIFFERENT users remain an intentional feature.
+        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceCode = ?1 and useruuid = ?2", code, useruuid);
+        String overlapRejection = leadOverlapRejection(startdate, null, null, sameUserLeads);
+        if (overlapRejection != null) throw new BadRequestException(overlapRejection);
         PracticeLead lead = new PracticeLead(UUID.randomUUID().toString(), code, useruuid, startdate, null);
         PracticeLead.persist(lead);
         return lead;
@@ -129,6 +141,13 @@ public class PracticeService {
             throw new NotFoundException("Practice lead not found: " + uuid);
         }
         if (enddate == null) throw new BadRequestException("enddate is required");
+        String enddateRejection = leadEnddateRejection(lead.getStartdate(), enddate);
+        if (enddateRejection != null) throw new BadRequestException(enddateRejection);
+        // Moving the enddate must not make [startdate, enddate) overlap another
+        // row of the same user + practice (extending past a successor period).
+        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceCode = ?1 and useruuid = ?2", code, lead.getUseruuid());
+        String overlapRejection = leadOverlapRejection(lead.getStartdate(), enddate, uuid, sameUserLeads);
+        if (overlapRejection != null) throw new BadRequestException(overlapRejection);
         lead.setEnddate(enddate);
         return lead;
     }
@@ -184,6 +203,56 @@ public class PracticeService {
     static String teamPracticeCodeRejection(String code, boolean activePracticeRowExists) {
         if (code == null || code.isBlank()) return null;         // clears the assignment
         if (!activePracticeRowExists) return "Practice '" + code + "' is not an active practice";
+        return null;
+    }
+
+    /**
+     * Pure decision for {@link #startLead}: a lead may only attach to an active
+     * {@code type='PRACTICE'} registry row — never a SEGMENT (UD) and never an
+     * inactive row (Phase 0 hardening, spec §1.6.E). Returns a rejection reason,
+     * or {@code null} if the practice can carry leads.
+     */
+    static String leadPracticeRejection(String code, String type, boolean active) {
+        if (!PRACTICE_TYPE.equals(type)) {
+            return "Practice '" + code + "' is not a real practice (type " + type + ") and cannot have leads";
+        }
+        if (!active) return "Practice '" + code + "' is not active and cannot have leads";
+        return null;
+    }
+
+    /**
+     * Pure decision for {@link #endLead}: the half-open period [startdate,
+     * enddate) must not be negative. {@code enddate == startdate} is allowed —
+     * a zero-length period that retracts a lead that never took effect.
+     */
+    static String leadEnddateRejection(LocalDate startdate, LocalDate enddate) {
+        if (enddate.isBefore(startdate)) {
+            return "enddate " + enddate + " must be on or after startdate " + startdate;
+        }
+        return null;
+    }
+
+    /**
+     * Pure decision for the same-user overlap guard on {@link #startLead} /
+     * {@link #endLead}: the candidate period [startdate, enddate) (null enddate
+     * = open-ended) must not overlap any other lead row of the same user +
+     * practice. Concurrent co-leads across DIFFERENT users are an intentional
+     * feature and never reach this check. Returns a rejection reason, or
+     * {@code null} if the period is free.
+     *
+     * @param excludeUuid the row being edited (skipped), or {@code null} on create
+     * @param sameUserLeads all lead rows for the same user + practice
+     */
+    static String leadOverlapRejection(LocalDate startdate, LocalDate enddate,
+                                       String excludeUuid, List<PracticeLead> sameUserLeads) {
+        for (PracticeLead other : sameUserLeads) {
+            if (other.getUuid().equals(excludeUuid)) continue;
+            if (DateUtils.periodsOverlap(startdate, enddate, other.getStartdate(), other.getEnddate())) {
+                return "Lead period overlaps this user's existing lead " + other.getUuid()
+                        + " [" + other.getStartdate() + " – "
+                        + (other.getEnddate() == null ? "open" : other.getEnddate()) + ")";
+            }
+        }
         return null;
     }
 }

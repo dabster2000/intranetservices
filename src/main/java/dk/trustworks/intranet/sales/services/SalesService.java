@@ -7,6 +7,7 @@ import dk.trustworks.intranet.sales.model.dto.LeadTrendData;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.services.PracticeService;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -33,6 +34,9 @@ public class SalesService {
 
     @Inject
     EntityManager entityManager;
+
+    @Inject
+    PracticeService practiceService;
 
     public SalesLead findOne(String uuid) {
         return SalesLead.findById(uuid);
@@ -147,6 +151,9 @@ public class SalesService {
     @Transactional
     public SalesLead persist(SalesLead salesLead) {
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
+            // Registry-driven guard: reject JK and any non-active/non-UD practice
+            // on create, mirroring UserService (spec §4.8 step 0 / §1.6.E).
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
             salesLead.setUuid(UUID.randomUUID().toString());
             salesLead.setCreated(LocalDateTime.now());
             if (salesLead.getStatus() == LeadStatus.WON) {
@@ -158,6 +165,7 @@ public class SalesService {
                     salesLead.getUuid(), salesLead.getStatus(),
                     requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null);
         } else if(SalesLead.findById(salesLead.getUuid())==null) {
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
             if (salesLead.getStatus() == LeadStatus.WON) {
                 salesLead.setWonDate(LocalDateTime.now());
             }
@@ -201,6 +209,13 @@ public class SalesService {
             logStageTransition(salesLead.getUuid(),
                     existing.getStatus() != null ? existing.getStatus().name() : null,
                     salesLead.getStatus().name());
+        }
+
+        // Registry-driven guard: validate the practice only when it actually changes
+        // vs the stored value, mirroring UserService.updateOne — no-op writes are
+        // tolerated so a whole-object lead PUT can't 400 during a migration window.
+        if (existing == null || existing.getPractice() != salesLead.getPractice()) {
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
         }
 
         LocalDateTime wonDate;

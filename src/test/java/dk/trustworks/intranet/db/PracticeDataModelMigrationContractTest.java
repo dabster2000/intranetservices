@@ -125,11 +125,65 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(migration.contains("ALTER TABLE"), "V419 must be data-only");
     }
 
+    // ── Phase 0 migrations (V421–V423, spec §1.6.F) ───────────────────────
+
+    @Test
+    void v421_adds_the_audit_columns_idempotently() throws IOException {
+        String migration = readV421();
+
+        // practice has timestamps already — only the actor columns are added.
+        assertTrue(migration.contains("ALTER TABLE practice"), "practice must gain actor columns");
+        assertTrue(migration.contains("ALTER TABLE practice_lead"), "practice_lead must gain the full trail");
+        assertTrue(migration.contains("ALTER TABLE team_settings"), "team_settings must gain creation columns");
+        int guardedAdds = migration.split("ADD COLUMN IF NOT EXISTS", -1).length - 1;
+        assertTrue(guardedAdds >= 8, "every ADD COLUMN must be IF NOT EXISTS-guarded (found " + guardedAdds + ")");
+        assertTrue(migration.contains("WHERE created_at IS NULL") || migration.contains("WHERE created_by IS NULL"),
+                "backfills must be guarded so re-runs are no-ops");
+        assertFalse(migration.toUpperCase().contains("DROP "), "V421 is additive only");
+    }
+
+    @Test
+    void v422_rederives_the_hygiene_row_sets_with_the_canonical_predicate() throws IOException {
+        String migration = readV422();
+
+        // Terminated users' open roles close at the latest statusdate <= today.
+        assertTrue(migration.contains("us.status = 'TERMINATED'"), "termination derived from userstatus");
+        assertTrue(migration.contains("us2.statusdate <= CURRENT_DATE"), "latest status must be capped at today");
+        assertTrue(migration.contains("tr.enddate IS NULL"), "only open roles are touched");
+        assertTrue(migration.contains("DELETE FROM teamroles WHERE useruuid IS NULL"), "orphan rows deleted");
+        // Dual-membership resolution: ARBA row closes the day Cyber Security began.
+        assertTrue(migration.contains("ab4ebf52-2203-4be6-a621-e0b4af847d88"), "dual-membership user targeted");
+        assertTrue(migration.contains("'2024-03-01'"), "ARBA row closes at the CS startdate");
+        // JK questionnaire strip is generic (JSON rebuild), not positional.
+        assertTrue(migration.contains("JSON_TABLE"), "target_practices rebuilt as JSON, not string surgery");
+        assertTrue(migration.contains("JSON_SEARCH"), "only rows containing JK are touched");
+    }
+
+    @Test
+    void v423_drops_the_two_dead_views_idempotently() throws IOException {
+        String migration = readV423();
+        assertTrue(migration.contains("DROP VIEW IF EXISTS fact_historical_win_rates"));
+        assertTrue(migration.contains("DROP VIEW IF EXISTS fact_revenue_runoff"));
+        assertFalse(migration.toUpperCase().contains("DROP TABLE"), "V423 drops views only");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
     }
 
     private static String readV419() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V419__Retire_jk_practice_data.sql"));
+    }
+
+    private static String readV421() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V421__Practice_phase0_audit_columns.sql"));
+    }
+
+    private static String readV422() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V422__Practice_phase0_team_role_hygiene.sql"));
+    }
+
+    private static String readV423() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V423__Drop_fact_historical_win_rates_and_fact_revenue_runoff.sql"));
     }
 }
