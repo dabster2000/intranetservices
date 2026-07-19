@@ -38,6 +38,12 @@ public class PracticeService {
     /** Registry type discriminator for real practices (vs SEGMENT). */
     static final String PRACTICE_TYPE = "PRACTICE";
 
+    /** The only values the practice.type ENUM column accepts. */
+    static final java.util.Set<String> VALID_TYPES = java.util.Set.of("PRACTICE", "SEGMENT");
+
+    /** Codes are short uppercase keys — also keeps them URI- and ENUM-safe. */
+    static final java.util.regex.Pattern CODE_PATTERN = java.util.regex.Pattern.compile("[A-Z0-9_-]{1,10}");
+
     // ── Registry reads ────────────────────────────────────────────────────
 
     /** All registry rows (incl. inactive + SEGMENT) ordered by sort order — the frontend filters. */
@@ -57,14 +63,21 @@ public class PracticeService {
 
     @Transactional
     public Practice create(String code, String displayCode, String name, String type, Boolean active, Integer sortOrder) {
-        if (code == null || code.isBlank()) throw new BadRequestException("code is required");
-        if (displayCode == null || displayCode.isBlank()) throw new BadRequestException("displayCode is required");
+        if (code == null || !CODE_PATTERN.matcher(code).matches()) {
+            throw new BadRequestException("code is required and must match " + CODE_PATTERN.pattern());
+        }
+        if (displayCode == null || !CODE_PATTERN.matcher(displayCode).matches()) {
+            throw new BadRequestException("displayCode is required and must match " + CODE_PATTERN.pattern());
+        }
         if (name == null || name.isBlank()) throw new BadRequestException("name is required");
         if (Practice.findById(code) != null) throw new BadRequestException("Practice code already exists: " + code);
         if (Practice.count("displayCode = ?1", displayCode) > 0) {
             throw new BadRequestException("Practice displayCode already exists: " + displayCode);
         }
         String resolvedType = (type == null || type.isBlank()) ? PRACTICE_TYPE : type;
+        if (!VALID_TYPES.contains(resolvedType)) {
+            throw new BadRequestException("type must be one of " + VALID_TYPES);
+        }
         Practice practice = new Practice(
                 code, displayCode, name, resolvedType,
                 active == null || active,
@@ -78,12 +91,18 @@ public class PracticeService {
         Practice practice = Practice.findById(code);
         if (practice == null) throw new NotFoundException("Practice not found: " + code);
         if (displayCode != null && !displayCode.equals(practice.getDisplayCode())) {
+            if (!CODE_PATTERN.matcher(displayCode).matches()) {
+                throw new BadRequestException("displayCode must match " + CODE_PATTERN.pattern());
+            }
             if (Practice.count("displayCode = ?1 and code <> ?2", displayCode, code) > 0) {
                 throw new BadRequestException("Practice displayCode already exists: " + displayCode);
             }
             practice.setDisplayCode(displayCode);
         }
-        if (name != null) practice.setName(name);
+        if (name != null) {
+            if (name.isBlank()) throw new BadRequestException("name must not be blank");
+            practice.setName(name);
+        }
         if (active != null) practice.setActive(active);
         if (sortOrder != null) practice.setSortOrder(sortOrder);
         return practice;
@@ -93,6 +112,10 @@ public class PracticeService {
     public PracticeLead startLead(String code, String useruuid, LocalDate startdate) {
         if (Practice.findById(code) == null) throw new NotFoundException("Practice not found: " + code);
         if (useruuid == null || useruuid.isBlank()) throw new BadRequestException("useruuid is required");
+        // practice_lead.useruuid has no FK to user — validate existence here instead.
+        if (dk.trustworks.intranet.domain.user.entity.User.findById(useruuid) == null) {
+            throw new BadRequestException("Unknown user: " + useruuid);
+        }
         if (startdate == null) throw new BadRequestException("startdate is required");
         PracticeLead lead = new PracticeLead(UUID.randomUUID().toString(), code, useruuid, startdate, null);
         PracticeLead.persist(lead);

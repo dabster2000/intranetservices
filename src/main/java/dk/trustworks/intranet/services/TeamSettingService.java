@@ -41,6 +41,9 @@ public class TeamSettingService {
     // ── Reads ─────────────────────────────────────────────────────────────
 
     public List<TeamSetting> findByKey(String key) {
+        // Same allow-list as the write path: a future sensitive key must not become
+        // readable by every teams:read holder just by existing.
+        if (!VALID_KEYS.contains(key)) throw new BadRequestException("Invalid setting key: " + key);
         return TeamSetting.list("settingKey = ?1", key);
     }
 
