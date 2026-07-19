@@ -96,8 +96,12 @@ public class PracticeRegistryDriftCheck {
     /**
      * Active core PRACTICE codes from the registry, or {@code null} if the table is
      * missing/unreadable (defensive — do not fail startup).
+     *
+     * <p>REQUIRED, not SUPPORTS: on the startup worker thread there is no surrounding
+     * transaction, and executing the native query without one intermittently fails
+     * with "ResultSet is closed" while other startup jobs churn the connection pool.
      */
-    @Transactional(Transactional.TxType.SUPPORTS)
+    @Transactional(Transactional.TxType.REQUIRED)
     Set<String> loadRegistryCore() {
         try {
             @SuppressWarnings("unchecked")
