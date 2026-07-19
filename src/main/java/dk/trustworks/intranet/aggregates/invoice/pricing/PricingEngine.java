@@ -25,9 +25,18 @@ public class PricingEngine {
     @Inject PricingRuleCatalog catalog;
     @Inject MeterRegistry registry;
 
+    // Invoice.discount arrives unvalidated from the draft REST endpoints; reject out-of-range
+    // percentages here so no pricing math ever runs on them.
+    static void validateDiscount(double discountPct) {
+        if (Double.isNaN(discountPct) || Double.isInfinite(discountPct) || discountPct < 0.0 || discountPct > 100.0) {
+            throw new IllegalArgumentException("Invoice discount must be between 0 and 100, was " + discountPct);
+        }
+    }
+
     @Timed(value = "invoice.pricing.duration", description = "Pricing Engine timing") // Micrometer
     public PriceResult price(Invoice draft, Map<String, String> contractTypeItems) {
         Objects.requireNonNull(draft, "invoice draft");
+        validateDiscount(draft.getDiscount());
         final LocalDate date = draft.getInvoicedate() != null ? draft.getInvoicedate() : LocalDate.now();
 
         var ruleSet = catalog.select(draft.getContractType(), date);

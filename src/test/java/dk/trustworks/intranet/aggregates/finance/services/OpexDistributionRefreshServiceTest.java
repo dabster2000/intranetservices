@@ -7,10 +7,7 @@ import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.enums.CostType;
 import dk.trustworks.intranet.model.Company;
-import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
-import io.quarkus.test.junit.TestProfile;
-import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -55,20 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code intercompanyCalcService} @Inject inside the SUT can be wired by CDI.
  * No DB I/O occurs — all inputs to the method under test are built in memory.
  */
-@QuarkusTest
-@TestProfile(OpexDistributionRefreshServiceTest.Profile.class)
 class OpexDistributionRefreshServiceTest {
-
-    public static class Profile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "quarkus.s3.devservices.enabled", "false",
-                    "cvtool.username", "test-placeholder",
-                    "cvtool.password", "test-placeholder"
-            );
-        }
-    }
 
     private static final YearMonth TEST_MONTH = YearMonth.of(2099, 1);
 
@@ -79,8 +63,13 @@ class OpexDistributionRefreshServiceTest {
      */
     private static final String OPEX_GROUPNAME = "Variable omkostninger";
 
-    @Inject
     OpexDistributionRefreshService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new OpexDistributionRefreshService();
+        service.intercompanyCalcService = new IntercompanyCalcService();
+    }
 
     // -----------------------------------------------------------------------
     // Test 1: SALARIES account with consistent positive postings — regression
