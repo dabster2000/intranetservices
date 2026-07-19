@@ -67,30 +67,6 @@ public class BatchTriggerResource {
                   WHERE newer.request_id>r.request_id
               )
             """;
-    /**
-     * Operator same-input retry beyond the bounded automatic budget (design line ~791: "Only a
-     * same-input technical FAILED/stale request is retried by token/version-guarded transition of
-     * that same row to PENDING with an incremented attempt count"). The automatic scheduler stops at
-     * its attempt cap; an operator explicitly retargeting the exact latest FAILED id/key/vector — for
-     * example after deploying a fix for the failure — revives that same row, never a duplicate.
-     */
-    static final String COST_START_OPERATOR_RETRY_SQL = """
-            UPDATE practice_cost_basis_refresh_request r
-            JOIN practice_contribution_publication_control c ON c.control_id=1
-            JOIN practice_operating_cost_publication o ON o.publication_id=1
-            SET r.status='PENDING', r.owner_token=NULL, r.claimed_at=NULL, r.failed_at=NULL,
-                r.attempt_count=r.attempt_count+1, r.safe_reason='OPERATOR_TECHNICAL_RETRY',
-                r.optimistic_version=r.optimistic_version+1
-            WHERE r.request_id=:requestId AND r.status='FAILED'
-              AND r.request_key=:requestKey
-              AND r.input_vector_fingerprint=:inputVector
-              AND c.refresh_enabled=TRUE AND c.revenue_recovery_owner_token IS NULL
-              AND o.latest_cost_basis_request_id=r.request_id
-              AND NOT EXISTS (
-                  SELECT 1 FROM practice_cost_basis_refresh_request newer
-                  WHERE newer.request_id>r.request_id
-              )
-            """;
     static final String REVENUE_START_PRECONDITION_SQL = """
             SELECT COUNT(*)
             FROM practice_contribution_publication_control c
@@ -469,16 +445,6 @@ public class BatchTriggerResource {
                 .setParameter("requestKey", request.expectedRequestKey())
                 .setParameter("inputVector", request.expectedInputVectorFingerprint())
                 .getSingleResult();
-        if (eligible.longValue() != 1) {
-            // Explicit operator retargeting of the exact latest FAILED same-input request revives
-            // that row (attempt_count+1) instead of conflicting; anything else stays a 409.
-            int revived = em.createNativeQuery(COST_START_OPERATOR_RETRY_SQL)
-                    .setParameter("requestId", request.expectedRequestId())
-                    .setParameter("requestKey", request.expectedRequestKey())
-                    .setParameter("inputVector", request.expectedInputVectorFingerprint())
-                    .executeUpdate();
-            eligible = revived == 1 ? 1L : 0L;
-        }
         if (eligible.longValue() != 1) {
             // A stale/mismatched/superseded target returns 409 with the safe successor request id so the
             // operator/verifier can follow the supersession chain and explicitly retarget it (design line ~791).
