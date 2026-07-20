@@ -18,7 +18,7 @@ class PeoplePopulationSqlSupportTest {
     void ranksStatusBeforeCompanyAndPopulationFilters() {
         PeopleFilterRequest request = new PeopleFilterRequest();
         request.companyId = "00000000-0000-0000-0000-000000000001";
-        PeopleFilterParams filters = PeopleFilterParams.from(request, CLOCK);
+        PeopleFilterParams filters = PeopleFilterParams.from(request, CLOCK, TestPracticeResolver.RESOLVER);
 
         String sql = PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate");
 
@@ -35,7 +35,7 @@ class PeoplePopulationSqlSupportTest {
 
     @Test
     void temporalRankingUsesBusinessTransferPriorityThenAuditFallbacks() {
-        PeopleFilterParams filters = PeopleFilterParams.from(new PeopleFilterRequest(), CLOCK);
+        PeopleFilterParams filters = PeopleFilterParams.from(new PeopleFilterRequest(), CLOCK, TestPracticeResolver.RESOLVER);
         String snapshot = PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate");
         String monthly = PeoplePopulationSqlSupport.monthlyPopulationCtes();
 
@@ -52,12 +52,12 @@ class PeoplePopulationSqlSupportTest {
         PeopleFilterRequest leaderRequest = new PeopleFilterRequest();
         leaderRequest.managementScope = "PEOPLE_LEADERS";
         String leaders = PeoplePopulationSqlSupport.snapshotPopulationCtes(
-                PeopleFilterParams.from(leaderRequest, CLOCK), "asOfDate");
+                PeopleFilterParams.from(leaderRequest, CLOCK, TestPracticeResolver.RESOLVER), "asOfDate");
 
         PeopleFilterRequest seniorRequest = new PeopleFilterRequest();
         seniorRequest.managementScope = "SENIOR_LEADERSHIP";
         String senior = PeoplePopulationSqlSupport.snapshotPopulationCtes(
-                PeopleFilterParams.from(seniorRequest, CLOCK), "asOfDate");
+                PeopleFilterParams.from(seniorRequest, CLOCK, TestPracticeResolver.RESOLVER), "asOfDate");
 
         assertTrue(leaders.contains("tr.membertype = 'LEADER'"));
         assertFalse(leaders.contains("career_track IN (:seniorLeadershipTracks)"));

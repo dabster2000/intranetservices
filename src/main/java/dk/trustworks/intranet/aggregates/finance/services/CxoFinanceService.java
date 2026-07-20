@@ -42,6 +42,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAbsenceWaterfallDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import dk.trustworks.intranet.financeservice.model.enums.RevenueBasis;
+import dk.trustworks.intranet.model.Practice;
+import dk.trustworks.intranet.services.PracticeService;
 
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.FiscalYearRange;
@@ -101,6 +103,9 @@ public class CxoFinanceService {
 
     @Inject
     DistributionAwareOpexProvider opexProvider;
+
+    @Inject
+    PracticeService practiceService;
 
     /**
      * F3 — internal-cost timing alignment (default OFF, prod-safe).
@@ -322,12 +327,12 @@ public class CxoFinanceService {
         log.debugf("getUtilizationTrend: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
                 normalizedFromDate, normalizedToDate, practices, companyIds);
 
-        // Always filter by known practices to exclude UD/undefined and include
-        // bench consultants who are in a real practice. When caller passes specific
-        // practices, use those; otherwise default to all 5 known practices.
-        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
-                ? practices
-                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        // Always filter to real practices: exclude UD/undefined while including
+        // bench consultants who are in a real practice. When the caller passes
+        // specific practices (validated storage codes), use those; otherwise the
+        // registry's active type='PRACTICE' set applies (Phase 3 — the deleted
+        // BILLABLE_PRACTICES constant's registry-driven successor).
+        boolean hasPractices = practices != null && !practices.isEmpty();
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -347,7 +352,11 @@ public class CxoFinanceService {
         sql.append("  AND bdd.document_date <= :toDate ");
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
-        sql.append("  AND u.practice IN (:practices) ");
+        if (hasPractices) {
+            sql.append("  AND u.practice IN (:practices) ");
+        } else {
+            sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
+        }
 
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -359,7 +368,7 @@ public class CxoFinanceService {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromDate", normalizedFromDate);
         query.setParameter("toDate", normalizedToDate);
-        query.setParameter("practices", effectivePractices);
+        if (hasPractices) query.setParameter("practices", practices);
 
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -6070,7 +6079,7 @@ public class CxoFinanceService {
      *
      * @param fromMonthKey Start month key YYYYMM (inclusive)
      * @param toMonthKey   End month key YYYYMM (exclusive)
-     * @param practices    Practice/service line codes (defaults to all 5)
+     * @param practices    Practice storage codes (absent → the registry's active PRACTICE set)
      * @param companyIds   Optional company filter
      * @return List of monthly budget hour totals
      */
@@ -6080,9 +6089,7 @@ public class CxoFinanceService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
-                ? practices
-                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasPractices = practices != null && !practices.isEmpty();
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -6090,7 +6097,13 @@ public class CxoFinanceService {
         sql.append("FROM fact_revenue_budget_mat b ");
         sql.append("WHERE b.month_key >= :fromKey ");
         sql.append("  AND b.month_key < :toKey ");
-        sql.append("  AND b.service_line_id IN (:practices) ");
+        if (hasPractices) {
+            sql.append("  AND b.service_line_id IN (:practices) ");
+        } else {
+            // Registry default (Phase 3). The budget fact carries storage codes
+            // (no uuid twin during the dual-key window) — code-column variant.
+            sql.append(UtilizationCalculationHelper.activePracticeCodeFilter("b", "service_line_id"));
+        }
         if (hasCompanies) {
             sql.append("  AND b.company_id IN (:companyIds) ");
         }
@@ -6100,7 +6113,7 @@ public class CxoFinanceService {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromMonthKey);
         query.setParameter("toKey", toMonthKey);
-        query.setParameter("practices", effectivePractices);
+        if (hasPractices) query.setParameter("practices", practices);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
@@ -6126,7 +6139,7 @@ public class CxoFinanceService {
      *
      * @param fromMonthKey Start month key YYYYMM (inclusive)
      * @param toMonthKey   End month key YYYYMM (exclusive)
-     * @param practices    Practice codes (defaults to all 5)
+     * @param practices    Practice storage codes (absent → the registry's active PRACTICE set)
      * @param companyIds   Optional company filter
      * @return List of monthly net available hour totals
      */
@@ -6136,9 +6149,7 @@ public class CxoFinanceService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
-                ? practices
-                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasPractices = practices != null && !practices.isEmpty();
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -6151,7 +6162,11 @@ public class CxoFinanceService {
         sql.append("JOIN `user` u ON u.uuid = d.useruuid ");
         sql.append("WHERE d.consultant_type = 'CONSULTANT' ");
         sql.append("  AND d.status_type = 'ACTIVE' ");
-        sql.append("  AND u.practice IN (:practices) ");
+        if (hasPractices) {
+            sql.append("  AND u.practice IN (:practices) ");
+        } else {
+            sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
+        }
         sql.append("  AND CONCAT(d.year, LPAD(d.month, 2, '0')) >= :fromKey ");
         sql.append("  AND CONCAT(d.year, LPAD(d.month, 2, '0')) < :toKey ");
         if (hasCompanies) {
@@ -6161,7 +6176,7 @@ public class CxoFinanceService {
         sql.append("ORDER BY month_key");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", effectivePractices);
+        if (hasPractices) query.setParameter("practices", practices);
         query.setParameter("fromKey", fromMonthKey);
         query.setParameter("toKey", toMonthKey);
         if (hasCompanies) {
@@ -6191,7 +6206,7 @@ public class CxoFinanceService {
      *
      * @param year       Year (e.g. 2026)
      * @param month      Month number (1-12)
-     * @param practices  Practice codes (defaults to all 5)
+     * @param practices  Practice storage codes (absent → the registry's active PRACTICE set)
      * @param companyIds Optional company filter
      * @return List of consultant DTOs (uuid, firstname, lastname, practice)
      */
@@ -6201,9 +6216,7 @@ public class CxoFinanceService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
-                ? practices
-                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasPractices = practices != null && !practices.isEmpty();
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -6213,7 +6226,11 @@ public class CxoFinanceService {
         sql.append("WHERE bdd.year = :year AND bdd.month = :month ");
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
-        sql.append("  AND u.practice IN (:practices) ");
+        if (hasPractices) {
+            sql.append("  AND u.practice IN (:practices) ");
+        } else {
+            sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
+        }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
@@ -6222,7 +6239,7 @@ public class CxoFinanceService {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("year", year);
         query.setParameter("month", month);
-        query.setParameter("practices", effectivePractices);
+        if (hasPractices) query.setParameter("practices", practices);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
@@ -6540,13 +6557,6 @@ public class CxoFinanceService {
     // ============================================================================
 
     /**
-     * Canonical order for known practice ids in the {@code practices} response array.
-     * Anything else returned by the SQL is folded into {@code "OTHER"} which, when present,
-     * is appended after this list.
-     */
-    private static final List<String> KNOWN_PRACTICES = List.of("PM", "SA", "BA", "DEV", "CYB");
-
-    /**
      * Returns trailing-window revenue broken down by practice (consultant-level attribution),
      * with cost and margin overlay. Ported from the legacy BFF route at
      * {@code /api/cxo/finance/revenue-by-practice}.
@@ -6555,8 +6565,9 @@ public class CxoFinanceService {
      * delivering consultant (NOT the project-level service line). The cost query aggregates
      * direct delivery cost by month from {@code fact_project_financials_mat}. Java assembles
      * the two streams: cost-only months are present in the result with empty practice
-     * revenue, and any practice id outside {@link #KNOWN_PRACTICES} is collapsed into
-     * {@code "OTHER"}.</p>
+     * revenue, and any practice id outside the registry's active {@code type='PRACTICE'}
+     * codes (sort_order order — Phase 3's registry-driven successor of the old hardcoded
+     * five) is collapsed into {@code "OTHER"}.</p>
      *
      * @param fromDate inclusive start of date window; defaults to first day of (now − 17 months) when null
      * @param toDate   inclusive end of date window; defaults to today when null
@@ -6651,11 +6662,33 @@ public class CxoFinanceService {
         @SuppressWarnings("unchecked")
         List<Tuple> costRows = costQuery.getResultList();
 
-        RevenuePracticeDTO response = buildRevenueByPracticeResponse(revenueRows, costRows);
+        List<String> knownPractices = practiceService.activePracticeCodes();
+        RevenuePracticeDTO aggregated = buildRevenueByPracticeResponse(revenueRows, costRows, knownPractices);
+        RevenuePracticeDTO response = new RevenuePracticeDTO(
+                aggregated.months(), aggregated.practices(), practiceDetails(aggregated.practices()));
 
         log.debugf("revenueByPractice: returned %d months / %d practices (companyFilter=%s)",
                 response.months().size(), response.practices().size(), Boolean.toString(hasCompanyFilter));
         return response;
+    }
+
+    /**
+     * Registry identity rows for the {@code practices} list (additive Phase 3
+     * field, §4.5): same order, uuid + labels from the registry; the synthetic
+     * {@code OTHER} bucket (and any code without a registry row) gets a null
+     * uuid with passthrough labels.
+     */
+    private List<RevenuePracticeDTO.PracticeDetail> practiceDetails(List<String> codes) {
+        Map<String, Practice> byCode = practiceService.findAll().stream()
+                .collect(Collectors.toMap(Practice::getCode, p -> p));
+        List<RevenuePracticeDTO.PracticeDetail> details = new ArrayList<>(codes.size());
+        for (String code : codes) {
+            Practice row = byCode.get(code);
+            details.add(row != null
+                    ? new RevenuePracticeDTO.PracticeDetail(row.getUuid(), row.getCode(), row.getDisplayCode(), row.getName())
+                    : new RevenuePracticeDTO.PracticeDetail(null, code, code, "OTHER".equals(code) ? "Other" : code));
+        }
+        return details;
     }
 
     /**
@@ -6682,10 +6715,10 @@ public class CxoFinanceService {
      * <ol>
      *   <li>Index cost rows by {@code month_key} into a flat map.</li>
      *   <li>Group revenue rows by {@code month_key} into ({@code practiceId} → revenue), folding
-     *       any practice id outside {@link #KNOWN_PRACTICES} into {@code "OTHER"}.</li>
+     *       any practice id outside {@code knownPractices} into {@code "OTHER"}.</li>
      *   <li>Ensure cost-only months are represented in the output (with empty practice revenue).</li>
-     *   <li>Determine which practices appear at all, preserving the canonical order
-     *       {@code [PM, SA, BA, DEV, CYB]} with {@code "OTHER"} appended last when present.</li>
+     *   <li>Determine which practices appear at all, preserving the {@code knownPractices}
+     *       order with {@code "OTHER"} appended last when present.</li>
      *   <li>Emit one {@link MonthlyRevenuePracticeDataPoint} per month with the per-month margin
      *       computed in Java ({@code null} when revenue ≤ 0).</li>
      * </ol></p>
@@ -6694,11 +6727,14 @@ public class CxoFinanceService {
      *                    {@code service_line_id}, {@code revenue_dkk}
      * @param costRows    tuples with columns: {@code month_key}, {@code year_val}, {@code month_number},
      *                    {@code cost_dkk}
-     * @return assembled DTO ready for JSON serialization
+     * @param knownPractices ordered registry storage codes (active {@code type='PRACTICE'} rows
+     *                       by {@code sort_order}) defining the recognized buckets and their order
+     * @return assembled DTO (months + practices; the caller attaches {@code practiceDetails})
      */
     static RevenuePracticeDTO buildRevenueByPracticeResponse(
             List<Tuple> revenueRows,
-            List<Tuple> costRows) {
+            List<Tuple> costRows,
+            List<String> knownPractices) {
 
         // ----- Index cost rows by month_key -----
         Map<String, Double> costByMonth = new LinkedHashMap<>(costRows.size());
@@ -6718,8 +6754,8 @@ public class CxoFinanceService {
             String rawPracticeId = t.get("service_line_id", String.class);
             double revenue = toDouble(t.get("revenue_dkk"));
 
-            // Defensive remap: anything outside KNOWN_PRACTICES becomes OTHER.
-            String practiceId = (rawPracticeId != null && KNOWN_PRACTICES.contains(rawPracticeId))
+            // Defensive remap: anything outside the registry's active codes becomes OTHER.
+            String practiceId = (rawPracticeId != null && knownPractices.contains(rawPracticeId))
                     ? rawPracticeId
                     : "OTHER";
 
@@ -6745,8 +6781,8 @@ public class CxoFinanceService {
         for (MonthAggregate agg : monthMap.values()) {
             practiceSet.addAll(agg.practices.keySet());
         }
-        List<String> practices = new ArrayList<>(KNOWN_PRACTICES.size() + 1);
-        for (String p : KNOWN_PRACTICES) {
+        List<String> practices = new ArrayList<>(knownPractices.size() + 1);
+        for (String p : knownPractices) {
             if (practiceSet.contains(p)) practices.add(p);
         }
         if (practiceSet.contains("OTHER")) practices.add("OTHER");
@@ -6783,6 +6819,6 @@ public class CxoFinanceService {
             ));
         }
 
-        return new RevenuePracticeDTO(months, practices);
+        return new RevenuePracticeDTO(months, practices, null);
     }
 }

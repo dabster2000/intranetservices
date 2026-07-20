@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.executive.resources;
 
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
+import dk.trustworks.intranet.aggregates.executive.people.TestPracticeResolver;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterRequest;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -71,24 +72,24 @@ class ExecutivePeopleV2ResourceTest {
         ExecutivePeopleV2Resource.applyCareerDefaults(omittedCareerType);
         assertEquals("CONSULTANT", omittedCareerType.employeeTypes);
         assertDoesNotThrow(() -> ExecutivePeopleV2Resource.validateCareerInvariants(
-                PeopleFilterParams.from(omittedCareerType)));
+                PeopleFilterParams.from(omittedCareerType, TestPracticeResolver.RESOLVER)));
 
         PeopleFilterRequest career = new PeopleFilterRequest();
         career.employeeTypes = "CONSULTANT";
         career.population = "EMPLOYED";
-        assertDoesNotThrow(() -> ExecutivePeopleV2Resource.validateCareerInvariants(PeopleFilterParams.from(career)));
+        assertDoesNotThrow(() -> ExecutivePeopleV2Resource.validateCareerInvariants(PeopleFilterParams.from(career, TestPracticeResolver.RESOLVER)));
         career.employeeTypes = "STAFF";
         assertThrows(BadRequestException.class,
-                () -> ExecutivePeopleV2Resource.validateCareerInvariants(PeopleFilterParams.from(career)));
+                () -> ExecutivePeopleV2Resource.validateCareerInvariants(PeopleFilterParams.from(career, TestPracticeResolver.RESOLVER)));
 
         PeopleFilterRequest leadership = new PeopleFilterRequest();
         leadership.employeeTypes = "CONSULTANT,STAFF,STUDENT";
         leadership.population = "EMPLOYED";
         assertDoesNotThrow(() -> ExecutivePeopleV2Resource.validateLeadershipInvariants(
-                PeopleFilterParams.from(leadership)));
+                PeopleFilterParams.from(leadership, TestPracticeResolver.RESOLVER)));
         leadership.population = "ACTIVE";
         assertThrows(BadRequestException.class,
-                () -> ExecutivePeopleV2Resource.validateLeadershipInvariants(PeopleFilterParams.from(leadership)));
+                () -> ExecutivePeopleV2Resource.validateLeadershipInvariants(PeopleFilterParams.from(leadership, TestPracticeResolver.RESOLVER)));
     }
 
     private static Set<String> career() {

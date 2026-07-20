@@ -11,7 +11,6 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import dk.trustworks.intranet.services.PracticeService;
@@ -399,8 +398,8 @@ public class UserService {
         // Phase 2 (spec §4.2): new users are team-less by definition, so an
         // incoming practice is a MANUAL assignment; absent → the UD sentinel.
         // The app owns the code↔uuid twin now (V426 dropped the trigger mirror).
-        if (user.getPractice() == null) user.setPractice(PrimarySkillType.UD);
-        user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(user.getPractice().name()));
+        if (user.getPractice() == null || user.getPractice().isBlank()) user.setPractice("UD");
+        user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(user.getPractice()));
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
@@ -444,11 +443,12 @@ public class UserService {
         // is rejected for users with a current MEMBER team, and routed through
         // PracticeSyncService as a MANUAL assignment for team-less users. The
         // whole-object PUT no longer writes the practice columns directly.
-        // A null incoming practice means "not provided" on update (no UI path
-        // sends null — "No practice" is the UD sentinel), so it never counts as
-        // a change; a stale-but-equal value passes through untouched.
-        PrimarySkillType previousPractice = existing != null ? existing.getPractice() : null;
-        boolean practiceChanged = user.getPractice() != null && user.getPractice() != previousPractice;
+        // A null/blank incoming practice means "not provided" on update (no UI
+        // path sends null — "No practice" is the UD sentinel), so it never counts
+        // as a change; a stale-but-equal value passes through untouched.
+        String previousPractice = existing != null ? existing.getPractice() : null;
+        boolean practiceChanged = user.getPractice() != null && !user.getPractice().isBlank()
+                && !user.getPractice().equals(previousPractice);
         if (practiceChanged) {
             practiceService.validateUserPracticeAssignable(user.getPractice());
             String currentTeam = practiceSyncService.currentMemberTeamUuid(user.getUuid(), LocalDate.now());

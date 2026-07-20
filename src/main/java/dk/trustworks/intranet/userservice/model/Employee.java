@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
@@ -54,9 +53,9 @@ public class Employee extends PanacheEntityBase {
     private String defects;
     private boolean photoconsent;
     private String other;
-    @Enumerated(EnumType.STRING)
+    /** Practice storage code (registry {@code practice.code}); plain String since Phase 3. */
     @Column(name = "practice")
-    private PrimarySkillType practice;
+    private String practice;
     @Enumerated(EnumType.STRING)
     private StatusType status;
     private int allocation;

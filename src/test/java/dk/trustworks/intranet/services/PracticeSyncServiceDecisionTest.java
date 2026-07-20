@@ -4,7 +4,6 @@ import dk.trustworks.intranet.services.PracticeSyncService.HistoryState;
 import dk.trustworks.intranet.services.PracticeSyncService.TransitionAction;
 import dk.trustworks.intranet.services.PracticeSyncService.TransitionPlan;
 import dk.trustworks.intranet.userservice.model.TeamRole;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import org.junit.jupiter.api.Test;
 
@@ -214,11 +213,4 @@ class PracticeSyncServiceDecisionTest {
         assertNull(PracticeSyncService.latestOf(null, null));
     }
 
-    @Test
-    void only_enum_codes_are_storable_until_phase_3() {
-        assertEquals(PrimarySkillType.UD, PracticeSyncService.parseStorable("UD"));
-        assertEquals(PrimarySkillType.CYB, PracticeSyncService.parseStorable("CYB"));
-        assertNull(PracticeSyncService.parseStorable("XX"));
-        assertNull(PracticeSyncService.parseStorable(null));
-    }
 }

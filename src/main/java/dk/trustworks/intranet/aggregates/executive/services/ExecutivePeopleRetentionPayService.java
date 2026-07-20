@@ -16,10 +16,10 @@ import dk.trustworks.intranet.aggregates.executive.people.PeopleManagementScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationSqlSupport;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleSalaryType;
+import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentFunction;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentStatus;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.Tuple;
@@ -51,6 +51,9 @@ public class ExecutivePeopleRetentionPayService {
 
     @Inject
     PeopleAnalyticsRepository repository;
+
+    @Inject
+    PracticeService practiceService;
 
     public Response<List<RetentionRatePoint>> retentionRate(PeopleFilterParams filters) {
         requireEmployedPopulation(filters, "retention-rate");
@@ -521,13 +524,14 @@ public class ExecutivePeopleRetentionPayService {
         return functionLabel + " — " + statusLabel;
     }
 
-    private static int compensationGroupSort(PeopleCompensationGroup group, String value) {
+    private int compensationGroupSort(PeopleCompensationGroup group, String value) {
         if (OVERALL_GROUP.equals(value)) return -1;
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.sortOrder(value);
             case PRACTICE -> {
-                List<String> order = new ArrayList<>();
-                for (PrimarySkillType practice : PrimarySkillType.values()) order.add(practice.name());
+                // Registry-derived business order (Phase 3): every registry code
+                // in sort_order — including the UD bucket — then Unassigned.
+                List<String> order = new ArrayList<>(practiceService.orderedRegistryCodes());
                 order.add("UNASSIGNED");
                 int index = order.indexOf(value);
                 yield index < 0 ? order.size() : index;

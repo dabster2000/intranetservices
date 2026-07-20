@@ -3,7 +3,6 @@ package dk.trustworks.intranet.services;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.model.Practice;
 import dk.trustworks.intranet.model.PracticeLead;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.panache.common.Sort;
 import lombok.extern.jbosslog.JBossLog;
@@ -50,6 +49,88 @@ public class PracticeService {
     /** All registry rows (incl. inactive + SEGMENT) ordered by sort order — the frontend filters. */
     public List<Practice> findAll() {
         return Practice.listAll(Sort.by("sortOrder"));
+    }
+
+    /**
+     * Storage codes of the active {@code type='PRACTICE'} rows, in registry
+     * {@code sort_order}. The registry-derived successor of the deleted
+     * {@code UtilizationCalculationHelper.BILLABLE_PRACTICES} constant (Phase 3):
+     * the default population for the practice-filtered utilization analytics.
+     */
+    public List<String> activePracticeCodes() {
+        return Practice.<Practice>list("type = ?1 and active = true order by sortOrder", PRACTICE_TYPE)
+                .stream().map(Practice::getCode).toList();
+    }
+
+    /**
+     * Storage codes of ALL registry rows (incl. {@code UD} and inactive rows) in
+     * registry {@code sort_order} — the grouping/ordering universe for
+     * practice-dimensioned analytics (career matrix, compensation groups).
+     * Replaces the deleted enum's {@code values()} declaration order; unlike
+     * {@link #activePracticeCodes()} it keeps the {@code UD} bucket, whose users
+     * are real data in those groupings until the Phase 4 operational-NULL flip.
+     */
+    public List<String> orderedRegistryCodes() {
+        return findAll().stream().map(Practice::getCode).toList();
+    }
+
+    /**
+     * Resolves a practice identified by uuid (canonical, §4.5) or storage code
+     * (compatibility alias until Phase 5). Uuid is tried first; both matches are
+     * case-insensitive on the uuid, exact on the code.
+     *
+     * @return the registry row, or {@code null} when nothing matches
+     */
+    public Practice resolveByIdOrCode(String id) {
+        if (id == null || id.isBlank()) return null;
+        Practice byUuid = Practice.find("lower(uuid) = ?1", id.toLowerCase(java.util.Locale.ROOT)).firstResult();
+        if (byUuid != null) return byUuid;
+        return Practice.findById(id);
+    }
+
+    /**
+     * Maps a uuid-or-code identifier to its storage code for query filters,
+     * passing unresolvable values through unchanged. Used by the list-shaped
+     * lookups ({@code /practices/{id}/leads}, {@code /practices/{id}/teams})
+     * whose contract is an empty list — never a 404 — for unknown identifiers.
+     */
+    public String resolveToCodeOrPassthrough(String id) {
+        Practice practice = resolveByIdOrCode(id);
+        return practice != null ? practice.getCode() : id;
+    }
+
+    /**
+     * Resolves one {@code practices=} filter token — a registry uuid (canonical)
+     * or a storage code (alias) — to its storage code. Any registry row resolves,
+     * including {@code UD} and inactive rows: filters are reads, and the widest
+     * backward-compatible universe is the whole registry. Retired codes with no
+     * registry row (e.g. {@code JK}) do not resolve.
+     */
+    public java.util.Optional<String> resolveFilterToken(String token) {
+        if (token == null || token.isBlank()) return java.util.Optional.empty();
+        String trimmed = token.trim();
+        Practice byUuid = Practice.find("lower(uuid) = ?1", trimmed.toLowerCase(java.util.Locale.ROOT)).firstResult();
+        if (byUuid != null) return java.util.Optional.of(byUuid.getCode());
+        Practice byCode = Practice.findById(trimmed.toUpperCase(java.util.Locale.ROOT));
+        return byCode != null ? java.util.Optional.of(byCode.getCode()) : java.util.Optional.empty();
+    }
+
+    /**
+     * Validates and normalizes a caller-supplied practice filter set (codes or
+     * uuids, §4.5) to storage codes, preserving iteration order. {@code null}
+     * or empty input passes through as {@code null} ("no filter supplied" — the
+     * endpoints then apply their registry-derived default population).
+     *
+     * @throws BadRequestException on any token that matches no registry row
+     */
+    public java.util.Set<String> normalizePracticeFilter(java.util.Set<String> tokens) {
+        if (tokens == null || tokens.isEmpty()) return null;
+        java.util.Set<String> codes = new java.util.LinkedHashSet<>();
+        for (String token : tokens) {
+            codes.add(resolveFilterToken(token).orElseThrow(() -> new BadRequestException(
+                    "Invalid practices value '" + token + "'; expected a practice uuid or storage code from the registry")));
+        }
+        return codes;
     }
 
     public List<PracticeLead> findLeads(String code) {
@@ -133,6 +214,8 @@ public class PracticeService {
         String overlapRejection = leadOverlapRejection(startdate, null, null, sameUserLeads);
         if (overlapRejection != null) throw new BadRequestException(overlapRejection);
         PracticeLead lead = new PracticeLead(UUID.randomUUID().toString(), code, useruuid, startdate, null);
+        // Dual-key window: the app maintains the uuid twin on new rows (Phase 3).
+        lead.setPracticeUuid(practice.getUuid());
         PracticeLead.persist(lead);
         return lead;
     }
@@ -158,14 +241,15 @@ public class PracticeService {
     // ── Write validation ──────────────────────────────────────────────────
 
     /**
-     * Validates a {@code user.practice} value on write: null is allowed (no
-     * practice), {@code UD} is allowed (sentinel), {@code JK} is rejected, and
-     * any other value must be an active {@code type='PRACTICE'} registry row.
+     * Validates a {@code user.practice} storage-code value on write: null/blank
+     * is allowed (no practice), {@code UD} is allowed (sentinel), {@code JK} is
+     * rejected, and any other value must be an active {@code type='PRACTICE'}
+     * registry row. Re-typed from the deleted {@code PrimarySkillType} enum in
+     * Phase 3 — semantics identical, the registry is the only authority.
      */
-    public void validateUserPracticeAssignable(PrimarySkillType practice) {
-        if (practice == null) return;
-        String code = practice.name();
-        String rejection = userPracticeRejection(code, isActivePractice(code));
+    public void validateUserPracticeAssignable(String practice) {
+        if (practice == null || practice.isBlank()) return;
+        String rejection = userPracticeRejection(practice, isActivePractice(practice));
         if (rejection != null) throw new BadRequestException(rejection);
     }
 

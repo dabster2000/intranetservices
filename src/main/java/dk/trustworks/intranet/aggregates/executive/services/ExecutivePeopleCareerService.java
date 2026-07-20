@@ -13,9 +13,9 @@ import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleManagementScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationSqlSupport;
+import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
 import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.Tuple;
@@ -60,6 +60,9 @@ public class ExecutivePeopleCareerService {
 
     @Inject
     PeopleAnalyticsRepository repository;
+
+    @Inject
+    PracticeService practiceService;
 
     public Response<List<CareerLadderRow>> careerLadder(PeopleFilterParams filters) {
         String sql = "WITH " + PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate") +
@@ -184,8 +187,11 @@ public class ExecutivePeopleCareerService {
         }
         boolean responseSuppressed = suppresses(total);
         boolean anyCellSuppressed = false;
-        List<String> practices = new ArrayList<>();
-        for (PrimarySkillType practice : PrimarySkillType.values()) practices.add(practice.name());
+        // Registry-derived grid (Phase 3): every registry practice in business
+        // order (sort_order) — including the UD "No practice" bucket, whose
+        // users are real data until the Phase 4 operational-NULL flip — plus
+        // the Unassigned bucket for users without a practice value at all.
+        List<String> practices = new ArrayList<>(practiceService.orderedRegistryCodes());
         practices.add("UNASSIGNED");
         Map<String, Long> completeCounts = new LinkedHashMap<>();
         for (String practice : practices) {
@@ -208,7 +214,7 @@ public class ExecutivePeopleCareerService {
         return new Response<>(meta(filters, filters.asOfDate(), filters.asOfDate(), null, null,
                 anyCellSuppressed ? -1 : total, 0, responseSuppressed, YearMonth.from(filters.asOfDate()),
                 List.of(
-                        "The matrix includes the seven official current practices in business order.",
+                        "The matrix includes every practice registry entry in business order.",
                         "Practice is current-state only and is not applied retroactively.",
                         "Entry and Unassigned are shown separately from the six career tracks.")), data);
     }

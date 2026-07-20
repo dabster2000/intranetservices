@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
@@ -37,12 +36,14 @@ public class PracticeLead extends PanacheEntityBase implements Auditable {
     private String practiceCode;
 
     /**
-     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Written only
-     * by the migration backfill this phase (insertable/updatable false); not
-     * serialized and not read until Phase 3.
+     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Since
+     * Phase 3 the application maintains it ({@code PracticeService.startLead}
+     * sets both identifiers together; the V424 backfill covered pre-existing
+     * rows) and it serializes — lead responses carry code and uuid (§4.5).
+     * Read-only on input: the practice identity comes from the route.
      */
-    @JsonIgnore
-    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "practice_uuid")
     private String practiceUuid;
 
     private String useruuid;

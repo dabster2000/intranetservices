@@ -101,6 +101,9 @@ public class CxoFinanceResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    @Inject
+    dk.trustworks.intranet.services.PracticeService practiceService;
+
     /**
      * Gets monthly revenue and margin trend data.
      *
@@ -170,7 +173,9 @@ public class CxoFinanceResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         // Call service layer
@@ -1089,7 +1094,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/payroll-headcount-structure: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
                 fromDate, toDate, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyPayrollHeadcountDTO> result = cxoFinanceService.getPayrollHeadcountStructure(
@@ -1651,7 +1658,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/budget-hours-by-month: fromMonthKey=%s, toMonthKey=%s, practices=%s, companyIds=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getBudgetHoursByMonth(fromMonthKey, toMonthKey, practiceSet, companyIdSet);
@@ -1678,7 +1687,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/future-net-available: fromMonthKey=%s, toMonthKey=%s, practices=%s, companyIds=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getFutureNetAvailable(fromMonthKey, toMonthKey, practiceSet, companyIdSet);
@@ -1708,7 +1719,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/utilization-consultants: year=%d, month=%d, practices=%s, companyIds=%s",
                 effectiveYear, effectiveMonth, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getUtilizationConsultants(effectiveYear, effectiveMonth, practiceSet, companyIdSet);

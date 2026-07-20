@@ -244,7 +244,9 @@ public final class PeoplePopulationSqlSupport {
         }
         if (filters.companyId() != null) bindings.put("companyId", filters.companyId());
         if (!filters.practices().isEmpty()) {
-            bindings.put("practices", filters.practices().stream().map(Enum::name).collect(Collectors.toSet()));
+            // Already normalized storage codes (PeopleFilterParams, Phase 3) —
+            // the DB comparison stays against the user.practice code column.
+            bindings.put("practices", filters.practices());
         }
         if (!filters.careerTracks().isEmpty()) {
             bindings.put("careerTracks", filters.careerTracks().stream().map(Enum::name).collect(Collectors.toSet()));

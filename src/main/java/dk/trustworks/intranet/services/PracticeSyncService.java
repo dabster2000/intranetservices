@@ -7,7 +7,6 @@ import dk.trustworks.intranet.model.TeamPracticeAssignment;
 import dk.trustworks.intranet.model.UserPracticeHistory;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.userservice.model.TeamRole;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -145,13 +144,13 @@ public class PracticeSyncService {
 
     /**
      * Direct (manual) practice assignment — permitted only for team-less users;
-     * {@code UserService} enforces that rule before calling. A null practice is
-     * stored as the {@code UD} sentinel this phase. Also writes the initial
-     * history row on user creation (the retired insert trigger's job).
+     * {@code UserService} enforces that rule before calling. A null/blank
+     * practice is stored as the {@code UD} sentinel this phase. Also writes the
+     * initial history row on user creation (the retired insert trigger's job).
      */
     @Transactional
-    public void applyManualPractice(String useruuid, PrimarySkillType practice, LocalDate effectiveFrom) {
-        String code = practice == null ? NO_PRACTICE_CODE : practice.name();
+    public void applyManualPractice(String useruuid, String practice, LocalDate effectiveFrom) {
+        String code = practice == null || practice.isBlank() ? NO_PRACTICE_CODE : practice;
         apply(useruuid, code, resolvePracticeUuid(code), effectiveFrom, effectiveFrom, SOURCE_MANUAL, null, actor());
     }
 
@@ -272,15 +271,9 @@ public class PracticeSyncService {
     private boolean apply(String useruuid, String newCode, String newUuid,
                           LocalDate requestedFrom, LocalDate asOf,
                           String source, String sourceTeamUuid, String actor) {
-        PrimarySkillType storable = parseStorable(newCode);
-        if (storable == null) {
-            // The user.practice column is enum-mapped until Phase 3 — a registry
-            // code outside PrimarySkillType cannot be stored without breaking
-            // every entity read. Documented Phase 2 limitation.
-            log.errorf("Practice sync: code '%s' is not storable on user.practice (enum-mapped until Phase 3) — "
-                    + "skipping transition for user %s", newCode, useruuid);
-            return false;
-        }
+        // Since Phase 3 user.practice is a plain String column: any registry
+        // code is storable, so the Phase 2 enum gate (parseStorable) is gone —
+        // a newly created practice propagates to users with no code change.
         if (requestedFrom == null || requestedFrom.isAfter(asOf)) {
             // Future-dated (or undated) triggers write nothing — the tick
             // materializes them on the day.
@@ -297,7 +290,7 @@ public class PracticeSyncService {
             log.warnf("Practice sync: user %s not found — skipping", useruuid);
             return false;
         }
-        String currentCode = user.getPractice() == null ? null : user.getPractice().name();
+        String currentCode = user.getPractice();
         boolean userRowStale = !Objects.equals(currentCode, newCode)
                 || !Objects.equals(user.getPracticeUuid(), newUuid);
 
@@ -336,7 +329,7 @@ public class PracticeSyncService {
         if (userRowStale) {
             // The row is already pessimistically locked and managed — write
             // through the entity so the persistence context stays consistent.
-            user.setPractice(storable);
+            user.setPractice(newCode);
             user.setPracticeUuid(newUuid);
         }
         log.infof("Practice sync: user %s %s → %s (effective %s, source=%s, team=%s, by=%s, action=%s)",
@@ -521,16 +514,6 @@ public class PracticeSyncService {
         if (a == null) return b;
         if (b == null) return a;
         return a.isAfter(b) ? a : b;
-    }
-
-    /** {@code user.practice} is enum-mapped until Phase 3 — only enum codes are storable. */
-    static PrimarySkillType parseStorable(String code) {
-        if (code == null) return null;
-        try {
-            return PrimarySkillType.valueOf(code);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
     }
 
     enum TransitionAction { NOOP, UPDATE_OPEN_ROW, CLOSE_AND_INSERT, INSERT_OPEN_ROW }

@@ -59,8 +59,8 @@ class CxoDtoJsonShapeTest {
 
     @Test
     void revenuePracticeDto_jsonKeys() throws Exception {
-        var dto = new RevenuePracticeDTO(List.of(), List.of("PM"));
-        assertEquals(Set.of("months", "practices"), keysOf(dto));
+        var dto = new RevenuePracticeDTO(List.of(), List.of("PM"), List.of(new RevenuePracticeDTO.PracticeDetail("uuid-pm", "PM", "PM", "Project Managers")));
+        assertEquals(Set.of("months", "practices", "practiceDetails"), keysOf(dto));
     }
 
     @Test

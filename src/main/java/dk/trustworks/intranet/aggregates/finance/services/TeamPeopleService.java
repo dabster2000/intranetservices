@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.AllPracticesCareerDistributionResult;
 import dk.trustworks.intranet.aggregates.finance.dto.AllPracticesCareerDistributionResult.MemberBasicInfo;
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantAbsenceDayDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
@@ -95,9 +96,10 @@ public class TeamPeopleService {
     }
 
     /**
-     * Returns the career level distribution for all active consultants in the five
-     * regular practices (PM, BA, CYB, DEV, SA), grouped by career track and level.
-     * Excludes terminated and pre-boarding employees.
+     * Returns the career level distribution for all active consultants in the
+     * registry's active {@code type='PRACTICE'} practices (registry join since
+     * Phase 3 — formerly a hardcoded five-code list), grouped by career track
+     * and level. Excludes terminated and pre-boarding employees.
      */
     public AllPracticesCareerDistributionResult getAllPracticesCareerDistribution() {
         @SuppressWarnings("unchecked")
@@ -106,7 +108,10 @@ public class TeamPeopleService {
                 FROM user_career_level ucl
                 JOIN user u ON ucl.useruuid = u.uuid
                 JOIN userstatus us ON us.useruuid = u.uuid
-                WHERE u.practice IN ('PM', 'BA', 'CYB', 'DEV', 'SA')
+                WHERE 1=1
+                """
+                + UtilizationCalculationHelper.activePracticeUserFilter("u")
+                + """
                   AND ucl.active_from = (
                       SELECT MAX(ucl2.active_from)
                       FROM user_career_level ucl2

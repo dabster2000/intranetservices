@@ -7,7 +7,6 @@ import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
@@ -80,9 +79,14 @@ public class User extends PanacheEntityBase {
     private boolean photoconsent;
     @Deprecated
     private String other;
-    @Enumerated(EnumType.STRING)
+    /**
+     * Practice storage code (registry {@code practice.code}: PM/SA/BA/DEV/CYB
+     * or the {@code UD} no-practice sentinel). Plain String since Phase 3 —
+     * the {@code PrimarySkillType} enum is gone, so any registry code is
+     * storable. Serializes exactly as the enum did (the code string).
+     */
     @Column(name = "practice")
-    private PrimarySkillType practice;
+    private String practice;
 
     /**
      * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Since Phase 2

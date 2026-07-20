@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -32,11 +31,12 @@ public class Practice extends PanacheEntityBase implements Auditable {
      * Stable surrogate identity (V424, Part 2 Phase 1). {@code code} stays the PK
      * until Phase 5; this uuid is a UNIQUE attribute. Migrations mint it for
      * existing rows; {@link dk.trustworks.intranet.services.PracticeService#create}
-     * sets it on new rows (hence insertable). Not serialized yet — the read paths
-     * consume the uuid only from Phase 3 (§4.5); serializing it now would break
-     * this phase's byte-identical {@code GET /practices} contract.
+     * sets it on new rows (hence insertable). Serialized since Phase 3 (§4.5):
+     * the uuid is the canonical API identifier and {@code GET /practices} is the
+     * bootstrap call carrying it to every practice-aware UI. Read-only on input —
+     * identity is server-minted, never client-assigned.
      */
-    @JsonIgnore
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "uuid")
     private String uuid;
 

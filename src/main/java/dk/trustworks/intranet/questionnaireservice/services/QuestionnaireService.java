@@ -3,6 +3,8 @@ package dk.trustworks.intranet.questionnaireservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.model.Practice;
+import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.questionnaireservice.dto.CreateQuestionRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.CreateQuestionnaireRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.CreateSubmissionRequest;
@@ -25,6 +27,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -34,6 +37,9 @@ public class QuestionnaireService {
 
     @Inject
     TeamRoleService teamRoleService;
+
+    @Inject
+    PracticeService practiceService;
 
     public List<Questionnaire> listAll() {
         return Questionnaire.listAll();
@@ -168,11 +174,27 @@ public class QuestionnaireService {
         try {
             ObjectMapper mapper = new ObjectMapper();
             if (request.getTargetPractices() != null && !request.getTargetPractices().isEmpty()) {
+                // Phase 3 (spec §4.3): validate each targeting code against the
+                // registry — retired codes (JK) and unknown values cannot enter —
+                // and write BOTH arrays: codes (compatibility, dropped in Phase 5)
+                // and uuids (what the targeting reader matches from Phase 3 on).
+                List<String> uuids = new ArrayList<>(request.getTargetPractices().size());
+                for (String code : request.getTargetPractices()) {
+                    practiceService.validateUserPracticeAssignable(code);
+                    Practice registryRow = code == null ? null : Practice.findById(code);
+                    if (registryRow == null) {
+                        throw new BadRequestException("Unknown practice code in targetPractices: " + code);
+                    }
+                    uuids.add(registryRow.getUuid());
+                }
                 q.setTargetPractices(mapper.writeValueAsString(request.getTargetPractices()));
+                q.setTargetPracticeUuids(mapper.writeValueAsString(uuids));
             }
             if (request.getTargetTeams() != null && !request.getTargetTeams().isEmpty()) {
                 q.setTargetTeams(mapper.writeValueAsString(request.getTargetTeams()));
             }
+        } catch (BadRequestException e) {
+            throw e;
         } catch (Exception e) {
             throw new BadRequestException("Invalid practices or teams format");
         }
@@ -200,10 +222,11 @@ public class QuestionnaireService {
     public List<Questionnaire> getActiveReminders(String userUuid) {
         LocalDate today = LocalDate.now();
 
-        // Get user's practice
+        // Get user's practice identity — uuid is the matching key since Phase 3
+        // (§4.5); the storage code remains only for the legacy-row fallback.
         User user = User.findById(userUuid);
-        String userPractice = user != null && user.getPractice() != null
-                ? user.getPractice().name() : null;
+        String userPractice = user != null ? user.getPractice() : null;
+        String userPracticeUuid = user != null ? user.getPracticeUuid() : null;
 
         // Get user's current team UUIDs
         List<TeamRole> teamRoles = teamRoleService.listAll(userUuid);
@@ -228,12 +251,29 @@ public class QuestionnaireService {
                 .filter(q -> q.isOpen() && q.isReminderEnabled())
                 .filter(q -> !submittedQuestionnaireUuids.contains(q.getUuid()))
                 .filter(q -> {
-                    if (q.getTargetPractices() == null || q.getTargetPractices().isBlank()) {
+                    // Phase 3 reader switch (§4.3): target_practice_uuids is the
+                    // matching key. NULL/blank on BOTH columns = targets everyone;
+                    // a '[]' literal matches nobody (preserved asymmetry). The
+                    // code-array fallback covers only rows that predate the dual
+                    // key and were never uuid-backfilled — the V425 backfill plus
+                    // this class's writer make that combination unexpected.
+                    String uuidArray = q.getTargetPracticeUuids();
+                    String codeArray = q.getTargetPractices();
+                    if ((uuidArray == null || uuidArray.isBlank())
+                            && (codeArray == null || codeArray.isBlank())) {
                         return true;
                     }
-                    if (userPractice == null) return false;
                     try {
-                        List<String> practices = mapper.readValue(q.getTargetPractices(),
+                        if (uuidArray != null && !uuidArray.isBlank()) {
+                            if (userPracticeUuid == null) return false;
+                            List<String> practiceUuids = mapper.readValue(uuidArray,
+                                    mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+                            return practiceUuids.contains(userPracticeUuid);
+                        }
+                        log.warnf("Questionnaire %s has target_practices but no target_practice_uuids — "
+                                + "falling back to code matching (expected only for pre-V425 rows)", q.getUuid());
+                        if (userPractice == null) return false;
+                        List<String> practices = mapper.readValue(codeArray,
                                 mapper.getTypeFactory().constructCollectionType(List.class, String.class));
                         return practices.contains(userPractice);
                     } catch (Exception e) {
