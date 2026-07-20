@@ -86,6 +86,24 @@ public final class DateUtils {
         return testDate.isAfter(from) && testDate.isBefore(to);
     }
 
+    /**
+     * Half-open interval overlap for temporal role rows ([start, end); the end
+     * date itself is excluded, matching the canonical predicate
+     * {@code startdate <= asOf AND (enddate IS NULL OR enddate > asOf)}).
+     * A {@code null} start means "since forever", a {@code null} end means
+     * "open-ended". Two adjacent periods (a ends the day b starts) do NOT overlap.
+     */
+    public static boolean periodsOverlap(LocalDate aStart, LocalDate aEnd, LocalDate bStart, LocalDate bEnd) {
+        LocalDate aStartEff = aStart == null ? LocalDate.MIN : aStart;
+        LocalDate aEndEff = aEnd == null ? LocalDate.MAX : aEnd;
+        LocalDate bStartEff = bStart == null ? LocalDate.MIN : bStart;
+        LocalDate bEndEff = bEnd == null ? LocalDate.MAX : bEnd;
+        // max(starts) < min(ends) — also correct for zero-length (empty) periods.
+        LocalDate latestStart = aStartEff.isAfter(bStartEff) ? aStartEff : bStartEff;
+        LocalDate earliestEnd = aEndEff.isBefore(bEndEff) ? aEndEff : bEndEff;
+        return latestStart.isBefore(earliestEnd);
+    }
+
     public static boolean isWeekend(LocalDate localDate) {
         if(isWeekendDay(localDate)) return true;
         for (LocalDate vacationDate : getVacationDayArray(localDate.getYear())) {

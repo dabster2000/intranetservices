@@ -43,6 +43,16 @@ public class Questionnaire extends PanacheEntityBase {
     @Column(name = "target_practices", columnDefinition = "TEXT")
     private String targetPractices;
 
+    /**
+     * Uuid twin of {@link #targetPractices} (V425, Part 2 Phase 1): a JSON array
+     * of practice registry uuids in the same element order. The targeting reader
+     * matches this column since Phase 3 (§4.3); the code array stays populated
+     * for compatibility until Phase 5 drops it. Both arrays are written together
+     * by {@code QuestionnaireService.createQuestionnaire}.
+     */
+    @Column(name = "target_practice_uuids", columnDefinition = "TEXT")
+    private String targetPracticeUuids;
+
     @Column(name = "target_teams", columnDefinition = "TEXT")
     private String targetTeams;
 

@@ -115,7 +115,7 @@ public class ConsultantRecommendationUseCase {
         sb.append("UUID: ").append(lead.getUuid()).append("\n");
         sb.append("Description: ").append(nullSafe(lead.getDescription())).append("\n");
         sb.append("Client: ").append(lead.getClient() != null ? lead.getClient().getName() : "Unknown").append("\n");
-        sb.append("Practice (required skill area): ").append(lead.getPractice() != null ? lead.getPractice().name() : "Any").append("\n");
+        sb.append("Practice (required skill area): ").append(lead.getPractice() != null ? lead.getPractice() : "Any").append("\n");
         sb.append("Daily rate (DKK): ").append(lead.getRate()).append("\n");
         sb.append("Period (months): ").append(lead.getPeriod()).append("\n");
         sb.append("Allocation (%): ").append(lead.getAllocation()).append("\n");
@@ -132,7 +132,7 @@ public class ConsultantRecommendationUseCase {
         for (User c : consultants) {
             sb.append("- uuid: ").append(c.getUuid()).append("\n");
             sb.append("  name: ").append(c.getFullname()).append("\n");
-            sb.append("  primarySkill: ").append(c.getPractice() != null ? c.getPractice().name() : "Unknown").append("\n");
+            sb.append("  primarySkill: ").append(c.getPractice() != null ? c.getPractice() : "Unknown").append("\n");
             sb.append("\n");
         }
 

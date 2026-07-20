@@ -6,12 +6,16 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import dk.trustworks.intranet.domain.user.entity.Team;
+import dk.trustworks.intranet.services.PracticeSyncService;
 import dk.trustworks.intranet.userservice.model.TeamRole;
+import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
@@ -31,6 +35,9 @@ public class TeamService {
 
     @Inject
     OpenAIService openAIService;
+
+    @Inject
+    PracticeSyncService practiceSyncService;
 
     public List<Team> listAll() {
         return Team.listAll();
@@ -179,25 +186,122 @@ public class TeamService {
 
     @Transactional
     public void addTeamroleToUser(String teamuuid, TeamRole teamrole) {
-        if(teamrole.getUuid()!=null && TeamRole.findByIdOptional(teamrole.getUuid()).isPresent()) TeamRole.deleteById(teamrole.getUuid());
+        validateTeamroleWrite(teamuuid, teamrole);
+        // Phase 2 (spec §4.2): MEMBER writes drive the user's derived practice.
+        // Capture the pre-write current team so a role replacement that ends the
+        // membership (e.g. MEMBER → LEADER) can still derive the user to UD.
+        LocalDate today = LocalDate.now();
+        boolean affectsMembership = teamrole.getTeammembertype() == TeamMemberType.MEMBER;
+        String previousCurrentTeam = practiceSyncService.currentMemberTeamUuid(teamrole.getUseruuid(), today);
+        // A role replacement can also displace ANOTHER user's membership (the
+        // body reuses an existing row's uuid with a different useruuid) — that
+        // user must be re-derived too, or their team-derived practice would be
+        // orphaned with no role row left as evidence for the tick.
+        String displacedUser = null;
+        String displacedPreviousTeam = null;
+        if (teamrole.getUuid() != null) {
+            TeamRole existing = TeamRole.findById(teamrole.getUuid());
+            if (existing != null) {
+                affectsMembership |= existing.getTeammembertype() == TeamMemberType.MEMBER;
+                if (existing.getTeammembertype() == TeamMemberType.MEMBER
+                        && !existing.getUseruuid().equals(teamrole.getUseruuid())) {
+                    displacedUser = existing.getUseruuid();
+                    displacedPreviousTeam = practiceSyncService.currentMemberTeamUuid(displacedUser, today);
+                }
+                TeamRole.deleteById(teamrole.getUuid());
+            }
+        }
         TeamRole.persist(new TeamRole(UUID.randomUUID().toString(), teamuuid, teamrole.getUseruuid(), teamrole.getStartdate(), teamrole.getEnddate(), teamrole.getTeammembertype()));
+        if (affectsMembership) {
+            practiceSyncService.onMembershipChanged(teamrole.getUseruuid(), previousCurrentTeam, today);
+        }
+        if (displacedUser != null) {
+            practiceSyncService.onMembershipChanged(displacedUser, displacedPreviousTeam, today);
+        }
+    }
+
+    /**
+     * Phase 0 hardening of the {@code teamroles} write path (spec §4.2 / §1.6.E).
+     * Rejects rows that would recreate the dirty data cleaned by V422 (NULL
+     * useruuid, NULL startdate) and enforces the single-MEMBER invariant: a
+     * MEMBER role's half-open period [startdate, enddate) must not overlap
+     * another MEMBER role of the same user on a DIFFERENT team — using the
+     * canonical temporal predicate, so future-dated rows count too.
+     * LEADER/SPONSOR/GUEST roles are untouched.
+     */
+    private void validateTeamroleWrite(String teamuuid, TeamRole teamrole) {
+        if (teamrole == null) throw new BadRequestException("team role body is required");
+        if (teamrole.getUseruuid() == null || teamrole.getUseruuid().isBlank()) {
+            throw new BadRequestException("useruuid is required");
+        }
+        if (teamrole.getStartdate() == null) throw new BadRequestException("startdate is required");
+        if (teamrole.getTeammembertype() != TeamMemberType.MEMBER) return;
+        List<TeamRole> memberRoles = TeamRole.list("useruuid = ?1 and teammembertype = ?2",
+                teamrole.getUseruuid(), TeamMemberType.MEMBER);
+        TeamRole conflict = findOverlappingMemberRole(teamrole.getUuid(), teamuuid,
+                teamrole.getStartdate(), teamrole.getEnddate(), memberRoles);
+        if (conflict != null) {
+            Team conflictTeam = Team.findById(conflict.getTeamuuid());
+            String teamName = conflictTeam != null ? conflictTeam.getName() : conflict.getTeamuuid();
+            throw new BadRequestException("User is already a MEMBER of team '" + teamName + "' in this period ("
+                    + conflict.getStartdate() + " – "
+                    + (conflict.getEnddate() == null ? "open" : conflict.getEnddate())
+                    + "). A user can hold only one team membership at a time.");
+        }
+    }
+
+    /**
+     * Pure decision for the single-MEMBER invariant: returns the first MEMBER
+     * role of the same user on a different team whose [startdate, enddate)
+     * overlaps the candidate period, or {@code null} if the period is free.
+     * Same-team rows are ignored (re-joining or editing within one team is not
+     * a dual membership), as is the row being edited itself.
+     *
+     * @param editedRoleUuid the row being replaced by this write, or {@code null} on create
+     * @param targetTeamuuid the team the candidate role is written to
+     * @param memberRolesOfUser all MEMBER rows of the user (any team, any period)
+     */
+    static TeamRole findOverlappingMemberRole(String editedRoleUuid, String targetTeamuuid,
+                                              LocalDate startdate, LocalDate enddate,
+                                              List<TeamRole> memberRolesOfUser) {
+        for (TeamRole other : memberRolesOfUser) {
+            if (other.getUuid().equals(editedRoleUuid)) continue;
+            if (other.getTeamuuid().equals(targetTeamuuid)) continue;
+            if (DateUtils.periodsOverlap(startdate, enddate, other.getStartdate(), other.getEnddate())) {
+                return other;
+            }
+        }
+        return null;
     }
 
     @Transactional
     public void removeUserFromTeam(String teamroleuuid) {
+        TeamRole role = TeamRole.findById(teamroleuuid);
+        if (role == null) return;
+        // Phase 2 (spec §4.2): deleting a MEMBER role can end the membership —
+        // capture the pre-delete current team so the sync can derive to UD even
+        // though no role row remains as evidence.
+        String previousCurrentTeam = role.getTeammembertype() == TeamMemberType.MEMBER
+                ? practiceSyncService.currentMemberTeamUuid(role.getUseruuid(), LocalDate.now())
+                : null;
         TeamRole.deleteById(teamroleuuid);
+        if (role.getTeammembertype() == TeamMemberType.MEMBER) {
+            practiceSyncService.onMembershipChanged(role.getUseruuid(), previousCurrentTeam, LocalDate.now());
+        }
     }
 
     /**
-     * Sets (or clears, with {@code practiceCode == null}) a team's practice link (V418).
-     * The caller validates the code against the practice registry beforehand.
+     * Sets (or clears, with {@code practiceCode == null}) a team's practice link
+     * (V418). The caller validates the code against the practice registry
+     * beforehand. Since Phase 2 the whole flow lives in
+     * {@link PracticeSyncService#applyTeamPracticeChange}: the transition is
+     * recorded in {@code team_practice_assignment}, the team's denormalized
+     * code/uuid pair is updated, and every current MEMBER is re-derived with
+     * {@code effective_from} = the change date.
      */
     @Transactional
     public Team updateTeamPractice(String teamuuid, String practiceCode) {
-        Team team = Team.findById(teamuuid);
-        if (team == null) throw new NotFoundException("Team not found: " + teamuuid);
-        team.setPracticeCode(practiceCode);
-        return team;
+        return practiceSyncService.applyTeamPracticeChange(teamuuid, practiceCode, LocalDate.now());
     }
 
     /**

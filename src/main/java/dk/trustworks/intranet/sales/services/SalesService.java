@@ -6,7 +6,9 @@ import dk.trustworks.intranet.sales.model.SalesLeadConsultant;
 import dk.trustworks.intranet.sales.model.dto.LeadTrendData;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.model.Practice;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.services.PracticeService;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -33,6 +35,9 @@ public class SalesService {
 
     @Inject
     EntityManager entityManager;
+
+    @Inject
+    PracticeService practiceService;
 
     public SalesLead findOne(String uuid) {
         return SalesLead.findById(uuid);
@@ -146,7 +151,15 @@ public class SalesService {
 
     @Transactional
     public SalesLead persist(SalesLead salesLead) {
+        // Phase 4: absent practice and the deprecated 'UD' alias (code or uuid,
+        // wire-valid until Phase 5) normalize to NULL — the operational
+        // "no practice" on sales_lead.
+        salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
+            // Registry-driven guard: reject JK and any non-active practice
+            // on create, mirroring UserService (spec §4.8 step 0 / §1.6.E).
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
+            salesLead.setPracticeUuid(resolvePracticeUuid(salesLead.getPractice()));
             salesLead.setUuid(UUID.randomUUID().toString());
             salesLead.setCreated(LocalDateTime.now());
             if (salesLead.getStatus() == LeadStatus.WON) {
@@ -158,6 +171,8 @@ public class SalesService {
                     salesLead.getUuid(), salesLead.getStatus(),
                     requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null);
         } else if(SalesLead.findById(salesLead.getUuid())==null) {
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
+            salesLead.setPracticeUuid(resolvePracticeUuid(salesLead.getPractice()));
             if (salesLead.getStatus() == LeadStatus.WON) {
                 salesLead.setWonDate(LocalDateTime.now());
             }
@@ -192,6 +207,9 @@ public class SalesService {
     public void update(SalesLead salesLead) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         log.infof("Updating sales lead uuid=%s, status=%s, user=%s", salesLead.getUuid(), salesLead.getStatus(), userUuid);
+        // Phase 4: the deprecated 'UD' alias normalizes to NULL before the
+        // change comparison and the wholesale column write below.
+        salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
 
         // Determine won_date based on status transition
         SalesLead existing = SalesLead.findById(salesLead.getUuid());
@@ -201,6 +219,13 @@ public class SalesService {
             logStageTransition(salesLead.getUuid(),
                     existing.getStatus() != null ? existing.getStatus().name() : null,
                     salesLead.getStatus().name());
+        }
+
+        // Registry-driven guard: validate the practice only when it actually changes
+        // vs the stored value, mirroring UserService.updateOne — no-op writes are
+        // tolerated so a whole-object lead PUT can't 400 during a migration window.
+        if (existing == null || !Objects.equals(existing.getPractice(), salesLead.getPractice())) {
+            practiceService.validateUserPracticeAssignable(salesLead.getPractice());
         }
 
         LocalDateTime wonDate;
@@ -219,6 +244,7 @@ public class SalesService {
                         "allocation = ?2, " +
                         "closeDate = ?3, " +
                         "practice = ?4, " +
+                        "practiceUuid = ?19, " +
                         "leadManager = ?5, " +
                         "extension = ?6, " +
                         "rate = ?7, " +
@@ -250,7 +276,19 @@ public class SalesService {
                 salesLead.getLostReason(),
                 salesLead.getLostNotes(),
                 salesLead.getLostAtStage(),
-                salesLead.getUuid());
+                salesLead.getUuid(),
+                resolvePracticeUuid(salesLead.getPractice()));
+    }
+
+    /**
+     * Registry code → uuid for the {@code sales_lead.practice_uuid} twin, which
+     * the application maintains since Phase 3 (the V424 backfill covered only
+     * pre-existing rows). Null/blank or unregistered codes map to null.
+     */
+    private String resolvePracticeUuid(String practiceCode) {
+        if (practiceCode == null || practiceCode.isBlank()) return null;
+        Practice registryRow = practiceService.resolveByIdOrCode(practiceCode);
+        return registryRow == null ? null : registryRow.getUuid();
     }
 
     @Transactional

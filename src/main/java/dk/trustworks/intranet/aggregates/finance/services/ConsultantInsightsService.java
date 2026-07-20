@@ -32,8 +32,10 @@ import static dk.trustworks.intranet.aggregates.utilization.services.Utilization
  * Provides per-consultant analytics: utilization rankings, time-to-first-contract,
  * bench consultants, unprofitable consultants, and budget-vs-actual gap.
  *
- * All queries filter to consultants in the five core practices
- * ({@link dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper#BILLABLE_PRACTICES}),
+ * All queries filter to consultants in the registry's active {@code type='PRACTICE'}
+ * practices (Phase 3 —
+ * {@link dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper#activePracticeUserFilter(String)},
+ * the registry-driven successor of the deleted {@code BILLABLE_PRACTICES} constant),
  * with optional company filtering. This is the population definition for these
  * widgets, not a user-selectable filter: it is what keeps partners and management
  * (stored practice {@code UD}) out of consultant-performance rankings. It is
@@ -41,7 +43,7 @@ import static dk.trustworks.intranet.aggregates.utilization.services.Utilization
  *
  * <p>Exception: the explicit-window profitability variant takes a practice set and
  * treats an absent one as "no practice filter" — the team dashboard filters by team
- * membership instead and must also see members outside the five core practices.</p>
+ * membership instead and must also see members outside the real practices.</p>
  */
 @JBossLog
 @ApplicationScoped
@@ -49,6 +51,9 @@ public class ConsultantInsightsService {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    dk.trustworks.intranet.services.PracticeService practiceService;
 
     /**
      * Returns consultants ranked by net utilization over the trailing 12 months.
@@ -84,7 +89,9 @@ public class ConsultantInsightsService {
                  )
                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
-              AND u.practice IN (:practices)
+            """);
+        sql.append(activePracticeUserFilter("u"));
+        sql.append("""
               AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
             """);
 
@@ -102,7 +109,6 @@ public class ConsultantInsightsService {
         sql.append(" LIMIT :resultLimit");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", toDate);
         query.setParameter("resultLimit", limit);
@@ -162,8 +168,9 @@ public class ConsultantInsightsService {
                 FROM user u
                 JOIN userstatus us ON us.useruuid = u.uuid
                      AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
-                WHERE u.practice IN (:practices)
+                WHERE 1=1
             """);
+        sql.append(activePracticeUserFilter("u"));
 
         if (hasCompanies) {
             sql.append("      AND us.companyuuid IN (:companyIds) ");
@@ -180,7 +187,6 @@ public class ConsultantInsightsService {
             """);
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("cutoffDate", cutoffDate);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -244,8 +250,9 @@ public class ConsultantInsightsService {
                  )
                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             LEFT JOIN contract_consultants cc ON cc.useruuid = u.uuid
-            WHERE u.practice IN (:practices)
+            WHERE 1=1
             """);
+        sql.append(activePracticeUserFilter("u"));
 
         if (hasCompanies) {
             sql.append("  AND us.companyuuid IN (:companyIds) ");
@@ -258,7 +265,6 @@ public class ConsultantInsightsService {
             """);
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("cutoffDate", cutoffDate);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -331,8 +337,11 @@ public class ConsultantInsightsService {
         LocalDate periodFrom = "fytd".equalsIgnoreCase(period)
                 ? getCurrentFiscalYearRange().start()
                 : ttmStart();
+        // Registry-derived active PRACTICE codes (Phase 3) — the CXO dashboard's
+        // fixed population, formerly the hardcoded BILLABLE_PRACTICES constant.
         return getConsultantProfitability(
-                BILLABLE_PRACTICES, companyIds, periodFrom, firstOfCurrentMonth);
+                new java.util.LinkedHashSet<>(practiceService.activePracticeCodes()),
+                companyIds, periodFrom, firstOfCurrentMonth);
     }
 
     /**
@@ -401,7 +410,7 @@ public class ConsultantInsightsService {
               AND fud.document_date >= :periodFrom AND fud.document_date < :periodTo
             """);
         if (hasPractices) {
-            headcountSql.append("  AND u.practice IN (:practices) ");
+            headcountSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             headcountSql.append("  AND fud.companyuuid IN (:companyIds) ");
@@ -461,7 +470,7 @@ public class ConsultantInsightsService {
             """);
 
         if (hasPractices) {
-            userSql.append("  AND u.practice IN (:practices) ");
+            userSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             userSql.append("  AND agg.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");
@@ -534,7 +543,10 @@ public class ConsultantInsightsService {
             SELECT bd.useruuid, SUM(bd.budgetHours) AS total_budget
             FROM fact_budget_day bd
             JOIN user ub ON ub.uuid = bd.useruuid
-            WHERE ub.practice IN (:practices)
+            WHERE 1=1
+            """);
+        budgetSub.append(activePracticeUserFilter("ub"));
+        budgetSub.append("""
               AND bd.document_date >= :ttmFrom AND bd.document_date <= :ttmTo
               AND (SELECT us_type.type FROM userstatus us_type
                    WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
@@ -552,7 +564,9 @@ public class ConsultantInsightsService {
             FROM fact_user_day fud
             JOIN `user` ua ON ua.uuid = fud.useruuid
             WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
-              AND ua.practice IN (:practices)
+            """);
+        actualSub.append(activePracticeUserFilter("ua"));
+        actualSub.append("""
               AND fud.document_date >= :ttmFrom AND fud.document_date <= :ttmTo
             """);
         if (hasCompanies) {
@@ -575,7 +589,6 @@ public class ConsultantInsightsService {
             """.formatted(budgetSub, actualSub);
 
         var query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("practices", BILLABLE_PRACTICES);
         query.setParameter("ttmFrom", ttmFrom);
         query.setParameter("ttmTo", ttmTo);
         query.setParameter("resultLimit", limit);

@@ -2,7 +2,6 @@ package dk.trustworks.intranet.aggregates.utilization.services;
 
 import java.time.LocalDate;
 import java.time.Month;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -37,16 +36,45 @@ public final class UtilizationCalculationHelper {
     // ── Filter constants ──────────────────────────────────────────────────
 
     /**
-     * Billable practice codes used by executive and CXO dashboards.
+     * Registry-driven successor of the deleted {@code BILLABLE_PRACTICES}
+     * constant (Part 2 Phase 3): a WHERE fragment keeping only rows whose user
+     * is currently in an active {@code type='PRACTICE'} registry practice —
+     * resolved through the {@code practice_uuid} surrogate key, so the filter
+     * follows the registry with no code list to maintain. Excludes the UD
+     * "no practice" sentinel exactly as the old five-code set did.
      * The dashboard (company-wide) intentionally does NOT filter by practice.
      * The team dashboard filters by team membership instead.
      *
      * <p><b>Note:</b> {@code user.practice} is current-state only (no temporal history).
      * Practice-filtered reports attribute all historical data to the consultant's
-     * current practice assignment. As of 2026-04, no practice changes have occurred
-     * in production data, so this is a documented limitation, not an active bug.</p>
+     * current practice assignment.</p>
+     *
+     * @param userAlias SQL alias of the {@code user} table — compile-time
+     *                  identifier literal only, never user input
+     * @return WHERE fragment (leading {@code AND} included, wrapped in spaces)
      */
-    public static final Set<String> BILLABLE_PRACTICES = Set.of("PM", "BA", "CYB", "DEV", "SA");
+    public static String activePracticeUserFilter(String userAlias) {
+        requireSqlIdentifier(userAlias);
+        return " AND EXISTS (SELECT 1 FROM practice ap_" + userAlias
+                + " WHERE ap_" + userAlias + ".uuid = " + userAlias + ".practice_uuid"
+                + " AND ap_" + userAlias + ".type = 'PRACTICE' AND ap_" + userAlias + ".active = 1) ";
+    }
+
+    /**
+     * Code-column variant of {@link #activePracticeUserFilter(String)} for
+     * legacy fact tables that carry practice storage codes (no uuid twin during
+     * the dual-key window — re-keyed in Phase 4).
+     *
+     * @param tableAlias SQL alias of the fact table — compile-time identifier literal
+     * @param codeColumn the practice-code column on that alias — compile-time identifier literal
+     */
+    public static String activePracticeCodeFilter(String tableAlias, String codeColumn) {
+        requireSqlIdentifier(tableAlias);
+        requireSqlIdentifier(codeColumn);
+        return " AND EXISTS (SELECT 1 FROM practice ap_" + tableAlias
+                + " WHERE ap_" + tableAlias + ".code = " + tableAlias + "." + codeColumn
+                + " AND ap_" + tableAlias + ".type = 'PRACTICE' AND ap_" + tableAlias + ".active = 1) ";
+    }
 
     /** Canonical consultant type filter. Only billable consultants contribute to utilization. */
     public static final String CONSULTANT_TYPE = "CONSULTANT";

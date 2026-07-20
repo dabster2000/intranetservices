@@ -172,7 +172,11 @@ public final class PeoplePopulationSqlSupport {
             sql.append(" AND ").append(statusAlias).append(".companyuuid = :companyId");
         }
         if (!filters.practices().isEmpty()) {
-            sql.append(" AND ").append(userAlias).append(".practice IN (:practices)");
+            // Member mapping (Phase 4): "no practice" is NULL on user rows, and the
+            // normalized filter set names it by the 'UD' member token — COALESCE
+            // makes the UD token match NULL rows while real-practice-only sets
+            // keep excluding them.
+            sql.append(" AND COALESCE(").append(userAlias).append(".practice, 'UD') IN (:practices)");
         }
         return sql.toString();
     }
@@ -195,7 +199,11 @@ public final class PeoplePopulationSqlSupport {
             sql.append(" AND ").append(statusAlias).append(".companyuuid = :companyId");
         }
         if (!filters.practices().isEmpty()) {
-            sql.append(" AND ").append(userAlias).append(".practice IN (:practices)");
+            // Member mapping (Phase 4): "no practice" is NULL on user rows, and the
+            // normalized filter set names it by the 'UD' member token — COALESCE
+            // makes the UD token match NULL rows while real-practice-only sets
+            // keep excluding them.
+            sql.append(" AND COALESCE(").append(userAlias).append(".practice, 'UD') IN (:practices)");
         }
         if (!filters.careerTracks().isEmpty()) {
             sql.append(" AND ").append(careerAlias).append(".career_track IN (:careerTracks)");
@@ -244,7 +252,9 @@ public final class PeoplePopulationSqlSupport {
         }
         if (filters.companyId() != null) bindings.put("companyId", filters.companyId());
         if (!filters.practices().isEmpty()) {
-            bindings.put("practices", filters.practices().stream().map(Enum::name).collect(Collectors.toSet()));
+            // Already normalized storage codes (PeopleFilterParams, Phase 3) —
+            // the DB comparison stays against the user.practice code column.
+            bindings.put("practices", filters.practices());
         }
         if (!filters.careerTracks().isEmpty()) {
             bindings.put("careerTracks", filters.careerTracks().stream().map(Enum::name).collect(Collectors.toSet()));

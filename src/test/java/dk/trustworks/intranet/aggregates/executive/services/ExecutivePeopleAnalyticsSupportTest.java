@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAna
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayQuartileRow;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayTrendPoint;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
+import dk.trustworks.intranet.aggregates.executive.people.TestPracticeResolver;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterRequest;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentFunction;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentStatus;
@@ -65,7 +66,7 @@ class ExecutivePeopleAnalyticsSupportTest {
     void payEndpointsRejectNonEmployedPopulationBeforeQuerying() {
         PeopleFilterRequest request = new PeopleFilterRequest();
         request.population = "ACTIVE";
-        PeopleFilterParams filters = PeopleFilterParams.from(request);
+        PeopleFilterParams filters = PeopleFilterParams.from(request, TestPracticeResolver.RESOLVER);
         ExecutivePeopleRetentionPayService service = new ExecutivePeopleRetentionPayService();
 
         assertThrows(BadRequestException.class, () -> service.payEquity(filters));

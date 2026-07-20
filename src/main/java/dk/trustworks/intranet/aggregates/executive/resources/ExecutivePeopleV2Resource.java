@@ -125,6 +125,9 @@ public class ExecutivePeopleV2Resource {
     @Inject
     ScopeContext scopeContext;
 
+    @Inject
+    dk.trustworks.intranet.services.PracticeService practiceService;
+
     @Context
     UriInfo uriInfo;
 
@@ -294,7 +297,7 @@ public class ExecutivePeopleV2Resource {
         Set<String> allowed = new HashSet<>(endpointKeys);
         allowed.addAll(List.of(detailKeys));
         validateQueryParameters(uriInfo.getQueryParameters(), allowed);
-        return PeopleFilterParams.from(request);
+        return PeopleFilterParams.from(request, practiceService::resolveFilterToken);
     }
 
     static void validateQueryParameters(MultivaluedMap<String, String> queryParameters, Set<String> allowed) {

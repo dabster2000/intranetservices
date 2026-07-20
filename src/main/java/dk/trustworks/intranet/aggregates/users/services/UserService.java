@@ -11,10 +11,10 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import dk.trustworks.intranet.services.PracticeService;
+import dk.trustworks.intranet.services.PracticeSyncService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -23,6 +23,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotAllowedException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
@@ -58,6 +59,8 @@ public class UserService {
     ResumeParserService resumeParserService;
     @Inject
     PracticeService practiceService;
+    @Inject
+    PracticeSyncService practiceSyncService;
 
     /**
      * 1) Find user by Azure OID + issuer
@@ -385,13 +388,22 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {
         log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
-        // Registry-driven guard: reject JK and any non-active/non-UD practice on create (V418).
-        practiceService.validateUserPracticeAssignable(user.getPractice());
+        // Phase 4 (spec §4.1): absent practice and the deprecated 'UD' alias
+        // (code or uuid — wire-valid until Phase 5) normalize to NULL, the
+        // operational "no practice". Registry guard on the normalized value:
+        // reject JK and any non-active practice on create (V418).
+        String normalizedPractice = practiceService.normalizeNoPracticeAlias(user.getPractice());
+        practiceService.validateUserPracticeAssignable(normalizedPractice);
         if(User.find("uuid = ?1 or username = ?2", user.getUuid(), user.getUsername()).count() > 0) {
             log.infof("User already exists, skipping creation: uuid=%s username=%s", user.getUuid(), user.getUsername());
             return user;
         }
         log.debugf("User does not exist, proceeding with creation: uuid=%s", user.getUuid());
+        // Phase 2 (spec §4.2): new users are team-less by definition, so an
+        // incoming practice is a MANUAL assignment.
+        // The app owns the code↔uuid twin (V426 dropped the trigger mirror).
+        user.setPractice(normalizedPractice);
+        user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(normalizedPractice));
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
@@ -409,6 +421,8 @@ public class UserService {
         User.persist(user);
         Role.persist(new Role(UUID.randomUUID().toString(), "USER", user.getUuid()));
         UserContactinfo.persist(userContactinfo);
+        // Initial history row (the retired insert trigger's job), source=MANUAL.
+        practiceSyncService.applyManualPractice(user.getUuid(), user.getPractice(), LocalDate.now());
         log.infof("User created successfully: uuid=%s username=%s", user.getUuid(), user.getUsername());
         return user;
     }
@@ -429,9 +443,29 @@ public class UserService {
         // Registry-driven guard: validate the practice only when it actually changes
         // vs the stored value. No-op writes (incl. legacy JK) are tolerated so a
         // whole-object employee PUT can't 400 during any migration window (V418).
-        PrimarySkillType previousPractice = existing != null ? existing.getPractice() : null;
-        if (user.getPractice() != previousPractice) {
-            practiceService.validateUserPracticeAssignable(user.getPractice());
+        // Phase 2 (spec §4.2): practice is derived from team membership — a change
+        // is rejected for users with a current MEMBER team, and routed through
+        // PracticeSyncService as a MANUAL assignment for team-less users. The
+        // whole-object PUT no longer writes the practice columns directly.
+        // A null/blank incoming practice means "not provided" on update (the
+        // whole-object-PUT hardening from Phase 2), so it never counts as a
+        // change. An explicit "no practice" is expressed with the deprecated
+        // 'UD' alias (code or uuid), which normalizes to NULL before the change
+        // comparison — so a teamed no-practice user's PUT echoing the alias is
+        // a no-op rather than a 400, and a team-less user can clear a manual
+        // practice by sending it (Phase 4).
+        String previousPractice = existing != null ? existing.getPractice() : null;
+        boolean practiceProvided = user.getPractice() != null && !user.getPractice().isBlank();
+        String normalizedPractice = practiceService.normalizeNoPracticeAlias(user.getPractice());
+        boolean practiceChanged = practiceProvided && !Objects.equals(normalizedPractice, previousPractice);
+        if (practiceChanged) {
+            practiceService.validateUserPracticeAssignable(normalizedPractice);
+            String currentTeam = practiceSyncService.currentMemberTeamUuid(user.getUuid(), LocalDate.now());
+            if (currentTeam != null) {
+                throw new BadRequestException(
+                        "Practice is derived from team membership and cannot be edited directly — "
+                        + "change the user's team in team management instead.");
+            }
         }
 
         User.update("email = ?1, " +
@@ -448,9 +482,8 @@ public class UserService {
                         "pensiondetails = ?12, " +
                         "defects = ?13, " +
                         "photoconsent = ?14, " +
-                        "other = ?15, " +
-                        "practice = ?16 " +
-                        "WHERE uuid = ?17 ",
+                        "other = ?15 " +
+                        "WHERE uuid = ?16 ",
                 user.getEmail(),
                 user.getFirstname(),
                 user.getLastname(),
@@ -466,8 +499,11 @@ public class UserService {
                 user.getDefects(),
                 user.isPhotoconsent(),
                 user.getOther(),
-                user.getPractice(),
                 user.getUuid());
+
+        if (practiceChanged) {
+            practiceSyncService.applyManualPractice(user.getUuid(), normalizedPractice, LocalDate.now());
+        }
 
         log.debugf("User updated successfully: uuid=%s", user.getUuid());
     }

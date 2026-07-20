@@ -3,7 +3,6 @@ package dk.trustworks.intranet.aggregates.executive.people;
 import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
 import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import jakarta.ws.rs.BadRequestException;
 
 import java.time.Clock;
@@ -14,6 +13,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -23,7 +23,10 @@ import java.util.function.Function;
  *
  * <p>All user input is converted to closed enums, UUIDs, or bounded integers
  * before it reaches a SQL builder. Invalid input deliberately fails with HTTP
- * 400 instead of being ignored.</p>
+ * 400 instead of being ignored. Practices are validated against the practice
+ * registry (Phase 3, spec §4.5): the caller may send storage codes or registry
+ * uuids; {@link #practices()} always holds normalized storage codes, which is
+ * what the SQL builders bind against {@code u.practice}.</p>
  */
 public record PeopleFilterParams(
         LocalDate asOfDate,
@@ -32,13 +35,24 @@ public record PeopleFilterParams(
         String companyId,
         Set<ConsultantType> employeeTypes,
         PeoplePopulationScope population,
-        Set<PrimarySkillType> practices,
+        Set<String> practices,
         Set<CareerTrack> careerTracks,
         Set<CareerLevel> careerLevels,
         PeopleManagementScope managementScope,
         PeopleCompensationGroup compensationGroup,
         PeopleSalaryType salaryType
 ) {
+
+    /**
+     * Resolves one {@code practices=} token (registry uuid or storage code) to
+     * its storage code — implemented by
+     * {@link dk.trustworks.intranet.services.PracticeService#resolveFilterToken(String)};
+     * a functional interface so the parsing stays unit-testable without a database.
+     */
+    @FunctionalInterface
+    public interface PracticeTokenResolver {
+        Optional<String> toStorageCode(String token);
+    }
     public static final int DEFAULT_MONTHS = 24;
     public static final int DEFAULT_HORIZON_DAYS = 90;
     public static final int MAX_LIST_VALUES = 20;
@@ -46,11 +60,11 @@ public record PeopleFilterParams(
     public static final Set<ConsultantType> DEFAULT_INTERNAL_TYPES = Collections.unmodifiableSet(
             new LinkedHashSet<>(Arrays.asList(ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT)));
 
-    public static PeopleFilterParams from(PeopleFilterRequest request) {
-        return from(request, Clock.system(REPORTING_ZONE));
+    public static PeopleFilterParams from(PeopleFilterRequest request, PracticeTokenResolver practiceResolver) {
+        return from(request, Clock.system(REPORTING_ZONE), practiceResolver);
     }
 
-    static PeopleFilterParams from(PeopleFilterRequest request, Clock clock) {
+    static PeopleFilterParams from(PeopleFilterRequest request, Clock clock, PracticeTokenResolver practiceResolver) {
         if (request == null) request = new PeopleFilterRequest();
         rejectPresentBlank("asOfDate", request.asOfDate);
         rejectPresentBlank("months", request.months);
@@ -93,8 +107,7 @@ public record PeopleFilterParams(
             throw badRequest("employeeTypes cannot contain EXTERNAL; externals are reported separately");
         }
 
-        Set<PrimarySkillType> practices = parseEnumList(
-                "practices", request.practices, PrimarySkillType.class, PrimarySkillType::valueOf);
+        Set<String> practices = parsePracticeList(request.practices, practiceResolver);
         Set<CareerTrack> careerTracks = parseEnumList(
                 "careerTracks", request.careerTracks, CareerTrack.class, CareerTrack::valueOf);
         Set<CareerLevel> careerLevels = parseEnumList(
@@ -146,6 +159,30 @@ public record PeopleFilterParams(
         } catch (IllegalArgumentException ex) {
             throw badRequest("Invalid " + name + ": " + raw);
         }
+    }
+
+    /**
+     * Parses the {@code practices} CSV into normalized storage codes via the
+     * registry resolver. Accepts storage codes (case-insensitive) and registry
+     * uuids (§4.5); unknown tokens — including retired codes such as {@code JK}
+     * that no longer have a registry row — fail with HTTP 400.
+     */
+    private static Set<String> parsePracticeList(String raw, PracticeTokenResolver resolver) {
+        if (raw == null || raw.isBlank()) return null;
+        String[] values = raw.split(",", -1);
+        if (values.length > MAX_LIST_VALUES) {
+            throw badRequest("practices accepts at most " + MAX_LIST_VALUES + " values");
+        }
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        for (String value : values) {
+            String trimmed = value.trim();
+            if (trimmed.isEmpty()) {
+                throw badRequest("practices contains a blank value");
+            }
+            result.add(resolver.toStorageCode(trimmed).orElseThrow(() -> badRequest(
+                    "Invalid practices value '" + value + "'; expected a practice registry storage code or uuid")));
+        }
+        return Collections.unmodifiableSet(result);
     }
 
     private static <E extends Enum<E>> Set<E> parseEnumList(
