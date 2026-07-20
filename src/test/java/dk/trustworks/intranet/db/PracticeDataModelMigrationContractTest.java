@@ -270,6 +270,50 @@ class PracticeDataModelMigrationContractTest {
         assertTrue(m.contains("REFERENCES `user` (uuid)"), "FK targets user(uuid)");
     }
 
+    // ── Phase 2 migration (V426 — application becomes the sole writer) ───────
+
+    @Test
+    void v426_drops_all_five_triggers_idempotently() throws IOException {
+        String m = readV426();
+        // The exact family recreated by V424 — the two uuid mirrors and the
+        // three history writers — must all go, each with IF EXISTS.
+        for (String trigger : List.of(
+                "trg_user_practice_uuid_before_insert",
+                "trg_user_practice_uuid_before_update",
+                "trg_user_practice_history_after_insert",
+                "trg_user_practice_history_after_update",
+                "trg_user_practice_history_after_delete")) {
+            assertTrue(m.contains("DROP TRIGGER IF EXISTS " + trigger), "must drop " + trigger);
+        }
+        int drops = m.split("DROP TRIGGER IF EXISTS", -1).length - 1;
+        assertTrue(drops >= 5, "all five triggers dropped (found " + drops + ")");
+        assertFalse(m.toUpperCase().contains("CREATE TRIGGER"),
+                "V426 must not recreate any trigger — the application is the sole writer");
+    }
+
+    @Test
+    void v426_resyncs_the_twin_columns_from_the_code_columns() throws IOException {
+        String m = readV426();
+        // Convergence resyncs derive the uuid from the code via a registry join
+        // and are keyed on NULL-safe mismatch, so re-runs are no-ops.
+        assertTrue(m.contains("SET u.practice_uuid = p.uuid"), "user twin resynced");
+        assertTrue(m.contains("SET t.practice_uuid = p.uuid"), "team twin resynced");
+        assertTrue(m.contains("SET h.practice_uuid = p.uuid"), "history twin resynced");
+        int nullSafeGuards = m.split("<=>", -1).length - 1;
+        assertTrue(nullSafeGuards >= 3, "every resync keyed on NULL-safe mismatch (found " + nullSafeGuards + ")");
+    }
+
+    @Test
+    void v426_documents_that_raw_sql_writes_no_history() throws IOException {
+        String m = readV426();
+        assertTrue(m.contains("BY DESIGN") && m.contains("writes NO"),
+                "header must state that raw SQL practice updates write no history (tick reconciles)");
+        // Trigger drops only — no structural DDL rides along.
+        String upper = m.toUpperCase();
+        assertFalse(upper.contains("DROP TABLE") || upper.contains("DROP COLUMN") || upper.contains("DROP INDEX"),
+                "V426 drops triggers only");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
     }
@@ -296,5 +340,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV425() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V425__Practice_phase1_new_structures.sql"));
+    }
+
+    private static String readV426() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V426__Practice_phase2_drop_triggers_application_writer.sql"));
     }
 }

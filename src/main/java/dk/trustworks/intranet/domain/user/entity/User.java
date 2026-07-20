@@ -15,6 +15,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
+import org.hibernate.annotations.DynamicUpdate;
 import org.mindrot.jbcrypt.BCrypt;
 
 import java.time.LocalDate;
@@ -28,6 +29,12 @@ import java.util.stream.Collectors;
 @Data
 @Entity
 @Table(name = "user")
+// Only dirty columns are written on flush. Load-bearing since Phase 2: practice
+// and practice_uuid are entity-writable (PracticeSyncService is their writer),
+// and a full-column UPDATE from an unrelated managed-entity flush (e.g.
+// linkAzureAccount) could otherwise revert a concurrent practice write without
+// any history — the triggers that used to record such writes are gone (V426).
+@DynamicUpdate
 public class User extends PanacheEntityBase {
 
     @Id
@@ -78,13 +85,15 @@ public class User extends PanacheEntityBase {
     private PrimarySkillType practice;
 
     /**
-     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Written only by
-     * the DB trigger mirror during the dual-key window (insertable/updatable
-     * false); no read path consumes it until Phase 3, and it is not serialized
-     * (byte-identical user payload this phase).
+     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Since Phase 2
+     * (V426) the trigger mirror is gone and the application owns the twin
+     * invariant: PracticeSyncService and UserService.createUser are the only
+     * writers and always set both columns together. No read path consumes it
+     * until Phase 3, and it is not serialized ({@code @JsonIgnore} also blocks
+     * mass assignment through the entity-as-request-body pattern).
      */
     @JsonIgnore
-    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    @Column(name = "practice_uuid")
     private String practiceUuid;
 
     @Transient

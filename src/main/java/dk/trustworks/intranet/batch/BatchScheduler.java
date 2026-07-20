@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.batch;
 
+import dk.trustworks.intranet.services.PracticeSyncService;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,6 +22,9 @@ public class BatchScheduler {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    PracticeSyncService practiceSyncService;
 
     /**
      * Kill switch for expense-consume — the only scheduled job that POSTs vouchers
@@ -66,6 +70,24 @@ public class BatchScheduler {
     @Scheduled(cron = "0 5 3 * * ?")
     void trigger() {
         log.info("BI nightly refresh handled by MariaDB event ev_bi_nightly_refresh; Quarkus side observing only");
+    }
+
+    // Practice reconciliation tick (Part 2 Phase 2, spec §4.2): re-derives every
+    // user's practice from their current MEMBER role — this is what materializes
+    // future-dated membership starts/ends on their day; the TeamService event
+    // hooks are only the optimization. Idempotent and convergent, so a run on a
+    // draining ECS task during cutover is harmless (the scheduler is not
+    // clustered). Default 06:20 UTC keeps it outside the 02:00–05:00 CET quiet
+    // window (staging refresh ~02:00, BI nightly 03:00 UTC, expense-sync 05:00
+    // UTC) whether the container clock runs UTC or CET; PRACTICE_RECONCILIATION_CRON
+    // overrides it (local/dev verification).
+    @Scheduled(cron = "{dk.trustworks.practice.reconciliation.cron}", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void schedulePracticeReconciliation() {
+        try {
+            practiceSyncService.reconcileAll(LocalDate.now());
+        } catch (Exception e) {
+            log.error("practice-reconciliation tick failed", e);
+        }
     }
 
     // Finance loads

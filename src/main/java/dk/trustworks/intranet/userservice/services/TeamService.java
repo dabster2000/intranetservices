@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import dk.trustworks.intranet.domain.user.entity.Team;
+import dk.trustworks.intranet.services.PracticeSyncService;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -34,6 +35,9 @@ public class TeamService {
 
     @Inject
     OpenAIService openAIService;
+
+    @Inject
+    PracticeSyncService practiceSyncService;
 
     public List<Team> listAll() {
         return Team.listAll();
@@ -183,8 +187,37 @@ public class TeamService {
     @Transactional
     public void addTeamroleToUser(String teamuuid, TeamRole teamrole) {
         validateTeamroleWrite(teamuuid, teamrole);
-        if(teamrole.getUuid()!=null && TeamRole.findByIdOptional(teamrole.getUuid()).isPresent()) TeamRole.deleteById(teamrole.getUuid());
+        // Phase 2 (spec §4.2): MEMBER writes drive the user's derived practice.
+        // Capture the pre-write current team so a role replacement that ends the
+        // membership (e.g. MEMBER → LEADER) can still derive the user to UD.
+        LocalDate today = LocalDate.now();
+        boolean affectsMembership = teamrole.getTeammembertype() == TeamMemberType.MEMBER;
+        String previousCurrentTeam = practiceSyncService.currentMemberTeamUuid(teamrole.getUseruuid(), today);
+        // A role replacement can also displace ANOTHER user's membership (the
+        // body reuses an existing row's uuid with a different useruuid) — that
+        // user must be re-derived too, or their team-derived practice would be
+        // orphaned with no role row left as evidence for the tick.
+        String displacedUser = null;
+        String displacedPreviousTeam = null;
+        if (teamrole.getUuid() != null) {
+            TeamRole existing = TeamRole.findById(teamrole.getUuid());
+            if (existing != null) {
+                affectsMembership |= existing.getTeammembertype() == TeamMemberType.MEMBER;
+                if (existing.getTeammembertype() == TeamMemberType.MEMBER
+                        && !existing.getUseruuid().equals(teamrole.getUseruuid())) {
+                    displacedUser = existing.getUseruuid();
+                    displacedPreviousTeam = practiceSyncService.currentMemberTeamUuid(displacedUser, today);
+                }
+                TeamRole.deleteById(teamrole.getUuid());
+            }
+        }
         TeamRole.persist(new TeamRole(UUID.randomUUID().toString(), teamuuid, teamrole.getUseruuid(), teamrole.getStartdate(), teamrole.getEnddate(), teamrole.getTeammembertype()));
+        if (affectsMembership) {
+            practiceSyncService.onMembershipChanged(teamrole.getUseruuid(), previousCurrentTeam, today);
+        }
+        if (displacedUser != null) {
+            practiceSyncService.onMembershipChanged(displacedUser, displacedPreviousTeam, today);
+        }
     }
 
     /**
@@ -243,19 +276,32 @@ public class TeamService {
 
     @Transactional
     public void removeUserFromTeam(String teamroleuuid) {
+        TeamRole role = TeamRole.findById(teamroleuuid);
+        if (role == null) return;
+        // Phase 2 (spec §4.2): deleting a MEMBER role can end the membership —
+        // capture the pre-delete current team so the sync can derive to UD even
+        // though no role row remains as evidence.
+        String previousCurrentTeam = role.getTeammembertype() == TeamMemberType.MEMBER
+                ? practiceSyncService.currentMemberTeamUuid(role.getUseruuid(), LocalDate.now())
+                : null;
         TeamRole.deleteById(teamroleuuid);
+        if (role.getTeammembertype() == TeamMemberType.MEMBER) {
+            practiceSyncService.onMembershipChanged(role.getUseruuid(), previousCurrentTeam, LocalDate.now());
+        }
     }
 
     /**
-     * Sets (or clears, with {@code practiceCode == null}) a team's practice link (V418).
-     * The caller validates the code against the practice registry beforehand.
+     * Sets (or clears, with {@code practiceCode == null}) a team's practice link
+     * (V418). The caller validates the code against the practice registry
+     * beforehand. Since Phase 2 the whole flow lives in
+     * {@link PracticeSyncService#applyTeamPracticeChange}: the transition is
+     * recorded in {@code team_practice_assignment}, the team's denormalized
+     * code/uuid pair is updated, and every current MEMBER is re-derived with
+     * {@code effective_from} = the change date.
      */
     @Transactional
     public Team updateTeamPractice(String teamuuid, String practiceCode) {
-        Team team = Team.findById(teamuuid);
-        if (team == null) throw new NotFoundException("Team not found: " + teamuuid);
-        team.setPracticeCode(practiceCode);
-        return team;
+        return practiceSyncService.applyTeamPracticeChange(teamuuid, practiceCode, LocalDate.now());
     }
 
     /**

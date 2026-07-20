@@ -5,6 +5,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.DynamicUpdate;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -16,6 +17,9 @@ import jakarta.persistence.Table;
 @Entity
 @Table(name = "team")
 @NoArgsConstructor
+// Only dirty columns are written on flush — an unrelated managed-Team flush
+// must not revert a concurrent practice_code/practice_uuid write (see User).
+@DynamicUpdate
 public class Team extends PanacheEntityBase {
 
     @Id
@@ -33,13 +37,15 @@ public class Team extends PanacheEntityBase {
     private String practiceCode;
 
     /**
-     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Written only
-     * by the migration backfill this phase (insertable/updatable false); Phase 2's
-     * PracticeSyncService becomes its writer. Not serialized yet (byte-identical
-     * team payload); no read path consumes it until Phase 3.
+     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Since
+     * Phase 2, PracticeSyncService.applyTeamPracticeChange is the writer and
+     * always sets both columns together (the application owns the twin
+     * invariant — V426 dropped the trigger mirror on {@code user}, and the team
+     * columns never had one). Not serialized yet; no read path consumes it
+     * until Phase 3.
      */
     @JsonIgnore
-    @Column(name = "practice_uuid", insertable = false, updatable = false)
+    @Column(name = "practice_uuid")
     private String practiceUuid;
 
 }
