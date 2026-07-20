@@ -388,18 +388,22 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {
         log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
-        // Registry-driven guard: reject JK and any non-active/non-UD practice on create (V418).
-        practiceService.validateUserPracticeAssignable(user.getPractice());
+        // Phase 4 (spec §4.1): absent practice and the deprecated 'UD' alias
+        // (code or uuid — wire-valid until Phase 5) normalize to NULL, the
+        // operational "no practice". Registry guard on the normalized value:
+        // reject JK and any non-active practice on create (V418).
+        String normalizedPractice = practiceService.normalizeNoPracticeAlias(user.getPractice());
+        practiceService.validateUserPracticeAssignable(normalizedPractice);
         if(User.find("uuid = ?1 or username = ?2", user.getUuid(), user.getUsername()).count() > 0) {
             log.infof("User already exists, skipping creation: uuid=%s username=%s", user.getUuid(), user.getUsername());
             return user;
         }
         log.debugf("User does not exist, proceeding with creation: uuid=%s", user.getUuid());
         // Phase 2 (spec §4.2): new users are team-less by definition, so an
-        // incoming practice is a MANUAL assignment; absent → the UD sentinel.
-        // The app owns the code↔uuid twin now (V426 dropped the trigger mirror).
-        if (user.getPractice() == null || user.getPractice().isBlank()) user.setPractice("UD");
-        user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(user.getPractice()));
+        // incoming practice is a MANUAL assignment.
+        // The app owns the code↔uuid twin (V426 dropped the trigger mirror).
+        user.setPractice(normalizedPractice);
+        user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(normalizedPractice));
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
@@ -443,14 +447,19 @@ public class UserService {
         // is rejected for users with a current MEMBER team, and routed through
         // PracticeSyncService as a MANUAL assignment for team-less users. The
         // whole-object PUT no longer writes the practice columns directly.
-        // A null/blank incoming practice means "not provided" on update (no UI
-        // path sends null — "No practice" is the UD sentinel), so it never counts
-        // as a change; a stale-but-equal value passes through untouched.
+        // A null/blank incoming practice means "not provided" on update (the
+        // whole-object-PUT hardening from Phase 2), so it never counts as a
+        // change. An explicit "no practice" is expressed with the deprecated
+        // 'UD' alias (code or uuid), which normalizes to NULL before the change
+        // comparison — so a teamed no-practice user's PUT echoing the alias is
+        // a no-op rather than a 400, and a team-less user can clear a manual
+        // practice by sending it (Phase 4).
         String previousPractice = existing != null ? existing.getPractice() : null;
-        boolean practiceChanged = user.getPractice() != null && !user.getPractice().isBlank()
-                && !user.getPractice().equals(previousPractice);
+        boolean practiceProvided = user.getPractice() != null && !user.getPractice().isBlank();
+        String normalizedPractice = practiceService.normalizeNoPracticeAlias(user.getPractice());
+        boolean practiceChanged = practiceProvided && !Objects.equals(normalizedPractice, previousPractice);
         if (practiceChanged) {
-            practiceService.validateUserPracticeAssignable(user.getPractice());
+            practiceService.validateUserPracticeAssignable(normalizedPractice);
             String currentTeam = practiceSyncService.currentMemberTeamUuid(user.getUuid(), LocalDate.now());
             if (currentTeam != null) {
                 throw new BadRequestException(
@@ -493,7 +502,7 @@ public class UserService {
                 user.getUuid());
 
         if (practiceChanged) {
-            practiceSyncService.applyManualPractice(user.getUuid(), user.getPractice(), LocalDate.now());
+            practiceSyncService.applyManualPractice(user.getUuid(), normalizedPractice, LocalDate.now());
         }
 
         log.debugf("User updated successfully: uuid=%s", user.getUuid());

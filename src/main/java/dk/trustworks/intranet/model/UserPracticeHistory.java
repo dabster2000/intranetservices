@@ -45,7 +45,8 @@ public class UserPracticeHistory extends PanacheEntityBase {
 
     private String useruuid;
 
-    /** Legacy storage code (PM/BA/SA/DEV/CYB/UD). Dual-keyed until Phase 5. */
+    /** Legacy storage code (PM/BA/SA/DEV/CYB). Nullable since Phase 4 — a NULL
+     *  period is first-class "no practice" history. Dual-keyed until Phase 5. */
     private String practice;
 
     @Column(name = "practice_uuid")

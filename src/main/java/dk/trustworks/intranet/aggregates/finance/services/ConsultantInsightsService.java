@@ -410,7 +410,7 @@ public class ConsultantInsightsService {
               AND fud.document_date >= :periodFrom AND fud.document_date < :periodTo
             """);
         if (hasPractices) {
-            headcountSql.append("  AND u.practice IN (:practices) ");
+            headcountSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             headcountSql.append("  AND fud.companyuuid IN (:companyIds) ");
@@ -470,7 +470,7 @@ public class ConsultantInsightsService {
             """);
 
         if (hasPractices) {
-            userSql.append("  AND u.practice IN (:practices) ");
+            userSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             userSql.append("  AND agg.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");

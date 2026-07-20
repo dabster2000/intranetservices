@@ -167,12 +167,12 @@ public class ExecutivePeopleCareerService {
 
     public Response<List<PracticeCareerCell>> practiceCareerMatrix(PeopleFilterParams filters) {
         String sql = "WITH " + PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate") +
-                " SELECT fp.practice," +
+                " SELECT COALESCE(fp.practice, 'UD') practice," +
                 " CASE WHEN fp.career_level = 'JUNIOR_CONSULTANT' THEN 'ENTRY'" +
                 " WHEN fp.career_track IS NULL THEN 'UNASSIGNED' ELSE fp.career_track END career_track," +
                 " COUNT(DISTINCT fp.useruuid) people_count" +
                 " FROM filtered_population fp WHERE fp.`type` = 'CONSULTANT'" +
-                " GROUP BY fp.practice, career_track";
+                " GROUP BY COALESCE(fp.practice, 'UD'), career_track";
         List<Tuple> rows = repository.tuples("practice-career-matrix", sql,
                 PeoplePopulationSqlSupport.snapshotBindings(filters, "asOfDate", filters.asOfDate()));
         Map<String, Long> counts = new LinkedHashMap<>();

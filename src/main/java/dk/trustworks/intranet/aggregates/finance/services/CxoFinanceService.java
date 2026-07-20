@@ -353,7 +353,7 @@ public class CxoFinanceService {
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND u.practice IN (:practices) ");
+            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
@@ -1135,7 +1135,7 @@ public class CxoFinanceService {
         billableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         billableSql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasServiceLines) {
-            billableSql.append("  AND u.practice IN (:serviceLines) ");
+            billableSql.append("  AND COALESCE(u.practice, 'UD') IN (:serviceLines) ");
         }
         if (hasCompanies) {
             billableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -1162,7 +1162,7 @@ public class CxoFinanceService {
         availableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         availableSql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasServiceLines) {
-            availableSql.append("  AND u.practice IN (:serviceLines) ");
+            availableSql.append("  AND COALESCE(u.practice, 'UD') IN (:serviceLines) ");
         }
         if (hasCompanies) {
             availableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -2660,7 +2660,7 @@ public class CxoFinanceService {
 
         // Add optional filters
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.practice IN (:serviceLines)) ");
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2727,7 +2727,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            fteSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.practice IN (:serviceLines)) ");
+            fteSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             fteSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2808,7 +2808,7 @@ public class CxoFinanceService {
         // Note: work_full doesn't have sector_id or contract_type_id directly,
         // so we filter by service line (consultant's practice) and company
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.practice IN (:serviceLines)) ");
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2883,7 +2883,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            expectedSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.practice IN (:serviceLines)) ");
+            expectedSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             expectedSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -3341,7 +3341,7 @@ public class CxoFinanceService {
         billableSql.append("  ) ");
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.practice IN (:serviceLines)) ");
+            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
@@ -3364,7 +3364,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.practice IN (:serviceLines)) ");
+            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             availableSql.append("AND b.companyuuid IN (:companyIds) ");
@@ -6163,7 +6163,7 @@ public class CxoFinanceService {
         sql.append("WHERE d.consultant_type = 'CONSULTANT' ");
         sql.append("  AND d.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND u.practice IN (:practices) ");
+            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
@@ -6227,14 +6227,16 @@ public class CxoFinanceService {
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND u.practice IN (:practices) ");
+            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
-        sql.append("ORDER BY u.practice, u.firstname, u.lastname");
+        // Sort key uses the member mapping so no-practice consultants keep their
+        // pre-flip position (the stored 'UD' sorted last; a raw NULL sorts first).
+        sql.append("ORDER BY COALESCE(u.practice, 'UD'), u.firstname, u.lastname");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("year", year);
@@ -6595,7 +6597,7 @@ public class CxoFinanceService {
                 "  DATE_FORMAT(i.invoicedate, '%Y%m')    AS month_key, " +
                 "  YEAR(i.invoicedate)                   AS year_val, " +
                 "  MONTH(i.invoicedate)                  AS month_number, " +
-                "  COALESCE(u.practice, 'OTHER')         AS service_line_id, " +
+                "  COALESCE(u.practice, 'UD')            AS service_line_id, " +
                 "  SUM( " +
                 "    ii.rate * ii.hours " +
                 "    * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
@@ -6623,7 +6625,7 @@ public class CxoFinanceService {
                 "  AND (YEAR(i.invoicedate) > :fromYear OR (YEAR(i.invoicedate) = :fromYear AND MONTH(i.invoicedate) >= :fromMonth)) " +
                 "  AND (YEAR(i.invoicedate) < :toYear OR (YEAR(i.invoicedate) = :toYear AND MONTH(i.invoicedate) <= :toMonth))" +
                 revenueCompanyFilter + " " +
-                "GROUP BY month_key, year_val, month_number, COALESCE(u.practice, 'OTHER') " +
+                "GROUP BY month_key, year_val, month_number, COALESCE(u.practice, 'UD') " +
                 "ORDER BY month_key, service_line_id";
 
         Query revenueQuery = em.createNativeQuery(revenueSql, Tuple.class);

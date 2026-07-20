@@ -38,10 +38,11 @@ import java.util.UUID;
  * they hold a <em>current</em> MEMBER role under the canonical temporal predicate
  * {@code startdate <= asOf AND (enddate IS NULL OR enddate > asOf)}.
  * LEADER/SPONSOR/GUEST roles never drive practice. Team without practice, or no
- * current MEMBER role → the {@code UD} sentinel (operational NULL is Phase 4) —
- * unless the user is team-less and manually assigned, in which case the manual
- * value stands (spec §4.2: derived when a current MEMBER team exists, manual
- * otherwise).
+ * current MEMBER role → {@code NULL} on both key columns (the Phase 4
+ * operational truth; the {@code UD} sentinel stopped being stored with the V427
+ * flip) — unless the user is team-less and manually assigned, in which case the
+ * manual value stands (spec §4.2: derived when a current MEMBER team exists,
+ * manual otherwise). NULL periods are first-class history rows (spec §4.3).
  *
  * <p><b>Effective-date rule (Phase 2 prescribed default):</b> a transition's
  * {@code effective_from} is the triggering effective date (membership startdate,
@@ -74,11 +75,11 @@ public class PracticeSyncService {
     /** Provenance: direct assignment on a team-less user (spec §4.2 override). */
     public static final String SOURCE_MANUAL = "MANUAL";
 
-    /** Sentinel "no practice" code — operational NULL arrives in Phase 4. */
-    static final String NO_PRACTICE_CODE = "UD";
-
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    PracticeService practiceService;
 
     // ── Event hooks (synchronous, join the caller's transaction) ──────────
 
@@ -90,7 +91,7 @@ public class PracticeSyncService {
      * @param previousCurrentTeamUuid the team of the user's current MEMBER role
      *                                <em>before</em> the write (null if none) —
      *                                lets a deletion or role-type change that
-     *                                leaves the user team-less derive to UD even
+     *                                leaves the user team-less derive to NULL even
      *                                though no role row remains as evidence
      */
     @Transactional
@@ -104,7 +105,7 @@ public class PracticeSyncService {
      * denormalized {@code practice_code}/{@code practice_uuid}, and cascades a
      * re-derivation to every current MEMBER with {@code effective_from} = the
      * change date. {@code newPracticeCode} null/blank unsets the practice
-     * (members derive to UD; no new assignment row is inserted).
+     * (members derive to NULL; no new assignment row is inserted).
      */
     @Transactional
     public Team applyTeamPracticeChange(String teamuuid, String newPracticeCode, LocalDate changeDate) {
@@ -128,15 +129,13 @@ public class PracticeSyncService {
         team.setPracticeUuid(newUuid);
 
         // Cascade: every current MEMBER (canonical predicate as of the change date)
-        // transitions to the team's new practice — or UD when the practice is unset.
-        String derivedCode = code == null ? NO_PRACTICE_CODE : code;
-        String derivedUuid = code == null ? resolvePracticeUuid(NO_PRACTICE_CODE) : newUuid;
+        // transitions to the team's new practice — or NULL when the practice is unset.
         String actor = actor();
         List<TeamRole> currentMembers = TeamRole.list(
                 "teamuuid = ?1 and teammembertype = ?2 and startdate <= ?3 and (enddate is null or enddate > ?3)",
                 teamuuid, TeamMemberType.MEMBER, changeDate);
         for (TeamRole member : currentMembers) {
-            apply(member.getUseruuid(), derivedCode, derivedUuid, changeDate, changeDate,
+            apply(member.getUseruuid(), code, newUuid, changeDate, changeDate,
                     SOURCE_TEAM_SYNC, teamuuid, actor);
         }
         return team;
@@ -144,13 +143,15 @@ public class PracticeSyncService {
 
     /**
      * Direct (manual) practice assignment — permitted only for team-less users;
-     * {@code UserService} enforces that rule before calling. A null/blank
-     * practice is stored as the {@code UD} sentinel this phase. Also writes the
-     * initial history row on user creation (the retired insert trigger's job).
+     * {@code UserService} enforces that rule before calling. A null/blank value
+     * and the deprecated {@code UD} alias (code or registry uuid — wire
+     * compatibility until Phase 5) are stored as {@code NULL} on both key
+     * columns. Also writes the initial history row on user creation (the
+     * retired insert trigger's job).
      */
     @Transactional
     public void applyManualPractice(String useruuid, String practice, LocalDate effectiveFrom) {
-        String code = practice == null || practice.isBlank() ? NO_PRACTICE_CODE : practice;
+        String code = practiceService.normalizeNoPracticeAlias(practice);
         apply(useruuid, code, resolvePracticeUuid(code), effectiveFrom, effectiveFrom, SOURCE_MANUAL, null, actor());
     }
 
@@ -236,24 +237,24 @@ public class PracticeSyncService {
             }
             LocalDate practiceLostOn = latestClosedAssignmentEnd(team.getUuid());
             LocalDate since = latestOf(roleStart, practiceLostOn);
-            return apply(useruuid, NO_PRACTICE_CODE, resolvePracticeUuid(NO_PRACTICE_CODE),
+            return apply(useruuid, null, null,
                     since, asOf, SOURCE_TEAM_SYNC, team.getUuid(), actor);
         }
 
         // Team-less. A manual assignment stands (spec §4.2) — the value only
-        // derives to UD when there is positive evidence that it is a stale
+        // derives to NULL when there is positive evidence that it is a stale
         // team-derived value: a membership that ended after the current history
         // period began, or (event path) a current membership that was just
         // deleted/re-typed, leaving no role row behind as evidence.
         LocalDate anchor = latestHistoryFrom(useruuid);
         TeamRole endedEvidence = staleDerivedEvidence(memberRoles, asOf, anchor);
         if (endedEvidence != null) {
-            return apply(useruuid, NO_PRACTICE_CODE, resolvePracticeUuid(NO_PRACTICE_CODE),
+            return apply(useruuid, null, null,
                     endedEvidence.getEnddate(), asOf, SOURCE_TEAM_SYNC, endedEvidence.getTeamuuid(), actor);
         }
         if (previousCurrentTeamUuid != null) {
             LocalDate endedOn = latestEndedOn(memberRoles, previousCurrentTeamUuid, asOf);
-            return apply(useruuid, NO_PRACTICE_CODE, resolvePracticeUuid(NO_PRACTICE_CODE),
+            return apply(useruuid, null, null,
                     endedOn != null ? endedOn : asOf, asOf, SOURCE_TEAM_SYNC, previousCurrentTeamUuid, actor);
         }
         return false;

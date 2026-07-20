@@ -100,11 +100,34 @@ public class PracticeService {
     }
 
     /**
+     * Normalizes an incoming practice value on a WRITE path to the Phase 4
+     * operational representation: {@code null}/blank and the deprecated
+     * {@code UD} alias — the storage code (case-insensitive) or the UD registry
+     * row's uuid, both kept wire-valid until Phase 5 for clients that still
+     * send them — all mean "no practice" and normalize to {@code null}. Any
+     * other value passes through unchanged (validation is a separate concern).
+     * Callers: {@code UserService}, {@code SalesService},
+     * {@code PracticeSyncService.applyManualPractice}.
+     */
+    public String normalizeNoPracticeAlias(String practice) {
+        if (practice == null || practice.isBlank()) return null;
+        String trimmed = practice.trim();
+        if (NO_PRACTICE_CODE.equalsIgnoreCase(trimmed)) return null;
+        Practice udRow = Practice.findById(NO_PRACTICE_CODE);
+        if (udRow != null && udRow.getUuid() != null && udRow.getUuid().equalsIgnoreCase(trimmed)) return null;
+        return trimmed;
+    }
+
+    /**
      * Resolves one {@code practices=} filter token — a registry uuid (canonical)
      * or a storage code (alias) — to its storage code. Any registry row resolves,
      * including {@code UD} and inactive rows: filters are reads, and the widest
-     * backward-compatible universe is the whole registry. Retired codes with no
-     * registry row (e.g. {@code JK}) do not resolve.
+     * backward-compatible universe is the whole registry. The {@code UD} token
+     * resolves to the {@code 'UD'} member code, which the SQL builders compare
+     * against {@code COALESCE(practice,'UD')} — since the Phase 4 flip it
+     * selects the NULL no-practice population on operational tables and the
+     * synthetic member on warehouse tables. Retired codes with no registry row
+     * (e.g. {@code JK}) do not resolve.
      */
     public java.util.Optional<String> resolveFilterToken(String token) {
         if (token == null || token.isBlank()) return java.util.Optional.empty();
@@ -242,10 +265,13 @@ public class PracticeService {
 
     /**
      * Validates a {@code user.practice} storage-code value on write: null/blank
-     * is allowed (no practice), {@code UD} is allowed (sentinel), {@code JK} is
-     * rejected, and any other value must be an active {@code type='PRACTICE'}
-     * registry row. Re-typed from the deleted {@code PrimarySkillType} enum in
-     * Phase 3 — semantics identical, the registry is the only authority.
+     * is a valid "no practice" (stored as NULL since Phase 4), {@code UD} is
+     * allowed as the deprecated no-practice ALIAS (normalized to NULL by
+     * {@link #normalizeNoPracticeAlias}; removed in Phase 5 with the registry
+     * row), {@code JK} is rejected, and any other value must be an active
+     * {@code type='PRACTICE'} registry row. Re-typed from the deleted
+     * {@code PrimarySkillType} enum in Phase 3 — the registry is the only
+     * authority.
      */
     public void validateUserPracticeAssignable(String practice) {
         if (practice == null || practice.isBlank()) return;

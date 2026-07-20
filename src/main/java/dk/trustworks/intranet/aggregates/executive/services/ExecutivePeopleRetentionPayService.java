@@ -455,7 +455,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND u.practice IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND sc.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND sc.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {
@@ -473,7 +473,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND u.practice IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND ucl.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND ucl.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {
@@ -498,7 +498,8 @@ public class ExecutivePeopleRetentionPayService {
             PeopleCompensationGroup group, String alias, String dstAlias) {
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.toSqlCase(alias + ".career_level");
-            case PRACTICE -> "COALESCE(" + alias + ".practice,'UNASSIGNED')";
+            case PRACTICE -> // Phase 4: NULL practice IS the 'UD' member (pre-flip rows stored 'UD')
+                    "COALESCE(" + alias + ".practice,'UD')";
             case CAREER_TRACK -> "CASE WHEN " + alias + ".career_level='JUNIOR_CONSULTANT' THEN 'ENTRY'" +
                     " WHEN " + alias + ".career_track IS NULL THEN 'UNASSIGNED' ELSE " + alias + ".career_track END";
             case DISCO_FUNCTION -> "CONCAT(" + discoCodeCase(dstAlias) + ",'|'," +

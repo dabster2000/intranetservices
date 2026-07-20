@@ -314,6 +314,87 @@ class PracticeDataModelMigrationContractTest {
                 "V426 drops triggers only");
     }
 
+    // ── Phase 4 migration (V427 — warehouse recreation + operational NULL flip) ─
+
+    @Test
+    void v427_makes_the_history_practice_column_nullable_and_drops_the_ud_default() throws IOException {
+        String m = readV427();
+        assertTrue(m.contains("MODIFY COLUMN practice VARCHAR(50) NULL"),
+                "user_practice_history.practice must become nullable (NULL periods are first-class history)");
+        assertTrue(m.contains("MODIFY COLUMN practice VARCHAR(3) NULL DEFAULT NULL"),
+                "user.practice loses the V418 'UD' default — NULL is the no-practice default now");
+    }
+
+    @Test
+    void v427_flips_ud_to_null_on_all_three_operational_tables_both_twins() throws IOException {
+        String m = readV427();
+        // One flip per table, setting BOTH key twins, keyed on the stored code
+        // OR a drifted UD-registry uuid (defensive), so re-runs match zero rows.
+        for (String table : List.of("UPDATE `user` u", "UPDATE user_practice_history h", "UPDATE sales_lead sl")) {
+            assertTrue(m.contains(table), "flip must cover " + table);
+        }
+        int nullPairs = m.split("practice = NULL,\n    \\w+\\.practice_uuid = NULL", -1).length - 1;
+        assertTrue(nullPairs >= 3, "each flip must NULL both twins together (found " + nullPairs + ")");
+        int udJoins = m.split("LEFT JOIN practice ud ON ud.code = 'UD' AND ud.uuid =", -1).length - 1;
+        assertTrue(udJoins >= 3, "each flip must also catch uuid-only drift rows (found " + udJoins + ")");
+        assertFalse(m.contains("UPDATE team"), "team is not a flip target — teams never stored 'UD'");
+        assertFalse(m.contains("DELETE FROM practice"), "the UD registry row survives until Phase 5");
+    }
+
+    @Test
+    void v427_recreates_the_seven_practice_dimensioned_views_with_the_member_mapping() throws IOException {
+        String m = readV427();
+        for (String view : List.of(
+                "fact_backlog", "fact_employee_monthly", "fact_pipeline", "fact_project_financials",
+                "fact_revenue_budget", "fact_salary_monthly", "fact_staffing_forecast_week")) {
+            assertTrue(m.contains("VIEW `" + view + "` AS") || m.contains("VIEW " + view + " AS"),
+                    "must recreate " + view);
+        }
+        // The synthetic member: registry LEFT JOIN + COALESCE(code,'UD') and the
+        // 'No practice' label — never a NULL group key, survives the Phase 5 row drop.
+        int memberMappings = m.split("COALESCE\\(\\w+\\.code, 'UD'\\)", -1).length - 1;
+        assertTrue(memberMappings >= 6, "views must emit COALESCE(<registry>.code,'UD') (found " + memberMappings + ")");
+        int labels = m.split("'No practice'", -1).length - 1;
+        assertTrue(labels >= 7, "each practice-dimensioned view carries the additive practice_label (found " + labels + ")");
+        assertFalse(m.contains("VIEW `consultant`") || m.contains("VIEW consultant AS"),
+                "the user-shaped consultant view is deliberately untouched — its practice column follows operational NULL");
+    }
+
+    @Test
+    void v427_pins_the_dominant_vote_tie_break_and_keeps_no_practice_voters() throws IOException {
+        String m = readV427();
+        // The two dominant-practice votes must not exclude no-practice consultants
+        // (the old `u.practice IS NOT NULL` filter would silently drop the whole
+        // former-UD population from the vote after the flip)...
+        assertFalse(m.contains("u.practice IS NOT NULL"),
+                "no vote may filter no-practice voters out — they participate as the 'UD' member");
+        // ...and ties resolve deterministically to registry sort_order (documented
+        // one-time shuffle of previously plan-arbitrary tied winners, spec §1.6.J).
+        int tieBreaks = m.split("MIN\\(COALESCE\\(vprg.sort_order, 2147483647\\)\\) ASC", -1).length - 1;
+        assertTrue(tieBreaks >= 2, "both votes pin the sort_order tie-break (found " + tieBreaks + ")");
+    }
+
+    @Test
+    void v427_repoints_the_snapshot_procs_to_the_uuid_twin() throws IOException {
+        String m = readV427();
+        assertTrue(m.contains("CREATE OR REPLACE PROCEDURE sp_snapshot_pipeline"), "snapshot proc recreated");
+        assertTrue(m.contains("CREATE OR REPLACE PROCEDURE sp_backfill_pipeline_snapshots"), "backfill proc recreated");
+        int uuidJoins = m.split("LEFT JOIN practice preg ON preg.uuid = sl.practice_uuid", -1).length - 1;
+        assertTrue(uuidJoins >= 2, "both procs resolve via sl.practice_uuid — sl.practice is dropped in Phase 5");
+        assertFalse(m.contains("preg.code = sl.practice"),
+                "no proc may keep joining the legacy code column");
+    }
+
+    @Test
+    void v427_touches_no_mat_table_and_drops_nothing() throws IOException {
+        String m = readV427();
+        String upper = m.toUpperCase();
+        assertFalse(upper.contains("ALTER TABLE FACT_"),
+                "mat tables need no change — code columns are already VARCHAR(50) everywhere");
+        assertFalse(upper.contains("DROP TABLE") || upper.contains("DROP COLUMN") || upper.contains("DROP VIEW"),
+                "V427 recreates and flips; destructive drops are Phase 5");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
     }
@@ -344,5 +425,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV426() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V426__Practice_phase2_drop_triggers_application_writer.sql"));
+    }
+
+    private static String readV427() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V427__Practice_phase4_operational_null_flip_and_warehouse.sql"));
     }
 }

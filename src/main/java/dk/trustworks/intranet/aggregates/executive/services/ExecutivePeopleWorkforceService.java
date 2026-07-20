@@ -539,7 +539,7 @@ public class ExecutivePeopleWorkforceService {
 
     private String eventScope(PeopleFilterParams filters) {
         StringBuilder sql = new StringBuilder("COALESCE(NULLIF(h.`type`,'EXTERNAL'),h.previous_type) IN (:employeeTypes)");
-        if (!filters.practices().isEmpty()) sql.append(" AND u.practice IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND ec.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND ec.career_level IN (:careerLevels)");
         switch (filters.managementScope()) {

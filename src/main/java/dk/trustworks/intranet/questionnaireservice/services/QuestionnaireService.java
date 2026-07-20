@@ -180,8 +180,19 @@ public class QuestionnaireService {
                 // and uuids (what the targeting reader matches from Phase 3 on).
                 List<String> uuids = new ArrayList<>(request.getTargetPractices().size());
                 for (String code : request.getTargetPractices()) {
+                    // Phase 4: a 'UD' target would silently match nobody — no
+                    // operational row stores it anymore (a NULL-practice user
+                    // matches only untargeted questionnaires, by design). Reject
+                    // it so the dead-letter target cannot be created; the
+                    // no-practice population is reachable via "everyone" or
+                    // team targeting. No existing row targeted UD at flip time.
+                    if (practiceService.normalizeNoPracticeAlias(code) == null) {
+                        throw new BadRequestException(
+                                "targetPractices cannot contain the no-practice value ('UD'/null) — "
+                                + "target everyone or use targetTeams instead");
+                    }
                     practiceService.validateUserPracticeAssignable(code);
-                    Practice registryRow = code == null ? null : Practice.findById(code);
+                    Practice registryRow = Practice.findById(code);
                     if (registryRow == null) {
                         throw new BadRequestException("Unknown practice code in targetPractices: " + code);
                     }

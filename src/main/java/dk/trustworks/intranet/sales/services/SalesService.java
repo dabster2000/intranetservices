@@ -151,8 +151,12 @@ public class SalesService {
 
     @Transactional
     public SalesLead persist(SalesLead salesLead) {
+        // Phase 4: absent practice and the deprecated 'UD' alias (code or uuid,
+        // wire-valid until Phase 5) normalize to NULL — the operational
+        // "no practice" on sales_lead.
+        salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
-            // Registry-driven guard: reject JK and any non-active/non-UD practice
+            // Registry-driven guard: reject JK and any non-active practice
             // on create, mirroring UserService (spec §4.8 step 0 / §1.6.E).
             practiceService.validateUserPracticeAssignable(salesLead.getPractice());
             salesLead.setPracticeUuid(resolvePracticeUuid(salesLead.getPractice()));
@@ -203,6 +207,9 @@ public class SalesService {
     public void update(SalesLead salesLead) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         log.infof("Updating sales lead uuid=%s, status=%s, user=%s", salesLead.getUuid(), salesLead.getStatus(), userUuid);
+        // Phase 4: the deprecated 'UD' alias normalizes to NULL before the
+        // change comparison and the wholesale column write below.
+        salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
 
         // Determine won_date based on status transition
         SalesLead existing = SalesLead.findById(salesLead.getUuid());
