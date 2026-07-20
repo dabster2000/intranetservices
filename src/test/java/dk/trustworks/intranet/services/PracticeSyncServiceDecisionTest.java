@@ -120,30 +120,31 @@ class PracticeSyncServiceDecisionTest {
     }
 
     // ── planTransition: the V407/V424 trigger semantics + the clamp ───────
+    // Uuid-only since Phase 5A — the stored legacy code plays no part.
 
-    private static HistoryState openRow(LocalDate from, String code, String uuid) {
-        return new HistoryState("open-row", from, code, uuid, null);
+    private static HistoryState openRow(LocalDate from, String uuid) {
+        return new HistoryState("open-row", from, uuid, null);
     }
 
     @Test
     void unchanged_practice_is_a_noop() {
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF.minusDays(5), "SA", "uuid-sa"), ASOF, "SA", "uuid-sa");
+                openRow(ASOF.minusDays(5), "uuid-sa"), ASOF, "uuid-sa");
         assertEquals(TransitionAction.NOOP, plan.action());
     }
 
     @Test
-    void same_code_but_different_uuid_is_not_a_noop() {
-        // The twin invariant is the application's job now — a uuid re-mint must converge.
+    void different_uuid_is_not_a_noop() {
+        // A uuid re-mint (staging refresh) must converge on the next derivation.
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF.minusDays(5), "SA", "uuid-old"), ASOF, "SA", "uuid-new");
+                openRow(ASOF.minusDays(5), "uuid-old"), ASOF, "uuid-new");
         assertEquals(TransitionAction.CLOSE_AND_INSERT, plan.action());
     }
 
     @Test
     void normal_change_closes_the_open_row_and_inserts_at_the_triggering_date() {
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF.minusDays(5), "SA", "uuid-sa"), ASOF, "CYB", "uuid-cyb");
+                openRow(ASOF.minusDays(5), "uuid-sa"), ASOF, "uuid-cyb");
         assertEquals(TransitionAction.CLOSE_AND_INSERT, plan.action());
         assertEquals(ASOF, plan.effectiveFrom());
         assertFalse(plan.clamped());
@@ -154,7 +155,7 @@ class PracticeSyncServiceDecisionTest {
         // The triggers' same-day collapse — also the only CHECK-safe action
         // (effective_to must be strictly greater than effective_from).
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF, "SA", "uuid-sa"), ASOF, "CYB", "uuid-cyb");
+                openRow(ASOF, "uuid-sa"), ASOF, "uuid-cyb");
         assertEquals(TransitionAction.UPDATE_OPEN_ROW, plan.action());
         assertEquals(ASOF, plan.effectiveFrom());
         assertFalse(plan.clamped());
@@ -165,7 +166,7 @@ class PracticeSyncServiceDecisionTest {
         // Retroactive rewrites are out of scope: a triggering date before the
         // open row clamps onto it (and collapses in place, with a warning).
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF.minusDays(5), "SA", "uuid-sa"), ASOF.minusDays(20), "CYB", "uuid-cyb");
+                openRow(ASOF.minusDays(5), "uuid-sa"), ASOF.minusDays(20), "uuid-cyb");
         assertEquals(TransitionAction.UPDATE_OPEN_ROW, plan.action());
         assertEquals(ASOF.minusDays(5), plan.effectiveFrom());
         assertTrue(plan.clamped());
@@ -173,9 +174,10 @@ class PracticeSyncServiceDecisionTest {
 
     @Test
     void backdated_between_open_row_and_today_is_honoured_unclamped() {
-        // e.g. the tick materializing a membership end from two days ago.
+        // e.g. the tick materializing a membership end from two days ago —
+        // deriving to NULL (no practice), the Phase 4 operational truth.
         TransitionPlan plan = PracticeSyncService.planTransition(
-                openRow(ASOF.minusDays(5), "SA", "uuid-sa"), ASOF.minusDays(2), "UD", "uuid-ud");
+                openRow(ASOF.minusDays(5), "uuid-sa"), ASOF.minusDays(2), null);
         assertEquals(TransitionAction.CLOSE_AND_INSERT, plan.action());
         assertEquals(ASOF.minusDays(2), plan.effectiveFrom());
         assertFalse(plan.clamped());
@@ -184,7 +186,7 @@ class PracticeSyncServiceDecisionTest {
     @Test
     void no_history_inserts_a_fresh_open_row() {
         TransitionPlan plan = PracticeSyncService.planTransition(
-                new HistoryState(null, null, null, null, null), ASOF, "SA", "uuid-sa");
+                new HistoryState(null, null, null, null), ASOF, "uuid-sa");
         assertEquals(TransitionAction.INSERT_OPEN_ROW, plan.action());
         assertEquals(ASOF, plan.effectiveFrom());
         assertFalse(plan.clamped());
@@ -195,8 +197,8 @@ class PracticeSyncServiceDecisionTest {
         // Keeps the timeline contiguous and collision-free under the
         // (useruuid, effective_from) unique key.
         TransitionPlan plan = PracticeSyncService.planTransition(
-                new HistoryState(null, null, null, null, ASOF.minusDays(3)),
-                ASOF.minusDays(10), "SA", "uuid-sa");
+                new HistoryState(null, null, null, ASOF.minusDays(3)),
+                ASOF.minusDays(10), "uuid-sa");
         assertEquals(TransitionAction.INSERT_OPEN_ROW, plan.action());
         assertEquals(ASOF.minusDays(3), plan.effectiveFrom());
         assertTrue(plan.clamped());

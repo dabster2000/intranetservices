@@ -1792,9 +1792,10 @@ public class CxoFinanceResource {
      * CXO Command Center: monthly invoiced revenue broken down by practice (service line),
      * with cost and margin overlay.
      *
-     * <p>Revenue is attributed at the consultant level via {@code u.practice} of the delivering
-     * consultant — NOT the project-level service line — to avoid distortion from EXTERNAL
-     * consultants, mixed-practice projects, and "UD" (Undefined) buckets. Cost remains
+     * <p>Revenue is attributed at the consultant level via the delivering consultant's
+     * registry-derived practice code ({@code u.practice_uuid} → registry, Phase 5A) — NOT the
+     * project-level service line — to avoid distortion from EXTERNAL
+     * consultants, mixed-practice projects, and "UD" (No practice) buckets. Cost remains
      * project-level (from {@code fact_project_financials_mat}). Months with cost but no
      * revenue still appear in the response with an empty practice revenue map.</p>
      *

@@ -77,7 +77,7 @@ public class ConsultantInsightsService {
 
         StringBuilder sql = new StringBuilder();
         sql.append("""
-            SELECT fud.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+            SELECT fud.useruuid AS user_id, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                    SUM(fud.registered_billable_hours) AS billable,
                    SUM(fud.net_available_hours) AS net_available
             FROM fact_user_day fud
@@ -100,7 +100,7 @@ public class ConsultantInsightsService {
         }
 
         sql.append("""
-            GROUP BY fud.useruuid, u.firstname, u.lastname, u.practice
+            GROUP BY fud.useruuid, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid)
             HAVING SUM(fud.net_available_hours) > 100
             """);
 
@@ -163,7 +163,7 @@ public class ConsultantInsightsService {
                    sub.hire_date,
                    MIN(cc.activefrom) AS first_contract_date
             FROM (
-                SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+                SELECT u.uuid AS user_id, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                        MIN(us.statusdate) AS hire_date
                 FROM user u
                 JOIN userstatus us ON us.useruuid = u.uuid
@@ -177,7 +177,7 @@ public class ConsultantInsightsService {
         }
 
         sql.append("""
-                GROUP BY u.uuid, u.firstname, u.lastname, u.practice
+                GROUP BY u.uuid, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid)
                 HAVING MIN(us.statusdate) >= :cutoffDate
             ) sub
             LEFT JOIN contract_consultants cc ON cc.useruuid = sub.user_id
@@ -239,7 +239,7 @@ public class ConsultantInsightsService {
 
         StringBuilder sql = new StringBuilder();
         sql.append("""
-            SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+            SELECT u.uuid AS user_id, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                    MAX(cc.activeto) AS last_contract_end,
                    DATEDIFF(CURDATE(), MAX(cc.activeto)) AS days_since
             FROM user u
@@ -259,7 +259,7 @@ public class ConsultantInsightsService {
         }
 
         sql.append("""
-            GROUP BY u.uuid, u.firstname, u.lastname, u.practice
+            GROUP BY u.uuid, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid)
             HAVING MAX(cc.activeto) IS NULL OR MAX(cc.activeto) < :cutoffDate
             ORDER BY days_since DESC
             """);
@@ -410,7 +410,7 @@ public class ConsultantInsightsService {
               AND fud.document_date >= :periodFrom AND fud.document_date < :periodTo
             """);
         if (hasPractices) {
-            headcountSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            headcountSql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             headcountSql.append("  AND fud.companyuuid IN (:companyIds) ");
@@ -442,7 +442,7 @@ public class ConsultantInsightsService {
         // so zero-salary consultants stay in the population).
         StringBuilder userSql = new StringBuilder();
         userSql.append("""
-            SELECT agg.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+            SELECT agg.useruuid AS user_id, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                    agg.period_revenue AS ttm_revenue,
                    agg.period_salary AS ttm_salary
             FROM (
@@ -470,7 +470,7 @@ public class ConsultantInsightsService {
             """);
 
         if (hasPractices) {
-            userSql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            userSql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             userSql.append("  AND agg.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");
@@ -576,7 +576,7 @@ public class ConsultantInsightsService {
 
         // Main query joining budget and actual
         String sql = """
-            SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+            SELECT u.uuid AS user_id, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                    budget_sub.total_budget AS budget_hours,
                    COALESCE(actual_sub.total_billable, 0) AS actual_hours,
                    budget_sub.total_budget - COALESCE(actual_sub.total_billable, 0) AS gap_hours,

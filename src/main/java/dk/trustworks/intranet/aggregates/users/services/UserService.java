@@ -136,7 +136,8 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.practice,
+               u.photoconsent, u.other, u.practice_uuid,
+               (select prc.code from practice prc where prc.uuid = u.practice_uuid) AS practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
@@ -171,7 +172,8 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.practice,
+               u.photoconsent, u.other, u.practice_uuid,
+               (select prc.code from practice prc where prc.uuid = u.practice_uuid) AS practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
@@ -362,7 +364,8 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.practice,
+               u.photoconsent, u.other, u.practice_uuid,
+               (select prc.code from practice prc where prc.uuid = u.practice_uuid) AS practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN active_overlap ao ON ao.useruuid = u.uuid
@@ -401,7 +404,9 @@ public class UserService {
         log.debugf("User does not exist, proceeding with creation: uuid=%s", user.getUuid());
         // Phase 2 (spec §4.2): new users are team-less by definition, so an
         // incoming practice is a MANUAL assignment.
-        // The app owns the code↔uuid twin (V426 dropped the trigger mirror).
+        // Phase 5A: practice_uuid is the only persisted key — the practice
+        // field is a registry-derived @Formula, so setting it here only shapes
+        // the response of this call (and feeds applyManualPractice below).
         user.setPractice(normalizedPractice);
         user.setPracticeUuid(practiceSyncService.resolvePracticeUuid(normalizedPractice));
         user.setCreated(LocalDate.now());
@@ -449,11 +454,12 @@ public class UserService {
         // whole-object PUT no longer writes the practice columns directly.
         // A null/blank incoming practice means "not provided" on update (the
         // whole-object-PUT hardening from Phase 2), so it never counts as a
-        // change. An explicit "no practice" is expressed with the deprecated
-        // 'UD' alias (code or uuid), which normalizes to NULL before the change
-        // comparison — so a teamed no-practice user's PUT echoing the alias is
-        // a no-op rather than a 400, and a team-less user can clear a manual
-        // practice by sending it (Phase 4).
+        // change. An explicit "no practice" is expressed with the 'UD' alias
+        // (Phase 5: the permanent no-practice member token — the code literal,
+        // not the retired registry row), which normalizes to NULL before the
+        // change comparison — so a teamed no-practice user's PUT echoing the
+        // alias is a no-op rather than a 400, and a team-less user can clear a
+        // manual practice by sending it (Phase 4).
         String previousPractice = existing != null ? existing.getPractice() : null;
         boolean practiceProvided = user.getPractice() != null && !user.getPractice().isBlank();
         String normalizedPractice = practiceService.normalizeNoPracticeAlias(user.getPractice());

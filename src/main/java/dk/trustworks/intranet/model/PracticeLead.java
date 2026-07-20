@@ -9,6 +9,7 @@ import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.Formula;
 
 import jakarta.persistence.*;
 import java.time.LocalDate;
@@ -32,15 +33,20 @@ public class PracticeLead extends PanacheEntityBase implements Auditable {
     @Id
     private String uuid;
 
-    @Column(name = "practice_code")
+    /**
+     * Practice code, DERIVED from {@link #practiceUuid} via the registry
+     * (Phase 5A) — the {@code practice_lead.practice_code} column is no longer
+     * mapped and is dropped by V428. Lead responses keep carrying both the
+     * code (this derived field) and the uuid (§4.5).
+     */
+    @Formula("(select prc.code from practice prc where prc.uuid = practice_uuid)")
     private String practiceCode;
 
     /**
-     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Since
-     * Phase 3 the application maintains it ({@code PracticeService.startLead}
-     * sets both identifiers together; the V424 backfill covered pre-existing
-     * rows) and it serializes — lead responses carry code and uuid (§4.5).
-     * Read-only on input: the practice identity comes from the route.
+     * The lead's practice identity (V424; sole persisted key since Phase 5A —
+     * {@code PracticeService.startLead} writes only this column) and part of
+     * the lead payload (§4.5). Read-only on input: the practice identity
+     * comes from the route.
      */
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "practice_uuid")
@@ -72,8 +78,16 @@ public class PracticeLead extends PanacheEntityBase implements Auditable {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String modifiedBy;
 
-    public PracticeLead(String uuid, String practiceCode, String useruuid, LocalDate startdate, LocalDate enddate) {
+    /**
+     * @param practiceUuid the registry uuid — the persisted practice key
+     * @param practiceCode the registry code, set in memory only (the field is
+     *                     a formula) so the create response carries it without
+     *                     a reload
+     */
+    public PracticeLead(String uuid, String practiceUuid, String practiceCode,
+                        String useruuid, LocalDate startdate, LocalDate enddate) {
         this.uuid = uuid;
+        this.practiceUuid = practiceUuid;
         this.practiceCode = practiceCode;
         this.useruuid = useruuid;
         this.startdate = startdate;

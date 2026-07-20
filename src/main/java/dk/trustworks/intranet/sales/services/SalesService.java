@@ -151,9 +151,11 @@ public class SalesService {
 
     @Transactional
     public SalesLead persist(SalesLead salesLead) {
-        // Phase 4: absent practice and the deprecated 'UD' alias (code or uuid,
-        // wire-valid until Phase 5) normalize to NULL — the operational
-        // "no practice" on sales_lead.
+        // Phase 4: absent practice and the 'UD' no-practice member token (the
+        // permanent write alias) normalize to NULL — the operational
+        // "no practice" on sales_lead. Since 5A the entity field is a
+        // registry-derived formula: setting it here shapes this call's
+        // response; only the uuid twin is persisted.
         salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
             // Registry-driven guard: reject JK and any non-active practice
@@ -207,8 +209,8 @@ public class SalesService {
     public void update(SalesLead salesLead) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         log.infof("Updating sales lead uuid=%s, status=%s, user=%s", salesLead.getUuid(), salesLead.getStatus(), userUuid);
-        // Phase 4: the deprecated 'UD' alias normalizes to NULL before the
-        // change comparison and the wholesale column write below.
+        // Phase 4: the 'UD' no-practice member token normalizes to NULL before
+        // the change comparison; since 5A only the uuid twin is written below.
         salesLead.setPractice(practiceService.normalizeNoPracticeAlias(salesLead.getPractice()));
 
         // Determine won_date based on status transition
@@ -240,11 +242,12 @@ public class SalesService {
             wonDate = existing != null ? existing.getWonDate() : null;
         }
 
+        // Phase 5A: practiceUuid is the only persisted practice key (the
+        // legacy `practice` field is a formula — JPQL may not assign it).
         SalesLead.update("client = ?1, " +
                         "allocation = ?2, " +
                         "closeDate = ?3, " +
-                        "practice = ?4, " +
-                        "practiceUuid = ?19, " +
+                        "practiceUuid = ?4, " +
                         "leadManager = ?5, " +
                         "extension = ?6, " +
                         "rate = ?7, " +
@@ -262,7 +265,7 @@ public class SalesService {
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
-                salesLead.getPractice(),
+                resolvePracticeUuid(salesLead.getPractice()),
                 salesLead.getLeadManager(),
                 salesLead.isExtension(),
                 salesLead.getRate(),
@@ -276,8 +279,7 @@ public class SalesService {
                 salesLead.getLostReason(),
                 salesLead.getLostNotes(),
                 salesLead.getLostAtStage(),
-                salesLead.getUuid(),
-                resolvePracticeUuid(salesLead.getPractice()));
+                salesLead.getUuid());
     }
 
     /**

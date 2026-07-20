@@ -33,6 +33,9 @@ import java.time.LocalDateTime;
  * <p>
  * There is intentionally no FK to user: deleting a user must not erase or block
  * audit history (V407 decision).
+ * <p>
+ * Phase 5A: the row's practice identity is {@code practice_uuid} alone — the
+ * legacy code column is unmapped, unwritten, and dropped by V428.
  */
 @Data
 @NoArgsConstructor
@@ -45,10 +48,14 @@ public class UserPracticeHistory extends PanacheEntityBase {
 
     private String useruuid;
 
-    /** Legacy storage code (PM/BA/SA/DEV/CYB). Nullable since Phase 4 — a NULL
-     *  period is first-class "no practice" history. Dual-keyed until Phase 5. */
-    private String practice;
-
+    /**
+     * The period's practice identity (registry uuid; NULL = a first-class
+     * "no practice" period since Phase 4). Sole key since Phase 5A — the
+     * legacy {@code practice} code column is no longer mapped or written
+     * (rows written before 5A keep their stale stored codes untouched until
+     * V428 drops the column). This entity has no REST exposure; the code
+     * string, where needed, derives via the registry.
+     */
     @Column(name = "practice_uuid")
     private String practiceUuid;
 
