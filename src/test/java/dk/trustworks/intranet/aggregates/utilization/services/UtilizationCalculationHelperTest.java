@@ -22,6 +22,34 @@ class UtilizationCalculationHelperTest {
         return LocalDate.now().withDayOfMonth(1).minusDays(1);
     }
 
+    // ── registry-driven practice population filters (Phase 3) ─────────────
+
+    @Test
+    void activePracticeUserFilter_buildsTheUuidExistsFragment() {
+        String fragment = UtilizationCalculationHelper.activePracticeUserFilter("u");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                " AND EXISTS (SELECT 1 FROM practice ap_u WHERE ap_u.uuid = u.practice_uuid"
+                        + " AND ap_u.type = 'PRACTICE' AND ap_u.active = 1) ",
+                fragment);
+    }
+
+    @Test
+    void activePracticeCodeFilter_buildsTheCodeExistsFragment() {
+        String fragment = UtilizationCalculationHelper.activePracticeCodeFilter("b", "service_line_id");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                " AND EXISTS (SELECT 1 FROM practice ap_b WHERE ap_b.code = b.service_line_id"
+                        + " AND ap_b.type = 'PRACTICE' AND ap_b.active = 1) ",
+                fragment);
+    }
+
+    @Test
+    void practiceFilterBuilders_rejectNonIdentifierInput() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> UtilizationCalculationHelper.activePracticeUserFilter("u; DROP TABLE user"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> UtilizationCalculationHelper.activePracticeCodeFilter("b", "x = 1 OR"));
+    }
+
     @Test
     void capToLastCompleteMonth_leavesPastDatesUntouched() {
         LocalDate past = LocalDate.now().minusYears(2);

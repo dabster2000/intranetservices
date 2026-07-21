@@ -22,6 +22,7 @@ import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.security.ScopeContext;
+import dk.trustworks.intranet.services.TeamSettingService;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
@@ -125,6 +126,9 @@ public class UserResource {
 
     @Inject
     ScopeContext scopeContext;
+
+    @Inject
+    TeamSettingService teamSettingService;
 
     /** DTO for linking Azure fields **/
     public static class AzureLinkDto {
@@ -313,6 +317,14 @@ public class UserResource {
             @QueryParam("fromyear") Integer fromYear,
             @QueryParam("toyear") Integer toYear) {
         return knowledgeExpenseAPI.calculateBudgets(useruuid, fromYear, toYear);
+    }
+
+    @GET
+    @Path("/{useruuid}/it-budget")
+    @RolesAllowed({"devices:read"})
+    public Map<String, Integer> getItBudget(@PathParam("useruuid") String useruuid) {
+        // IT budget resolves from the user's current MEMBER team (V418, re-homed from practice).
+        return Map.of("itBudget", teamSettingService.resolveItBudgetForUser(useruuid));
     }
 
     @GET

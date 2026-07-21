@@ -101,6 +101,9 @@ public class CxoFinanceResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    @Inject
+    dk.trustworks.intranet.services.PracticeService practiceService;
+
     /**
      * Gets monthly revenue and margin trend data.
      *
@@ -170,7 +173,9 @@ public class CxoFinanceResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         // Call service layer
@@ -1089,7 +1094,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/payroll-headcount-structure: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
                 fromDate, toDate, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyPayrollHeadcountDTO> result = cxoFinanceService.getPayrollHeadcountStructure(
@@ -1466,7 +1473,9 @@ public class CxoFinanceResource {
      * Returns consultants ranked by highest net utilization over trailing 12 months.
      * Only includes consultants with > 100 net available hours.
      *
-     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * <p>Scoped to the five core practices — see {@code ConsultantInsightsService} for why
+     * that population is fixed rather than caller-selectable.</p>
+     *
      * @param companyIds Comma-separated company UUIDs (optional)
      * @param order      Sort order: "DESC" for highest first (default), "ASC" for lowest first
      * @param limit      Maximum number of results (default 10)
@@ -1475,26 +1484,25 @@ public class CxoFinanceResource {
     @GET
     @Path("/consultant-utilization-rankings")
     public List<ConsultantUtilizationRankingDTO> getConsultantUtilizationRankings(
-            @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds,
             @QueryParam("order") @DefaultValue("DESC") String order,
             @QueryParam("limit") @DefaultValue("10") int limit) {
 
-        log.debugf("GET /finance/cxo/consultant-utilization-rankings: practices=%s, companyIds=%s, order=%s, limit=%d",
-                practices, companyIds, order, limit);
+        log.debugf("GET /finance/cxo/consultant-utilization-rankings: companyIds=%s, order=%s, limit=%d",
+                companyIds, order, limit);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
         boolean ascending = "ASC".equalsIgnoreCase(order);
 
-        return consultantInsightsService.getUtilizationRankings(practiceSet, companyIdSet, ascending, limit);
+        return consultantInsightsService.getUtilizationRankings(companyIdSet, ascending, limit);
     }
 
     /**
      * Returns time-to-first-contract data for consultants hired within the last N months.
      * Shows hire date, first contract start date, and days between them.
      *
-     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * <p>Scoped to the five core practices — see {@code ConsultantInsightsService}.</p>
+     *
      * @param companyIds Comma-separated company UUIDs (optional)
      * @param months     How many months back to look for hires (default 24)
      * @return List of hire-to-contract DTOs ordered by hire date ascending
@@ -1502,24 +1510,23 @@ public class CxoFinanceResource {
     @GET
     @Path("/time-to-first-contract")
     public List<TimeToFirstContractDTO> getTimeToFirstContract(
-            @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds,
             @QueryParam("months") @DefaultValue("24") int months) {
 
-        log.debugf("GET /finance/cxo/time-to-first-contract: practices=%s, companyIds=%s, months=%d",
-                practices, companyIds, months);
+        log.debugf("GET /finance/cxo/time-to-first-contract: companyIds=%s, months=%d",
+                companyIds, months);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
-        return consultantInsightsService.getTimeToFirstContract(practiceSet, companyIdSet, months);
+        return consultantInsightsService.getTimeToFirstContract(companyIdSet, months);
     }
 
     /**
      * Returns consultants who have had no active contract for at least the specified number of months.
      * Only includes currently active consultants.
      *
-     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * <p>Scoped to the five core practices — see {@code ConsultantInsightsService}.</p>
+     *
      * @param companyIds Comma-separated company UUIDs (optional)
      * @param minMonths  Minimum months without a contract (default 3)
      * @return List of bench consultant DTOs ordered by days since contract descending
@@ -1527,47 +1534,46 @@ public class CxoFinanceResource {
     @GET
     @Path("/consultants-without-contract")
     public List<ConsultantWithoutContractDTO> getConsultantsWithoutContract(
-            @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds,
             @QueryParam("minMonths") @DefaultValue("3") int minMonths) {
 
-        log.debugf("GET /finance/cxo/consultants-without-contract: practices=%s, companyIds=%s, minMonths=%d",
-                practices, companyIds, minMonths);
+        log.debugf("GET /finance/cxo/consultants-without-contract: companyIds=%s, minMonths=%d",
+                companyIds, minMonths);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
-        return consultantInsightsService.getConsultantsWithoutContract(practiceSet, companyIdSet, minMonths);
+        return consultantInsightsService.getConsultantsWithoutContract(companyIdSet, minMonths);
     }
 
     /**
      * Returns consultants whose trailing 12-month net profit is negative.
      * Net Profit = Revenue - Salary - (Total OPEX / headcount).
      *
-     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * <p>Scoped to the five core practices — see {@code ConsultantInsightsService}. The
+     * shared-overhead divisor is the headcount of that same population, so the scope
+     * affects every consultant's net profit, not just who appears in the list.</p>
+     *
      * @param companyIds Comma-separated company UUIDs (optional)
      * @return List of unprofitable consultant DTOs ordered by net profit ascending (worst first)
      */
     @GET
     @Path("/unprofitable-consultants")
     public List<UnprofitableConsultantDTO> getUnprofitableConsultants(
-            @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds) {
 
-        log.debugf("GET /finance/cxo/unprofitable-consultants: practices=%s, companyIds=%s",
-                practices, companyIds);
+        log.debugf("GET /finance/cxo/unprofitable-consultants: companyIds=%s", companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
-        return consultantInsightsService.getUnprofitableConsultants(practiceSet, companyIdSet);
+        return consultantInsightsService.getUnprofitableConsultants(companyIdSet);
     }
 
     /**
      * Returns per-consultant gap between budgeted hours and actual billable hours over TTM.
      * Identifies consultants driving the largest budget-actual discrepancy.
      *
-     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * <p>Scoped to the five core practices — see {@code ConsultantInsightsService}.</p>
+     *
      * @param companyIds Comma-separated company UUIDs (optional)
      * @param limit      Maximum number of results (default 15)
      * @return List of budget-actual gap DTOs ordered by gap descending (largest gap first)
@@ -1575,17 +1581,15 @@ public class CxoFinanceResource {
     @GET
     @Path("/budget-actual-gap")
     public List<BudgetActualGapDTO> getBudgetActualGap(
-            @QueryParam("practices") String practices,
             @QueryParam("companyIds") String companyIds,
             @QueryParam("limit") @DefaultValue("15") int limit) {
 
-        log.debugf("GET /finance/cxo/budget-actual-gap: practices=%s, companyIds=%s, limit=%d",
-                practices, companyIds, limit);
+        log.debugf("GET /finance/cxo/budget-actual-gap: companyIds=%s, limit=%d",
+                companyIds, limit);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
-        return consultantInsightsService.getBudgetActualGap(practiceSet, companyIdSet, limit);
+        return consultantInsightsService.getBudgetActualGap(companyIdSet, limit);
     }
 
     /**
@@ -1654,7 +1658,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/budget-hours-by-month: fromMonthKey=%s, toMonthKey=%s, practices=%s, companyIds=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getBudgetHoursByMonth(fromMonthKey, toMonthKey, practiceSet, companyIdSet);
@@ -1681,7 +1687,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/future-net-available: fromMonthKey=%s, toMonthKey=%s, practices=%s, companyIds=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getFutureNetAvailable(fromMonthKey, toMonthKey, practiceSet, companyIdSet);
@@ -1711,7 +1719,9 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/utilization-consultants: year=%d, month=%d, practices=%s, companyIds=%s",
                 effectiveYear, effectiveMonth, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> practiceSet = practiceService.normalizePracticeFilter(parseCommaSeparated(practices));
+        // practices= accepts registry storage codes or uuids (§4.5); values are
+        // validated against the registry and normalized to storage codes.
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getUtilizationConsultants(effectiveYear, effectiveMonth, practiceSet, companyIdSet);

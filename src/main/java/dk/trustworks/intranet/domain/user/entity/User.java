@@ -7,7 +7,6 @@ import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
@@ -15,6 +14,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
+import org.hibernate.annotations.DynamicUpdate;
 import org.mindrot.jbcrypt.BCrypt;
 
 import java.time.LocalDate;
@@ -28,6 +28,12 @@ import java.util.stream.Collectors;
 @Data
 @Entity
 @Table(name = "user")
+// Only dirty columns are written on flush. Load-bearing since Phase 2: practice
+// and practice_uuid are entity-writable (PracticeSyncService is their writer),
+// and a full-column UPDATE from an unrelated managed-entity flush (e.g.
+// linkAzureAccount) could otherwise revert a concurrent practice write without
+// any history — the triggers that used to record such writes are gone (V426).
+@DynamicUpdate
 public class User extends PanacheEntityBase {
 
     @Id
@@ -73,9 +79,26 @@ public class User extends PanacheEntityBase {
     private boolean photoconsent;
     @Deprecated
     private String other;
-    @Enumerated(EnumType.STRING)
+    /**
+     * Practice storage code (registry {@code practice.code}: PM/SA/BA/DEV/CYB
+     * or the {@code UD} no-practice sentinel). Plain String since Phase 3 —
+     * the {@code PrimarySkillType} enum is gone, so any registry code is
+     * storable. Serializes exactly as the enum did (the code string).
+     */
     @Column(name = "practice")
-    private PrimarySkillType practice;
+    private String practice;
+
+    /**
+     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Since Phase 2
+     * (V426) the trigger mirror is gone and the application owns the twin
+     * invariant: PracticeSyncService and UserService.createUser are the only
+     * writers and always set both columns together. No read path consumes it
+     * until Phase 3, and it is not serialized ({@code @JsonIgnore} also blocks
+     * mass assignment through the entity-as-request-body pattern).
+     */
+    @JsonIgnore
+    @Column(name = "practice_uuid")
+    private String practiceUuid;
 
     @Transient
     private List<Salary> salaries = new ArrayList<>();

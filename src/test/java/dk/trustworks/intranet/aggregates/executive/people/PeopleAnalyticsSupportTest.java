@@ -33,7 +33,7 @@ class PeopleAnalyticsSupportTest {
 
     @Test
     void smallExcludedPartitionIsShownWhenFloorDisabled() {
-        PeopleFilterParams filters = PeopleFilterParams.from(new PeopleFilterRequest());
+        PeopleFilterParams filters = PeopleFilterParams.from(new PeopleFilterRequest(), TestPracticeResolver.RESOLVER);
         var meta = PeopleAnalyticsSupport.meta(
                 filters, LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 10),
                 null, null, 140, 2, false, null, List.of());

@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.sales.model;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.domain.user.entity.User;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -47,9 +47,20 @@ public class SalesLead extends PanacheEntityBase {
     private LocalDate closeDate;
     private int period;
     private int allocation;
-    @Enumerated(EnumType.STRING)
+    /** Practice storage code (registry {@code practice.code}); plain String since Phase 3. */
     @Column(name = "practice")
-    private PrimarySkillType practice;
+    private String practice;
+
+    /**
+     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Since Phase 3
+     * the application maintains it: {@link dk.trustworks.intranet.sales.services.SalesService}
+     * sets both columns together on every lead practice write (the V424 backfill
+     * covered pre-existing rows). Not serialized — identity flows via the registry.
+     */
+    @JsonIgnore
+    @Column(name = "practice_uuid")
+    private String practiceUuid;
+
     private boolean extension;
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")

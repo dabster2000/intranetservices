@@ -16,10 +16,10 @@ import dk.trustworks.intranet.aggregates.executive.people.PeopleManagementScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationSqlSupport;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleSalaryType;
+import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentFunction;
 import dk.trustworks.intranet.userservice.model.enums.DstEmploymentStatus;
-import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.Tuple;
@@ -51,6 +51,9 @@ public class ExecutivePeopleRetentionPayService {
 
     @Inject
     PeopleAnalyticsRepository repository;
+
+    @Inject
+    PracticeService practiceService;
 
     public Response<List<RetentionRatePoint>> retentionRate(PeopleFilterParams filters) {
         requireEmployedPopulation(filters, "retention-rate");
@@ -452,7 +455,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND u.practice IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND sc.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND sc.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {
@@ -470,7 +473,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND u.practice IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND ucl.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND ucl.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {
@@ -495,7 +498,8 @@ public class ExecutivePeopleRetentionPayService {
             PeopleCompensationGroup group, String alias, String dstAlias) {
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.toSqlCase(alias + ".career_level");
-            case PRACTICE -> "COALESCE(" + alias + ".practice,'UNASSIGNED')";
+            case PRACTICE -> // Phase 4: NULL practice IS the 'UD' member (pre-flip rows stored 'UD')
+                    "COALESCE(" + alias + ".practice,'UD')";
             case CAREER_TRACK -> "CASE WHEN " + alias + ".career_level='JUNIOR_CONSULTANT' THEN 'ENTRY'" +
                     " WHEN " + alias + ".career_track IS NULL THEN 'UNASSIGNED' ELSE " + alias + ".career_track END";
             case DISCO_FUNCTION -> "CONCAT(" + discoCodeCase(dstAlias) + ",'|'," +
@@ -521,13 +525,14 @@ public class ExecutivePeopleRetentionPayService {
         return functionLabel + " — " + statusLabel;
     }
 
-    private static int compensationGroupSort(PeopleCompensationGroup group, String value) {
+    private int compensationGroupSort(PeopleCompensationGroup group, String value) {
         if (OVERALL_GROUP.equals(value)) return -1;
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.sortOrder(value);
             case PRACTICE -> {
-                List<String> order = new ArrayList<>();
-                for (PrimarySkillType practice : PrimarySkillType.values()) order.add(practice.name());
+                // Registry-derived business order (Phase 3): every registry code
+                // in sort_order — including the UD bucket — then Unassigned.
+                List<String> order = new ArrayList<>(practiceService.orderedRegistryCodes());
                 order.add("UNASSIGNED");
                 int index = order.indexOf(value);
                 yield index < 0 ? order.size() : index;

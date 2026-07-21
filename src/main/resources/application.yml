@@ -439,6 +439,13 @@ dk:
       # Read-side e-conomic load (finance-load-economics). Staging false.
       economics-load:
         enabled: ${FINANCE_ECONOMICS_LOAD_ENABLED:true}
+    practice:
+      # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
+      # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,
+      # BI nightly, expense-sync). Env-overridable so a local/dev run can fire
+      # it on demand; the job is idempotent and convergent at any cadence.
+      reconciliation:
+        cron: ${PRACTICE_RECONCILIATION_CRON:0 20 6 * * ?}
     environment:
       id: ${ENVIRONMENT_ID:production}
     intranet:

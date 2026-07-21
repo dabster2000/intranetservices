@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAna
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.WorkforceSummary;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.WorkforceFlowPoint;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
+import dk.trustworks.intranet.aggregates.executive.people.TestPracticeResolver;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterRequest;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -131,6 +132,6 @@ class ExecutivePeopleProductionReconciliationTest {
         request.asOfDate = "2026-07-10";
         request.months = String.valueOf(months);
         request.horizonDays = "90";
-        return PeopleFilterParams.from(request);
+        return PeopleFilterParams.from(request, TestPracticeResolver.RESOLVER);
     }
 }

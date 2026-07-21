@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class RevenueByPracticeAggregationTest {
 
+    /** Registry active-PRACTICE codes in sort_order, as activePracticeCodes() returns them. */
+    private static final List<String> CORE_FIVE = List.of("PM", "SA", "BA", "DEV", "CYB");
+
     /** Minimal fake Tuple backed by a Map. */
     private static Tuple tuple(Map<String, Object> values) {
         return new Tuple() {
@@ -61,7 +64,7 @@ class RevenueByPracticeAggregationTest {
         List<Tuple> revenue = List.of(
             revenueRow("202501", 2025, 1, "ZZZ", 100.0));
         List<Tuple> cost = List.of();
-        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost);
+        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost, CORE_FIVE);
         assertEquals(List.of("OTHER"), result.practices());
         assertEquals(1, result.months().size());
         assertEquals(100.0, result.months().get(0).practiceRevenue().get("OTHER"));
@@ -73,7 +76,7 @@ class RevenueByPracticeAggregationTest {
             revenueRow("202501", 2025, 1, "OTHER", 10.0),
             revenueRow("202501", 2025, 1, "PM", 20.0),
             revenueRow("202501", 2025, 1, "DEV", 30.0));
-        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, List.of());
+        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, List.of(), CORE_FIVE);
         assertEquals("OTHER", result.practices().get(result.practices().size() - 1));
         // Known practices come first in canonical order
         assertEquals(List.of("PM", "DEV", "OTHER"), result.practices());
@@ -83,7 +86,7 @@ class RevenueByPracticeAggregationTest {
     void costOnlyMonthIsBackfilledWithZeroRevenue() {
         List<Tuple> revenue = List.of();
         List<Tuple> cost = List.of(costRow("202503", 2025, 3, 500.0));
-        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost);
+        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost, CORE_FIVE);
         assertEquals(1, result.months().size());
         MonthlyRevenuePracticeDataPoint m = result.months().get(0);
         assertEquals("202503", m.monthKey());
@@ -96,7 +99,7 @@ class RevenueByPracticeAggregationTest {
     void marginPercentIsRoundedToTwoDecimals() {
         List<Tuple> revenue = List.of(revenueRow("202501", 2025, 1, "PM", 1000.0));
         List<Tuple> cost = List.of(costRow("202501", 2025, 1, 333.0));
-        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost);
+        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, cost, CORE_FIVE);
         // (1000 - 333) / 1000 = 66.7%
         assertEquals(66.7, result.months().get(0).marginPercent(), 0.01);
     }
@@ -107,7 +110,7 @@ class RevenueByPracticeAggregationTest {
             revenueRow("202503", 2025, 3, "PM", 30.0),
             revenueRow("202501", 2025, 1, "PM", 10.0),
             revenueRow("202502", 2025, 2, "PM", 20.0));
-        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, List.of());
+        RevenuePracticeDTO result = CxoFinanceService.buildRevenueByPracticeResponse(revenue, List.of(), CORE_FIVE);
         assertEquals(List.of("202501", "202502", "202503"),
             result.months().stream().map(MonthlyRevenuePracticeDataPoint::monthKey).toList());
     }

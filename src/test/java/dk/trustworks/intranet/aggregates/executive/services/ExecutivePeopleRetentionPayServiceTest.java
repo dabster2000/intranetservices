@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAna
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.RetentionCohortPoint;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleAnalyticsRepository;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
+import dk.trustworks.intranet.aggregates.executive.people.TestPracticeResolver;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterRequest;
 import jakarta.persistence.Tuple;
 import org.junit.jupiter.api.Test;
@@ -118,7 +119,7 @@ class ExecutivePeopleRetentionPayServiceTest {
         PeopleFilterRequest request = new PeopleFilterRequest();
         request.asOfDate = "2026-07-10";
         request.months = "24";
-        return PeopleFilterParams.from(request);
+        return PeopleFilterParams.from(request, TestPracticeResolver.RESOLVER);
     }
 
     private static Tuple payRow(
