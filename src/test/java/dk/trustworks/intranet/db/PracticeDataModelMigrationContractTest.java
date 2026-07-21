@@ -414,6 +414,205 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(m.contains("DROP COLUMN"), "V428 only relaxes — the drop is V429's job");
     }
 
+    // ── Phase 5B (V429 — legacy cleanup + canonical codes) ─────────────────────
+
+    @Test
+    void v429_recreates_the_consultant_view_before_dropping_the_column_it_reads() throws IOException {
+        String m = code(readV429());
+        assertTrue(m.contains("VIEW `consultant` AS"), "the consultant view must be recreated here");
+        // Registry-derived, NOT the raw column — and NOT COALESCEd: this is a
+        // user-shaped entity view, so no-practice stays NULL (spec §4.1).
+        assertTrue(m.contains("prg.code AS practice"), "practice must derive from the registry join");
+        assertTrue(m.contains("LEFT JOIN practice prg ON prg.uuid = u.practice_uuid"),
+                "the derivation must resolve through the uuid twin");
+        assertFalse(squash(m).contains("COALESCE(prg.code, 'UD')"),
+                "no sentinel here — the flip removed it; only warehouse views synthesize the member token");
+        // Asserted against the DDL only (comments stripped): the phrase also occurs
+        // in the file's prose header, so a comment-inclusive check would pass even
+        // if the clause were deleted and MariaDB silently defaulted to DEFINER.
+        assertTrue(m.contains("SQL SECURITY INVOKER"), "the view's INVOKER security type must be explicit");
+        // The Employee entity maps this view: the full 28-column contract, not just
+        // the practice column, must survive the rewrite.
+        for (String col : List.of(
+                "u.uuid,", "u.created,", "u.email,", "u.firstname,", "u.lastname,", "u.gender,", "u.type,",
+                "u.password,", "u.username,", "u.slackusername,", "u.birthday,", "u.cpr,", "u.phone,",
+                "u.pension,", "u.healthcare,", "u.pensiondetails,", "u.defects,", "u.photoconsent,", "u.other,",
+                "cl.career_track,", "cl.career_level,", "us.status,", "us.allocation,",
+                "us.type AS consultanttype,", "COALESCE(s.salary, 0) AS salary,", "us.companyuuid")) {
+            assertTrue(m.contains(col), "the consultant view must keep column " + col);
+        }
+        assertTrue(m.contains(") AS hiredate,"), "the hiredate scalar subquery must survive");
+        // Ordering: the recreation must precede the drop of user.practice.
+        assertTrue(m.indexOf("VIEW `consultant` AS") < m.indexOf("DROP COLUMN IF EXISTS practice;"),
+                "the view must be recreated BEFORE user.practice is dropped, or it breaks at SELECT time");
+    }
+
+    @Test
+    void v429_validates_data_before_it_destroys_anything() throws IOException {
+        String m = code(readV429());
+        // MariaDB DDL is non-transactional. The only two statements that can fail
+        // on DATA are the strict-FK adds and the UD delete; both must precede the
+        // six irreversible column drops so a data surprise aborts cleanly and
+        // re-runs, instead of wedging the DB with the columns already gone.
+        int firstDrop = m.indexOf("DROP COLUMN IF EXISTS");
+        assertTrue(m.indexOf("ADD CONSTRAINT fk_user_practice FOREIGN KEY") < firstDrop,
+                "the strict FKs must validate the data BEFORE any column is dropped");
+        assertTrue(m.indexOf("DELETE FROM practice WHERE code = 'UD'") < firstDrop,
+                "the UD delete must run BEFORE any column is dropped");
+        assertTrue(m.indexOf("UPDATE fact_pipeline_snapshot fps") < firstDrop,
+                "the snapshot release must run BEFORE any column is dropped");
+    }
+
+    @Test
+    void v429_drops_the_code_foreign_keys_before_the_columns_they_constrain() throws IOException {
+        String m = code(readV429());
+        assertTrue(m.contains("DROP FOREIGN KEY IF EXISTS fk_team_practice"), "team's code FK must go");
+        assertTrue(m.contains("DROP FOREIGN KEY IF EXISTS fk_practice_lead_practice"), "practice_lead's code FK must go");
+        // Both reference practice(code) with RESTRICT — the fold fails while they exist.
+        assertTrue(m.indexOf("DROP FOREIGN KEY IF EXISTS fk_team_practice") < m.indexOf("DROP COLUMN IF EXISTS practice_code;"),
+                "FK drops must precede the column drops");
+        assertTrue(m.indexOf("DROP FOREIGN KEY IF EXISTS fk_practice_lead_practice") < m.indexOf("SET @practice_fold :="),
+                "both code FKs must be gone before the parent key is renamed");
+        // The composite (practice_code, startdate) index is dropped explicitly —
+        // dropping only the column would leave a degenerate index on (startdate).
+        assertTrue(m.contains("DROP INDEX IF EXISTS idx_practice_lead_practice"),
+                "the composite code index must be dropped explicitly, not left degenerate");
+    }
+
+    @Test
+    void v429_drops_all_six_legacy_code_columns_from_the_right_tables() throws IOException {
+        String m = code(readV429());
+        // Table-targeted, not a blind count: a retargeted drop must not pass.
+        for (String t : List.of("`user`", "user_practice_history", "sales_lead")) {
+            assertTrue(m.contains("ALTER TABLE " + t + "\n    DROP COLUMN IF EXISTS practice;"),
+                    t + " must lose its legacy practice column");
+        }
+        for (String t : List.of("team", "practice_lead")) {
+            assertTrue(m.contains("ALTER TABLE " + t + "\n    DROP COLUMN IF EXISTS practice_code;"),
+                    t + " must lose its legacy practice_code column");
+        }
+        assertTrue(m.contains("ALTER TABLE questionnaire\n    DROP COLUMN IF EXISTS target_practices;"),
+                "the questionnaire code array is derived from the uuid array since Phase 5");
+        // The trailing ';' matters: without it a typo'd column name prefix-matches
+        // and IF EXISTS silently turns the drop into a no-op.
+        int bareDrops = m.split("DROP COLUMN IF EXISTS practice;", -1).length - 1;
+        assertTrue(bareDrops == 3, "exactly three tables lose practice (found " + bareDrops + ")");
+    }
+
+    @Test
+    void v429_releases_the_snapshot_rows_before_deleting_the_ud_row() throws IOException {
+        String m = code(readV429());
+        assertTrue(m.contains("UPDATE fact_pipeline_snapshot fps"), "the frozen snapshot rows must be released");
+        assertTrue(m.contains("JOIN practice p ON p.uuid = fps.practice_uuid AND p.code = 'UD'"),
+                "the release must key on the UD row by code — uuids are environment-minted");
+        assertTrue(m.indexOf("UPDATE fact_pipeline_snapshot fps") < m.indexOf("DELETE FROM practice"),
+                "NULLing must precede the row delete — afterwards the join can no longer find it");
+        assertFalse(squash(m).contains("ALTER TABLE fact_pipeline_snapshot ADD CONSTRAINT"),
+                "frozen history gets no FK — its keys must survive registry evolution");
+    }
+
+    @Test
+    void v429_deletes_the_ud_registry_row_but_keeps_the_member_token() throws IOException {
+        String m = code(readV429());
+        assertTrue(m.contains("DELETE FROM practice WHERE code = 'UD';"),
+                "the UD registry row is dropped in this phase");
+        // Keyed on code alone: depending on the type column would make the file
+        // un-replayable once the V430 micro-step retires it.
+        assertFalse(m.contains("DELETE FROM practice WHERE code = 'UD' AND type"),
+                "the delete must not depend on the type column that V430 retires");
+        // The literal token outlives the row: mat 'UD' buckets are never re-keyed.
+        String flat = squash(m);
+        assertFalse(flat.contains("WHERE practice_id = 'UD'") || flat.contains("WHERE service_line_id = 'UD'"),
+                "'UD' mat buckets are the permanent member token — never re-keyed");
+    }
+
+    @Test
+    void v429_renames_by_folding_display_code_on_the_legacy_codes_only() throws IOException {
+        String m = code(readV429());
+        // Keyed on the three legacy codes, NOT on "code <> display_code": the latter
+        // is a rule rather than a fixed point and would re-fire on any later admin
+        // edit that legitimately diverges the two columns.
+        // Anchored on the closing quote of the SQL string literal, so an appended
+        // predicate (e.g. AND 1 = 0) that neuters the fold cannot prefix-match.
+        assertTrue(squash(m).contains("'UPDATE practice SET code = display_code WHERE code IN (''SA'', ''BA'', ''DEV'')',"),
+                "the fold must key on exactly the three legacy codes so it is a true fixed point");
+        assertFalse(m.contains("WHERE code <> display_code"),
+                "a <>-keyed fold re-fires on later legitimate divergence — silently rewriting a live storage key");
+        assertFalse(m.contains("UPDATE practice SET code = 'IA'"), "the rename must not hardcode target codes");
+        // Guarded so the file stays replayable after V430 drops display_code.
+        assertTrue(m.contains("SET @practice_has_display_code :="),
+                "the fold must be guarded on display_code still existing");
+    }
+
+    @Test
+    void v429_swaps_the_primary_key_to_uuid_and_keeps_code_unique() throws IOException {
+        String m = code(readV429());
+        assertTrue(m.contains("ALTER TABLE practice DROP PRIMARY KEY, ADD PRIMARY KEY (uuid), ADD UNIQUE KEY uk_practice_code (code)"),
+                "the swap must be ONE statement so the table is never without a primary key");
+        // No native IF NOT EXISTS for PRIMARY KEY — the swap is information_schema-guarded,
+        // and the guard polarity matters: inverted, the swap never runs on a fresh DB.
+        assertTrue(m.contains("IF(@practice_pk_is_uuid = 0,"), "the guard must fire when the PK is NOT yet uuid");
+        // uuid must be the SOLE pk column, else a composite PK skips the swap and
+        // then strands the file on the uq_practice_uuid drop below.
+        assertTrue(m.contains("SEQ_IN_INDEX = 1"), "the guard must require uuid to be the sole primary key column");
+        // Ordering anchored on EXECUTE, not on the literal inside the string
+        // variable — the swap does not take effect until the statement runs.
+        assertTrue(m.indexOf("EXECUTE practice_pk_stmt;") < m.indexOf("DROP INDEX IF EXISTS uq_practice_uuid"),
+                "uq_practice_uuid may only be dropped once the PK actually backs the tpa foreign key");
+    }
+
+    @Test
+    void v429_establishes_the_five_strict_foreign_keys_on_the_uuid_twins() throws IOException {
+        String m = code(readV429());
+        for (String fk : List.of(
+                "fk_user_practice", "fk_user_practice_history_practice", "fk_sales_lead_practice",
+                "fk_team_practice_uuid", "fk_practice_lead_practice_uuid")) {
+            assertTrue(m.contains("ADD CONSTRAINT " + fk + " FOREIGN KEY IF NOT EXISTS (practice_uuid)"),
+                    "must add " + fk + " on the uuid twin");
+        }
+        int restrict = m.split("REFERENCES practice \\(uuid\\) ON DELETE RESTRICT", -1).length - 1;
+        assertTrue(restrict == 5, "all five new FKs are ON DELETE RESTRICT (found " + restrict + ")");
+        assertFalse(m.contains("ON DELETE SET NULL") || m.contains("ON DELETE CASCADE"),
+                "no weakening of the delete rule — RESTRICT is the house default");
+        // The three previously-unindexed twins get house-named indexes rather than
+        // letting InnoDB auto-name them after the constraint.
+        for (String idx : List.of(
+                "idx_user_practice_uuid", "idx_user_practice_history_practice_uuid", "idx_sales_lead_practice_uuid")) {
+            assertTrue(m.contains("ADD KEY IF NOT EXISTS " + idx + " (practice_uuid)"), "must add " + idx);
+        }
+    }
+
+    @Test
+    void v429_rekeys_the_four_mat_tables_in_place_with_the_right_mapping() throws IOException {
+        String m = squash(code(readV429()));
+        // Assert the full SET->WHERE mapping per table, not just the WHERE clause:
+        // the point of this section is SA->IA / BA->BU / DEV->TECH specifically.
+        for (String mat : List.of("fact_employee_monthly_mat", "fact_opex_mat")) {
+            assertTrue(m.contains("UPDATE " + mat + " SET practice_id = 'IA' WHERE practice_id = 'SA';"), mat + " SA to IA");
+            assertTrue(m.contains("UPDATE " + mat + " SET practice_id = 'BU' WHERE practice_id = 'BA';"), mat + " BA to BU");
+            assertTrue(m.contains("UPDATE " + mat + " SET practice_id = 'TECH' WHERE practice_id = 'DEV';"), mat + " DEV to TECH");
+        }
+        for (String mat : List.of("fact_project_financials_mat", "fact_revenue_budget_mat")) {
+            assertTrue(m.contains("UPDATE " + mat + " SET service_line_id = 'IA' WHERE service_line_id = 'SA';"), mat + " SA to IA");
+            assertTrue(m.contains("UPDATE " + mat + " SET service_line_id = 'BU' WHERE service_line_id = 'BA';"), mat + " BA to BU");
+            assertTrue(m.contains("UPDATE " + mat + " SET service_line_id = 'TECH' WHERE service_line_id = 'DEV';"), mat + " DEV to TECH");
+        }
+    }
+
+    @Test
+    void v429_retains_display_code_and_type_for_the_draining_canary_task() throws IOException {
+        String m = squash(code(readV429()));
+        // The 5A task still maps display_code and filters on type='PRACTICE'.
+        // Dropping either here would break it mid-cutover; both are a trailing
+        // micro-step (V430) once 5A has drained. Deviation recorded in spec §1.6.K.
+        // Backtick-tolerant: type is quasi-reserved and the file already backticks user.
+        for (String col : List.of("display_code", "`display_code`", "type", "`type`")) {
+            assertFalse(m.contains("DROP COLUMN IF EXISTS " + col + ";") || m.contains("DROP COLUMN " + col + ";"),
+                    col + " must survive V429 — the draining 5A task reads it");
+        }
+        assertFalse(m.contains("DROP TABLE "), "V429 drops columns and one row, never a table");
+    }
+
     /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
     private static String code(String migration) {
         return migration.lines()
@@ -464,5 +663,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV428() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V428__Practice_phase5a_relax_practice_lead_code.sql"));
+    }
+
+    private static String readV429() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V429__Practice_phase5_cleanup_canonical_codes.sql"));
     }
 }
