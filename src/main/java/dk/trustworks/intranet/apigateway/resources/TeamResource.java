@@ -12,6 +12,7 @@ import dk.trustworks.intranet.aggregates.finance.services.TeamDashboardService;
 import dk.trustworks.intranet.aggregates.finance.services.TeamPeopleService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.Team;
+import dk.trustworks.intranet.model.Practice;
 import dk.trustworks.intranet.model.TeamSetting;
 import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.services.TeamSettingService;
@@ -29,11 +30,25 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
+import java.net.URI;
 import java.util.List;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
+/**
+ * Team API. Reads require {@code teams:read}; mutations additionally require
+ * {@code teams:write}. Mutation bodies are record DTOs so no entity is
+ * mass-assigned, and validation is hand-rolled ({@link BadRequestException} →
+ * 400 via the exception mapper) rather than Bean Validation.
+ * <p>
+ * <b>There is deliberately no delete or archive endpoint.</b> Teams are
+ * referenced by {@code teamroles} (no FK — rows would silently dangle),
+ * {@code team_practice_assignment}, {@code team_settings} and the bonus
+ * configuration, and nothing in the model carries an {@code active} flag to
+ * filter on. Retiring a team is a data-migration decision, not a button.
+ */
 @Tag(name = "team")
 @JBossLog
 @Path("/teams")
@@ -63,7 +78,13 @@ public class TeamResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
-    public record UpdateTeamPracticeRequest(String practiceCode) {
+    public record CreateTeamRequest(String name, String shortname, String description, String practiceCode) {
+    }
+
+    public record UpdateTeamRequest(String name, String shortname, String description) {
+    }
+
+    public record UpdateTeamPracticeRequest(String practiceCode, String practiceUuid) {
     }
 
     public record UpdateTeamSettingRequest(String value) {
@@ -187,6 +208,32 @@ public class TeamResource {
     }
 
     // -----------------------------------------------------------------------
+    // Team administration (settings-teams tab, V431)
+    // -----------------------------------------------------------------------
+
+    @POST
+    @RolesAllowed({"teams:write"})
+    public Response createTeam(CreateTeamRequest request) {
+        if (request == null) throw new BadRequestException("Request body is required");
+        practiceService.validateTeamPracticeCode(request.practiceCode());
+        log.infof("TeamResource.createTeam name=%s shortname=%s practiceCode=%s updatedBy=%s",
+                request.name(), request.shortname(), request.practiceCode(), requestHeaderHolder.getUserUuid());
+        Team created = teamService.createTeam(request.name(), request.shortname(),
+                request.description(), request.practiceCode());
+        return Response.created(URI.create("/teams/" + created.getUuid())).entity(created).build();
+    }
+
+    /** Partial edit — omitted fields are left alone. The practice link has its own endpoint. */
+    @PUT
+    @Path("/{teamuuid}")
+    @RolesAllowed({"teams:write"})
+    public Team updateTeam(@PathParam("teamuuid") String teamuuid, UpdateTeamRequest request) {
+        if (request == null) throw new BadRequestException("Request body is required");
+        log.infof("TeamResource.updateTeam teamuuid=%s updatedBy=%s", teamuuid, requestHeaderHolder.getUserUuid());
+        return teamService.updateTeam(teamuuid, request.name(), request.shortname(), request.description());
+    }
+
+    // -----------------------------------------------------------------------
     // Team → practice link and team-scoped settings (V418)
     // -----------------------------------------------------------------------
 
@@ -194,11 +241,37 @@ public class TeamResource {
     @Path("/{teamuuid}/practice")
     @RolesAllowed({"teams:write"})
     public Team updateTeamPractice(@PathParam("teamuuid") String teamuuid, UpdateTeamPracticeRequest body) {
-        String practiceCode = body == null ? null : body.practiceCode();
+        String practiceCode = resolvePracticeCode(body);
         practiceService.validateTeamPracticeCode(practiceCode);
         log.infof("TeamResource.updateTeamPractice teamuuid=%s practiceCode=%s updatedBy=%s",
                 teamuuid, practiceCode, requestHeaderHolder.getUserUuid());
         return teamService.updateTeamPractice(teamuuid, practiceCode);
+    }
+
+    /**
+     * The practice preview a client must show before {@link #updateTeamPractice}:
+     * the members that write would actually re-derive. Deliberately NOT
+     * {@code GET /teams/{uuid}/users} — that one has no temporal predicate and
+     * over-reports; {@code .../users/search/findByMonth} adds status and
+     * consultant-type filters the cascade does not apply and under-reports.
+     */
+    @GET
+    @Path("/{teamuuid}/practice/impact")
+    public TeamService.TeamPracticeImpact getTeamPracticeImpact(@PathParam("teamuuid") String teamuuid) {
+        return teamService.getTeamPracticeImpact(teamuuid);
+    }
+
+    /**
+     * {@code practiceUuid} is the canonical identifier (§4.5) and wins when
+     * supplied; {@code practiceCode} is the pre-existing alias and still works.
+     * Both absent clears the team's practice.
+     */
+    private String resolvePracticeCode(UpdateTeamPracticeRequest body) {
+        if (body == null) return null;
+        if (body.practiceUuid() == null || body.practiceUuid().isBlank()) return body.practiceCode();
+        Practice practice = practiceService.resolveByIdOrCode(body.practiceUuid());
+        if (practice == null) throw new BadRequestException("Practice not found: " + body.practiceUuid());
+        return practice.getCode();
     }
 
     @GET

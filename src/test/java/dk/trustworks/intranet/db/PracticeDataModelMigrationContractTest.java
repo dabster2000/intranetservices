@@ -613,6 +613,35 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(m.contains("DROP TABLE "), "V429 drops columns and one row, never a table");
     }
 
+    // ── Teams admin page (V431 — the settings-teams tab registration) ─────────
+
+    @Test
+    void v431_registers_the_teams_settings_tab_with_its_own_icon() throws IOException {
+        String m = code(readV431());
+        // Both halves of the registration are load-bearing: without the row the
+        // tab never renders, whatever the frontend does.
+        assertTrue(m.contains("'settings-teams'"), "page_registry key settings-teams");
+        assertTrue(m.contains("'/settings?tab=teams'"), "react_route must address the sibling tab");
+        assertTrue(m.contains("'ADMIN'"), "the tab is ADMIN-gated");
+        assertTrue(m.contains("'SETTINGS'"), "the row belongs to the SETTINGS section");
+        assertTrue(m.contains("140"), "display_order 140 places it after settings-practices (130)");
+        // 'Users' is already the icon of two other pages — a third would be
+        // ambiguous, so this tab gets UsersRound.
+        assertTrue(m.contains("'UsersRound'"), "icon must be UsersRound, not the twice-used Users");
+        assertFalse(m.contains("'Users'"), "the ambiguous Users icon must not be reused here");
+    }
+
+    @Test
+    void v431_is_an_idempotent_data_only_upsert() throws IOException {
+        String m = code(readV431());
+        assertTrue(m.contains("INSERT INTO page_registry"), "registration mirrors the V418 seed");
+        assertTrue(m.contains("ON DUPLICATE KEY UPDATE"), "re-runs must converge, not collide");
+        String upper = m.toUpperCase();
+        assertFalse(upper.contains("CREATE TABLE") || upper.contains("ALTER TABLE")
+                        || upper.contains("DROP TABLE") || upper.contains("DROP COLUMN"),
+                "V431 registers a page — it carries no schema change");
+    }
+
     /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
     private static String code(String migration) {
         return migration.lines()
@@ -667,5 +696,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV429() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V429__Practice_phase5_cleanup_canonical_codes.sql"));
+    }
+
+    private static String readV431() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V431__Add_teams_admin_page_registry.sql"));
     }
 }

@@ -6,6 +6,8 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import dk.trustworks.intranet.domain.user.entity.Team;
+import dk.trustworks.intranet.model.Practice;
+import dk.trustworks.intranet.services.PracticeService;
 import dk.trustworks.intranet.services.PracticeSyncService;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
@@ -14,6 +16,7 @@ import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
@@ -21,6 +24,7 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.*;
 
@@ -30,6 +34,15 @@ public class TeamService {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /** {@code team.name varchar(200)}. */
+    private static final int NAME_MAX_LENGTH = 200;
+
+    /** {@code team.shortname varchar(4)} — not a typo; the shortname is a badge, not a slug. */
+    private static final int SHORTNAME_MAX_LENGTH = 4;
+
+    /** {@code team.description tinytext} holds 255 BYTES — Danish characters cost two of them. */
+    private static final int DESCRIPTION_MAX_BYTES = 255;
+
     @Inject
     UserService userService;
 
@@ -38,6 +51,12 @@ public class TeamService {
 
     @Inject
     PracticeSyncService practiceSyncService;
+
+    @Inject
+    PracticeService practiceService;
+
+    @Inject
+    EntityManager em;
 
     public List<Team> listAll() {
         return Team.listAll();
@@ -288,6 +307,154 @@ public class TeamService {
         if (role.getTeammembertype() == TeamMemberType.MEMBER) {
             practiceSyncService.onMembershipChanged(role.getUseruuid(), previousCurrentTeam, LocalDate.now());
         }
+    }
+
+    /**
+     * Creates a team. The uuid is minted here: {@link Team} has neither
+     * {@code @GeneratedValue} nor a {@code @PrePersist} hook, and a
+     * client-supplied uuid is never honoured (mass-assignment hazard).
+     * A non-blank {@code practiceCode} routes through
+     * {@link PracticeSyncService#applyTeamPracticeChange} — same transaction —
+     * so the temporal {@code team_practice_assignment} row is written like on
+     * any other practice change; the member cascade is a no-op on a team that
+     * has no roles yet. The caller validates the code against the registry.
+     */
+    @Transactional
+    public Team createTeam(String name, String shortname, String description, String practiceCode) {
+        String teamName = requireText(name, "name", NAME_MAX_LENGTH);
+        String teamShortname = requireText(shortname, "shortname", SHORTNAME_MAX_LENGTH);
+        validateDescriptionLength(description);
+        validateShortnameUnique(teamShortname, null);
+
+        Team team = new Team();
+        team.setUuid(UUID.randomUUID().toString());
+        team.setName(teamName);
+        team.setShortname(teamShortname);
+        team.setDescription(description);
+        Team.persist(team);
+
+        if (practiceCode != null && !practiceCode.isBlank()) {
+            return practiceSyncService.applyTeamPracticeChange(team.getUuid(), practiceCode, LocalDate.now());
+        }
+        return team;
+    }
+
+    /**
+     * Partial team edit — only the fields the request actually supplied are
+     * touched. The managed entity is loaded and mutated deliberately: Team is
+     * {@code @DynamicUpdate}, so the flush writes exactly those columns. A bulk
+     * {@code Team.update(...)} would blank {@code practice_uuid} and orphan the
+     * open {@code team_practice_assignment} row.
+     * <p>
+     * {@code teamleadbonus}/{@code teambonus} are primitive booleans (an omitted
+     * JSON field deserializes to {@code false}, not "unchanged") and are not
+     * editable here; {@code practiceCode} is a registry {@code @Formula} whose
+     * only writer is {@link #updateTeamPractice}.
+     */
+    @Transactional
+    public Team updateTeam(String teamuuid, String name, String shortname, String description) {
+        Team team = Team.findById(teamuuid);
+        if (team == null) throw new NotFoundException("Team not found: " + teamuuid);
+        if (name != null) team.setName(requireText(name, "name", NAME_MAX_LENGTH));
+        if (shortname != null) {
+            String teamShortname = requireText(shortname, "shortname", SHORTNAME_MAX_LENGTH);
+            validateShortnameUnique(teamShortname, teamuuid);
+            team.setShortname(teamShortname);
+        }
+        if (description != null) {
+            validateDescriptionLength(description);
+            team.setDescription(description);
+        }
+        return team;
+    }
+
+    private static String requireText(String value, String field, int maxLength) {
+        if (value == null || value.isBlank()) throw new BadRequestException(field + " is required");
+        String trimmed = value.trim();
+        if (trimmed.length() > maxLength) {
+            throw new BadRequestException(field + " must be at most " + maxLength + " characters");
+        }
+        return trimmed;
+    }
+
+    private static void validateDescriptionLength(String description) {
+        if (description == null) return;
+        if (description.getBytes(StandardCharsets.UTF_8).length > DESCRIPTION_MAX_BYTES) {
+            throw new BadRequestException("description must be at most " + DESCRIPTION_MAX_BYTES + " bytes");
+        }
+    }
+
+    /**
+     * Shortname uniqueness is an APPLICATION-level rule — the column carries no
+     * unique constraint, so this check is the only guard.
+     *
+     * @param excludeTeamuuid the team being edited (skipped), or {@code null} on create
+     */
+    private static void validateShortnameUnique(String shortname, String excludeTeamuuid) {
+        long clashes = excludeTeamuuid == null
+                ? Team.count("shortname = ?1", shortname)
+                : Team.count("shortname = ?1 and uuid <> ?2", shortname, excludeTeamuuid);
+        if (clashes > 0) throw new BadRequestException("Shortname already exists: " + shortname);
+    }
+
+    /** One member a practice change would re-derive — uuid and display name, nothing else. */
+    public record ImpactedMember(String useruuid, String name) {}
+
+    /** Preview payload for a pending {@code PUT /teams/{uuid}/practice}. */
+    public record TeamPracticeImpact(String teamuuid, String teamName, String currentPracticeCode,
+                                     String currentPracticeName, int affectedCount,
+                                     List<ImpactedMember> members) {}
+
+    /**
+     * Exactly what changing this team's practice would cascade to, as of today —
+     * the confirmation dialog's source of truth. Nothing is written.
+     */
+    public TeamPracticeImpact getTeamPracticeImpact(String teamuuid) {
+        Team team = Team.findById(teamuuid);
+        if (team == null) throw new NotFoundException("Team not found: " + teamuuid);
+        Practice practice = team.getPracticeUuid() == null
+                ? null
+                : practiceService.resolveByIdOrCode(team.getPracticeUuid());
+        List<ImpactedMember> members = cascadeMembers(teamuuid, LocalDate.now());
+        return new TeamPracticeImpact(teamuuid, team.getName(),
+                practice == null ? null : practice.getCode(),
+                practice == null ? null : practice.getName(),
+                members.size(), members);
+    }
+
+    /**
+     * The cascade population, resolved with the SAME predicate
+     * {@link PracticeSyncService#applyTeamPracticeChange} iterates: no status
+     * filter, no consultant-type filter, NULL startdate excluded by 3VL. The
+     * narrower team lookups on this class ({@link #getUsersByTeam}) report a
+     * different set than the change would actually touch, so a preview must not
+     * be built on them.
+     * <p>
+     * Duplicate MEMBER rows for one user (overlapping periods) collapse to one
+     * entry — the cascade re-derives a USER, not a row. Names come from one
+     * projection query: {@code UserService.addChildrenToUser} would fire eight
+     * child queries per user and pull salary and bank data this preview must
+     * never carry.
+     */
+    private List<ImpactedMember> cascadeMembers(String teamuuid, LocalDate asOf) {
+        List<TeamRole> currentMembers = TeamRole.list(
+                "teamuuid = ?1 and teammembertype = ?2 and startdate <= ?3 and (enddate is null or enddate > ?3)",
+                teamuuid, TeamMemberType.MEMBER, asOf);
+        Set<String> useruuids = new LinkedHashSet<>();
+        currentMembers.forEach(member -> useruuids.add(member.getUseruuid()));
+        if (useruuids.isEmpty()) return List.of();
+        Map<String, String> names = new HashMap<>();
+        em.createQuery("select u.uuid, u.firstname, u.lastname from User u where u.uuid in :useruuids", Object[].class)
+                .setParameter("useruuids", useruuids)
+                .getResultList()
+                .forEach(row -> names.put((String) row[0], row[1] + " " + row[2]));
+        // teamroles carries no FK to user, so a member row can outlive its user —
+        // keep the entry (name null) or the count would stop matching the cascade.
+        return useruuids.stream()
+                .map(useruuid -> new ImpactedMember(useruuid, names.get(useruuid)))
+                .sorted(Comparator.comparing(ImpactedMember::name,
+                        Comparator.nullsLast(Comparator.<String>naturalOrder())))
+                .toList();
     }
 
     /**
