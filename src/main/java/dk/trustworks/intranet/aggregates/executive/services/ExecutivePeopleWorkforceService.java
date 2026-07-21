@@ -252,7 +252,8 @@ public class ExecutivePeopleWorkforceService {
                 " FROM event_status_day esd" +
                 " WINDOW w AS (PARTITION BY esd.useruuid ORDER BY esd.statusdate,esd.created_at,esd.uuid)" +
                 "), scoped_events AS (" +
-                " SELECT h.*, u.practice, ec.career_track, ec.career_level," +
+                " SELECT h.*, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice," +
+                " ec.career_track, ec.career_level," +
                 " CASE WHEN " + isEmployed + " AND NOT (" + wasEmployed + ")" +
                 "  AND COALESCE(h.prior_employed_rows,0)=0 AND " + companyIn + " THEN 1 ELSE 0 END first_hire," +
                 " CASE WHEN ((" + isEmployed + " AND NOT (" + wasEmployed + ")" +
@@ -539,7 +540,7 @@ public class ExecutivePeopleWorkforceService {
 
     private String eventScope(PeopleFilterParams filters) {
         StringBuilder sql = new StringBuilder("COALESCE(NULLIF(h.`type`,'EXTERNAL'),h.previous_type) IN (:employeeTypes)");
-        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND ec.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND ec.career_level IN (:careerLevels)");
         switch (filters.managementScope()) {

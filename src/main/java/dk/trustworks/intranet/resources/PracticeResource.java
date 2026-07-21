@@ -52,9 +52,10 @@ public class PracticeResource {
 
     /** Shared OpenAPI description for every {id} path parameter (§4.5). */
     private static final String ID_PARAM_DESCRIPTION =
-            "Practice uuid (canonical identifier). The storage code (e.g. PM, SA) is "
-            + "accepted as a deprecated compatibility alias until Phase 5 of the "
-            + "practice data-model migration removes it — new integrations must send the uuid.";
+            "Practice uuid (canonical identifier). The registry code (e.g. PM, IA) is "
+            + "accepted as a compatibility alias — note that codes are mutable: Phase 5 "
+            + "renamed the legacy storage codes (SA→IA, BA→BU, DEV→TECH), so retired "
+            + "codes no longer resolve. New integrations must send the uuid.";
 
     @Inject
     PracticeService practiceService;
@@ -119,7 +120,7 @@ public class PracticeResource {
                     + "never 404.")
     public List<PracticeLead> findLeads(
             @Parameter(description = ID_PARAM_DESCRIPTION) @PathParam("id") String id) {
-        return practiceService.findLeads(practiceService.resolveToCodeOrPassthrough(id));
+        return practiceService.findLeads(practiceService.resolveToUuidOrPassthrough(id));
     }
 
     @POST
@@ -134,7 +135,7 @@ public class PracticeResource {
         LocalDate startdate = parseDate(request.startdate(), "startdate");
         log.infof("PracticeResource.startLead id=%s code=%s useruuid=%s startdate=%s updatedBy=%s",
                 id, practice.getCode(), request.useruuid(), startdate, requestHeaderHolder.getUserUuid());
-        PracticeLead created = practiceService.startLead(practice.getCode(), request.useruuid(), startdate);
+        PracticeLead created = practiceService.startLead(practice, request.useruuid(), startdate);
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -151,7 +152,7 @@ public class PracticeResource {
         LocalDate enddate = parseDate(request.enddate(), "enddate");
         log.infof("PracticeResource.endLead id=%s code=%s uuid=%s enddate=%s updatedBy=%s",
                 id, practice.getCode(), uuid, enddate, requestHeaderHolder.getUserUuid());
-        return practiceService.endLead(practice.getCode(), uuid, enddate);
+        return practiceService.endLead(practice, uuid, enddate);
     }
 
     @GET
@@ -161,7 +162,7 @@ public class PracticeResource {
                     + "never 404.")
     public List<Team> findTeams(
             @Parameter(description = ID_PARAM_DESCRIPTION) @PathParam("id") String id) {
-        return practiceService.findTeams(practiceService.resolveToCodeOrPassthrough(id));
+        return practiceService.findTeams(practiceService.resolveToUuidOrPassthrough(id));
     }
 
     /** Uuid-first, code-fallback resolution (§4.5); 404 preserves the pre-Phase-3 unknown-row behavior. */

@@ -119,6 +119,6 @@ class PracticeServiceValidationTest {
     }
 
     private static PracticeLead lead(String uuid, LocalDate startdate, LocalDate enddate) {
-        return new PracticeLead(uuid, "PM", "user-1", startdate, enddate);
+        return new PracticeLead(uuid, "uuid-pm", "PM", "user-1", startdate, enddate);
     }
 }

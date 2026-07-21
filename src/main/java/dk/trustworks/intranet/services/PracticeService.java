@@ -13,23 +13,31 @@ import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Application service over the practice registry (V418). Keeps the code strings
- * (PM/BA/SA/DEV/CYB) as the universal key while adding a data-driven layer for
- * naming, leadership and team grouping.
+ * Application service over the practice registry (V418). Since Phase 5A the
+ * registry uuid is the only persisted practice key anywhere — codes are display
+ * attributes and filter/write aliases resolved through this service.
  * <p>
- * Registry-driven write validation for {@code user.practice} and
- * {@code team.practice_code} lives here; the pure decision logic is factored into
- * static package-visible helpers ({@link #userPracticeRejection},
- * {@link #teamPracticeCodeRejection}) so it can be unit-tested without a database.
+ * Registry-driven write validation for the user- and team-practice writes lives
+ * here; the pure decision logic is factored into static package-visible helpers
+ * ({@link #userPracticeRejection}, {@link #teamPracticeCodeRejection}) so it can
+ * be unit-tested without a database.
  */
 @JBossLog
 @ApplicationScoped
 public class PracticeService {
 
-    /** Sentinel "no practice" code stored on {@code user.practice}. */
+    /**
+     * The permanent no-practice MEMBER TOKEN (Phase 5 graduation of the former
+     * UD registry row / stored sentinel): the warehouse member code the views
+     * synthesize for NULL practice, the filter token selecting the no-practice
+     * population, and the write alias meaning "no practice" — one coherent,
+     * registry-INDEPENDENT concept. The UD registry row itself is deleted by
+     * V428; only this literal survives.
+     */
     static final String NO_PRACTICE_CODE = "UD";
 
     /** Retired junior pseudo-practice — rejected on every write from V418 onward. */
@@ -63,15 +71,19 @@ public class PracticeService {
     }
 
     /**
-     * Storage codes of ALL registry rows (incl. {@code UD} and inactive rows) in
-     * registry {@code sort_order} — the grouping/ordering universe for
-     * practice-dimensioned analytics (career matrix, compensation groups).
-     * Replaces the deleted enum's {@code values()} declaration order; unlike
-     * {@link #activePracticeCodes()} it keeps the {@code UD} bucket, whose users
-     * are real data in those groupings until the Phase 4 operational-NULL flip.
+     * Codes of ALL registry rows (incl. inactive) in registry {@code sort_order},
+     * with the no-practice MEMBER TOKEN ({@code 'UD'}) appended last — the
+     * grouping/ordering universe for practice-dimensioned analytics (career
+     * matrix, compensation groups), whose no-practice population groups under
+     * the member. The append is registry-independent (Phase 5 graduation): while
+     * the UD registry row still exists (sort_order 90, last) it already appears
+     * in the list and the append is a no-op; after V428 deletes the row, the
+     * token keeps its last-place bucket with no behavior change.
      */
     public List<String> orderedRegistryCodes() {
-        return findAll().stream().map(Practice::getCode).toList();
+        List<String> codes = new java.util.ArrayList<>(findAll().stream().map(Practice::getCode).toList());
+        if (!codes.contains(NO_PRACTICE_CODE)) codes.add(NO_PRACTICE_CODE);
+        return List.copyOf(codes);
     }
 
     /**
@@ -89,49 +101,53 @@ public class PracticeService {
     }
 
     /**
-     * Maps a uuid-or-code identifier to its storage code for query filters,
+     * Maps a uuid-or-code identifier to the registry uuid for query filters,
      * passing unresolvable values through unchanged. Used by the list-shaped
      * lookups ({@code /practices/{id}/leads}, {@code /practices/{id}/teams})
-     * whose contract is an empty list — never a 404 — for unknown identifiers.
+     * whose contract is an empty list — never a 404 — for unknown identifiers
+     * (a passed-through garbage value matches no {@code practice_uuid} row).
      */
-    public String resolveToCodeOrPassthrough(String id) {
+    public String resolveToUuidOrPassthrough(String id) {
         Practice practice = resolveByIdOrCode(id);
-        return practice != null ? practice.getCode() : id;
+        return practice != null ? practice.getUuid() : id;
     }
 
     /**
-     * Normalizes an incoming practice value on a WRITE path to the Phase 4
-     * operational representation: {@code null}/blank and the deprecated
-     * {@code UD} alias — the storage code (case-insensitive) or the UD registry
-     * row's uuid, both kept wire-valid until Phase 5 for clients that still
-     * send them — all mean "no practice" and normalize to {@code null}. Any
+     * Normalizes an incoming practice value on a WRITE path to the operational
+     * representation: {@code null}/blank and the {@code 'UD'} member token —
+     * the PERMANENT no-practice write alias (Phase 5 graduation; the forms
+     * submit it for an explicit "no practice") — normalize to {@code null}.
+     * The token check is a registry-independent literal. The UD registry ROW's
+     * uuid additionally normalizes while that row still exists (pre-V428); the
+     * uuid alias dies with the row — clients must send the token or null. Any
      * other value passes through unchanged (validation is a separate concern).
      * Callers: {@code UserService}, {@code SalesService},
-     * {@code PracticeSyncService.applyManualPractice}.
+     * {@code PracticeSyncService.applyManualPractice}, {@code QuestionnaireService}.
      */
     public String normalizeNoPracticeAlias(String practice) {
         if (practice == null || practice.isBlank()) return null;
         String trimmed = practice.trim();
         if (NO_PRACTICE_CODE.equalsIgnoreCase(trimmed)) return null;
-        Practice udRow = Practice.findById(NO_PRACTICE_CODE);
+        Practice udRow = Practice.<Practice>find("code", NO_PRACTICE_CODE).firstResult();
         if (udRow != null && udRow.getUuid() != null && udRow.getUuid().equalsIgnoreCase(trimmed)) return null;
         return trimmed;
     }
 
     /**
-     * Resolves one {@code practices=} filter token — a registry uuid (canonical)
-     * or a storage code (alias) — to its storage code. Any registry row resolves,
-     * including {@code UD} and inactive rows: filters are reads, and the widest
-     * backward-compatible universe is the whole registry. The {@code UD} token
-     * resolves to the {@code 'UD'} member code, which the SQL builders compare
-     * against {@code COALESCE(practice,'UD')} — since the Phase 4 flip it
-     * selects the NULL no-practice population on operational tables and the
-     * synthetic member on warehouse tables. Retired codes with no registry row
-     * (e.g. {@code JK}) do not resolve.
+     * Resolves one {@code practices=} filter token — a registry uuid (canonical),
+     * a registry code (alias), or the {@code 'UD'} no-practice MEMBER TOKEN —
+     * to its member/storage code. The {@code UD} token is a registry-INDEPENDENT
+     * literal (Phase 5 graduation: it selects the NULL no-practice population on
+     * operational tables and the synthetic member on warehouse tables, and must
+     * keep resolving after V428 deletes the UD registry row). Any registry row
+     * resolves, including inactive rows: filters are reads, and the widest
+     * backward-compatible universe is the whole registry. Retired codes with no
+     * registry row (JK now; SA/BA/DEV after the V428 rename) do not resolve.
      */
     public java.util.Optional<String> resolveFilterToken(String token) {
         if (token == null || token.isBlank()) return java.util.Optional.empty();
         String trimmed = token.trim();
+        if (NO_PRACTICE_CODE.equalsIgnoreCase(trimmed)) return java.util.Optional.of(NO_PRACTICE_CODE);
         Practice byUuid = Practice.find("lower(uuid) = ?1", trimmed.toLowerCase(java.util.Locale.ROOT)).firstResult();
         if (byUuid != null) return java.util.Optional.of(byUuid.getCode());
         Practice byCode = Practice.findById(trimmed.toUpperCase(java.util.Locale.ROOT));
@@ -156,12 +172,12 @@ public class PracticeService {
         return codes;
     }
 
-    public List<PracticeLead> findLeads(String code) {
-        return PracticeLead.list("practiceCode = ?1 order by startdate", code);
+    public List<PracticeLead> findLeads(String practiceUuid) {
+        return PracticeLead.list("practiceUuid = ?1 order by startdate", practiceUuid);
     }
 
-    public List<Team> findTeams(String code) {
-        return Team.list("practiceCode = ?1", code);
+    public List<Team> findTeams(String practiceUuid) {
+        return Team.list("practiceUuid = ?1", practiceUuid);
     }
 
     // ── Registry mutations ────────────────────────────────────────────────
@@ -217,15 +233,14 @@ public class PracticeService {
     }
 
     @Transactional
-    public PracticeLead startLead(String code, String useruuid, LocalDate startdate) {
-        Practice practice = Practice.findById(code);
-        if (practice == null) throw new NotFoundException("Practice not found: " + code);
+    public PracticeLead startLead(Practice practice, String useruuid, LocalDate startdate) {
+        if (practice == null) throw new NotFoundException("Practice not found");
         // Phase 0 hardening: leads attach only to active type='PRACTICE' rows
-        // (never UD/SEGMENT rows, never inactive rows).
-        String practiceRejection = leadPracticeRejection(code, practice.getType(), practice.isActive());
+        // (never SEGMENT rows, never inactive rows).
+        String practiceRejection = leadPracticeRejection(practice.getCode(), practice.getType(), practice.isActive());
         if (practiceRejection != null) throw new BadRequestException(practiceRejection);
         if (useruuid == null || useruuid.isBlank()) throw new BadRequestException("useruuid is required");
-        // practice_lead.useruuid has no FK to user — validate existence here instead.
+        // practice_lead.useruuid FK exists (V425), but validate here for a clean 400.
         if (dk.trustworks.intranet.domain.user.entity.User.findById(useruuid) == null) {
             throw new BadRequestException("Unknown user: " + useruuid);
         }
@@ -233,20 +248,22 @@ public class PracticeService {
         // A new lead is open-ended [startdate, ∞) — reject if it overlaps any
         // existing row for the same user + practice. Concurrent leads across
         // DIFFERENT users remain an intentional feature.
-        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceCode = ?1 and useruuid = ?2", code, useruuid);
+        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceUuid = ?1 and useruuid = ?2",
+                practice.getUuid(), useruuid);
         String overlapRejection = leadOverlapRejection(startdate, null, null, sameUserLeads);
         if (overlapRejection != null) throw new BadRequestException(overlapRejection);
-        PracticeLead lead = new PracticeLead(UUID.randomUUID().toString(), code, useruuid, startdate, null);
-        // Dual-key window: the app maintains the uuid twin on new rows (Phase 3).
-        lead.setPracticeUuid(practice.getUuid());
+        // Phase 5A: the uuid is the only persisted key; the code rides along
+        // in memory so the create response carries it (the field is a formula).
+        PracticeLead lead = new PracticeLead(UUID.randomUUID().toString(),
+                practice.getUuid(), practice.getCode(), useruuid, startdate, null);
         PracticeLead.persist(lead);
         return lead;
     }
 
     @Transactional
-    public PracticeLead endLead(String code, String uuid, LocalDate enddate) {
+    public PracticeLead endLead(Practice practice, String uuid, LocalDate enddate) {
         PracticeLead lead = PracticeLead.findById(uuid);
-        if (lead == null || !lead.getPracticeCode().equals(code)) {
+        if (lead == null || practice == null || !Objects.equals(lead.getPracticeUuid(), practice.getUuid())) {
             throw new NotFoundException("Practice lead not found: " + uuid);
         }
         if (enddate == null) throw new BadRequestException("enddate is required");
@@ -254,7 +271,8 @@ public class PracticeService {
         if (enddateRejection != null) throw new BadRequestException(enddateRejection);
         // Moving the enddate must not make [startdate, enddate) overlap another
         // row of the same user + practice (extending past a successor period).
-        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceCode = ?1 and useruuid = ?2", code, lead.getUseruuid());
+        List<PracticeLead> sameUserLeads = PracticeLead.list("practiceUuid = ?1 and useruuid = ?2",
+                practice.getUuid(), lead.getUseruuid());
         String overlapRejection = leadOverlapRejection(lead.getStartdate(), enddate, uuid, sameUserLeads);
         if (overlapRejection != null) throw new BadRequestException(overlapRejection);
         lead.setEnddate(enddate);

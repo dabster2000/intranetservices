@@ -395,6 +395,37 @@ class PracticeDataModelMigrationContractTest {
                 "V427 recreates and flips; destructive drops are Phase 5");
     }
 
+    // ── Phase 5A (V428 — relax practice_lead.practice_code) ────────────────────
+
+    @Test
+    void v428_relaxes_the_practice_lead_code_column_so_5a_can_ship_alone() throws IOException {
+        String m = code(readV428());
+        // 5A's PracticeLead.practiceCode is an @Formula, which Hibernate never
+        // emits in an INSERT; the column was NOT NULL with no default, so
+        // POST /practices/{id}/leads 500s until this relaxation ships WITH 5A.
+        assertTrue(m.contains("MODIFY COLUMN practice_code VARCHAR(10) NULL"),
+                "practice_code must become nullable for the uuid-only writer");
+        // NULL, never a fabricated legacy code, in a column that is about to die.
+        assertFalse(m.contains("DEFAULT ''"), "an empty-string default would fabricate a fake legacy code");
+        // V429 drops this column, so an out-of-order replay must no-op, not abort.
+        assertTrue(m.contains("SET @practice_lead_has_code :="),
+                "the ALTER must be guarded on the column still existing (V429 drops it)");
+        assertTrue(m.contains("'DO 0'"), "the guard's no-op branch follows the house idiom");
+        assertFalse(m.contains("DROP COLUMN"), "V428 only relaxes — the drop is V429's job");
+    }
+
+    /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
+    private static String code(String migration) {
+        return migration.lines()
+                .filter(line -> !line.stripLeading().startsWith("--"))
+                .collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    /** Collapses runs of whitespace so assertions are not coupled to column alignment. */
+    private static String squash(String sql) {
+        return sql.replaceAll("[ \\t]+", " ").replaceAll("\\s*\\n\\s*", " ");
+    }
+
     private static String read() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V418__Create_practice_registry_and_team_settings.sql"));
     }
@@ -429,5 +460,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV427() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V427__Practice_phase4_operational_null_flip_and_warehouse.sql"));
+    }
+
+    private static String readV428() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V428__Practice_phase5a_relax_practice_lead_code.sql"));
     }
 }

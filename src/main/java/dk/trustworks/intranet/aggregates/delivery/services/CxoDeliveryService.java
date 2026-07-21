@@ -155,7 +155,7 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -593,7 +593,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("    AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("    AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -725,7 +725,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("    AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("    AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -845,7 +845,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.status_type = 'ACTIVE' ");
         sql.append("    AND bdd.net_available_hours > 0 ");
         if (hasPractices) {
-            sql.append("    AND COALESCE(u_p.practice, 'UD') IN (:practices) ");
+            sql.append("    AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u_p.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -938,7 +938,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.status_type = 'ACTIVE' ");
         sql.append("    AND bdd.net_available_hours > 0 ");
         if (hasPractices) {
-            sql.append("    AND COALESCE(u_p.practice, 'UD') IN (:practices) ");
+            sql.append("    AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u_p.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -1520,7 +1520,7 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -1607,7 +1607,7 @@ public class CxoDeliveryService {
         sql.append("SELECT ");
         // Member mapping (Phase 4): no-practice consultants keep their pre-flip
         // 'UD' bucket (stored 'UD' before the operational NULL flip).
-        sql.append("  COALESCE(u.practice, 'UD') AS team, ");
+        sql.append("  COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') AS team, ");
         sql.append("  YEARWEEK(bdd.document_date, 1) AS yw, ");
         sql.append("  SUM(bdd.registered_billable_hours) AS billable, ");
         sql.append("  SUM(bdd.net_available_hours) AS available ");
@@ -1618,17 +1618,17 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         sql.append("  AND bdd.net_available_hours > 0 ");
-        sql.append("  AND COALESCE(u.practice, 'UD') != '' ");
+        sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') != '' ");
 
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
 
-        sql.append("GROUP BY COALESCE(u.practice, 'UD'), YEARWEEK(bdd.document_date, 1) ");
-        sql.append("ORDER BY COALESCE(u.practice, 'UD'), yw ");
+        sql.append("GROUP BY COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD'), YEARWEEK(bdd.document_date, 1) ");
+        sql.append("ORDER BY COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD'), yw ");
 
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("startDate", startMonday);

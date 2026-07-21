@@ -25,14 +25,19 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Sole writer of {@code user.practice} + {@code user.practice_uuid},
- * {@code user_practice_history} and (for team changes)
- * {@code team_practice_assignment} — Part 2 Phase 2 (spec §4.2). The V407/V424
- * trigger family is dropped by V426; from that migration on, every practice
- * transition flows through this service, which reproduces the triggers' exact
- * semantics (half-open intervals, null-safe change detection, same-day collapse,
- * code↔uuid twin maintenance) and adds provenance ({@code source},
+ * Sole writer of {@code user.practice_uuid}, {@code user_practice_history} and
+ * (for team changes) {@code team_practice_assignment} — Part 2 Phase 2 (spec
+ * §4.2). The V407/V424 trigger family is dropped by V426; from that migration
+ * on, every practice transition flows through this service, which reproduces
+ * the triggers' exact semantics (half-open intervals, null-safe change
+ * detection, same-day collapse) and adds provenance ({@code source},
  * {@code source_team_uuid}, {@code updated_by}).
+ * <p>
+ * Phase 5A: the registry uuid is the ONLY written practice key — the legacy
+ * code columns ({@code user.practice}, {@code user_practice_history.practice},
+ * {@code team.practice_code}) are no longer written or compared (stale stored
+ * codes are inert; V428 drops the columns). Change detection, derivation and
+ * repair all run on {@code practice_uuid}.
  *
  * <p><b>Derivation rule:</b> a user's practice is the practice of the team where
  * they hold a <em>current</em> MEMBER role under the canonical temporal predicate
@@ -120,13 +125,16 @@ public class PracticeSyncService {
         }
         String newUuid = registryRow == null ? null : registryRow.getUuid();
 
-        if (Objects.equals(team.getPracticeCode(), code) && Objects.equals(team.getPracticeUuid(), newUuid)) {
+        if (Objects.equals(team.getPracticeUuid(), newUuid)) {
             return team; // no-op — nothing written, no cascade
         }
 
         recordTeamPracticeAssignment(teamuuid, newUuid, changeDate);
-        team.setPracticeCode(code);
+        // Phase 5A: the uuid is the only persisted key (practiceCode is a
+        // registry-derived formula and follows automatically on reload; set it
+        // in memory so this call's response carries the new value).
         team.setPracticeUuid(newUuid);
+        team.setPracticeCode(code);
 
         // Cascade: every current MEMBER (canonical predicate as of the change date)
         // transitions to the team's new practice — or NULL when the practice is unset.
@@ -135,7 +143,7 @@ public class PracticeSyncService {
                 "teamuuid = ?1 and teammembertype = ?2 and startdate <= ?3 and (enddate is null or enddate > ?3)",
                 teamuuid, TeamMemberType.MEMBER, changeDate);
         for (TeamRole member : currentMembers) {
-            apply(member.getUseruuid(), code, newUuid, changeDate, changeDate,
+            apply(member.getUseruuid(), newUuid, changeDate, changeDate,
                     SOURCE_TEAM_SYNC, teamuuid, actor);
         }
         return team;
@@ -144,15 +152,20 @@ public class PracticeSyncService {
     /**
      * Direct (manual) practice assignment — permitted only for team-less users;
      * {@code UserService} enforces that rule before calling. A null/blank value
-     * and the deprecated {@code UD} alias (code or registry uuid — wire
-     * compatibility until Phase 5) are stored as {@code NULL} on both key
-     * columns. Also writes the initial history row on user creation (the
-     * retired insert trigger's job).
+     * and the {@code 'UD'} no-practice member token (the permanent write alias)
+     * are stored as {@code NULL} (the Phase 4 operational truth). Also writes
+     * the initial history row on user creation (the retired insert trigger's job).
      */
     @Transactional
     public void applyManualPractice(String useruuid, String practice, LocalDate effectiveFrom) {
         String code = practiceService.normalizeNoPracticeAlias(practice);
-        apply(useruuid, code, resolvePracticeUuid(code), effectiveFrom, effectiveFrom, SOURCE_MANUAL, null, actor());
+        String practiceUuid = resolvePracticeUuid(code);
+        if (code != null && practiceUuid == null) {
+            // Upstream validation rejects non-registry codes; this guards direct
+            // service calls from silently converting an unknown code to "no practice".
+            throw new BadRequestException("Practice '" + code + "' is not in the registry");
+        }
+        apply(useruuid, practiceUuid, effectiveFrom, effectiveFrom, SOURCE_MANUAL, null, actor());
     }
 
     // ── Daily reconciliation tick ─────────────────────────────────────────
@@ -229,15 +242,15 @@ public class PracticeSyncService {
                 return false;
             }
             LocalDate roleStart = current.getStartdate();
-            if (team.getPracticeCode() != null) {
+            if (team.getPracticeUuid() != null) {
                 LocalDate assignmentStart = openAssignmentStart(team.getUuid());
                 LocalDate since = latestOf(roleStart, assignmentStart);
-                return apply(useruuid, team.getPracticeCode(), team.getPracticeUuid(),
+                return apply(useruuid, team.getPracticeUuid(),
                         since, asOf, SOURCE_TEAM_SYNC, team.getUuid(), actor);
             }
             LocalDate practiceLostOn = latestClosedAssignmentEnd(team.getUuid());
             LocalDate since = latestOf(roleStart, practiceLostOn);
-            return apply(useruuid, null, null,
+            return apply(useruuid, null,
                     since, asOf, SOURCE_TEAM_SYNC, team.getUuid(), actor);
         }
 
@@ -249,12 +262,12 @@ public class PracticeSyncService {
         LocalDate anchor = latestHistoryFrom(useruuid);
         TeamRole endedEvidence = staleDerivedEvidence(memberRoles, asOf, anchor);
         if (endedEvidence != null) {
-            return apply(useruuid, null, null,
+            return apply(useruuid, null,
                     endedEvidence.getEnddate(), asOf, SOURCE_TEAM_SYNC, endedEvidence.getTeamuuid(), actor);
         }
         if (previousCurrentTeamUuid != null) {
             LocalDate endedOn = latestEndedOn(memberRoles, previousCurrentTeamUuid, asOf);
-            return apply(useruuid, null, null,
+            return apply(useruuid, null,
                     endedOn != null ? endedOn : asOf, asOf, SOURCE_TEAM_SYNC, previousCurrentTeamUuid, actor);
         }
         return false;
@@ -269,12 +282,11 @@ public class PracticeSyncService {
      * per {@link #planTransition} and the user row follows. Returns whether
      * anything was written.
      */
-    private boolean apply(String useruuid, String newCode, String newUuid,
+    private boolean apply(String useruuid, String newUuid,
                           LocalDate requestedFrom, LocalDate asOf,
                           String source, String sourceTeamUuid, String actor) {
-        // Since Phase 3 user.practice is a plain String column: any registry
-        // code is storable, so the Phase 2 enum gate (parseStorable) is gone —
-        // a newly created practice propagates to users with no code change.
+        // Phase 5A: the transition is keyed on the registry uuid alone — a
+        // newly created practice propagates to users with no code change.
         if (requestedFrom == null || requestedFrom.isAfter(asOf)) {
             // Future-dated (or undated) triggers write nothing — the tick
             // materializes them on the day.
@@ -291,12 +303,11 @@ public class PracticeSyncService {
             log.warnf("Practice sync: user %s not found — skipping", useruuid);
             return false;
         }
-        String currentCode = user.getPractice();
-        boolean userRowStale = !Objects.equals(currentCode, newCode)
-                || !Objects.equals(user.getPracticeUuid(), newUuid);
+        String currentUuid = user.getPracticeUuid();
+        boolean userRowStale = !Objects.equals(currentUuid, newUuid);
 
         HistoryState state = loadHistoryState(useruuid);
-        TransitionPlan plan = planTransition(state, requestedFrom, newCode, newUuid);
+        TransitionPlan plan = planTransition(state, requestedFrom, newUuid);
         if (!userRowStale && plan.action() == TransitionAction.NOOP) return false;
 
         if (plan.clamped()) {
@@ -310,7 +321,6 @@ public class PracticeSyncService {
             case NOOP -> { /* history already correct — user row repaired below */ }
             case UPDATE_OPEN_ROW -> {
                 UserPracticeHistory open = UserPracticeHistory.findById(state.openRowUuid());
-                open.setPractice(newCode);
                 open.setPracticeUuid(newUuid);
                 open.setRecordedAt(now);
                 open.setSource(source);
@@ -321,29 +331,29 @@ public class PracticeSyncService {
                 UserPracticeHistory open = UserPracticeHistory.findById(state.openRowUuid());
                 open.setEffectiveTo(plan.effectiveFrom());
                 open.setRecordedAt(now);
-                insertOpenRow(useruuid, newCode, newUuid, plan.effectiveFrom(), now, source, sourceTeamUuid, actor);
+                insertOpenRow(useruuid, newUuid, plan.effectiveFrom(), now, source, sourceTeamUuid, actor);
             }
             case INSERT_OPEN_ROW ->
-                    insertOpenRow(useruuid, newCode, newUuid, plan.effectiveFrom(), now, source, sourceTeamUuid, actor);
+                    insertOpenRow(useruuid, newUuid, plan.effectiveFrom(), now, source, sourceTeamUuid, actor);
         }
 
         if (userRowStale) {
             // The row is already pessimistically locked and managed — write
             // through the entity so the persistence context stays consistent.
-            user.setPractice(newCode);
+            // (user.practice is a registry-derived formula since 5A — the uuid
+            // is the only persisted key.)
             user.setPracticeUuid(newUuid);
         }
-        log.infof("Practice sync: user %s %s → %s (effective %s, source=%s, team=%s, by=%s, action=%s)",
-                useruuid, currentCode, newCode, plan.effectiveFrom(), source, sourceTeamUuid, actor, plan.action());
+        log.infof("Practice sync: user %s practiceUuid %s → %s (effective %s, source=%s, team=%s, by=%s, action=%s)",
+                useruuid, currentUuid, newUuid, plan.effectiveFrom(), source, sourceTeamUuid, actor, plan.action());
         return true;
     }
 
-    private void insertOpenRow(String useruuid, String code, String practiceUuid, LocalDate from,
+    private void insertOpenRow(String useruuid, String practiceUuid, LocalDate from,
                                LocalDateTime recordedAt, String source, String sourceTeamUuid, String actor) {
         UserPracticeHistory row = new UserPracticeHistory();
         row.setUuid(UUID.randomUUID().toString());
         row.setUseruuid(useruuid);
-        row.setPractice(code);
         row.setPracticeUuid(practiceUuid);
         row.setEffectiveFrom(from);
         row.setEffectiveTo(null);
@@ -437,13 +447,12 @@ public class PracticeSyncService {
                 .<UserPracticeHistory>find("useruuid = ?1 and effectiveTo is null order by effectiveFrom desc", useruuid)
                 .firstResult();
         if (open != null) {
-            return new HistoryState(open.getUuid(), open.getEffectiveFrom(), open.getPractice(),
-                    open.getPracticeUuid(), null);
+            return new HistoryState(open.getUuid(), open.getEffectiveFrom(), open.getPracticeUuid(), null);
         }
         UserPracticeHistory latestClosed = UserPracticeHistory
                 .<UserPracticeHistory>find("useruuid = ?1 and effectiveTo is not null order by effectiveTo desc", useruuid)
                 .firstResult();
-        return new HistoryState(null, null, null, null,
+        return new HistoryState(null, null, null,
                 latestClosed == null ? null : latestClosed.getEffectiveTo());
     }
 
@@ -522,9 +531,10 @@ public class PracticeSyncService {
     /**
      * Snapshot of a user's history for the transition decision: the open row
      * (null {@code openRowUuid} when none exists) or, only when no open row
-     * exists, the latest closed row's {@code effective_to}.
+     * exists, the latest closed row's {@code effective_to}. Uuid-keyed since
+     * Phase 5A — the stored legacy code plays no part in the decision.
      */
-    record HistoryState(String openRowUuid, LocalDate openFrom, String openPractice,
+    record HistoryState(String openRowUuid, LocalDate openFrom,
                         String openPracticeUuid, LocalDate latestClosedTo) {}
 
     record TransitionPlan(TransitionAction action, LocalDate effectiveFrom, boolean clamped) {}
@@ -533,7 +543,7 @@ public class PracticeSyncService {
      * Pure transition decision, reproducing the V407/V424 trigger semantics with
      * the Phase 2 effective-date clamp:
      * <ul>
-     *   <li>open row already carries the target practice (code and uuid) → NOOP
+     *   <li>open row already carries the target practice uuid → NOOP
      *       (the {@code <=>} change-detection guard);</li>
      *   <li>clamped effective date equals the open row's {@code effective_from}
      *       → update the open row in place (same-day collapse — also the only
@@ -545,10 +555,9 @@ public class PracticeSyncService {
      * </ul>
      */
     static TransitionPlan planTransition(HistoryState state, LocalDate requestedFrom,
-                                         String newCode, String newUuid) {
+                                         String newUuid) {
         if (state.openRowUuid() != null) {
-            if (Objects.equals(state.openPractice(), newCode)
-                    && Objects.equals(state.openPracticeUuid(), newUuid)) {
+            if (Objects.equals(state.openPracticeUuid(), newUuid)) {
                 return new TransitionPlan(TransitionAction.NOOP, state.openFrom(), false);
             }
             LocalDate effective = latestOf(requestedFrom, state.openFrom());

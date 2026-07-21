@@ -353,7 +353,7 @@ public class CxoFinanceService {
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
@@ -1135,7 +1135,7 @@ public class CxoFinanceService {
         billableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         billableSql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasServiceLines) {
-            billableSql.append("  AND COALESCE(u.practice, 'UD') IN (:serviceLines) ");
+            billableSql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines) ");
         }
         if (hasCompanies) {
             billableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -1162,7 +1162,7 @@ public class CxoFinanceService {
         availableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         availableSql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasServiceLines) {
-            availableSql.append("  AND COALESCE(u.practice, 'UD') IN (:serviceLines) ");
+            availableSql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines) ");
         }
         if (hasCompanies) {
             availableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -2660,7 +2660,7 @@ public class CxoFinanceService {
 
         // Add optional filters
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2727,7 +2727,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            fteSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            fteSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             fteSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2808,7 +2808,7 @@ public class CxoFinanceService {
         // Note: work_full doesn't have sector_id or contract_type_id directly,
         // so we filter by service line (consultant's practice) and company
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -2883,7 +2883,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            expectedSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            expectedSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             expectedSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
@@ -3341,7 +3341,7 @@ public class CxoFinanceService {
         billableSql.append("  ) ");
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
@@ -3364,7 +3364,7 @@ public class CxoFinanceService {
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND COALESCE(u.practice, 'UD') IN (:serviceLines)) ");
+            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             availableSql.append("AND b.companyuuid IN (:companyIds) ");
@@ -6163,7 +6163,7 @@ public class CxoFinanceService {
         sql.append("WHERE d.consultant_type = 'CONSULTANT' ");
         sql.append("  AND d.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
@@ -6220,14 +6220,15 @@ public class CxoFinanceService {
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
-        sql.append("SELECT DISTINCT u.uuid, u.firstname, u.lastname, u.practice ");
+        sql.append("SELECT DISTINCT u.uuid, u.firstname, u.lastname, ");
+        sql.append("  (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice ");
         sql.append("FROM fact_user_day bdd ");
         sql.append("JOIN `user` u ON u.uuid = bdd.useruuid ");
         sql.append("WHERE bdd.year = :year AND bdd.month = :month ");
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         if (hasPractices) {
-            sql.append("  AND COALESCE(u.practice, 'UD') IN (:practices) ");
+            sql.append("  AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices) ");
         } else {
             sql.append(UtilizationCalculationHelper.activePracticeUserFilter("u"));
         }
@@ -6236,7 +6237,9 @@ public class CxoFinanceService {
         }
         // Sort key uses the member mapping so no-practice consultants keep their
         // pre-flip position (the stored 'UD' sorted last; a raw NULL sorts first).
-        sql.append("ORDER BY COALESCE(u.practice, 'UD'), u.firstname, u.lastname");
+        // The full derivation expression is repeated (not the select alias) so
+        // resolution is unambiguous while the legacy u.practice column coexists.
+        sql.append("ORDER BY COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD'), u.firstname, u.lastname");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("year", year);
@@ -6563,8 +6566,9 @@ public class CxoFinanceService {
      * with cost and margin overlay. Ported from the legacy BFF route at
      * {@code /api/cxo/finance/revenue-by-practice}.
      *
-     * <p>The revenue query attributes each invoice line item to {@code u.practice} of the
-     * delivering consultant (NOT the project-level service line). The cost query aggregates
+     * <p>The revenue query attributes each invoice line item to the delivering consultant's
+     * registry-derived practice code ({@code u.practice_uuid} → registry, Phase 5A; NOT the
+     * project-level service line). The cost query aggregates
      * direct delivery cost by month from {@code fact_project_financials_mat}. Java assembles
      * the two streams: cost-only months are present in the result with empty practice
      * revenue, and any practice id outside the registry's active {@code type='PRACTICE'}
@@ -6597,7 +6601,7 @@ public class CxoFinanceService {
                 "  DATE_FORMAT(i.invoicedate, '%Y%m')    AS month_key, " +
                 "  YEAR(i.invoicedate)                   AS year_val, " +
                 "  MONTH(i.invoicedate)                  AS month_number, " +
-                "  COALESCE(u.practice, 'UD')            AS service_line_id, " +
+                "  COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD')            AS service_line_id, " +
                 "  SUM( " +
                 "    ii.rate * ii.hours " +
                 "    * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
@@ -6625,7 +6629,7 @@ public class CxoFinanceService {
                 "  AND (YEAR(i.invoicedate) > :fromYear OR (YEAR(i.invoicedate) = :fromYear AND MONTH(i.invoicedate) >= :fromMonth)) " +
                 "  AND (YEAR(i.invoicedate) < :toYear OR (YEAR(i.invoicedate) = :toYear AND MONTH(i.invoicedate) <= :toMonth))" +
                 revenueCompanyFilter + " " +
-                "GROUP BY month_key, year_val, month_number, COALESCE(u.practice, 'UD') " +
+                "GROUP BY month_key, year_val, month_number, COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') " +
                 "ORDER BY month_key, service_line_id";
 
         Query revenueQuery = em.createNativeQuery(revenueSql, Tuple.class);
