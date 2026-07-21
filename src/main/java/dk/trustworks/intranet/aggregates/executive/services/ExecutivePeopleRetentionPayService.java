@@ -455,7 +455,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND sc.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND sc.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {
@@ -473,7 +473,7 @@ public class ExecutivePeopleRetentionPayService {
         StringBuilder sql = new StringBuilder(
                 "ss.`type` IN (:employeeTypes) AND ss.status IN (:populationStatuses)");
         if (filters.companyId() != null) sql.append(" AND ss.companyuuid=:companyId");
-        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE(u.practice, 'UD') IN (:practices)");
+        if (!filters.practices().isEmpty()) sql.append(" AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices)");
         if (!filters.careerTracks().isEmpty()) sql.append(" AND ucl.career_track IN (:careerTracks)");
         if (!filters.careerLevels().isEmpty()) sql.append(" AND ucl.career_level IN (:careerLevels)");
         if (filters.managementScope() == PeopleManagementScope.PEOPLE_LEADERS) {

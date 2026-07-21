@@ -18,16 +18,24 @@ class CxoFinanceServiceRevenueByPracticeTest {
     @Inject
     CxoFinanceService service;
 
+    @Inject
+    dk.trustworks.intranet.services.PracticeService practiceService;
+
     @Test
     void revenueByPractice_defaultRange_returnsWrapper() {
         RevenuePracticeDTO result = service.revenueByPractice(null, null, null);
         assertNotNull(result);
         assertNotNull(result.months());
         assertNotNull(result.practices());
-        // practices list is ordered; verify each entry is one of the known set or "OTHER"
+        // practices list is ordered; verify each entry is a live registry code or
+        // the "OTHER" catch-all. Derived from the registry rather than hardcoded:
+        // the Phase 5 fold renames the storage codes (SA->IA, BA->BU, DEV->TECH),
+        // so a literal list would red the gate the moment V429 applies.
+        List<String> known = new java.util.ArrayList<>(practiceService.activePracticeCodes());
+        known.add("OTHER");
         for (String p : result.practices()) {
-            assertTrue(List.of("PM", "SA", "BA", "DEV", "CYB", "OTHER").contains(p),
-                    "Unexpected practice id: " + p);
+            assertTrue(known.contains(p),
+                    "Unexpected practice id: " + p + " (live registry: " + known + ")");
         }
         // Each month row's practiceRevenue keys must be a subset of the practices list
         for (MonthlyRevenuePracticeDataPoint m : result.months()) {

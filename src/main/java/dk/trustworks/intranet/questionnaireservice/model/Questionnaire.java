@@ -40,15 +40,22 @@ public class Questionnaire extends PanacheEntityBase {
     @Column(name = "reminder_cooldown_days")
     private int reminderCooldownDays;
 
-    @Column(name = "target_practices", columnDefinition = "TEXT")
+    /**
+     * Wire-compatibility twin of {@link #targetPracticeUuids}: a JSON array of
+     * practice registry CODES in the same element order, DERIVED on read since
+     * Phase 5A ({@code QuestionnaireService.withDerivedTargetPractices}
+     * populates it on every questionnaire returned by the API) — the
+     * {@code target_practices} column is no longer mapped or written and is
+     * dropped by V428.
+     */
+    @Transient
     private String targetPractices;
 
     /**
-     * Uuid twin of {@link #targetPractices} (V425, Part 2 Phase 1): a JSON array
-     * of practice registry uuids in the same element order. The targeting reader
-     * matches this column since Phase 3 (§4.3); the code array stays populated
-     * for compatibility until Phase 5 drops it. Both arrays are written together
-     * by {@code QuestionnaireService.createQuestionnaire}.
+     * The targeting key (V425, sole persisted array since Phase 5A): a JSON
+     * array of practice registry uuids. The targeting reader matches this
+     * column since Phase 3 (§4.3); {@code QuestionnaireService.createQuestionnaire}
+     * is the writer.
      */
     @Column(name = "target_practice_uuids", columnDefinition = "TEXT")
     private String targetPracticeUuids;

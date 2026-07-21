@@ -883,7 +883,8 @@ public class TeamDashboardService {
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
-                SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+                SELECT u.uuid AS user_id, u.firstname, u.lastname,
+                       (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                        MAX(cc.activeto) AS last_contract_end,
                        (SELECT COUNT(*) FROM sales_lead_consultant slc
                         JOIN sales_lead sl ON sl.uuid = slc.leaduuid
@@ -902,7 +903,7 @@ public class TeamDashboardService {
                         AND cc2.activeto > CURDATE()
                         AND c2.status IN ('SIGNED', 'TIME')
                   )
-                GROUP BY u.uuid, u.firstname, u.lastname, u.practice
+                GROUP BY u.uuid, u.firstname, u.lastname, (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid)
                 ORDER BY last_contract_end ASC
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -1317,7 +1318,8 @@ public class TeamDashboardService {
                                                    LocalDate effectiveEnd) {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
-                SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+                SELECT u.uuid AS user_id, u.firstname, u.lastname,
+                       (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice,
                        us.status, us.type AS consultant_type,
                        COALESCE(util.billable, 0) AS billable,
                        COALESCE(util.net_available, 0) AS net_available,

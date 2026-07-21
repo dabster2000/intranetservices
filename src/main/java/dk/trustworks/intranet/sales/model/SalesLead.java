@@ -10,6 +10,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.Formula;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -47,15 +48,22 @@ public class SalesLead extends PanacheEntityBase {
     private LocalDate closeDate;
     private int period;
     private int allocation;
-    /** Practice storage code (registry {@code practice.code}); plain String since Phase 3. */
-    @Column(name = "practice")
+    /**
+     * Practice code, DERIVED from {@link #practiceUuid} via the registry
+     * (Phase 5A) — the {@code sales_lead.practice} column is no longer mapped
+     * and is dropped by V428. The JSON field {@code practice} keeps its wire
+     * shape (code string or null); it stays writable in memory because the
+     * lead forms echo it back on create/update (SalesService normalizes the
+     * incoming value and persists only the uuid twin).
+     */
+    @Formula("(select prc.code from practice prc where prc.uuid = practice_uuid)")
     private String practice;
 
     /**
-     * Surrogate twin of {@link #practice} (V424, Part 2 Phase 1). Since Phase 3
-     * the application maintains it: {@link dk.trustworks.intranet.sales.services.SalesService}
-     * sets both columns together on every lead practice write (the V424 backfill
-     * covered pre-existing rows). Not serialized — identity flows via the registry.
+     * The lead's practice identity (V424; sole persisted key since Phase 5A —
+     * {@link dk.trustworks.intranet.sales.services.SalesService} resolves the
+     * incoming code through the registry and writes only this column).
+     * Not serialized — the wire carries the derived {@link #practice} code.
      */
     @JsonIgnore
     @Column(name = "practice_uuid")

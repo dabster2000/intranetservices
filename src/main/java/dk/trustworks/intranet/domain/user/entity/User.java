@@ -15,6 +15,7 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.hibernate.annotations.DynamicUpdate;
+import org.hibernate.annotations.Formula;
 import org.mindrot.jbcrypt.BCrypt;
 
 import java.time.LocalDate;
@@ -80,12 +81,17 @@ public class User extends PanacheEntityBase {
     @Deprecated
     private String other;
     /**
-     * Practice storage code (registry {@code practice.code}: PM/SA/BA/DEV/CYB
-     * or the {@code UD} no-practice sentinel). Plain String since Phase 3 —
-     * the {@code PrimarySkillType} enum is gone, so any registry code is
-     * storable. Serializes exactly as the enum did (the code string).
+     * Practice code, DERIVED from {@link #practiceUuid} via the registry
+     * (Phase 5A) — the {@code user.practice} column is no longer mapped and is
+     * dropped by V428. The JSON field {@code practice} keeps its exact wire
+     * shape (registry code string, or null for "no practice"): reads resolve
+     * through this formula on every load path (finds, lists, native entity
+     * queries, association fetches), and the field remains writable in memory
+     * so the entity-as-request-body pattern (createUser/updateOne reading the
+     * incoming value) and post-write response serialization keep working.
+     * Hibernate never writes it.
      */
-    @Column(name = "practice")
+    @Formula("(select prc.code from practice prc where prc.uuid = practice_uuid)")
     private String practice;
 
     /**

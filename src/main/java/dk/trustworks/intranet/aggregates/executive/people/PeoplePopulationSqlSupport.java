@@ -58,7 +58,8 @@ public final class PeoplePopulationSqlSupport {
                 " SELECT * FROM latest_career_ranked WHERE rn = 1" +
                 "), filtered_population AS (" +
                 " SELECT ls.useruuid, ls.status, ls.`type`, ls.allocation, ls.companyuuid, ls.statusdate," +
-                " u.firstname, u.lastname, u.gender, u.birthday, u.practice," +
+                " u.firstname, u.lastname, u.gender, u.birthday," +
+                " (SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid) AS practice," +
                 " lc.career_track, lc.career_level" +
                 " FROM latest_status ls" +
                 " JOIN `user` u ON u.uuid = ls.useruuid" +
@@ -175,8 +176,10 @@ public final class PeoplePopulationSqlSupport {
             // Member mapping (Phase 4): "no practice" is NULL on user rows, and the
             // normalized filter set names it by the 'UD' member token — COALESCE
             // makes the UD token match NULL rows while real-practice-only sets
-            // keep excluding them.
-            sql.append(" AND COALESCE(").append(userAlias).append(".practice, 'UD') IN (:practices)");
+            // keep excluding them. Since 5A the code derives from the registry
+            // via practice_uuid (the legacy column is dropped by V428).
+            sql.append(" AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = ")
+                    .append(userAlias).append(".practice_uuid), 'UD') IN (:practices)");
         }
         return sql.toString();
     }
@@ -202,8 +205,10 @@ public final class PeoplePopulationSqlSupport {
             // Member mapping (Phase 4): "no practice" is NULL on user rows, and the
             // normalized filter set names it by the 'UD' member token — COALESCE
             // makes the UD token match NULL rows while real-practice-only sets
-            // keep excluding them.
-            sql.append(" AND COALESCE(").append(userAlias).append(".practice, 'UD') IN (:practices)");
+            // keep excluding them. Since 5A the code derives from the registry
+            // via practice_uuid (the legacy column is dropped by V428).
+            sql.append(" AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = ")
+                    .append(userAlias).append(".practice_uuid), 'UD') IN (:practices)");
         }
         if (!filters.careerTracks().isEmpty()) {
             sql.append(" AND ").append(careerAlias).append(".career_track IN (:careerTracks)");

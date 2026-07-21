@@ -24,9 +24,11 @@ import java.util.function.Function;
  * <p>All user input is converted to closed enums, UUIDs, or bounded integers
  * before it reaches a SQL builder. Invalid input deliberately fails with HTTP
  * 400 instead of being ignored. Practices are validated against the practice
- * registry (Phase 3, spec §4.5): the caller may send storage codes or registry
- * uuids; {@link #practices()} always holds normalized storage codes, which is
- * what the SQL builders bind against {@code u.practice}.</p>
+ * registry (Phase 3, spec §4.5): the caller may send registry codes, registry
+ * uuids, or the permanent {@code 'UD'} no-practice member token;
+ * {@link #practices()} always holds normalized member/registry codes, which
+ * the SQL builders compare against the registry-derived code of
+ * {@code u.practice_uuid} (Phase 5A idiom).</p>
  */
 public record PeopleFilterParams(
         LocalDate asOfDate,

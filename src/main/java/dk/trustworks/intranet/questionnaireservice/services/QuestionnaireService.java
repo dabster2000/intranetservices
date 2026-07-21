@@ -42,13 +42,47 @@ public class QuestionnaireService {
     PracticeService practiceService;
 
     public List<Questionnaire> listAll() {
-        return Questionnaire.listAll();
+        List<Questionnaire> all = Questionnaire.listAll();
+        all.forEach(this::withDerivedTargetPractices);
+        return all;
     }
 
     public Questionnaire findByUuid(String uuid) {
         Questionnaire q = Questionnaire.findByUuid(uuid);
         if (q == null) {
             throw new WebApplicationException("Questionnaire not found: " + uuid, Response.Status.NOT_FOUND);
+        }
+        return withDerivedTargetPractices(q);
+    }
+
+    /**
+     * Populates the wire-compatibility {@code targetPractices} field (a JSON
+     * array of registry CODES, transient since Phase 5A) from the persisted
+     * uuid array, element order preserved. Codes follow registry renames
+     * automatically. A uuid without a registry row (impossible for real data —
+     * the writer validates and UD targets are rejected) is skipped with a
+     * warning rather than failing the read.
+     */
+    private Questionnaire withDerivedTargetPractices(Questionnaire q) {
+        String uuidArray = q.getTargetPracticeUuids();
+        if (uuidArray == null || uuidArray.isBlank()) return q;
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            List<String> uuids = mapper.readValue(uuidArray,
+                    mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+            List<String> codes = new ArrayList<>(uuids.size());
+            for (String practiceUuid : uuids) {
+                Practice row = Practice.<Practice>find("uuid", practiceUuid).firstResult();
+                if (row == null) {
+                    log.warnf("Questionnaire %s targets unknown practice uuid %s — omitted from targetPractices",
+                            q.getUuid(), practiceUuid);
+                    continue;
+                }
+                codes.add(row.getCode());
+            }
+            q.setTargetPractices(mapper.writeValueAsString(codes));
+        } catch (Exception e) {
+            log.warnf("Invalid target_practice_uuids JSON for questionnaire %s", q.getUuid());
         }
         return q;
     }
@@ -175,9 +209,9 @@ public class QuestionnaireService {
             ObjectMapper mapper = new ObjectMapper();
             if (request.getTargetPractices() != null && !request.getTargetPractices().isEmpty()) {
                 // Phase 3 (spec §4.3): validate each targeting code against the
-                // registry — retired codes (JK) and unknown values cannot enter —
-                // and write BOTH arrays: codes (compatibility, dropped in Phase 5)
-                // and uuids (what the targeting reader matches from Phase 3 on).
+                // registry — retired codes and unknown values cannot enter.
+                // Phase 5A: only the uuid array is persisted (the code array
+                // column is dropped by V428); the wire field derives on read.
                 List<String> uuids = new ArrayList<>(request.getTargetPractices().size());
                 for (String code : request.getTargetPractices()) {
                     // Phase 4: a 'UD' target would silently match nobody — no
@@ -198,7 +232,6 @@ public class QuestionnaireService {
                     }
                     uuids.add(registryRow.getUuid());
                 }
-                q.setTargetPractices(mapper.writeValueAsString(request.getTargetPractices()));
                 q.setTargetPracticeUuids(mapper.writeValueAsString(uuids));
             }
             if (request.getTargetTeams() != null && !request.getTargetTeams().isEmpty()) {
@@ -227,16 +260,16 @@ public class QuestionnaireService {
         log.infof("Questionnaire created: uuid=%s, title=%s, questions=%d",
                 q.getUuid(), q.getTitle(), request.getQuestions().size());
 
-        return Questionnaire.findByUuid(q.getUuid());
+        return withDerivedTargetPractices(Questionnaire.findByUuid(q.getUuid()));
     }
 
     public List<Questionnaire> getActiveReminders(String userUuid) {
         LocalDate today = LocalDate.now();
 
-        // Get user's practice identity — uuid is the matching key since Phase 3
-        // (§4.5); the storage code remains only for the legacy-row fallback.
+        // The user's practice identity — the registry uuid is the matching key
+        // (Phase 3 §4.5; code-array fallback removed in Phase 5A with the
+        // legacy column).
         User user = User.findById(userUuid);
-        String userPractice = user != null ? user.getPractice() : null;
         String userPracticeUuid = user != null ? user.getPracticeUuid() : null;
 
         // Get user's current team UUIDs
@@ -263,32 +296,22 @@ public class QuestionnaireService {
                 .filter(q -> !submittedQuestionnaireUuids.contains(q.getUuid()))
                 .filter(q -> {
                     // Phase 3 reader switch (§4.3): target_practice_uuids is the
-                    // matching key. NULL/blank on BOTH columns = targets everyone;
-                    // a '[]' literal matches nobody (preserved asymmetry). The
-                    // code-array fallback covers only rows that predate the dual
-                    // key and were never uuid-backfilled — the V425 backfill plus
-                    // this class's writer make that combination unexpected.
+                    // matching key — since Phase 5A the ONLY key (the code array
+                    // is unmapped; its column is dropped by V428). NULL/blank =
+                    // targets everyone; a '[]' literal matches nobody (preserved
+                    // asymmetry). NULL-practice users match only untargeted
+                    // questionnaires, by design.
                     String uuidArray = q.getTargetPracticeUuids();
-                    String codeArray = q.getTargetPractices();
-                    if ((uuidArray == null || uuidArray.isBlank())
-                            && (codeArray == null || codeArray.isBlank())) {
+                    if (uuidArray == null || uuidArray.isBlank()) {
                         return true;
                     }
                     try {
-                        if (uuidArray != null && !uuidArray.isBlank()) {
-                            if (userPracticeUuid == null) return false;
-                            List<String> practiceUuids = mapper.readValue(uuidArray,
-                                    mapper.getTypeFactory().constructCollectionType(List.class, String.class));
-                            return practiceUuids.contains(userPracticeUuid);
-                        }
-                        log.warnf("Questionnaire %s has target_practices but no target_practice_uuids — "
-                                + "falling back to code matching (expected only for pre-V425 rows)", q.getUuid());
-                        if (userPractice == null) return false;
-                        List<String> practices = mapper.readValue(codeArray,
+                        if (userPracticeUuid == null) return false;
+                        List<String> practiceUuids = mapper.readValue(uuidArray,
                                 mapper.getTypeFactory().constructCollectionType(List.class, String.class));
-                        return practices.contains(userPractice);
+                        return practiceUuids.contains(userPracticeUuid);
                     } catch (Exception e) {
-                        log.warnf("Invalid target_practices JSON for questionnaire %s", q.getUuid());
+                        log.warnf("Invalid target_practice_uuids JSON for questionnaire %s", q.getUuid());
                         return false;
                     }
                 })
@@ -305,6 +328,7 @@ public class QuestionnaireService {
                         return false;
                     }
                 })
+                .map(this::withDerivedTargetPractices)
                 .toList();
     }
 }

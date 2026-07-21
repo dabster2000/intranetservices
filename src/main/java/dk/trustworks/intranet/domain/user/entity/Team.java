@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.DynamicUpdate;
+import org.hibernate.annotations.Formula;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -32,17 +33,19 @@ public class Team extends PanacheEntityBase {
     private boolean teamleadbonus;
     private boolean teambonus;
 
-    /** Optional link to the practice registry (V418). NULL = no practice. */
-    @Column(name = "practice_code")
+    /**
+     * Practice code, DERIVED from {@link #practiceUuid} via the registry
+     * (Phase 5A) — the {@code team.practice_code} column is no longer mapped
+     * and is dropped by V428. The JSON field {@code practiceCode} keeps its
+     * wire shape (code string, or null for a practice-less team).
+     */
+    @Formula("(select prc.code from practice prc where prc.uuid = practice_uuid)")
     private String practiceCode;
 
     /**
-     * Surrogate twin of {@link #practiceCode} (V424, Part 2 Phase 1). Since
-     * Phase 2, PracticeSyncService.applyTeamPracticeChange is the writer and
-     * always sets both columns together (the application owns the twin
-     * invariant — V426 dropped the trigger mirror on {@code user}, and the team
-     * columns never had one). Not serialized yet; no read path consumes it
-     * until Phase 3.
+     * The team's practice identity (V424; sole persisted key since Phase 5A).
+     * PracticeSyncService.applyTeamPracticeChange is the only writer. Not
+     * serialized — the wire carries the derived {@link #practiceCode}.
      */
     @JsonIgnore
     @Column(name = "practice_uuid")

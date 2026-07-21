@@ -53,7 +53,13 @@ public class Employee extends PanacheEntityBase {
     private String defects;
     private boolean photoconsent;
     private String other;
-    /** Practice storage code (registry {@code practice.code}); plain String since Phase 3. */
+    /**
+     * Practice code (registry {@code practice.code}, or null for no practice).
+     * Maps the {@code consultant} VIEW's {@code practice} column — from V428
+     * the view derives it from {@code user.practice_uuid} via a registry join
+     * (the raw {@code user.practice} column is gone), so this mapping follows
+     * registry code renames with no entity change.
+     */
     @Column(name = "practice")
     private String practice;
     @Enumerated(EnumType.STRING)
