@@ -38,11 +38,17 @@
 --     (information_schema sweep of all 10 practice-referencing views and all
 --     4 routines: only uuid, code, name, sort_order are read).
 --
--- Idempotency (mandatory — repair-at-start re-runs this file, and the nightly
--- prod→staging refresh strips its effect until V431 reaches prod): MODIFY
--- COLUMN to an already-NULL-able column is a natural no-op, but the statement
--- is guarded on the column still existing so the file stays replayable after
--- V432 drops it (same guard idiom as V429 §6).
+-- Idempotency (mandatory): MODIFY COLUMN to an already-NULL-able column is a
+-- natural no-op, and the statement is guarded on the column still existing so
+-- the file stays replayable after V432 drops it (same guard idiom as V429 §6).
+-- Replay happens through the ESTABLISHED RECOVERY, never automatically:
+-- repair-at-start only realigns checksums — it does NOT re-run an applied
+-- migration. Until V431 reaches prod, the nightly prod→staging refresh
+-- recreates practice from prod (NOT NULL again) while leaving
+-- flyway_schema_history intact, so each refresh RE-OPENS the ERROR 1364
+-- window on STAGING practice-creates. Recovery: the documented
+-- flyway-history-row delete + redeploy — or simply promote to prod, after
+-- which the refresh copies the already-relaxed table and the exposure ends.
 --
 -- ECS canary note: during this release's cutover the DRAINING pre-V431 task
 -- still maps display_code and writes it explicitly on INSERT — a NULL-able

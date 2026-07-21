@@ -90,8 +90,10 @@
 --     (all views enumerated; no proc, trigger, generated column or CHECK
 --     constraint references one).
 --
--- Idempotency (mandatory — this file re-runs via repair-at-start and after the
--- nightly prod→staging refresh strips it): the view is CREATE OR REPLACE; every
+-- Idempotency (mandatory — this file must survive replay after a
+-- flyway-history reset, the established recovery when the nightly prod→staging
+-- refresh strips its effects; repair-at-start realigns checksums only and
+-- never re-runs an applied migration): the view is CREATE OR REPLACE; every
 -- drop uses a native IF EXISTS shorthand; every ADD uses IF NOT EXISTS; the
 -- snapshot NULLing and the UD delete key on the UD row itself, so both match
 -- zero rows once it is gone; the fold keys on the three LEGACY codes (never on
