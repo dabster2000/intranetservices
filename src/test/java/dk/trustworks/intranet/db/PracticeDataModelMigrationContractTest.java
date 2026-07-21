@@ -679,6 +679,43 @@ class PracticeDataModelMigrationContractTest {
                 "type must not be touched — its DEFAULT 'PRACTICE' already covers the unmapped writer");
     }
 
+    // ── Retirement step 2 (V432 — drop display_code and type, migration-only) ─
+
+    @Test
+    void v432_drops_both_retired_columns_and_the_display_code_index() throws IOException {
+        String m = code(readV432());
+        assertTrue(m.contains("DROP COLUMN IF EXISTS display_code;"),
+                "display_code must go — unread and unwritten since V431");
+        assertTrue(m.contains("DROP COLUMN IF EXISTS type;"),
+                "type must go — single-valued since V429, unread since V431");
+        assertTrue(m.contains("DROP INDEX IF EXISTS uq_practice_display_code;"),
+                "the unique index covering display_code must be dropped explicitly");
+        // Explicit-first ordering: relying on the column drop to sweep the
+        // emptied index away would hide the intent and unprove replay order.
+        assertTrue(m.indexOf("DROP INDEX IF EXISTS uq_practice_display_code")
+                        < m.indexOf("DROP COLUMN IF EXISTS display_code"),
+                "the index drop must precede the column drop");
+    }
+
+    @Test
+    void v432_touches_nothing_but_the_two_columns_and_their_index() throws IOException {
+        String m = squash(code(readV432()));
+        // Exactly three ALTERs, all on practice — a retargeted or smuggled
+        // statement must not pass.
+        int alters = m.split("ALTER TABLE practice ", -1).length - 1;
+        assertTrue(alters == 3, "exactly three ALTER TABLE practice statements (found " + alters + ")");
+        assertFalse(m.contains("ALTER TABLE `user`") || m.contains("ALTER TABLE user_practice_history")
+                        || m.contains("ALTER TABLE sales_lead") || m.contains("ALTER TABLE team"),
+                "no other table may be touched");
+        // The survivors: code stays UNIQUE (uk_practice_code) and the uuid PK
+        // stays — this file must not touch either.
+        assertFalse(m.contains("uk_practice_code"), "code's unique key must survive untouched");
+        assertFalse(m.contains("PRIMARY KEY"), "the uuid primary key must survive untouched");
+        assertFalse(m.contains("DROP COLUMN IF EXISTS code;"), "the code column itself must survive");
+        assertFalse(m.contains("DROP TABLE") || m.contains("UPDATE ") || m.contains("DELETE FROM"),
+                "V432 is structural only — no data may move");
+    }
+
     /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
     private static String code(String migration) {
         return migration.lines()
@@ -741,5 +778,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV431() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V431__Practice_relax_display_code_for_derived_writer.sql"));
+    }
+
+    private static String readV432() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V432__Practice_retire_display_code_and_type.sql"));
     }
 }
