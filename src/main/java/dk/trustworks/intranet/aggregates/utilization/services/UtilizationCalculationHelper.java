@@ -38,12 +38,18 @@ public final class UtilizationCalculationHelper {
     /**
      * Registry-driven successor of the deleted {@code BILLABLE_PRACTICES}
      * constant (Part 2 Phase 3): a WHERE fragment keeping only rows whose user
-     * is currently in an active {@code type='PRACTICE'} registry practice —
-     * resolved through the {@code practice_uuid} surrogate key, so the filter
-     * follows the registry with no code list to maintain. Excludes the UD
-     * "no practice" sentinel exactly as the old five-code set did.
+     * is currently in an active registry practice — resolved through the
+     * {@code practice_uuid} surrogate key, so the filter follows the registry
+     * with no code list to maintain. The no-practice population is excluded by
+     * the join itself ({@code practice_uuid} is NULL since the Phase 4 flip),
+     * exactly as the old five-code set excluded the UD sentinel.
      * The dashboard (company-wide) intentionally does NOT filter by practice.
      * The team dashboard filters by team membership instead.
+     *
+     * <p>Until V431 this fragment also required {@code type = 'PRACTICE'}. The
+     * predicate was dropped deliberately, not lost: V429 deleted the UD row —
+     * the only SEGMENT — so every registry row is a practice and the registry
+     * no longer carries a type column to filter on.</p>
      *
      * <p><b>Note:</b> {@code user.practice} is current-state only (no temporal history).
      * Practice-filtered reports attribute all historical data to the consultant's
@@ -57,13 +63,15 @@ public final class UtilizationCalculationHelper {
         requireSqlIdentifier(userAlias);
         return " AND EXISTS (SELECT 1 FROM practice ap_" + userAlias
                 + " WHERE ap_" + userAlias + ".uuid = " + userAlias + ".practice_uuid"
-                + " AND ap_" + userAlias + ".type = 'PRACTICE' AND ap_" + userAlias + ".active = 1) ";
+                + " AND ap_" + userAlias + ".active = 1) ";
     }
 
     /**
      * Code-column variant of {@link #activePracticeUserFilter(String)} for
      * legacy fact tables that carry practice storage codes (no uuid twin during
-     * the dual-key window — re-keyed in Phase 4).
+     * the dual-key window — re-keyed in Phase 4). Same V431 rationale: the
+     * {@code type = 'PRACTICE'} predicate is gone because the registry holds
+     * nothing else since V429.
      *
      * @param tableAlias SQL alias of the fact table — compile-time identifier literal
      * @param codeColumn the practice-code column on that alias — compile-time identifier literal
@@ -73,7 +81,7 @@ public final class UtilizationCalculationHelper {
         requireSqlIdentifier(codeColumn);
         return " AND EXISTS (SELECT 1 FROM practice ap_" + tableAlias
                 + " WHERE ap_" + tableAlias + ".code = " + tableAlias + "." + codeColumn
-                + " AND ap_" + tableAlias + ".type = 'PRACTICE' AND ap_" + tableAlias + ".active = 1) ";
+                + " AND ap_" + tableAlias + ".active = 1) ";
     }
 
     /** Canonical consultant type filter. Only billable consultants contribute to utilization. */

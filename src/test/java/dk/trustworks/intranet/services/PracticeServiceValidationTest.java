@@ -56,7 +56,7 @@ class PracticeServiceValidationTest {
 
     @Test
     void teamPractice_ud_is_rejected_because_teams_use_null_not_the_sentinel() {
-        // UD is a SEGMENT, not an active PRACTICE — so activePracticeRowExists=false and it is rejected.
+        // UD has no registry row since V429 — activePracticeRowExists=false and it is rejected.
         assertNotNull(PracticeService.teamPracticeCodeRejection("UD", false));
     }
 
@@ -70,11 +70,12 @@ class PracticeServiceValidationTest {
 
     @Test
     void lead_attaches_only_to_active_practice_rows() {
-        assertNull(PracticeService.leadPracticeRejection("PM", "PRACTICE", true));
-        assertNotNull(PracticeService.leadPracticeRejection("PM", "PRACTICE", false),
+        // The historical SEGMENT rejection retired with the type column (V431):
+        // V429 deleted the UD row, so the registry cannot hold a SEGMENT anymore
+        // and only inactivity can reject.
+        assertNull(PracticeService.leadPracticeRejection("PM", true));
+        assertNotNull(PracticeService.leadPracticeRejection("PM", false),
                 "inactive practice must not accept leads");
-        assertNotNull(PracticeService.leadPracticeRejection("UD", "SEGMENT", true),
-                "SEGMENT rows (UD) must not accept leads");
     }
 
     @Test
