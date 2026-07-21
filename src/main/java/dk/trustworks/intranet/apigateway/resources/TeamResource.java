@@ -209,7 +209,7 @@ public class TeamResource {
     }
 
     // -----------------------------------------------------------------------
-    // Team administration (settings-teams tab, V431)
+    // Team administration (settings-teams tab, V430)
     // -----------------------------------------------------------------------
 
     /**

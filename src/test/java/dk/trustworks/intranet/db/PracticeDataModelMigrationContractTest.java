@@ -613,11 +613,11 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(m.contains("DROP TABLE "), "V429 drops columns and one row, never a table");
     }
 
-    // ── Teams admin page (V431 — the settings-teams tab registration) ─────────
+    // ── Teams admin page (V430 — the settings-teams tab registration) ─────────
 
     @Test
-    void v431_registers_the_teams_settings_tab_with_its_own_icon() throws IOException {
-        String m = code(readV431());
+    void v430_registers_the_teams_settings_tab_with_its_own_icon() throws IOException {
+        String m = code(readV430());
         // Both halves of the registration are load-bearing: without the row the
         // tab never renders, whatever the frontend does.
         assertTrue(m.contains("'settings-teams'"), "page_registry key settings-teams");
@@ -632,14 +632,14 @@ class PracticeDataModelMigrationContractTest {
     }
 
     @Test
-    void v431_is_an_idempotent_data_only_upsert() throws IOException {
-        String m = code(readV431());
+    void v430_is_an_idempotent_data_only_upsert() throws IOException {
+        String m = code(readV430());
         assertTrue(m.contains("INSERT INTO page_registry"), "registration mirrors the V418 seed");
         assertTrue(m.contains("ON DUPLICATE KEY UPDATE"), "re-runs must converge, not collide");
         String upper = m.toUpperCase();
         assertFalse(upper.contains("CREATE TABLE") || upper.contains("ALTER TABLE")
                         || upper.contains("DROP TABLE") || upper.contains("DROP COLUMN"),
-                "V431 registers a page — it carries no schema change");
+                "V430 registers a page — it carries no schema change");
     }
 
     /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
@@ -698,7 +698,7 @@ class PracticeDataModelMigrationContractTest {
         return Files.readString(MIGRATIONS.resolve("V429__Practice_phase5_cleanup_canonical_codes.sql"));
     }
 
-    private static String readV431() throws IOException {
-        return Files.readString(MIGRATIONS.resolve("V431__Add_teams_admin_page_registry.sql"));
+    private static String readV430() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V430__Add_teams_admin_page_registry.sql"));
     }
 }

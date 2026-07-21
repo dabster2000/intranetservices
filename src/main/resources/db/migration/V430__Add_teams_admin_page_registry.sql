@@ -1,5 +1,5 @@
 -- ====================================================================
--- V431: Teams admin settings-tab registration.
+-- V430: Teams admin settings-tab registration.
 --
 -- Registers the 'settings-teams' tab hosting team create/edit and the
 -- team → practice association. It is the sibling of the 'settings-practices'
