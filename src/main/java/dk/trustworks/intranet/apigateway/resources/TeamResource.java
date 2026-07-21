@@ -33,6 +33,7 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -211,15 +212,29 @@ public class TeamResource {
     // Team administration (settings-teams tab, V431)
     // -----------------------------------------------------------------------
 
+    /**
+     * Flattens CR/LF out of a free-text value bound for the log. Without this a
+     * caller-supplied newline splits one log line into two, and the awslogs
+     * driver cannot tell the forged half from a genuine event.
+     */
+    private static String logSafe(String value) {
+        return value == null ? null : value.replaceAll("[\\r\\n]+", " ");
+    }
+
     @POST
     @RolesAllowed({"teams:write"})
     public Response createTeam(CreateTeamRequest request) {
         if (request == null) throw new BadRequestException("Request body is required");
         practiceService.validateTeamPracticeCode(request.practiceCode());
-        log.infof("TeamResource.createTeam name=%s shortname=%s practiceCode=%s updatedBy=%s",
-                request.name(), request.shortname(), request.practiceCode(), requestHeaderHolder.getUserUuid());
         Team created = teamService.createTeam(request.name(), request.shortname(),
                 request.description(), request.practiceCode());
+        // Logged after the write, from the persisted row: these updatedBy= lines are
+        // the audit trail for team mutations, so they must not carry unvalidated
+        // free text. logSafe strips CR/LF — a newline in a request field would
+        // otherwise render as a second, forged log event under the awslogs driver.
+        log.infof("TeamResource.createTeam teamuuid=%s name=%s shortname=%s practiceCode=%s updatedBy=%s",
+                created.getUuid(), logSafe(created.getName()), logSafe(created.getShortname()),
+                logSafe(request.practiceCode()), requestHeaderHolder.getUserUuid());
         return Response.created(URI.create("/teams/" + created.getUuid())).entity(created).build();
     }
 
@@ -259,6 +274,20 @@ public class TeamResource {
     @Path("/{teamuuid}/practice/impact")
     public TeamService.TeamPracticeImpact getTeamPracticeImpact(@PathParam("teamuuid") String teamuuid) {
         return teamService.getTeamPracticeImpact(teamuuid);
+    }
+
+    /**
+     * Cascade-set sizes for every team in one query, keyed by team uuid — what the
+     * teams grid shows in its members column. Asking {@code /practice/impact} per
+     * row instead costs a request (and a full caller-role resolution) per team.
+     * <p>
+     * The literal segment cannot collide with {@code /{teamuuid}/...}: JAX-RS
+     * prefers literals, and no team uuid is the string "member-counts".
+     */
+    @GET
+    @Path("/member-counts")
+    public Map<String, Long> getTeamMemberCounts() {
+        return teamService.getTeamMemberCounts();
     }
 
     /**

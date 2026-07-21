@@ -423,6 +423,28 @@ public class TeamService {
     }
 
     /**
+     * Cascade-set size per team, in one grouped query using the same predicate as
+     * {@link #cascadeMembers} — distinct useruuid, so duplicate overlapping MEMBER
+     * rows collapse exactly as they do there. Teams with no current members are
+     * absent from the map rather than present with 0; the caller defaults them.
+     */
+    public Map<String, Long> getTeamMemberCounts() {
+        LocalDate asOf = LocalDate.now();
+        List<Object[]> rows = em.createQuery("""
+                select tr.teamuuid, count(distinct tr.useruuid) from TeamRole tr
+                where tr.teammembertype = :membertype
+                  and tr.startdate <= :asOf and (tr.enddate is null or tr.enddate > :asOf)
+                group by tr.teamuuid
+                """, Object[].class)
+                .setParameter("membertype", TeamMemberType.MEMBER)
+                .setParameter("asOf", asOf)
+                .getResultList();
+        Map<String, Long> counts = new HashMap<>();
+        rows.forEach(row -> counts.put((String) row[0], (Long) row[1]));
+        return counts;
+    }
+
+    /**
      * The cascade population, resolved with the SAME predicate
      * {@link PracticeSyncService#applyTeamPracticeChange} iterates: no status
      * filter, no consultant-type filter, NULL startdate excluded by 3VL. The
