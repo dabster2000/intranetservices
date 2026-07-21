@@ -97,9 +97,9 @@ public class TeamPeopleService {
 
     /**
      * Returns the career level distribution for all active consultants in the
-     * registry's active {@code type='PRACTICE'} practices (registry join since
-     * Phase 3 — formerly a hardcoded five-code list), grouped by career track
-     * and level. Excludes terminated and pre-boarding employees.
+     * registry's active practices (registry join since Phase 3 — formerly a
+     * hardcoded five-code list), grouped by career track and level. Excludes
+     * terminated and pre-boarding employees.
      */
     public AllPracticesCareerDistributionResult getAllPracticesCareerDistribution() {
         @SuppressWarnings("unchecked")
@@ -125,7 +125,12 @@ public class TeamPeopleService {
                         AND us2.statusdate <= CURDATE()
                   )
                   AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
-                ORDER BY ucl.career_track, ucl.career_level
+                -- Within-group member order is user-visible (avatar order in the
+                -- career matrix) but was plan-arbitrary until V431 — dropping the
+                -- registry type predicate exposed that by permuting it. Pinned
+                -- deterministically by name (uuid as final tie-break), same
+                -- treatment V427 gave the dominant-vote ties.
+                ORDER BY ucl.career_track, ucl.career_level, u.firstname, u.lastname, ucl.useruuid
                 """, Tuple.class)
                 .getResultList();
 

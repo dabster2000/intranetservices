@@ -604,7 +604,9 @@ class PracticeDataModelMigrationContractTest {
         String m = squash(code(readV429()));
         // The 5A task still maps display_code and filters on type='PRACTICE'.
         // Dropping either here would break it mid-cutover; both are a trailing
-        // micro-step (V430) once 5A has drained. Deviation recorded in spec §1.6.K.
+        // micro-step once 5A has drained — executed as V431 (stop writing) +
+        // V432 (drop); V430 was taken by the teams admin page registration.
+        // Deviation recorded in spec §1.6.K.
         // Backtick-tolerant: type is quasi-reserved and the file already backticks user.
         for (String col : List.of("display_code", "`display_code`", "type", "`type`")) {
             assertFalse(m.contains("DROP COLUMN IF EXISTS " + col + ";") || m.contains("DROP COLUMN " + col + ";"),
@@ -640,6 +642,41 @@ class PracticeDataModelMigrationContractTest {
         assertFalse(upper.contains("CREATE TABLE") || upper.contains("ALTER TABLE")
                         || upper.contains("DROP TABLE") || upper.contains("DROP COLUMN"),
                 "V430 registers a page — it carries no schema change");
+    }
+
+    // ── Retirement step 1 (V431 — relax display_code, ships with the derived-field code) ─
+
+    @Test
+    void v431_relaxes_display_code_so_the_derived_field_release_can_ship_alone() throws IOException {
+        String m = squash(code(readV431()));
+        // The V428 lesson recursed: display_code is NOT NULL with no default,
+        // and Hibernate omits unmapped columns from INSERTs — so the release
+        // that stops mapping the field needs this relaxation or POST /practices
+        // dies with ERROR 1364 for the whole window until V432 drops the column.
+        // Anchored on the closing quote of the SQL string literal (the ALTER
+        // lives inside the guard's prepared statement).
+        assertTrue(m.contains("'ALTER TABLE practice MODIFY COLUMN display_code VARCHAR(10) NULL',"),
+                "display_code must become nullable for the derived-field writer");
+        // NULL, never a fabricated value: DEFAULT '' would also collide with
+        // itself on the second insert under UNIQUE uq_practice_display_code
+        // (MariaDB permits multiple NULLs, not multiple empty strings).
+        assertFalse(m.contains("DEFAULT ''"), "an empty-string default would fabricate a value and break UNIQUE");
+    }
+
+    @Test
+    void v431_is_guarded_and_relaxes_only() throws IOException {
+        String m = code(readV431());
+        // V432 drops the column, so an out-of-order replay must no-op, not abort.
+        assertTrue(m.contains("SET @practice_has_display_code :="),
+                "the ALTER must be guarded on the column still existing (V432 drops it)");
+        assertTrue(m.contains("'DO 0'"), "the guard's no-op branch follows the house idiom");
+        // Relaxation only — the drop is V432's job, after this release drains.
+        assertFalse(m.contains("DROP COLUMN"), "V431 only relaxes — the drop is V432's job");
+        assertFalse(m.contains("DROP INDEX"), "uq_practice_display_code survives until V432");
+        // type needs no relaxation: it already defaults to 'PRACTICE', which is
+        // also the only value left in the domain since V429 deleted the UD row.
+        assertFalse(squash(m).contains("MODIFY COLUMN type") || squash(m).contains("MODIFY COLUMN `type`"),
+                "type must not be touched — its DEFAULT 'PRACTICE' already covers the unmapped writer");
     }
 
     /** Strips SQL line comments so assertions cannot be satisfied by prose in a header. */
@@ -700,5 +737,9 @@ class PracticeDataModelMigrationContractTest {
 
     private static String readV430() throws IOException {
         return Files.readString(MIGRATIONS.resolve("V430__Add_teams_admin_page_registry.sql"));
+    }
+
+    private static String readV431() throws IOException {
+        return Files.readString(MIGRATIONS.resolve("V431__Practice_relax_display_code_for_derived_writer.sql"));
     }
 }

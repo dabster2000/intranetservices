@@ -10,10 +10,12 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * Practice registry row (V418). The {@code code} is the legacy storage key
- * (PM/BA/SA/DEV/CYB/UD/JK); {@code displayCode} is the user-facing short code
- * (PM/IA/BU/TECH/CYB). {@code type} is stored as the ENUM('PRACTICE','SEGMENT')
- * mapped to a plain String — the practice pickers filter on {@code type = 'PRACTICE'}.
+ * Practice registry row (V418). Since V429 the storage {@code code} IS the
+ * canonical short code (PM/IA/BU/TECH/CYB); {@code displayCode} and {@code type}
+ * survive on the wire as DERIVED getters only ({@link #getDisplayCode()} ≡ code,
+ * {@link #getType()} ≡ "PRACTICE") — the backing columns stop being read here
+ * and are physically dropped by V432. The registry holds nothing but practices
+ * since V429 deleted the UD row, the only SEGMENT.
  * Audit fields follow the house {@link Auditable} pattern (V421): populated by
  * {@link AuditEntityListener} from the X-Requested-By header.
  */
@@ -40,12 +42,7 @@ public class Practice extends PanacheEntityBase implements Auditable {
     @Column(name = "uuid")
     private String uuid;
 
-    @Column(name = "display_code")
-    private String displayCode;
-
     private String name;
-
-    private String type;
 
     private boolean active;
 
@@ -68,12 +65,33 @@ public class Practice extends PanacheEntityBase implements Auditable {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String modifiedBy;
 
-    public Practice(String code, String displayCode, String name, String type, boolean active, int sortOrder) {
+    public Practice(String code, String name, boolean active, int sortOrder) {
         this.code = code;
-        this.displayCode = displayCode;
         this.name = name;
-        this.type = type;
         this.active = active;
         this.sortOrder = sortOrder;
+    }
+
+    /**
+     * LIVE WIRE FIELD, derived since V431: the frontend renders it in the admin
+     * settings grid, sales-overview chips, notification config and allocation
+     * legend, so it must keep appearing in JSON — but it is the storage code,
+     * which has been the canonical display code on every row since the V429
+     * fold. The {@code display_code} column is unread from here on and dropped
+     * by V432. Getter-only: Jackson serializes it and ignores it on input.
+     */
+    public String getDisplayCode() {
+        return code;
+    }
+
+    /**
+     * LIVE WIRE FIELD, derived since V431: the frontend splits registry rows on
+     * it ({@code PracticeAdminSettings}, {@code usePractices}), so it must keep
+     * appearing in JSON — but V429 deleted the UD row, the only SEGMENT, so
+     * every registry row is a practice and the answer is a constant. The
+     * {@code type} column is unread from here on and dropped by V432.
+     */
+    public String getType() {
+        return "PRACTICE";
     }
 }

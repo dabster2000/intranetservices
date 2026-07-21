@@ -63,10 +63,17 @@ public class PracticeResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    /**
+     * {@code displayCode} and {@code type} are retained for wire compatibility
+     * (V431) but no longer stored: both are optional, an echo of the derived
+     * value (displayCode == code, type == PRACTICE) is accepted, a divergent
+     * value is a 400. See {@link PracticeService#create}.
+     */
     public record CreatePracticeRequest(String code, String displayCode, String name, String type,
                                         Boolean active, Integer sortOrder) {
     }
 
+    /** Same V431 wire-compatibility note as {@link CreatePracticeRequest} for {@code displayCode}. */
     public record UpdatePracticeRequest(String name, String displayCode, Boolean active, Integer sortOrder) {
     }
 

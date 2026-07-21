@@ -26,13 +26,14 @@
 --     displayCode on GET /practices. RETAINED here: this file only CONVERGES
 --     its value (code := display_code) so the two agree on every row. The
 --     physical drop plus the entity change (getDisplayCode() ≡ code) is a
---     documented TRAILING MICRO-STEP for a later release (V430). Deviation
+--     documented TRAILING MICRO-STEP for later releases (V431 stop-writing +
+--     V432 drop; V430 was taken by the teams admin page). Deviation
 --     from §4.1's "fold and retire" — recorded in §1.6.K and both PR bodies.
 --   * `practice.type` — activePracticeUserFilter/activePracticeCodeFilter
 --     filter on type='PRACTICE'. RETAINED for the same reason; vestigial once
 --     the UD row (the only SEGMENT) is gone. Same trailing micro-step.
 --     NOTE: no statement below DEPENDS on either column existing except §6's
---     fold, which is guarded — so this file stays replayable after V430.
+--     fold, which is guarded — so this file stays replayable after V432.
 --   * the `consultant` view's `practice` column — the Employee entity maps it.
 --     Recreated in §1 BEFORE user.practice is dropped, so the column never
 --     stops resolving. Without this the view would survive syntactically and
@@ -108,7 +109,7 @@
 -- Rollback: forward-only per repo discipline. The dropped columns are exact
 -- duplicates of surviving uuid twins (zero drift verified above), so the
 -- pre-drop state is reconstructable by joining the registry; the code rename is
--- reversible via display_code until the V430 micro-step retires it; the
+-- reversible via display_code until the V432 micro-step retires it; the
 -- consultant view is recreatable from V226.
 -- =============================================================================
 
@@ -285,7 +286,7 @@ ALTER TABLE practice_lead
 --    snapshot rows. 'UD' survives as a synthesized member token (header).
 --
 --    Keyed on `code` alone — `code` is unique, and NOT depending on the `type`
---    column keeps this statement replayable after the V430 micro-step retires
+--    column keeps this statement replayable after the V432 micro-step retires
 --    that column.
 -- =============================================================================
 
@@ -362,7 +363,7 @@ ALTER TABLE questionnaire
 --    point: after the first run the predicate can never match again.
 --
 --    Guarded on display_code still existing, so this file stays replayable
---    after the V430 micro-step drops that column (idiom mirrors V425 §3b).
+--    after the V432 micro-step drops that column (idiom mirrors V425 §3b).
 --
 --    Everything downstream follows automatically: the warehouse views resolve
 --    the code through the registry off practice_uuid, so the next BI refresh
@@ -465,8 +466,10 @@ UPDATE fact_revenue_budget_mat     SET service_line_id = 'TECH' WHERE service_li
 -- =============================================================================
 -- NOT done here, by design:
 --   * practice.display_code and practice.type are NOT dropped — the draining
---     5A task still reads both. Trailing micro-step (V430 + a one-line entity
---     change) once 5A has fully drained. See the header and spec §1.6.K.
+--     5A task still reads both. Trailing micro-step once 5A has fully drained,
+--     executed as V431 (relax display_code + derived entity fields) then V432
+--     (the drop) — NOT the one-line change first estimated (spec §1.6.K).
+--     See the header for the canary contract.
 --   * No warehouse view is recreated for the rename: every one resolves its
 --     code through the registry off practice_uuid, so §6's fold propagates to
 --     them at the next refresh with no DDL. V427 recreated all seven precisely
