@@ -26,10 +26,12 @@ class UtilizationCalculationHelperTest {
 
     @Test
     void activePracticeUserFilter_buildsTheUuidExistsFragment() {
+        // No type predicate since V431: V429 deleted the UD row (the only
+        // SEGMENT), and V432 drops the column the predicate used to read.
         String fragment = UtilizationCalculationHelper.activePracticeUserFilter("u");
         org.junit.jupiter.api.Assertions.assertEquals(
                 " AND EXISTS (SELECT 1 FROM practice ap_u WHERE ap_u.uuid = u.practice_uuid"
-                        + " AND ap_u.type = 'PRACTICE' AND ap_u.active = 1) ",
+                        + " AND ap_u.active = 1) ",
                 fragment);
     }
 
@@ -38,7 +40,7 @@ class UtilizationCalculationHelperTest {
         String fragment = UtilizationCalculationHelper.activePracticeCodeFilter("b", "service_line_id");
         org.junit.jupiter.api.Assertions.assertEquals(
                 " AND EXISTS (SELECT 1 FROM practice ap_b WHERE ap_b.code = b.service_line_id"
-                        + " AND ap_b.type = 'PRACTICE' AND ap_b.active = 1) ",
+                        + " AND ap_b.active = 1) ",
                 fragment);
     }
 

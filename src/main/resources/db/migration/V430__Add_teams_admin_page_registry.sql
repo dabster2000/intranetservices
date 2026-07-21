@@ -12,8 +12,9 @@
 --
 -- Conventions (per project rules):
 --   * Idempotent: page_registry INSERT mirrors V418 (ON DUPLICATE KEY UPDATE).
---   * V430 is reserved for the practice final-cleanup migration; the gap is
---     safe because Flyway runs with out-of-order enabled.
+--   * Numbering: originally authored as V431 with V430 reserved for the
+--     practice final-cleanup; renumbered 2026-07-21 to close the gap. The
+--     cleanup became V431 (relax display_code) + V432 (drop).
 -- ====================================================================
 
 INSERT INTO page_registry

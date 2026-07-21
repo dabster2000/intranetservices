@@ -36,18 +36,19 @@ public class PracticeService {
      * synthesize for NULL practice, the filter token selecting the no-practice
      * population, and the write alias meaning "no practice" — one coherent,
      * registry-INDEPENDENT concept. The UD registry row itself is deleted by
-     * V428; only this literal survives.
+     * V429; only this literal survives.
      */
     static final String NO_PRACTICE_CODE = "UD";
 
     /** Retired junior pseudo-practice — rejected on every write from V418 onward. */
     static final String JK_CODE = "JK";
 
-    /** Registry type discriminator for real practices (vs SEGMENT). */
+    /**
+     * The single value {@code type} has resolved to since V429 deleted the UD
+     * row, the only SEGMENT. Kept solely to validate the optional wire field on
+     * {@link #create}: the column is unread since V431 and dropped by V432.
+     */
     static final String PRACTICE_TYPE = "PRACTICE";
-
-    /** The only values the practice.type ENUM column accepts. */
-    static final java.util.Set<String> VALID_TYPES = java.util.Set.of("PRACTICE", "SEGMENT");
 
     /** Codes are short uppercase keys — also keeps them URI- and ENUM-safe. */
     static final java.util.regex.Pattern CODE_PATTERN = java.util.regex.Pattern.compile("[A-Z0-9_-]{1,10}");
@@ -60,13 +61,16 @@ public class PracticeService {
     }
 
     /**
-     * Storage codes of the active {@code type='PRACTICE'} rows, in registry
-     * {@code sort_order}. The registry-derived successor of the deleted
+     * Storage codes of the active registry rows, in registry {@code sort_order}.
+     * The registry-derived successor of the deleted
      * {@code UtilizationCalculationHelper.BILLABLE_PRACTICES} constant (Phase 3):
      * the default population for the practice-filtered utilization analytics.
+     * Until V431 this also required {@code type = 'PRACTICE'} — dropped
+     * deliberately: V429 deleted the UD row (the only SEGMENT), so every
+     * registry row is a practice and the entity no longer maps a type field.
      */
     public List<String> activePracticeCodes() {
-        return Practice.<Practice>list("type = ?1 and active = true order by sortOrder", PRACTICE_TYPE)
+        return Practice.<Practice>list("active = true order by sortOrder")
                 .stream().map(Practice::getCode).toList();
     }
 
@@ -77,7 +81,7 @@ public class PracticeService {
      * matrix, compensation groups), whose no-practice population groups under
      * the member. The append is registry-independent (Phase 5 graduation): while
      * the UD registry row still exists (sort_order 90, last) it already appears
-     * in the list and the append is a no-op; after V428 deletes the row, the
+     * in the list and the append is a no-op; after V429 deleted the row, the
      * token keeps its last-place bucket with no behavior change.
      */
     public List<String> orderedRegistryCodes() {
@@ -118,7 +122,7 @@ public class PracticeService {
      * the PERMANENT no-practice write alias (Phase 5 graduation; the forms
      * submit it for an explicit "no practice") — normalize to {@code null}.
      * The token check is a registry-independent literal. The UD registry ROW's
-     * uuid additionally normalizes while that row still exists (pre-V428); the
+     * uuid additionally normalizes while that row still exists (pre-V429); the
      * uuid alias dies with the row — clients must send the token or null. Any
      * other value passes through unchanged (validation is a separate concern).
      * Callers: {@code UserService}, {@code SalesService},
@@ -139,10 +143,10 @@ public class PracticeService {
      * to its member/storage code. The {@code UD} token is a registry-INDEPENDENT
      * literal (Phase 5 graduation: it selects the NULL no-practice population on
      * operational tables and the synthetic member on warehouse tables, and must
-     * keep resolving after V428 deletes the UD registry row). Any registry row
+     * keep resolving after V429 deleted the UD registry row). Any registry row
      * resolves, including inactive rows: filters are reads, and the widest
      * backward-compatible universe is the whole registry. Retired codes with no
-     * registry row (JK now; SA/BA/DEV after the V428 rename) do not resolve.
+     * registry row (JK now; SA/BA/DEV after the V429 rename) do not resolve.
      */
     public java.util.Optional<String> resolveFilterToken(String token) {
         if (token == null || token.isBlank()) return java.util.Optional.empty();
@@ -182,25 +186,32 @@ public class PracticeService {
 
     // ── Registry mutations ────────────────────────────────────────────────
 
+    /**
+     * {@code displayCode} and {@code type} remain in the request contract for
+     * wire compatibility (V431), but neither is persisted anymore: displayCode
+     * is derived from {@code code} and type is the constant {@code PRACTICE}.
+     * Both are OPTIONAL — echoing the derived value is accepted (the BFF create
+     * route sends {@code displayCode == code}), a DIVERGENT value is a 400: the
+     * field can no longer store it, and silently returning a row that
+     * contradicts the request would hide that.
+     */
     @Transactional
     public Practice create(String code, String displayCode, String name, String type, Boolean active, Integer sortOrder) {
         if (code == null || !CODE_PATTERN.matcher(code).matches()) {
             throw new BadRequestException("code is required and must match " + CODE_PATTERN.pattern());
         }
-        if (displayCode == null || !CODE_PATTERN.matcher(displayCode).matches()) {
-            throw new BadRequestException("displayCode is required and must match " + CODE_PATTERN.pattern());
+        if (displayCode != null && !displayCode.isBlank() && !displayCode.equals(code)) {
+            throw new BadRequestException(
+                    "displayCode is derived from code since V431 — omit it or send the same value as code");
+        }
+        if (type != null && !type.isBlank() && !PRACTICE_TYPE.equals(type)) {
+            throw new BadRequestException(
+                    "type is always " + PRACTICE_TYPE + " since V429 retired the last SEGMENT row — omit it");
         }
         if (name == null || name.isBlank()) throw new BadRequestException("name is required");
         if (Practice.findById(code) != null) throw new BadRequestException("Practice code already exists: " + code);
-        if (Practice.count("displayCode = ?1", displayCode) > 0) {
-            throw new BadRequestException("Practice displayCode already exists: " + displayCode);
-        }
-        String resolvedType = (type == null || type.isBlank()) ? PRACTICE_TYPE : type;
-        if (!VALID_TYPES.contains(resolvedType)) {
-            throw new BadRequestException("type must be one of " + VALID_TYPES);
-        }
         Practice practice = new Practice(
-                code, displayCode, name, resolvedType,
+                code, name,
                 active == null || active,
                 sortOrder == null ? 0 : sortOrder);
         // Surrogate identity (V424): existing rows are minted by the migration;
@@ -210,18 +221,19 @@ public class PracticeService {
         return practice;
     }
 
+    /**
+     * {@code displayCode} stays in the request contract for wire compatibility
+     * (V431) but is no longer an independently stored value: echoing the
+     * current code is a no-op (the admin edit form always sends the field), a
+     * divergent value is a 400 — see {@link #create}.
+     */
     @Transactional
     public Practice update(String code, String name, String displayCode, Boolean active, Integer sortOrder) {
         Practice practice = Practice.findById(code);
         if (practice == null) throw new NotFoundException("Practice not found: " + code);
-        if (displayCode != null && !displayCode.equals(practice.getDisplayCode())) {
-            if (!CODE_PATTERN.matcher(displayCode).matches()) {
-                throw new BadRequestException("displayCode must match " + CODE_PATTERN.pattern());
-            }
-            if (Practice.count("displayCode = ?1 and code <> ?2", displayCode, code) > 0) {
-                throw new BadRequestException("Practice displayCode already exists: " + displayCode);
-            }
-            practice.setDisplayCode(displayCode);
+        if (displayCode != null && !displayCode.isBlank() && !displayCode.equals(practice.getCode())) {
+            throw new BadRequestException(
+                    "displayCode is derived from code since V431 and cannot diverge — omit it or send the current code");
         }
         if (name != null) {
             if (name.isBlank()) throw new BadRequestException("name must not be blank");
@@ -235,9 +247,10 @@ public class PracticeService {
     @Transactional
     public PracticeLead startLead(Practice practice, String useruuid, LocalDate startdate) {
         if (practice == null) throw new NotFoundException("Practice not found");
-        // Phase 0 hardening: leads attach only to active type='PRACTICE' rows
-        // (never SEGMENT rows, never inactive rows).
-        String practiceRejection = leadPracticeRejection(practice.getCode(), practice.getType(), practice.isActive());
+        // Phase 0 hardening: leads attach only to active registry rows. (The
+        // SEGMENT rejection retired with the type column — V429 deleted the
+        // last SEGMENT row, so the registry cannot hold one anymore.)
+        String practiceRejection = leadPracticeRejection(practice.getCode(), practice.isActive());
         if (practiceRejection != null) throw new BadRequestException(practiceRejection);
         if (useruuid == null || useruuid.isBlank()) throw new BadRequestException("useruuid is required");
         // practice_lead.useruuid FK exists (V425), but validate here for a clean 400.
@@ -287,9 +300,8 @@ public class PracticeService {
      * allowed as the deprecated no-practice ALIAS (normalized to NULL by
      * {@link #normalizeNoPracticeAlias}; removed in Phase 5 with the registry
      * row), {@code JK} is rejected, and any other value must be an active
-     * {@code type='PRACTICE'} registry row. Re-typed from the deleted
-     * {@code PrimarySkillType} enum in Phase 3 — the registry is the only
-     * authority.
+     * registry row. Re-typed from the deleted {@code PrimarySkillType} enum in
+     * Phase 3 — the registry is the only authority.
      */
     public void validateUserPracticeAssignable(String practice) {
         if (practice == null || practice.isBlank()) return;
@@ -299,8 +311,8 @@ public class PracticeService {
 
     /**
      * Validates a {@code team.practice_code} value on write: null/blank clears
-     * the assignment; any other value must be an active {@code type='PRACTICE'}
-     * registry row (teams never carry the {@code UD} sentinel — they use NULL).
+     * the assignment; any other value must be an active registry row (teams
+     * never carry the {@code UD} sentinel — they use NULL).
      */
     public void validateTeamPracticeCode(String code) {
         if (code == null || code.isBlank()) return;
@@ -309,7 +321,7 @@ public class PracticeService {
     }
 
     private boolean isActivePractice(String code) {
-        return Practice.count("code = ?1 and type = ?2 and active = true", code, PRACTICE_TYPE) > 0;
+        return Practice.count("code = ?1 and active = true", code) > 0;
     }
 
     /**
@@ -339,14 +351,12 @@ public class PracticeService {
 
     /**
      * Pure decision for {@link #startLead}: a lead may only attach to an active
-     * {@code type='PRACTICE'} registry row — never a SEGMENT (UD) and never an
-     * inactive row (Phase 0 hardening, spec §1.6.E). Returns a rejection reason,
-     * or {@code null} if the practice can carry leads.
+     * registry row (Phase 0 hardening, spec §1.6.E). The historical SEGMENT
+     * rejection is structurally impossible since V429 deleted the UD row — the
+     * registry holds nothing but practices, so only inactivity can reject.
+     * Returns a rejection reason, or {@code null} if the practice can carry leads.
      */
-    static String leadPracticeRejection(String code, String type, boolean active) {
-        if (!PRACTICE_TYPE.equals(type)) {
-            return "Practice '" + code + "' is not a real practice (type " + type + ") and cannot have leads";
-        }
+    static String leadPracticeRejection(String code, boolean active) {
         if (!active) return "Practice '" + code + "' is not active and cannot have leads";
         return null;
     }
