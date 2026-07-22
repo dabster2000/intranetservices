@@ -17,11 +17,16 @@ class RecruitmentEventTypeCatalogTest {
 
     @Test
     void catalog_containsExactlyTheSpecTypes() {
+        // APPLICATION_UPDATED is a deliberate P4 addition to the spec §3.4
+        // catalog: structural application edits that are neither stage moves
+        // nor terminals (expected start date) needed an event type and the
+        // spec had none ("every mutating endpoint = one command = ≥1 event",
+        // spec §6.2). Recorded in findings §P4.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
-                "APPLICATION_CREATED", "APPLICATION_STAGE_CHANGED", "APPLICATION_REJECTED",
-                "APPLICATION_WITHDRAWN",
+                "APPLICATION_CREATED", "APPLICATION_UPDATED", "APPLICATION_STAGE_CHANGED",
+                "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
                 "REFERRAL_SUBMITTED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
@@ -37,8 +42,9 @@ class RecruitmentEventTypeCatalogTest {
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
                 .collect(Collectors.toSet());
-        assertEquals(expected, actual, "event catalog must match spec §3.4 exactly");
-        assertEquals(40, RecruitmentEventType.values().length);
+        assertEquals(expected, actual,
+                "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED addition exactly");
+        assertEquals(41, RecruitmentEventType.values().length);
     }
 
     @Test
