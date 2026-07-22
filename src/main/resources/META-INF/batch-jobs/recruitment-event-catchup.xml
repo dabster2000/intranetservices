@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-event-catchup" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Event Catch-up Job (ATS expansion Phase 1)
+
+    Purpose:
+    Reliability half of the recruitment event backbone. The recorder's
+    after-commit EventBus publish is in-JVM only and lost on crash/deploy;
+    this job re-delivers every settled event between each reactor's
+    watermark (recruitment_reactor_offsets.last_processed_seq) and the
+    stream head, in seq order, honoring the per-event dedupe table
+    (recruitment_reactor_deliveries) so nothing double-fires.
+
+    Processing Flow:
+    1. For each registered RecruitmentReactor (CDI Instance lookup):
+    2.   Seed the offset row to the stream head if missing (new reactor)
+    3.   Sweep events with seq > watermark and occurred_at older than the
+         grace horizon (dk.trustworks.recruitment.catchup.grace-seconds)
+    4.   Advance the watermark per event; prune passed dedupe rows
+
+    Phase 1 note: no concrete reactors exist yet — the job is a live no-op
+    until P9/P12 deploy the first reactors.
+
+    Schedule:
+    Every 5 minutes via BatchScheduler, gated by
+    dk.trustworks.recruitment.catchup.enabled (default true).
+
+    Similar to:
+    recruitment-signature-completion.xml (5m recruitment-side polling job)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="catch-up-recruitment-reactors">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentEventCatchupBatchlet"/>
+    </step>
+</job>

@@ -135,8 +135,11 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             // Bug Reports
             "bugreports:read", "bugreports:write", "bugreports:admin",
 
-            // Recruitment
+            // Recruitment (interview/refer/comp/gdpr/admin added upfront in
+            // ATS expansion P1 — endpoints using them arrive in P3–P19)
             "recruitment:read", "recruitment:write",
+            "recruitment:interview", "recruitment:refer",
+            "recruitment:comp", "recruitment:gdpr", "recruitment:admin",
 
             // Admin
             "admin:read", "admin:write",

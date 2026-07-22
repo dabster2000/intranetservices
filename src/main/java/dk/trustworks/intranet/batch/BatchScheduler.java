@@ -59,6 +59,15 @@ public class BatchScheduler {
     boolean invoiceSyncEnabled;
 
     /**
+     * Kill switch for the recruitment event catch-up sweep (ATS expansion P1).
+     * Off = reactors only receive live EventBus deliveries; crash/deploy
+     * recovery pauses until re-enabled. Side-effect-free while no reactors
+     * are registered.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.catchup.enabled", defaultValue = "true")
+    boolean recruitmentCatchupEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -401,6 +410,37 @@ public class BatchScheduler {
             jobOperator.start("sharepoint-employee-folder-move", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule sharepoint-employee-folder-move: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Deliver recruitment events that the in-JVM live path missed
+     * (crash/deploy between commit and dispatch) to every registered
+     * recruitment reactor — the reliability half of the ATS event backbone.
+     * Idempotent (watermark + per-event dedupe), so a run on a draining ECS
+     * task during cutover is harmless. A no-op until the first concrete
+     * reactors deploy (P9/P12).
+     * <p>
+     * Schedule: every 5 minutes — same cadence as the other recruitment
+     * queue-drain jobs.
+     */
+    @Scheduled(every = "5m")
+    void scheduleRecruitmentEventCatchup() {
+        if (!recruitmentCatchupEnabled) {
+            log.debug("recruitment-event-catchup skipped: dk.trustworks.recruitment.catchup.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-event-catchup")) {
+                if (!jobOperator.getRunningExecutions("recruitment-event-catchup").isEmpty()) {
+                    log.debug("recruitment-event-catchup already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-event-catchup batch job");
+            jobOperator.start("recruitment-event-catchup", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-event-catchup: " + e.getMessage());
         }
     }
 
