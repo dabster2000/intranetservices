@@ -216,8 +216,14 @@ public class RecruitmentResource {
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("20") int size) {
         enforceFlag();
+        // Lenient viewer resolution: rows carry per-viewer application info
+        // (P4) when the X-Requested-By header is present; legacy callers
+        // without it still get the list (with empty application lists)
+        // rather than a 400 — deploy-order safety.
+        String viewer = requestHeaderHolder.getUserUuid();
         CandidateListResponse result = candidateService.list(
-                status, search, tag, education, experience, specialization, clearance, page, size);
+                status, search, tag, education, experience, specialization, clearance, page, size,
+                viewer != null && !viewer.isBlank() ? viewer : null);
         return Response.ok(result).build();
     }
 
