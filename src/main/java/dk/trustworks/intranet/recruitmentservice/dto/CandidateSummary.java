@@ -19,6 +19,12 @@ public record CandidateSummary(
         CandidateSource source,
         List<String> tags,
         RevisionKind latestRevisionKind,
-        LocalDateTime latestRevisionAt
+        LocalDateTime latestRevisionAt,
+        /**
+         * Open (non-terminal) applications, visibility-filtered per viewer:
+         * partner-track applications are absent for non-circle viewers.
+         * Empty when the candidate is in no pipeline (P4).
+         */
+        List<CandidateApplicationInfo> activeApplications
 ) {
 }

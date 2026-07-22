@@ -24,6 +24,13 @@ public enum RecruitmentEventType {
 
     // --- Applications (P4) ----------------------------------------------
     APPLICATION_CREATED,
+    /**
+     * Structural application edits that are neither stage moves nor
+     * terminals (e.g. expected start date). Catalog addition made in P4 —
+     * the spec §3.4 catalog had no type for "every mutating endpoint = one
+     * command = ≥1 event" on plain application updates (findings §P4).
+     */
+    APPLICATION_UPDATED,
     APPLICATION_STAGE_CHANGED,
     APPLICATION_REJECTED,
     APPLICATION_WITHDRAWN,

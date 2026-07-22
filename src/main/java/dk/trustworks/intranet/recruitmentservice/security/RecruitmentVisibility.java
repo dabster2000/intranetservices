@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.security;
 
 import dk.trustworks.intranet.domain.user.entity.Role;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
@@ -12,9 +13,13 @@ import jakarta.persistence.EntityManager;
 import jakarta.inject.Inject;
 
 import java.time.LocalDate;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -203,6 +208,139 @@ public class RecruitmentVisibility {
         return viewerUuid.equals(position.getHiringOwnerUuid())
                 || (position.getTeamUuid() != null && currentlyLedTeams(viewerUuid).contains(position.getTeamUuid()))
                 || (position.getPracticeUuid() != null && isCurrentPracticeLead(viewerUuid, position.getPracticeUuid()));
+    }
+
+    /**
+     * May the viewer make pipeline decisions (stage moves, terminals, team
+     * assignment) on applications of this position? Spec §7.2: admin and
+     * recruiter everywhere, teamlead/hiring owner on their own positions —
+     * a practice lead has READ access but no decision rights, and on
+     * partner track "may look" never implies "may change": only circle
+     * OWNER/RECRUITER members (or HR/admin) decide, mirroring the P2
+     * position-mutation rule.
+     */
+    public boolean canDecideOnApplication(String viewerUuid, RecruitmentPosition position) {
+        Set<String> roles = rolesOf(viewerUuid);
+        if (roles.contains(ROLE_ADMIN)) {
+            return true;
+        }
+        if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            return canManageCircle(viewerUuid, position);
+        }
+        if (roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+            return true;
+        }
+        return viewerUuid.equals(position.getHiringOwnerUuid())
+                || (position.getTeamUuid() != null
+                    && currentlyLedTeams(viewerUuid).contains(position.getTeamUuid()));
+    }
+
+    /**
+     * Is the viewer "the recruiter or the hiring owner" for this position?
+     * The elevated tier two P4 rules key on (spec §4.2): forward stage
+     * <em>skips</em> and rejecting a partner-referral candidate. ADMIN and
+     * the recruiter tier (HR/CXO) qualify everywhere; otherwise only the
+     * position's named hiring owner.
+     */
+    public boolean isRecruiterOrHiringOwner(String viewerUuid, RecruitmentPosition position) {
+        Set<String> roles = rolesOf(viewerUuid);
+        if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+            return true;
+        }
+        return viewerUuid.equals(position.getHiringOwnerUuid());
+    }
+
+    // ---- Application visibility (P4) -----------------------------------------
+
+    /**
+     * May the viewer read this application? An application is exactly as
+     * visible as its position — the position rule ({@link #canReadPosition})
+     * is the single source of truth; partner-track applications never leak
+     * outside the circle.
+     */
+    public boolean canReadApplication(String viewerUuid, RecruitmentApplication application) {
+        RecruitmentPosition position = RecruitmentPosition.findById(application.getPositionUuid());
+        return position != null && canReadPosition(viewerUuid, position);
+    }
+
+    /**
+     * The candidate's applications the viewer may see, ordered oldest-first.
+     * Same rule as {@link #canReadApplication}, evaluated with batched
+     * lookups (roles, circle memberships, led teams/practices are each
+     * fetched once, not per row).
+     */
+    public List<RecruitmentApplication> filterApplications(String viewerUuid, String candidateUuid) {
+        List<RecruitmentApplication> applications = RecruitmentApplication.list(
+                "candidateUuid = ?1 order by createdAt", candidateUuid);
+        return filterApplicationsBatch(viewerUuid, applications);
+    }
+
+    /**
+     * Batch variant for list pages: the visible OPEN applications of many
+     * candidates in two queries plus one viewer-context resolution. Keys
+     * with no visible open application are absent from the map.
+     */
+    public Map<String, List<RecruitmentApplication>> filterOpenApplicationsByCandidate(
+            String viewerUuid, Collection<String> candidateUuids) {
+        if (candidateUuids == null || candidateUuids.isEmpty()) {
+            return Map.of();
+        }
+        List<RecruitmentApplication> applications = RecruitmentApplication.list(
+                "candidateUuid in ?1 and terminal is null order by createdAt",
+                List.copyOf(candidateUuids));
+        return filterApplicationsBatch(viewerUuid, applications).stream()
+                .collect(Collectors.groupingBy(RecruitmentApplication::getCandidateUuid));
+    }
+
+    /**
+     * Apply the position-visibility rule to a pre-fetched application list
+     * with per-call (not per-row) lookups. The decision logic mirrors
+     * {@link #canReadPosition} exactly — change them together.
+     */
+    private List<RecruitmentApplication> filterApplicationsBatch(
+            String viewerUuid, List<RecruitmentApplication> applications) {
+        if (applications.isEmpty()) {
+            return applications;
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        boolean admin = roles.contains(ROLE_ADMIN);
+        boolean recruiterTier = roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+
+        List<String> positionUuids = applications.stream()
+                .map(RecruitmentApplication::getPositionUuid)
+                .distinct()
+                .toList();
+        Map<String, RecruitmentPosition> positions = RecruitmentPosition
+                .<RecruitmentPosition>list("uuid in ?1", positionUuids).stream()
+                .collect(Collectors.toMap(RecruitmentPosition::getUuid, Function.identity()));
+
+        Set<String> circled = admin ? Set.of()
+                : RecruitmentCircleMember.<RecruitmentCircleMember>list("userUuid", viewerUuid).stream()
+                        .map(RecruitmentCircleMember::getPositionUuid)
+                        .collect(Collectors.toSet());
+        Set<String> ledTeams = (admin || recruiterTier) ? Set.of()
+                : new HashSet<>(currentlyLedTeams(viewerUuid));
+        Set<String> ledPractices = (admin || recruiterTier) ? Set.of()
+                : new HashSet<>(currentlyLedPractices(viewerUuid));
+
+        return applications.stream().filter(application -> {
+            RecruitmentPosition position = positions.get(application.getPositionUuid());
+            if (position == null) {
+                return false; // Defensive — FK makes this unreachable.
+            }
+            if (admin) {
+                return true;
+            }
+            if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+                return circled.contains(position.getUuid());
+            }
+            if (recruiterTier) {
+                return true;
+            }
+            return viewerUuid.equals(position.getHiringOwnerUuid())
+                    || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
+                    || (position.getPracticeUuid() != null && ledPractices.contains(position.getPracticeUuid()));
+        }).toList();
     }
 
     /**

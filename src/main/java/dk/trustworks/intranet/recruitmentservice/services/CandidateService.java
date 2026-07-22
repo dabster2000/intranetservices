@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
+import dk.trustworks.intranet.recruitmentservice.dto.CandidateApplicationInfo;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
@@ -67,6 +68,9 @@ public class CandidateService {
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
+
+    @Inject
+    RecruitmentApplicationService applicationService;
 
     @Inject
     jakarta.persistence.EntityManager em;
@@ -206,11 +210,17 @@ public class CandidateService {
      * @param experience      nullable; a {@link CandidateExperienceLevel} name
      * @param specialization  nullable; exact specialization membership
      * @param clearance       nullable; a {@link CandidateSecurityClearance} name
+     * @param viewerUuid      nullable; the {@code X-Requested-By} user — when
+     *                        present, each row carries its open applications
+     *                        (visibility-filtered: partner-track applications
+     *                        are absent for non-circle viewers, P4). When
+     *                        absent (legacy callers without the header) the
+     *                        rows carry empty application lists.
      */
     public CandidateListResponse list(String statusFilter, String search, String tag,
                                       String education, String experience,
                                       String specialization, String clearance,
-                                      int page, int size) {
+                                      int page, int size, String viewerUuid) {
         StringBuilder where = new StringBuilder("1 = 1");
         Map<String, Object> params = new java.util.HashMap<>();
 
@@ -254,6 +264,16 @@ public class CandidateService {
                 .page(Page.of(page, size))
                 .list();
 
+        // Open-application facts per row (P4) — two batched queries for the
+        // whole page, visibility-filtered per viewer. Legacy callers without
+        // an X-Requested-By header get empty lists.
+        Map<String, List<CandidateApplicationInfo>> applicationInfo =
+                (viewerUuid == null || viewerUuid.isBlank())
+                        ? Map.of()
+                        : applicationService.openApplicationInfoByCandidate(
+                                viewerUuid,
+                                rows.stream().map(RecruitmentCandidate::getUuid).toList());
+
         List<CandidateSummary> data = new ArrayList<>(rows.size());
         for (RecruitmentCandidate c : rows) {
             Optional<CandidateDossier> dossier = findOpenOrLatestDossier(c.getUuid());
@@ -269,7 +289,8 @@ public class CandidateService {
                     c.getSource(),
                     c.getTags(),
                     latest.map(CandidateDossierRevision::getKind).orElse(null),
-                    latest.map(CandidateDossierRevision::getCreatedAt).orElse(null)
+                    latest.map(CandidateDossierRevision::getCreatedAt).orElse(null),
+                    applicationInfo.getOrDefault(c.getUuid(), List.of())
             ));
         }
         return new CandidateListResponse(data, totalCount);
