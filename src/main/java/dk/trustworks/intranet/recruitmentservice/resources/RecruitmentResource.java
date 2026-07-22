@@ -12,9 +12,14 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DeclineRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.DedupeCheckRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.PoolRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.TagsRequest;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSigningStatusSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.SendReviewRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureRequest;
@@ -24,10 +29,13 @@ import dk.trustworks.intranet.recruitmentservice.dto.WithdrawRequest;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentSecuredResponse;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateConversionUseCase;
+import dk.trustworks.intranet.recruitmentservice.services.CandidateDedupeService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSpecializationCatalog;
 import dk.trustworks.intranet.recruitmentservice.services.DossierPdfGenerationService;
 import dk.trustworks.intranet.recruitmentservice.services.DossierPdfGenerationService.GeneratedPdf;
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService;
@@ -137,6 +145,12 @@ public class RecruitmentResource {
     CandidateService candidateService;
 
     @Inject
+    CandidateDedupeService dedupeService;
+
+    @Inject
+    RecruitmentSpecializationCatalog specializationCatalog;
+
+    @Inject
     DossierService dossierService;
 
     @Inject
@@ -194,10 +208,22 @@ public class RecruitmentResource {
     public Response listCandidates(
             @QueryParam("status") String status,
             @QueryParam("search") String search,
+            @QueryParam("tag") String tag,
+            @QueryParam("education") String education,
+            @QueryParam("experience") String experience,
+            @QueryParam("specialization") String specialization,
+            @QueryParam("clearance") String clearance,
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("20") int size) {
         enforceFlag();
-        CandidateListResponse result = candidateService.list(status, search, page, size);
+        // Lenient viewer resolution: rows carry per-viewer application info
+        // (P4) when the X-Requested-By header is present; legacy callers
+        // without it still get the list (with empty application lists)
+        // rather than a 400 — deploy-order safety.
+        String viewer = requestHeaderHolder.getUserUuid();
+        CandidateListResponse result = candidateService.list(
+                status, search, tag, education, experience, specialization, clearance, page, size,
+                viewer != null && !viewer.isBlank() ? viewer : null);
         return Response.ok(result).build();
     }
 
@@ -254,6 +280,100 @@ public class RecruitmentResource {
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse result = candidateService.withdraw(uuid, request.reason(), currentActor());
         return Response.ok(result).build();
+    }
+
+    // ---- ATS candidate endpoints (plan §P3) -------------------------------------
+    //
+    // Gated by recruitment.pipeline.enabled (not the dossier flag): these are
+    // ATS-expansion surfaces, dark until the pipeline flag goes on (admins
+    // bypass — production dark-testing convention).
+
+    /**
+     * Pre-create duplicate check: email and/or LinkedIn reference against
+     * candidates AND employees. Advisory — the UI shows matches and asks for
+     * confirmation; creation is never blocked. POST so identifiers stay out
+     * of URLs and access logs.
+     */
+    @POST
+    @Path("/candidates/dedupe-check")
+    public Response dedupeCheck(@Valid DedupeCheckRequest request) {
+        enforcePipelineFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        boolean hasEmail = request.email() != null && !request.email().isBlank();
+        boolean hasLinkedin = request.linkedinUrl() != null && !request.linkedinUrl().isBlank();
+        if (!hasEmail && !hasLinkedin) {
+            throw new WebApplicationException(
+                    "Provide an email or a LinkedIn URL to check for duplicates",
+                    Response.Status.BAD_REQUEST);
+        }
+        return Response.ok(dedupeService.check(request.email(), request.linkedinUrl())).build();
+    }
+
+    /** Move a candidate into the talent pool (bucket defaults to PROSPECT). */
+    @POST
+    @Path("/candidates/{uuid}/pool")
+    @RolesAllowed({"recruitment:write"})
+    public Response poolCandidate(@PathParam("uuid") UUID uuid, PoolRequest request) {
+        enforcePipelineFlag();
+        CandidatePoolStatus bucket = request != null ? request.poolStatus() : null;
+        return Response.ok(candidateService.pool(uuid, bucket, currentActor())).build();
+    }
+
+    /** Bring a pooled candidate back to ACTIVE. */
+    @POST
+    @Path("/candidates/{uuid}/unpool")
+    @RolesAllowed({"recruitment:write"})
+    public Response unpoolCandidate(@PathParam("uuid") UUID uuid) {
+        enforcePipelineFlag();
+        return Response.ok(candidateService.unpool(uuid, currentActor())).build();
+    }
+
+    /** Replace the candidate's tag set (empty list clears). */
+    @PUT
+    @Path("/candidates/{uuid}/tags")
+    @RolesAllowed({"recruitment:write"})
+    public Response updateTags(@PathParam("uuid") UUID uuid, @Valid TagsRequest request) {
+        enforcePipelineFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        return Response.ok(candidateService.updateTags(uuid, request.tags(), currentActor())).build();
+    }
+
+    /**
+     * Add a note (recorded as a NOTE_ADDED event; text in pii). The
+     * SALARY_EXPECTATION field is the only place salary data may exist and
+     * requires the {@code recruitment:comp} scope — an interviewer-scoped
+     * caller gets 403 (spec §4.1, §7.1).
+     */
+    @POST
+    @Path("/candidates/{uuid}/notes")
+    @RolesAllowed({"recruitment:write"})
+    public Response addNote(@PathParam("uuid") UUID uuid, @Valid NoteRequest request) {
+        enforcePipelineFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        if (NoteRequest.FIELD_SALARY_EXPECTATION.equals(request.field())
+                && !scopeContext.hasScope("recruitment:comp")) {
+            throw new WebApplicationException(
+                    "Salary-expectation notes require the recruitment:comp scope",
+                    Response.Status.FORBIDDEN);
+        }
+        RecruitmentEvent event = candidateService.addNote(uuid, request, currentActor());
+        return Response.status(Response.Status.CREATED)
+                .entity(Map.of(
+                        "eventId", event.getEventId(),
+                        "occurredAt", event.getOccurredAt().toString()))
+                .build();
+    }
+
+    /**
+     * Specialization options for a practice, resolved from the per-practice
+     * catalog in settings (keyed by practice uuid). An empty list means the
+     * practice has no catalog — the UI hides the picker.
+     */
+    @GET
+    @Path("/candidates/specializations")
+    public Response specializationCatalog(@QueryParam("practice") String practiceUuid) {
+        enforcePipelineFlag();
+        return Response.ok(specializationCatalog.forPractice(practiceUuid)).build();
     }
 
     @POST
@@ -865,6 +985,21 @@ public class RecruitmentResource {
      */
     private void enforceFlag() {
         if (featureFlag.isEnabled()) {
+            return;
+        }
+        if (scopeContext.hasScope(ADMIN_WILDCARD)) {
+            return;
+        }
+        throw new NotFoundException("Resource not found");
+    }
+
+    /**
+     * Same convention for the ATS-expansion endpoints (plan §P3), keyed on
+     * {@code recruitment.pipeline.enabled} instead of the dossier flag.
+     * Off + non-admin → 404.
+     */
+    private void enforcePipelineFlag() {
+        if (featureFlag.isPipelineEnabled()) {
             return;
         }
         if (scopeContext.hasScope(ADMIN_WILDCARD)) {

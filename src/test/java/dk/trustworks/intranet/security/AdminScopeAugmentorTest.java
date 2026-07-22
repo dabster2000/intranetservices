@@ -46,6 +46,22 @@ class AdminScopeAugmentorTest {
     }
 
     @Test
+    void allScopes_contains_recruitment_ats_scopes() {
+        // ATS expansion P1 registers all five upfront (plan §P1) so later
+        // phases' endpoints never 403 the BFF. Removing one breaks the
+        // corresponding phase's surface.
+        for (String scope : new String[]{
+                "recruitment:read", "recruitment:write",
+                "recruitment:interview", "recruitment:refer",
+                "recruitment:comp", "recruitment:gdpr", "recruitment:admin"}) {
+            assertTrue(
+                    AdminScopeAugmentor.ALL_SCOPES.contains(scope),
+                    "Recruitment endpoints require " + scope + "; the BFF receives it via admin:* expansion"
+            );
+        }
+    }
+
+    @Test
     void allScopes_has_reasonable_size() {
         assertTrue(
                 AdminScopeAugmentor.ALL_SCOPES.size() >= 50,
