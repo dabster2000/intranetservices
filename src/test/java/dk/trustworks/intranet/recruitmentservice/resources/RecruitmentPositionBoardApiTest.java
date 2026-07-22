@@ -56,9 +56,11 @@ class RecruitmentPositionBoardApiTest {
     private String teamleadUser;     // teamroles LEADER of teamUuid
     private String plainUser;        // no roles, no leads, no circles
     private String referrerUser;     // "Refer Rachel" — referred_by target
+    private String staffOwnerUser;   // hiring_owner of the staff position, no roles
 
     private String practicePositionUuid;
     private String partnerPositionUuid;
+    private String staffPositionUuid;
 
     private String referralCandidate;   // Anna Ager, REFERRAL by referrerUser
     private String linkedinCandidate;   // Bo Berg, LINKEDIN_SEARCH
@@ -67,6 +69,7 @@ class RecruitmentPositionBoardApiTest {
     private String withdrawnCandidate;  // Eva Eng
     private String pooledCandidate;     // Finn Falk
     private String partnerCandidate;    // Gro Gram, on the partner position
+    private String staffCandidate;      // Ida Iversen, on the staff position
 
     private String idleApplication;      // SCREENING, 9 days ago
     private String freshApplication;     // SCREENING, 2 days ago
@@ -75,6 +78,7 @@ class RecruitmentPositionBoardApiTest {
     private String withdrawnApplication; // terminal 1 day ago
     private String pooledApplication;    // terminal 2 days ago
     private String partnerApplication;
+    private String staffApplication;
 
     private String previousFlagValue;
 
@@ -88,8 +92,10 @@ class RecruitmentPositionBoardApiTest {
         teamleadUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
         referrerUser = UUID.randomUUID().toString();
+        staffOwnerUser = UUID.randomUUID().toString();
         practicePositionUuid = UUID.randomUUID().toString();
         partnerPositionUuid = UUID.randomUUID().toString();
+        staffPositionUuid = UUID.randomUUID().toString();
         referralCandidate = UUID.randomUUID().toString();
         linkedinCandidate = UUID.randomUUID().toString();
         hiredCandidate = UUID.randomUUID().toString();
@@ -97,6 +103,7 @@ class RecruitmentPositionBoardApiTest {
         withdrawnCandidate = UUID.randomUUID().toString();
         pooledCandidate = UUID.randomUUID().toString();
         partnerCandidate = UUID.randomUUID().toString();
+        staffCandidate = UUID.randomUUID().toString();
         idleApplication = UUID.randomUUID().toString();
         freshApplication = UUID.randomUUID().toString();
         hiredApplication = UUID.randomUUID().toString();
@@ -104,6 +111,7 @@ class RecruitmentPositionBoardApiTest {
         withdrawnApplication = UUID.randomUUID().toString();
         pooledApplication = UUID.randomUUID().toString();
         partnerApplication = UUID.randomUUID().toString();
+        staffApplication = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             insertUser(recruiterUser, "Rina", "Recruiter");
@@ -112,6 +120,7 @@ class RecruitmentPositionBoardApiTest {
             insertUser(teamleadUser, "Tim", "Teamlead");
             insertUser(plainUser, "Palle", "Plain");
             insertUser(referrerUser, "Refer", "Rachel");
+            insertUser(staffOwnerUser, "Olga", "Owner");
             insertRole(recruiterUser, "HR");
             insertRole(circleRecruiter, "HR");
             insertRole(teamleadUser, "TEAMLEAD");
@@ -124,6 +133,8 @@ class RecruitmentPositionBoardApiTest {
             insertPosition(partnerPositionUuid, "Partner hire", "PARTNER", null, null,
                     "[\"SCREENING\",\"INTERVIEW_1\",\"INTERVIEW_2\",\"INTERVIEW_3\",\"OFFER\",\"HIRED\"]");
             insertCircleMember(partnerPositionUuid, circleRecruiter);
+            insertStaffPosition(staffPositionUuid, "Office manager", staffOwnerUser,
+                    "[\"SCREENING\",\"INTERVIEW_1\",\"OFFER\",\"HIRED\"]");
 
             insertCandidate(referralCandidate, "Anna", "Ager", "REFERRAL", referrerUser);
             insertCandidate(linkedinCandidate, "Bo", "Berg", "LINKEDIN_SEARCH", null);
@@ -132,6 +143,7 @@ class RecruitmentPositionBoardApiTest {
             insertCandidate(withdrawnCandidate, "Eva", "Eng", null, null);
             insertCandidate(pooledCandidate, "Finn", "Falk", null, null);
             insertCandidate(partnerCandidate, "Gro", "Gram", null, null);
+            insertCandidate(staffCandidate, "Ida", "Iversen", null, null);
 
             insertOpenApplication(idleApplication, referralCandidate, practicePositionUuid,
                     "SCREENING", 9, null, null);
@@ -147,6 +159,8 @@ class RecruitmentPositionBoardApiTest {
                     "RETURNED_TO_POOL", null, 2);
             insertOpenApplication(partnerApplication, partnerCandidate, partnerPositionUuid,
                     "SCREENING", 0, null, null);
+            insertOpenApplication(staffApplication, staffCandidate, staffPositionUuid,
+                    "INTERVIEW_1", 1, null, null);
 
             List<?> current = em.createNativeQuery(
                             "SELECT setting_value FROM app_settings WHERE setting_key = :key")
@@ -169,11 +183,13 @@ class RecruitmentPositionBoardApiTest {
     @AfterEach
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
-            List<String> positions = List.of(practicePositionUuid, partnerPositionUuid);
+            List<String> positions = List.of(practicePositionUuid, partnerPositionUuid,
+                    staffPositionUuid);
             List<String> candidates = List.of(referralCandidate, linkedinCandidate, hiredCandidate,
-                    rejectedCandidate, withdrawnCandidate, pooledCandidate, partnerCandidate);
+                    rejectedCandidate, withdrawnCandidate, pooledCandidate, partnerCandidate,
+                    staffCandidate);
             List<String> users = List.of(recruiterUser, circleRecruiter, practiceLeadUser,
-                    teamleadUser, plainUser, referrerUser);
+                    teamleadUser, plainUser, referrerUser, staffOwnerUser);
             em.createNativeQuery("DELETE FROM recruitment_applications WHERE position_uuid IN :p")
                     .setParameter("p", positions).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid IN :c")
@@ -368,6 +384,44 @@ class RecruitmentPositionBoardApiTest {
                 .body("position.uuid", Matchers.equalTo(practicePositionUuid));
     }
 
+    // ---- Staff track (P7 DoD: all three track types) ---------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void staffBoard_rendersItsTrimmedStageSet_forRecruiterTier() {
+        given()
+                .header("X-Requested-By", recruiterUser)
+                .when().get(BOARD, staffPositionUuid)
+                .then()
+                .statusCode(200)
+                .body("position.uuid", Matchers.equalTo(staffPositionUuid))
+                .body("position.hiringTrack", Matchers.equalTo("STAFF_ROLE"))
+                .body("position.practiceUuid", Matchers.nullValue())
+                .body("position.hiringOwnerUuid", Matchers.equalTo(staffOwnerUser))
+                .body("position.stageSet", Matchers.contains(
+                        "SCREENING", "INTERVIEW_1", "OFFER", "HIRED"))
+                .body("columns.stage", Matchers.contains(
+                        "SCREENING", "INTERVIEW_1", "OFFER", "HIRED"))
+                .body("columns[1].applications", Matchers.hasSize(1))
+                .body("columns[1].applications[0].candidateName", Matchers.equalTo("Ida Iversen"));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void staffBoard_visibleToItsHiringOwner_notToUninvolvedUsers() {
+        given()
+                .header("X-Requested-By", staffOwnerUser)
+                .when().get(BOARD, staffPositionUuid)
+                .then()
+                .statusCode(200)
+                .body("position.uuid", Matchers.equalTo(staffPositionUuid));
+        given()
+                .header("X-Requested-By", plainUser)
+                .when().get(BOARD, staffPositionUuid)
+                .then()
+                .statusCode(404);
+    }
+
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
     void uninvolvedEmployee_answers404() {
@@ -476,6 +530,23 @@ class RecruitmentPositionBoardApiTest {
                 .setParameter("track", track)
                 .setParameter("practice", practiceUuid)
                 .setParameter("team", teamUuid)
+                .setParameter("stageSet", stageSetJson)
+                .executeUpdate();
+    }
+
+    /** STAFF_ROLE position: no practice/team, a named hiring owner (the track's invariant). */
+    private void insertStaffPosition(String uuid, String title, String hiringOwnerUuid,
+                                     String stageSetJson) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_positions
+                            (uuid, title, hiring_track, hiring_owner_uuid, stage_set,
+                             demand_rag, status, opened_at, created_at, updated_at, created_by)
+                        VALUES (:uuid, :title, 'STAFF_ROLE', :owner, :stageSet,
+                                'GREEN', 'OPEN', NOW(3), NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("title", title)
+                .setParameter("owner", hiringOwnerUuid)
                 .setParameter("stageSet", stageSetJson)
                 .executeUpdate();
     }

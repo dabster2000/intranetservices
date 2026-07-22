@@ -75,6 +75,21 @@ public class RecruitmentTimelineService {
     EntityManager em;
 
     /**
+     * Upper bound on events scanned per page request (defense in depth —
+     * security review 2026-07-23). Visibility filtering happens in Java, so
+     * the query cannot simply {@code LIMIT} by the page size; instead one
+     * request scans at most this many rows and reports {@code hasMore=true}
+     * when the window was full, letting the {@code beforeSeq} cursor walk the
+     * rest page by page. A real candidate stream is orders of magnitude
+     * smaller, so the cap only ever bites on pathological data. Theoretical
+     * edge (documented, accepted): a window containing only invisible events
+     * returns an empty page with {@code hasMore=true}, which stalls a
+     * cursor-from-last-event client — reaching it needs {@value}+ consecutive
+     * invisible events for one candidate.
+     */
+    private static final int EVENT_SCAN_CAP = 2000;
+
+    /**
      * Build one timeline page for a viewer who already passed profile
      * access.
      *
@@ -88,9 +103,14 @@ public class RecruitmentTimelineService {
                                               int limit, Long beforeSeq) {
         Objects.requireNonNull(candidate, "candidate must not be null");
         List<RecruitmentEvent> raw = beforeSeq == null
-                ? RecruitmentEvent.list("candidateUuid = ?1 order by seq desc", candidate.getUuid())
-                : RecruitmentEvent.list("candidateUuid = ?1 and seq < ?2 order by seq desc",
-                        candidate.getUuid(), beforeSeq);
+                ? RecruitmentEvent.<RecruitmentEvent>find(
+                        "candidateUuid = ?1 order by seq desc", candidate.getUuid())
+                        .page(0, EVENT_SCAN_CAP).list()
+                : RecruitmentEvent.<RecruitmentEvent>find(
+                        "candidateUuid = ?1 and seq < ?2 order by seq desc",
+                        candidate.getUuid(), beforeSeq)
+                        .page(0, EVENT_SCAN_CAP).list();
+        boolean scanTruncated = raw.size() >= EVENT_SCAN_CAP;
         if (raw.isEmpty()) {
             return new CandidateTimelineResponse(List.of(), false);
         }
@@ -123,8 +143,8 @@ public class RecruitmentTimelineService {
                 visible.add(event);
             }
         }
-        boolean hasMore = visible.size() > limit;
-        List<RecruitmentEvent> page = hasMore ? visible.subList(0, limit) : visible;
+        boolean hasMore = visible.size() > limit || scanTruncated;
+        List<RecruitmentEvent> page = visible.size() > limit ? visible.subList(0, limit) : visible;
 
         Map<String, String> actorNames = resolveActorNames(page);
         List<TimelineEvent> events = page.stream()
