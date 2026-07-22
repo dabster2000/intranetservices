@@ -114,6 +114,36 @@ public class RecruitmentS3StorageService {
     }
 
     /**
+     * Store a document submitted through the P5 public application forms
+     * (CV or cover letter). Mirrors {@link #storeIdentityDocument} — same
+     * S3 bucket, same {@code File.type = "DOCUMENT"}, same
+     * {@code relateduuid = candidateUuid} linkage so the P19 anonymizer /
+     * retention reaper can trace the file back to its candidate.
+     *
+     * @return the new {@code fileUuid} the caller carries on the
+     *         {@code DOCUMENT_UPLOADED} event payload.
+     */
+    public String storeApplicationDocument(byte[] bytes, String filename, UUID candidateUuid) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+
+        String fileUuid = UUID.randomUUID().toString();
+        File file = new File(
+                fileUuid,
+                candidateUuid.toString(),
+                "DOCUMENT",
+                filename,
+                filename,
+                LocalDate.now(),
+                bytes);
+        s3FileService.save(file);
+        log.infof("Stored public application document candidate=%s fileUuid=%s size=%d",
+                candidateUuid, fileUuid, bytes.length);
+        return fileUuid;
+    }
+
+    /**
      * Fetch the bytes of a previously stored generated PDF.
      *
      * @throws IllegalStateException if the file is not found in S3
