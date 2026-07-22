@@ -32,10 +32,12 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentSecuredResponse;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateConversionUseCase;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateDedupeService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSpecializationCatalog;
+import dk.trustworks.intranet.recruitmentservice.services.ReferralService;
 import dk.trustworks.intranet.recruitmentservice.services.DossierPdfGenerationService;
 import dk.trustworks.intranet.recruitmentservice.services.DossierPdfGenerationService.GeneratedPdf;
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService;
@@ -149,6 +151,12 @@ public class RecruitmentResource {
 
     @Inject
     RecruitmentSpecializationCatalog specializationCatalog;
+
+    @Inject
+    RecruitmentVisibility visibility;
+
+    @Inject
+    ReferralService referralService;
 
     @Inject
     DossierService dossierService;
@@ -374,6 +382,27 @@ public class RecruitmentResource {
     public Response specializationCatalog(@QueryParam("practice") String practiceUuid) {
         enforcePipelineFlag();
         return Response.ok(specializationCatalog.forPractice(practiceUuid)).build();
+    }
+
+    /**
+     * Unsolicited applicants awaiting routing (plan §P6, the P5 carry-over):
+     * public-form candidates with no application yet, each with their
+     * desired practice (from {@code source_detail}) and candidate-scoped
+     * form answers. Recruiter tier only — the raw intake queue is not a
+     * teamlead surface (spec §7.2). The literal path segment wins over the
+     * {@code /candidates/{uuid}} template (the dedupe-check precedent).
+     */
+    @GET
+    @Path("/candidates/triage-queue")
+    public Response triageQueue() {
+        enforcePipelineFlag();
+        UUID actor = currentActor();
+        if (!visibility.isRecruiterTier(actor.toString())) {
+            throw new WebApplicationException(
+                    "The triage queue is reserved for the recruiter tier",
+                    Response.Status.FORBIDDEN);
+        }
+        return Response.ok(referralService.unsolicitedTriageQueue(actor)).build();
     }
 
     @POST

@@ -115,6 +115,19 @@ public class RecruitmentVisibility {
                 .getResultList();
     }
 
+    /**
+     * Whether the viewer belongs to the recruiter tier for module-wide
+     * queues (spec §7.2): {@code ADMIN}, {@code HR} or {@code CXO}. The P6
+     * referral triage queue and the unsolicited-applicant queue gate on
+     * this — a teamlead sees their own positions' pipelines but never the
+     * raw intake queues.
+     */
+    public boolean isRecruiterTier(String userUuid) {
+        Set<String> roles = rolesOf(userUuid);
+        return roles.contains(ROLE_ADMIN)
+                || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+    }
+
     /** Whether the viewer is a member of the position's circle (any role). */
     public boolean isCircleMember(String userUuid, String positionUuid) {
         return RecruitmentCircleMember.count(

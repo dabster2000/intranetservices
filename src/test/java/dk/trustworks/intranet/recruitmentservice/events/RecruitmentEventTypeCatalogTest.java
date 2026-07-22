@@ -22,12 +22,15 @@ class RecruitmentEventTypeCatalogTest {
         // nor terminals (expected start date) needed an event type and the
         // spec had none ("every mutating endpoint = one command = ≥1 event",
         // spec §6.2). Recorded in findings §P4.
+        // REFERRAL_TRIAGED is the matching P6 addition: the triage decision
+        // (create-candidate or dismiss) is a command with no spec §3.4 type
+        // of its own. Recorded in findings §P6.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
                 "APPLICATION_CREATED", "APPLICATION_UPDATED", "APPLICATION_STAGE_CHANGED",
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
-                "REFERRAL_SUBMITTED", "REFERRAL_OUTCOME_NOTIFIED",
+                "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
@@ -43,8 +46,9 @@ class RecruitmentEventTypeCatalogTest {
                 .map(Enum::name)
                 .collect(Collectors.toSet());
         assertEquals(expected, actual,
-                "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED addition exactly");
-        assertEquals(41, RecruitmentEventType.values().length);
+                "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED "
+                        + "and P6 REFERRAL_TRIAGED additions exactly");
+        assertEquals(42, RecruitmentEventType.values().length);
     }
 
     @Test
