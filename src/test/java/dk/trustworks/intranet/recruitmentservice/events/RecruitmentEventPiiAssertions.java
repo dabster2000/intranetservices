@@ -56,7 +56,7 @@ public final class RecruitmentEventPiiAssertions {
             "address", "street",
             "salary", "salary_expectation",
             "note", "notes", "note_text",
-            "body", "text", "free_text",
+            "body", "text", "free_text", "why_text",
             "cover_letter", "cv", "cv_text",
             "comment", "comments",
             "brief", "evidence", "quote", "rationale",

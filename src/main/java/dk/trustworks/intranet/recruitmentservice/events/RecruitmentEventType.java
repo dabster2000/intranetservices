@@ -37,6 +37,17 @@ public enum RecruitmentEventType {
 
     // --- Referrals (P6) -------------------------------------------------
     REFERRAL_SUBMITTED,
+    /**
+     * A recruiter triaged a referral — either into a candidate
+     * ({@code payload.outcome=CANDIDATE_CREATED}, candidate subject set;
+     * the candidate itself arrives via its own {@code CANDIDATE_CREATED})
+     * or dismissed ({@code payload.outcome=DISMISSED} with
+     * {@code payload.dismiss_reason}). Catalog addition made in P6 — the
+     * spec §3.4 catalog had no type for the triage decision itself, and
+     * spec §6.2's rule is "every mutating endpoint = one command = ≥1
+     * event" (findings §P6).
+     */
+    REFERRAL_TRIAGED,
     REFERRAL_OUTCOME_NOTIFIED,
 
     // --- Interviews & scorecards (P11) ----------------------------------
