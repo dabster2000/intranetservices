@@ -12,7 +12,11 @@ import java.util.Map;
  * JPA converter for free-shape JSON object columns
  * ({@code recruitment_candidates.source_detail} — the structured sub-source
  * whose keys depend on the chosen {@code source}: {@code channel},
- * {@code eventName}, {@code jobListingRef}, {@code referenceName}).
+ * {@code eventName}, {@code jobListingRef}, {@code referenceName}; the P5
+ * public forms add {@code selfReportedSource} (the candidate's own answer
+ * to "where did you hear about us"), and the unsolicited form adds
+ * {@code desiredPracticeUuid} + {@code desiredPracticeName} (the practice
+ * name resolved at submit time for triage convenience)).
  * <p>
  * AttributeConverter-to-String mechanism per module convention (see
  * {@link StageSetConverter} for the rationale).

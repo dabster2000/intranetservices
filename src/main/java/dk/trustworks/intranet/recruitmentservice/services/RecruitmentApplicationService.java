@@ -72,6 +72,26 @@ public class RecruitmentApplicationService {
     /** Spec §4.2: a terminal on the last open application starts a 6-month clock. */
     static final int RETENTION_MONTHS = 6;
 
+    /**
+     * Synthetic actor for domain-method signatures on the public-intake
+     * path (P5): the candidate has no user UUID, but domain methods like
+     * {@link RecruitmentCandidate#unpool(UUID)} null-check their audit
+     * actor. Events on that path carry {@code actor_type=CANDIDATE} with
+     * no actor UUID — this constant never reaches the event stream.
+     */
+    static final UUID PUBLIC_FORM_DOMAIN_ACTOR = new UUID(0L, 0L);
+
+    /**
+     * How the acting party is stamped onto emitted events — a user UUID
+     * for the manual path, {@code actorCandidate()} for the P5 public
+     * forms. Lets {@link #createCore} share the invariants without
+     * duplicating them per actor kind.
+     */
+    @FunctionalInterface
+    interface EventActor {
+        RecruitmentEventBuilder stamp(RecruitmentEventBuilder builder);
+    }
+
     @Inject
     RecruitmentEventRecorder eventRecorder;
 
@@ -97,6 +117,42 @@ public class RecruitmentApplicationService {
     public RecruitmentApplication create(RecruitmentCandidate candidate,
                                          RecruitmentPosition position, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        return createCore(candidate, position,
+                builder -> builder.actorUser(actor.toString()),
+                "manual", false, actor, actor.toString());
+    }
+
+    /**
+     * P5 public-intake variant of {@link #create}: same invariants (shared
+     * via {@link #createCore} — never duplicated), but events carry
+     * {@code actor_type=CANDIDATE} and {@code origin=public_form}. When the
+     * candidate was reused via the public dedupe path,
+     * {@code dedupe_review=true} flags the application for recruiter
+     * attention.
+     *
+     * @throws BusinessRuleViolation same conflicts as {@link #create}
+     */
+    @Transactional
+    public RecruitmentApplication createFromPublicForm(RecruitmentCandidate candidate,
+                                                       RecruitmentPosition position,
+                                                       boolean dedupeReview) {
+        return createCore(candidate, position,
+                RecruitmentEventBuilder::actorCandidate,
+                "public_form", dedupeReview, PUBLIC_FORM_DOMAIN_ACTOR, "candidate(public_form)");
+    }
+
+    /**
+     * The shared create invariants (spec §4.2): candidate-terminal 409,
+     * position OPEN check, duplicate-open-application guard, pooled
+     * auto-unpool, retention-clock reset, first stage of the position's
+     * stage set, UTC {@code stage_entered_at}, {@code APPLICATION_CREATED}
+     * in the same transaction.
+     */
+    private RecruitmentApplication createCore(RecruitmentCandidate candidate,
+                                              RecruitmentPosition position,
+                                              EventActor eventActor, String origin,
+                                              boolean dedupeReview, UUID domainActor,
+                                              String actorForLog) {
         if (candidate.isTerminal()) {
             throw new BusinessRuleViolation(
                     "Candidate %s is %s and cannot be attached to a position"
@@ -118,10 +174,10 @@ public class RecruitmentApplicationService {
 
         // Pool → pipeline: attaching a pooled candidate implies re-activation.
         if (candidate.getStatus() == CandidateStatus.POOLED) {
-            candidate.unpool(actor);
-            eventRecorder.record(RecruitmentEventBuilder.event(RecruitmentEventType.CANDIDATE_UNPOOLED)
-                    .candidate(candidate.getUuid())
-                    .actorUser(actor.toString())
+            candidate.unpool(domainActor);
+            eventRecorder.record(eventActor.stamp(
+                    RecruitmentEventBuilder.event(RecruitmentEventType.CANDIDATE_UNPOOLED)
+                            .candidate(candidate.getUuid()))
                     .payload("reason", "ATTACHED_TO_POSITION")
                     .payload("position_uuid", position.getUuid()));
         }
@@ -136,15 +192,19 @@ public class RecruitmentApplicationService {
         application.setStageEnteredAt(LocalDateTime.now(ZoneOffset.UTC));
         application.persist();
 
-        eventRecorder.record(applicationEvent(RecruitmentEventType.APPLICATION_CREATED,
-                application, position, actor)
+        RecruitmentEventBuilder created = applicationEvent(RecruitmentEventType.APPLICATION_CREATED,
+                application, position, eventActor)
                 .payload("position_title", position.getTitle())
                 .payload("hiring_track", position.getHiringTrack().name())
                 .payload("initial_stage", application.getStage().name())
-                .payload("origin", "manual"));
+                .payload("origin", origin);
+        if (dedupeReview) {
+            created.payload("dedupe_review", true);
+        }
+        eventRecorder.record(created);
 
         log.infof("Application created: %s (candidate=%s, position=%s) by actor=%s",
-                application.getUuid(), candidate.getUuid(), position.getUuid(), actor);
+                application.getUuid(), candidate.getUuid(), position.getUuid(), actorForLog);
         return application;
     }
 
@@ -448,11 +508,19 @@ public class RecruitmentApplicationService {
                                                             RecruitmentApplication application,
                                                             RecruitmentPosition position,
                                                             UUID actor) {
-        RecruitmentEventBuilder builder = RecruitmentEventBuilder.event(type)
+        return applicationEvent(type, application, position,
+                builder -> builder.actorUser(actor.toString()));
+    }
+
+    /** {@link #applicationEvent} with the actor stamped by kind (P5 public intake). */
+    private static RecruitmentEventBuilder applicationEvent(RecruitmentEventType type,
+                                                            RecruitmentApplication application,
+                                                            RecruitmentPosition position,
+                                                            EventActor eventActor) {
+        RecruitmentEventBuilder builder = eventActor.stamp(RecruitmentEventBuilder.event(type)
                 .candidate(application.getCandidateUuid())
                 .application(application.getUuid())
-                .position(application.getPositionUuid())
-                .actorUser(actor.toString());
+                .position(application.getPositionUuid()));
         if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
             builder.visibility(RecruitmentEventVisibility.CIRCLE);
         }

@@ -302,11 +302,30 @@ public class RecruitmentPositionService {
         }
     }
 
+    /**
+     * Slugs a position may never claim because they would shadow the
+     * literal {@code /apply/*} routes (P5: {@code /apply/unsolicited}) or
+     * routes reserved for the public surface's future pages.
+     */
+    static final java.util.Set<String> RESERVED_SLUGS = java.util.Set.of(
+            "unsolicited", "privacy", "config");
+
+    /** @throws WebApplicationException 400 when the normalized slug is reserved */
+    static void validateSlugNotReserved(String normalizedSlug) {
+        if (normalizedSlug != null && RESERVED_SLUGS.contains(normalizedSlug)) {
+            throw new WebApplicationException(
+                    "'%s' is reserved for the public application surface and cannot be used as a position slug"
+                            .formatted(normalizedSlug),
+                    Response.Status.BAD_REQUEST);
+        }
+    }
+
     private void validateSlugUnique(String slug, String selfUuid) {
         String normalized = normalizeSlug(slug);
         if (normalized == null) {
             return;
         }
+        validateSlugNotReserved(normalized);
         RecruitmentPosition other = RecruitmentPosition
                 .<RecruitmentPosition>find("publicSlug", normalized)
                 .firstResult();
