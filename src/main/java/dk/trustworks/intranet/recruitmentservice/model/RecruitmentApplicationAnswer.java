@@ -24,8 +24,13 @@ import java.util.UUID;
  * tab, so they live here rather than in event {@code pii} blocks — making
  * this table a named anonymization target for the P19 engine.
  * <p>
- * Rows are written by the P5 public form (and, later, the Airtable
- * importer) and read by the P8 profile; P4 only establishes the table.
+ * Two ownership shapes since V437 (P5): a position-form answer is scoped
+ * to its {@link #applicationUuid}; an unsolicited-form answer has no
+ * application (recruiter triage attaches one later — deliberate P5 spec
+ * decision) and scopes to its {@link #candidateUuid}. Exactly one of the
+ * two is set — {@code chk_raa_owner} enforces the XOR in the database.
+ * Rows are written by the P5 public forms (and, later, the Airtable
+ * importer) and read by the P8 profile.
  */
 @Getter
 @Setter
@@ -38,9 +43,19 @@ public class RecruitmentApplicationAnswer extends PanacheEntityBase {
     @Column(name = "uuid", length = 36, nullable = false, updatable = false)
     private String uuid;
 
-    /** FK to {@code recruitment_applications.uuid}. */
-    @Column(name = "application_uuid", length = 36, nullable = false, updatable = false)
+    /**
+     * FK to {@code recruitment_applications.uuid} — set for position-form
+     * answers, {@code NULL} for unsolicited (candidate-scoped) answers.
+     */
+    @Column(name = "application_uuid", length = 36, updatable = false)
     private String applicationUuid;
+
+    /**
+     * FK to {@code recruitment_candidates.uuid} — set for unsolicited
+     * answers, {@code NULL} for application-scoped answers.
+     */
+    @Column(name = "candidate_uuid", length = 36, updatable = false)
+    private String candidateUuid;
 
     /** Stable question code — display/reporting never interpret wording. */
     @Column(name = "question_key", length = 40, nullable = false, updatable = false)
