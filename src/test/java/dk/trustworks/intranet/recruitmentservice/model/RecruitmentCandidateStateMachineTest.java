@@ -112,14 +112,21 @@ class RecruitmentCandidateStateMachineTest {
     // -- isTerminal contract --
 
     @Test
-    void isTerminal_isFalseForActive_isTrueForOthers() {
+    void isTerminal_isFalseForActiveAndPooled_isTrueForOthers() {
+        // POOLED joined the vocabulary in the ATS expansion (plan §P3): a
+        // talent-pool candidate is parked, not terminal — they re-enter the
+        // funnel via unpool. ANONYMIZED (P19 end state) is terminal.
         RecruitmentCandidate c = active();
         assertEquals(false, c.isTerminal());
 
         for (CandidateStatus s : CandidateStatus.values()) {
             if (s == CandidateStatus.ACTIVE) continue;
             c.setStatus(s);
-            assertTrue(c.isTerminal(), "Expected terminal=true for status=" + s);
+            if (s == CandidateStatus.POOLED) {
+                assertEquals(false, c.isTerminal(), "POOLED is not terminal");
+            } else {
+                assertTrue(c.isTerminal(), "Expected terminal=true for status=" + s);
+            }
         }
     }
 }

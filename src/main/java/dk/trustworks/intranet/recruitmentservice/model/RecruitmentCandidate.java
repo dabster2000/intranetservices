@@ -1,10 +1,17 @@
 package dk.trustworks.intranet.recruitmentservice.model;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateEducationLevel;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateLawfulBasis;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityClearance;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -18,6 +25,8 @@ import lombok.Setter;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -55,14 +64,19 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     @Column(name = "last_name", length = 100, nullable = false)
     private String lastName;
 
-    @Column(name = "email", length = 255, nullable = false)
+    /** Nullable since V435 — LinkedIn imports and pool candidates may lack one. */
+    @Column(name = "email", length = 255)
     private String email;
 
     @Column(name = "phone", length = 50)
     private String phone;
 
-    /** Soft FK to {@code companies.uuid}. */
-    @Column(name = "target_company_uuid", length = 36, nullable = false)
+    /** PII. Pasted LinkedIn profile URL; dedupe compares normalized /in/ slugs. */
+    @Column(name = "linkedin_url", length = 500)
+    private String linkedinUrl;
+
+    /** Soft FK to {@code companies.uuid}. Nullable since V435 (talent-pool candidates). */
+    @Column(name = "target_company_uuid", length = 36)
     private String targetCompanyUuid;
 
     @Column(name = "target_start_date")
@@ -77,6 +91,90 @@ public class RecruitmentCandidate extends PanacheEntityBase {
 
     @Column(name = "decline_reason", columnDefinition = "TEXT")
     private String declineReason;
+
+    // ---- ATS: sourcing & referral (plan §P3, spec §4.1) -----------------------
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source", length = 20)
+    private CandidateSource source;
+
+    /** Structured sub-source; PII inside (reference names). Shape depends on {@link #source}. */
+    @Convert(converter = JsonMapConverter.class)
+    @Column(name = "source_detail", columnDefinition = "JSON")
+    private Map<String, Object> sourceDetail;
+
+    /** Soft FK to {@code users.uuid} — internal referrer. */
+    @Column(name = "referred_by_user_uuid", length = 36)
+    private String referredByUserUuid;
+
+    /** PII. Non-employee reference name. */
+    @Column(name = "external_referrer_name", length = 200)
+    private String externalReferrerName;
+
+    /** Soft FK to {@code users.uuid} — partner-referral mandate. */
+    @Column(name = "sponsoring_partner_uuid", length = 36)
+    private String sponsoringPartnerUuid;
+
+    /** Soft FK to {@code users.uuid} — triage routing for pool candidates. */
+    @Column(name = "relevant_teamlead_uuid", length = 36)
+    private String relevantTeamleadUuid;
+
+    // ---- ATS: pool & qualifications --------------------------------------------
+
+    /** Only meaningful while {@link #status} is {@code POOLED}; cleared on unpool. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pool_status", length = 20)
+    private CandidatePoolStatus poolStatus;
+
+    @Convert(converter = StringListConverter.class)
+    @Column(name = "tags", columnDefinition = "JSON")
+    private List<String> tags;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "education_level", length = 20)
+    private CandidateEducationLevel educationLevel;
+
+    @Column(name = "education_other", length = 200)
+    private String educationOther;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "experience_level", length = 20)
+    private CandidateExperienceLevel experienceLevel;
+
+    /** Practice-scoped role tags from the per-practice catalog in settings. */
+    @Convert(converter = StringListConverter.class)
+    @Column(name = "specializations", columnDefinition = "JSON")
+    private List<String> specializations;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "security_clearance", length = 10)
+    private CandidateSecurityClearance securityClearance;
+
+    /** Candidate open to clearance-required work. */
+    @Column(name = "security_relevant")
+    private Boolean securityRelevant;
+
+    // ---- ATS: GDPR bookkeeping (data only until P19) ----------------------------
+
+    /** System-maintained — never accepted from API clients. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "lawful_basis", length = 30)
+    private CandidateLawfulBasis lawfulBasis;
+
+    @Column(name = "retention_deadline")
+    private LocalDateTime retentionDeadline;
+
+    @Column(name = "art14_required")
+    private Boolean art14Required;
+
+    @Column(name = "art14_deadline")
+    private LocalDateTime art14Deadline;
+
+    @Column(name = "process_ended_at")
+    private LocalDateTime processEndedAt;
+
+    @Column(name = "anonymized_at")
+    private LocalDateTime anonymizedAt;
 
     /** Soft FK to {@code users.uuid}. Set when the candidate is hired and a user record is created. */
     @Column(name = "converted_user_uuid", length = 36)
@@ -174,12 +272,52 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     }
 
     /**
-     * @return true iff this candidate is in a terminal state (HIRED, DECLINED
-     *         or WITHDRAWN). Useful for the application service when deciding
-     *         whether to also call {@code CandidateDossier.closeOnTerminal()}.
+     * Move an {@link CandidateStatus#ACTIVE} candidate into the talent pool,
+     * or re-bucket an already {@link CandidateStatus#POOLED} one. Not a
+     * terminal transition — {@link #unpool(UUID)} reverses it.
+     *
+     * @param poolStatus pool bucket; defaults to {@link CandidatePoolStatus#PROSPECT}
+     *                   when {@code null}
+     * @throws BusinessRuleViolation if the candidate is in a terminal state
+     */
+    public void pool(CandidatePoolStatus poolStatus, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (status != CandidateStatus.ACTIVE && status != CandidateStatus.POOLED) {
+            throw new BusinessRuleViolation(
+                    "Cannot pool candidate %s: status is %s, expected ACTIVE or POOLED"
+                            .formatted(uuid, status));
+        }
+        this.status = CandidateStatus.POOLED;
+        this.poolStatus = poolStatus != null ? poolStatus : CandidatePoolStatus.PROSPECT;
+    }
+
+    /**
+     * Bring a {@link CandidateStatus#POOLED} candidate back to
+     * {@link CandidateStatus#ACTIVE} (e.g. before attaching them to a
+     * position in P4). Clears {@link #poolStatus}.
+     *
+     * @throws BusinessRuleViolation if the candidate is not currently POOLED
+     */
+    public void unpool(UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (status != CandidateStatus.POOLED) {
+            throw new BusinessRuleViolation(
+                    "Cannot unpool candidate %s: status is %s, expected POOLED"
+                            .formatted(uuid, status));
+        }
+        this.status = CandidateStatus.ACTIVE;
+        this.poolStatus = null;
+    }
+
+    /**
+     * @return true iff this candidate is in a terminal state (HIRED, DECLINED,
+     *         WITHDRAWN or ANONYMIZED). POOLED is NOT terminal — pool
+     *         candidates re-enter the funnel. Useful for the application
+     *         service when deciding whether to also call
+     *         {@code CandidateDossier.closeOnTerminal()}.
      */
     public boolean isTerminal() {
-        return status != CandidateStatus.ACTIVE;
+        return status != CandidateStatus.ACTIVE && status != CandidateStatus.POOLED;
     }
 
     private void guardActive(String operation) {
