@@ -16,6 +16,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -51,6 +52,21 @@ class RecruitmentPositionResourceContractTest {
             assertTrue(Arrays.asList(roles.value()).contains("recruitment:write"),
                     name + " must require recruitment:write");
         }
+    }
+
+    /**
+     * P7 contract lock: the board is a read-only sub-resource of the
+     * position — {@code GET /{uuid}/board} under the class-level
+     * {@code recruitment:read} scope, with NO method-level override
+     * (a write scope on a read endpoint would be as wrong as none).
+     */
+    @Test
+    void boardEndpoint_isGetOnUuidBoard_underTheClassReadScope() {
+        Method board = method("board");
+        assertNotNull(board.getAnnotation(GET.class), "board must be @GET");
+        assertEquals("/{uuid}/board", board.getAnnotation(Path.class).value());
+        assertNull(board.getAnnotation(RolesAllowed.class),
+                "board must inherit the class-level recruitment:read scope, not override it");
     }
 
     @Test
