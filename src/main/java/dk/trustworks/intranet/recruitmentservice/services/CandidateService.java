@@ -21,11 +21,13 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateEducationLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateLawfulBasis;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateListView;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityClearance;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -73,7 +75,20 @@ public class CandidateService {
     RecruitmentApplicationService applicationService;
 
     @Inject
+    RecruitmentVisibility visibility;
+
+    @Inject
     jakarta.persistence.EntityManager em;
+
+    /** Bulk tag calls carry at most this many candidates (P8 contract). */
+    public static final int BULK_TAG_MAX_CANDIDATES = 200;
+
+    /**
+     * Per-tag length cap — the limit {@code TagsRequest} declares
+     * ({@code @Size(max = 50)}); bean validation is inert in this repo, so
+     * the bulk path enforces it explicitly.
+     */
+    public static final int MAX_TAG_LENGTH = 50;
 
     /**
      * Create a candidate — either the original dossier flow or a standalone
@@ -210,16 +225,29 @@ public class CandidateService {
      * @param experience      nullable; a {@link CandidateExperienceLevel} name
      * @param specialization  nullable; exact specialization membership
      * @param clearance       nullable; a {@link CandidateSecurityClearance} name
+     * @param source          nullable; a {@link CandidateSource} name
+     * @param view            nullable; a {@link CandidateListView} name — the
+     *                        P8 saved views (ACTIVE_PIPELINE / TALENT_POOL /
+     *                        SILVER_MEDALISTS / ALL). Composable with every
+     *                        other filter; unknown values answer 400.
      * @param viewerUuid      nullable; the {@code X-Requested-By} user — when
      *                        present, each row carries its open applications
      *                        (visibility-filtered: partner-track applications
      *                        are absent for non-circle viewers, P4). When
      *                        absent (legacy callers without the header) the
      *                        rows carry empty application lists.
+     *                        <b>Partner-row gap (P8, P4 carry-over):</b>
+     *                        candidates whose applications are ALL
+     *                        partner-track are excluded query-level for
+     *                        viewers outside those circles (ADMIN sees all;
+     *                        zero-application candidates stay visible; a
+     *                        null viewer is fail-closed — treated as
+     *                        circle-less).
      */
     public CandidateListResponse list(String statusFilter, String search, String tag,
                                       String education, String experience,
                                       String specialization, String clearance,
+                                      String source, String view,
                                       int page, int size, String viewerUuid) {
         StringBuilder where = new StringBuilder("1 = 1");
         Map<String, Object> params = new java.util.HashMap<>();
@@ -227,6 +255,35 @@ public class CandidateService {
         if (statusFilter != null && !statusFilter.isBlank()) {
             where.append(" AND status = :status");
             params.put("status", parseEnum(CandidateStatus.class, statusFilter, "status"));
+        }
+        if (view != null && !view.isBlank()) {
+            switch (parseEnum(CandidateListView.class, view, "view")) {
+                case ACTIVE_PIPELINE -> where.append(
+                        " AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a"
+                                + " WHERE a.terminal IS NULL)");
+                case TALENT_POOL -> {
+                    where.append(" AND status = :viewStatus");
+                    params.put("viewStatus", CandidateStatus.POOLED);
+                }
+                case SILVER_MEDALISTS -> {
+                    where.append(" AND poolStatus = :viewPoolStatus");
+                    params.put("viewPoolStatus", CandidatePoolStatus.SILVER_MEDALIST);
+                }
+                case ALL -> {
+                    // No extra predicate — the default view.
+                }
+            }
+        }
+        if (source != null && !source.isBlank()) {
+            where.append(" AND source = :source");
+            params.put("source", parseEnum(CandidateSource.class, source, "source"));
+        }
+        // The partner-row gap: partner-track-only candidates leave the query
+        // before pagination so page counts stay correct (ADMIN → empty list).
+        List<String> partnerTrackOnly = visibility.partnerTrackOnlyCandidateUuids(viewerUuid, null);
+        if (!partnerTrackOnly.isEmpty()) {
+            where.append(" AND uuid NOT IN :partnerTrackOnly");
+            params.put("partnerTrackOnly", partnerTrackOnly);
         }
         if (search != null && !search.isBlank()) {
             where.append(" AND (LOWER(firstName) LIKE :q OR LOWER(lastName) LIKE :q OR LOWER(email) LIKE :q)");
@@ -290,7 +347,8 @@ public class CandidateService {
                     c.getTags(),
                     latest.map(CandidateDossierRevision::getKind).orElse(null),
                     latest.map(CandidateDossierRevision::getCreatedAt).orElse(null),
-                    applicationInfo.getOrDefault(c.getUuid(), List.of())
+                    applicationInfo.getOrDefault(c.getUuid(), List.of()),
+                    c.getUpdatedAt()
             ));
         }
         return new CandidateListResponse(data, totalCount);
@@ -432,15 +490,107 @@ public class CandidateService {
     public CandidateResponse updateTags(UUID candidateUuid, List<String> tags, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
-        List<String> normalized = normalizeStrings(tags);
-        if (!Objects.equals(nullSafeList(candidate.getTags()), nullSafeList(normalized))) {
-            RecruitmentEventBuilder event = candidateEvent(RecruitmentEventType.CANDIDATE_UPDATED, candidate, actor)
-                    .payload("changed_fields", List.of("tags"))
-                    .payload("tags", beforeAfter(candidate.getTags(), normalized));
-            candidate.setTags(normalized);
-            eventRecorder.record(event);
-        }
+        applyTagReplacement(candidate, normalizeStrings(tags), actor);
         return toResponse(candidate, latestRevision(candidate.getUuid()));
+    }
+
+    /**
+     * THE tag write path: replace the candidate's tag set and append one
+     * {@code CANDIDATE_UPDATED} — but only when the set actually changed
+     * (a no-op replacement emits nothing). Both the single {@code PUT /tags}
+     * endpoint and the P8 bulk union-add funnel through here so event
+     * semantics can never diverge.
+     *
+     * @return true iff the tag set changed (and an event was appended)
+     */
+    private boolean applyTagReplacement(RecruitmentCandidate candidate,
+                                        List<String> normalized, UUID actor) {
+        if (Objects.equals(nullSafeList(candidate.getTags()), nullSafeList(normalized))) {
+            return false;
+        }
+        RecruitmentEventBuilder event = candidateEvent(RecruitmentEventType.CANDIDATE_UPDATED, candidate, actor)
+                .payload("changed_fields", List.of("tags"))
+                .payload("tags", beforeAfter(candidate.getTags(), normalized));
+        candidate.setTags(normalized);
+        eventRecorder.record(event);
+        return true;
+    }
+
+    /**
+     * Union-add tags to up to {@link #BULK_TAG_MAX_CANDIDATES} candidates
+     * (P8 database grid bulk action). Per candidate the new set is
+     * {@code existing ∪ addTags} (existing order kept, additions appended);
+     * unchanged candidates emit no event — the change detection is the
+     * existing tag path's ({@link #applyTagReplacement}).
+     * <p>
+     * All-or-nothing: one transaction; a missing target — or one that is
+     * partner-track-only outside the actor's circles, i.e. invisible in the
+     * actor's grid — answers 404 for the whole call ("you cannot change
+     * what you cannot see"). Recruiter tier (ADMIN/HR/CXO) is enforced here
+     * as well as in the resource — defense in depth, the P6 precedent.
+     *
+     * @return the number of candidates whose tag set actually changed
+     */
+    @Transactional
+    public int bulkAddTags(List<String> candidateUuids, List<String> addTags, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (candidateUuids == null || candidateUuids.isEmpty()) {
+            throw badRequest("candidateUuids is required and must not be empty");
+        }
+        if (candidateUuids.size() > BULK_TAG_MAX_CANDIDATES) {
+            throw badRequest("At most " + BULK_TAG_MAX_CANDIDATES
+                    + " candidates per bulk call — got " + candidateUuids.size());
+        }
+        if (addTags == null || addTags.isEmpty()) {
+            throw badRequest("addTags is required and must not be empty");
+        }
+        List<String> normalizedAdd = normalizeStrings(addTags);
+        if (normalizedAdd.isEmpty()) {
+            throw badRequest("addTags contains no usable tags after trimming");
+        }
+        for (String tag : normalizedAdd) {
+            if (tag.length() > MAX_TAG_LENGTH) {
+                throw badRequest("Tags are capped at " + MAX_TAG_LENGTH + " characters");
+            }
+        }
+        LinkedHashSet<String> targets = new LinkedHashSet<>();
+        for (String uuid : candidateUuids) {
+            if (uuid == null || uuid.isBlank()) {
+                throw badRequest("candidateUuids must not contain blank entries");
+            }
+            targets.add(uuid.trim());
+        }
+        if (!visibility.isRecruiterTier(actor.toString())) {
+            throw new WebApplicationException(
+                    "Bulk tagging is reserved for the recruiter tier",
+                    Response.Status.FORBIDDEN);
+        }
+
+        // Invisible rows (partner-track-only outside the actor's circles)
+        // answer the same 404 as nonexistent ones — batched, no N+1.
+        java.util.Set<String> invisible = new java.util.HashSet<>(
+                visibility.partnerTrackOnlyCandidateUuids(actor.toString(), null));
+        Map<String, RecruitmentCandidate> byUuid = RecruitmentCandidate
+                .<RecruitmentCandidate>list("uuid in ?1", List.copyOf(targets)).stream()
+                .collect(java.util.stream.Collectors.toMap(RecruitmentCandidate::getUuid, c -> c));
+        for (String uuid : targets) {
+            if (!byUuid.containsKey(uuid) || invisible.contains(uuid)) {
+                throw new NotFoundException("Candidate not found: " + uuid);
+            }
+        }
+
+        int updated = 0;
+        for (String uuid : targets) {
+            RecruitmentCandidate candidate = byUuid.get(uuid);
+            List<String> union = new ArrayList<>(nullSafeList(candidate.getTags()));
+            union.addAll(normalizedAdd);
+            if (applyTagReplacement(candidate, normalizeStrings(union), actor)) {
+                updated++;
+            }
+        }
+        log.infof("Bulk-added %d tag(s) to %d of %d candidate(s) by actor=%s",
+                normalizedAdd.size(), updated, targets.size(), actor);
+        return updated;
     }
 
     /**

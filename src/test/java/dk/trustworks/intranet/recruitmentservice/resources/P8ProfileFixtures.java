@@ -1,0 +1,333 @@
+package dk.trustworks.intranet.recruitmentservice.resources;
+
+import jakarta.persistence.EntityManager;
+
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Shared native-SQL fixture helpers for the P8 profile/timeline/grid API
+ * tests — the same idioms as {@code RecruitmentPositionBoardApiTest}
+ * (staging-shaped local DB: {@code user} has no {@code active} column,
+ * {@code userstatus} untouched, everything cleaned up per test class).
+ * Events are seeded with raw INSERTs (the single-writer ArchUnit rule
+ * excludes tests, and no reactor fires without an EventBus publish).
+ */
+final class P8ProfileFixtures {
+
+    static final String PIPELINE_FLAG = "recruitment.pipeline.enabled";
+    static final String DOSSIER_FLAG = "recruitment.dossier.enabled";
+
+    private P8ProfileFixtures() {
+    }
+
+    // ---- Feature flags ---------------------------------------------------------
+
+    /** Upsert a flag; returns the previous value (null = row was absent). */
+    static String setFlag(EntityManager em, String key, String value) {
+        List<?> current = em.createNativeQuery(
+                        "SELECT setting_value FROM app_settings WHERE setting_key = :key")
+                .setParameter("key", key).getResultList();
+        String previous = current.isEmpty() ? null : (String) current.get(0);
+        if (previous == null) {
+            em.createNativeQuery("""
+                            INSERT INTO app_settings (setting_key, setting_value, category)
+                            VALUES (:key, :value, 'recruitment')
+                            """)
+                    .setParameter("key", key).setParameter("value", value).executeUpdate();
+        } else {
+            em.createNativeQuery(
+                            "UPDATE app_settings SET setting_value = :value WHERE setting_key = :key")
+                    .setParameter("value", value).setParameter("key", key).executeUpdate();
+        }
+        return previous;
+    }
+
+    /** Restore a flag to its pre-test value (null deletes the row). */
+    static void restoreFlag(EntityManager em, String key, String previous) {
+        if (previous == null) {
+            em.createNativeQuery("DELETE FROM app_settings WHERE setting_key = :key")
+                    .setParameter("key", key).executeUpdate();
+        } else {
+            em.createNativeQuery(
+                            "UPDATE app_settings SET setting_value = :value WHERE setting_key = :key")
+                    .setParameter("value", previous).setParameter("key", key).executeUpdate();
+        }
+    }
+
+    // ---- Users, roles, leads ---------------------------------------------------
+
+    static void insertUser(EntityManager em, String uuid, String firstname, String lastname) {
+        em.createNativeQuery("""
+                        INSERT INTO user (uuid, firstname, lastname, email, username, password, type,
+                                          created, cpr, birthday)
+                        VALUES (:uuid, :firstname, :lastname, :email, :username, 'x', 'CONSULTANT',
+                                NOW(), '0000000000', '2000-01-01')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("firstname", firstname)
+                .setParameter("lastname", lastname)
+                .setParameter("email", uuid + "@example.com")
+                .setParameter("username", uuid)
+                .executeUpdate();
+    }
+
+    static void insertRole(EntityManager em, String userUuid, String role) {
+        em.createNativeQuery("INSERT INTO roles (uuid, role, useruuid) VALUES (:uuid, :role, :user)")
+                .setParameter("uuid", UUID.randomUUID().toString())
+                .setParameter("role", role)
+                .setParameter("user", userUuid)
+                .executeUpdate();
+    }
+
+    static void insertPractice(EntityManager em, String uuid) {
+        em.createNativeQuery("""
+                        INSERT INTO practice (code, uuid, name, active, sort_order,
+                                              created_at, updated_at, created_by)
+                        VALUES (:code, :uuid, 'P8 Fixture', 1, 998, NOW(), NOW(), 'test')
+                        """)
+                .setParameter("code", "P" + uuid.substring(0, 7))
+                .setParameter("uuid", uuid)
+                .executeUpdate();
+    }
+
+    static void insertPracticeLead(EntityManager em, String userUuid, String practiceUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO practice_lead (uuid, practice_uuid, useruuid, startdate, enddate,
+                                                   created_at, updated_at, created_by)
+                        VALUES (:uuid, :practice, :user, '2024-01-01', NULL, NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", UUID.randomUUID().toString())
+                .setParameter("practice", practiceUuid)
+                .setParameter("user", userUuid)
+                .executeUpdate();
+    }
+
+    static void insertTeamLeader(EntityManager em, String userUuid, String teamUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO teamroles (uuid, teamuuid, useruuid, startdate, enddate, membertype)
+                        VALUES (:uuid, :team, :user, '2024-01-01', NULL, 'LEADER')
+                        """)
+                .setParameter("uuid", UUID.randomUUID().toString())
+                .setParameter("team", teamUuid)
+                .setParameter("user", userUuid)
+                .executeUpdate();
+    }
+
+    // ---- Positions, circles ----------------------------------------------------
+
+    static void insertPosition(EntityManager em, String uuid, String title, String track,
+                               String practiceUuid, String teamUuid, String hiringOwnerUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_positions
+                            (uuid, title, hiring_track, practice_uuid, team_uuid, hiring_owner_uuid,
+                             stage_set, status, opened_at, created_at, updated_at, created_by)
+                        VALUES (:uuid, :title, :track, :practice, :team, :owner,
+                                '["SCREENING","INTERVIEW_1","OFFER","HIRED"]',
+                                'OPEN', NOW(3), NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("title", title)
+                .setParameter("track", track)
+                .setParameter("practice", practiceUuid)
+                .setParameter("team", teamUuid)
+                .setParameter("owner", hiringOwnerUuid)
+                .executeUpdate();
+    }
+
+    static void insertCircleMember(EntityManager em, String positionUuid, String userUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_circle_members
+                            (position_uuid, user_uuid, role_in_circle, added_at, added_by_uuid)
+                        VALUES (:p, :u, 'RECRUITER', NOW(3), :u)
+                        """)
+                .setParameter("p", positionUuid)
+                .setParameter("u", userUuid)
+                .executeUpdate();
+    }
+
+    // ---- Candidates & applications ---------------------------------------------
+
+    static void insertCandidate(EntityManager em, String uuid, String firstName, String lastName,
+                                String status, String poolStatus, String tagsJson,
+                                String createdByUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_candidates
+                            (uuid, first_name, last_name, status, pool_status, tags,
+                             created_by_useruuid, created_at, updated_at)
+                        VALUES (:uuid, :first, :last, :status, :poolStatus, :tags,
+                                :actor, NOW(), NOW())
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("first", firstName)
+                .setParameter("last", lastName)
+                .setParameter("status", status)
+                .setParameter("poolStatus", poolStatus)
+                .setParameter("tags", tagsJson)
+                .setParameter("actor", createdByUuid)
+                .executeUpdate();
+    }
+
+    static void insertOpenApplication(EntityManager em, String uuid, String candidateUuid,
+                                      String positionUuid, String stage) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_applications
+                            (uuid, candidate_uuid, position_uuid, stage,
+                             stage_entered_at, created_at, updated_at, created_by)
+                        VALUES (:uuid, :candidate, :position, :stage,
+                                UTC_TIMESTAMP(3), NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("position", positionUuid)
+                .setParameter("stage", stage)
+                .executeUpdate();
+    }
+
+    static void insertClosedApplication(EntityManager em, String uuid, String candidateUuid,
+                                        String positionUuid, String terminal) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_applications
+                            (uuid, candidate_uuid, position_uuid, stage, terminal,
+                             stage_entered_at, created_at, updated_at, created_by)
+                        VALUES (:uuid, :candidate, :position, 'SCREENING', :terminal,
+                                UTC_TIMESTAMP(3), NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("position", positionUuid)
+                .setParameter("terminal", terminal)
+                .executeUpdate();
+    }
+
+    // ---- Events (raw stream rows) ----------------------------------------------
+
+    /**
+     * Insert one event row and return its {@code seq}. {@code pii_state}
+     * derives from the pii argument, mirroring the recorder.
+     */
+    static long insertEvent(EntityManager em, String eventType, String candidateUuid,
+                            String applicationUuid, String positionUuid,
+                            String actorType, String actorUuid, String visibility,
+                            String payloadJson, String piiJson) {
+        String eventId = UUID.randomUUID().toString();
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_events
+                            (event_id, event_type, candidate_uuid, application_uuid, position_uuid,
+                             actor_uuid, actor_type, occurred_at, visibility, payload, pii, pii_state)
+                        VALUES (:eventId, :type, :candidate, :application, :position,
+                                :actor, :actorType, UTC_TIMESTAMP(3), :visibility, :payload, :pii,
+                                :piiState)
+                        """)
+                .setParameter("eventId", eventId)
+                .setParameter("type", eventType)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("application", applicationUuid)
+                .setParameter("position", positionUuid)
+                .setParameter("actor", actorUuid)
+                .setParameter("actorType", actorType)
+                .setParameter("visibility", visibility)
+                .setParameter("payload", payloadJson)
+                .setParameter("pii", piiJson)
+                .setParameter("piiState", piiJson == null ? "NONE" : "PRESENT")
+                .executeUpdate();
+        return ((Number) em.createNativeQuery(
+                        "SELECT seq FROM recruitment_events WHERE event_id = :eventId")
+                .setParameter("eventId", eventId)
+                .getSingleResult()).longValue();
+    }
+
+    // ---- Answers, files, consents ----------------------------------------------
+
+    /** XOR ownership: pass exactly one of applicationUuid / candidateUuid. */
+    static void insertAnswer(EntityManager em, String applicationUuid, String candidateUuid,
+                             String questionKey, String answer) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_application_answers
+                            (uuid, application_uuid, candidate_uuid, question_key, answer, created_at)
+                        VALUES (:uuid, :application, :candidate, :key, :answer, UTC_TIMESTAMP(3))
+                        """)
+                .setParameter("uuid", UUID.randomUUID().toString())
+                .setParameter("application", applicationUuid)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("key", questionKey)
+                .setParameter("answer", answer)
+                .executeUpdate();
+    }
+
+    static void insertFileRow(EntityManager em, String uuid, String relatedUuid, String filename) {
+        em.createNativeQuery("""
+                        INSERT INTO files (uuid, relateduuid, type, name, filename, uploaddate)
+                        VALUES (:uuid, :related, 'DOCUMENT', :filename, :filename, CURDATE())
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("related", relatedUuid)
+                .setParameter("filename", filename)
+                .executeUpdate();
+    }
+
+    static void insertConsent(EntityManager em, String uuid, String candidateUuid, String kind,
+                              String status, String grantedAt, String expiresAt, String tokenHash) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_consents
+                            (uuid, candidate_uuid, kind, status, granted_at, expires_at, token_hash,
+                             created_at, updated_at, created_by)
+                        VALUES (:uuid, :candidate, :kind, :status, :grantedAt, :expiresAt, :tokenHash,
+                                NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("kind", kind)
+                .setParameter("status", status)
+                .setParameter("grantedAt", grantedAt)
+                .setParameter("expiresAt", expiresAt)
+                .setParameter("tokenHash", tokenHash)
+                .executeUpdate();
+    }
+
+    // ---- Cleanup ----------------------------------------------------------------
+
+    static void cleanupRecruitmentRows(EntityManager em, List<String> candidateUuids,
+                                       List<String> positionUuids, List<String> userUuids,
+                                       String practiceUuid) {
+        if (!candidateUuids.isEmpty()) {
+            em.createNativeQuery("DELETE FROM recruitment_events WHERE candidate_uuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_application_answers WHERE candidate_uuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("""
+                            DELETE FROM recruitment_application_answers WHERE application_uuid IN
+                            (SELECT uuid FROM recruitment_applications WHERE candidate_uuid IN :c)
+                            """)
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_consents WHERE candidate_uuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM files WHERE relateduuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_applications WHERE candidate_uuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid IN :c")
+                    .setParameter("c", candidateUuids).executeUpdate();
+        }
+        if (!positionUuids.isEmpty()) {
+            em.createNativeQuery("DELETE FROM recruitment_circle_members WHERE position_uuid IN :p")
+                    .setParameter("p", positionUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_positions WHERE uuid IN :p")
+                    .setParameter("p", positionUuids).executeUpdate();
+        }
+        if (!userUuids.isEmpty()) {
+            em.createNativeQuery("DELETE FROM practice_lead WHERE useruuid IN :u")
+                    .setParameter("u", userUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM teamroles WHERE useruuid IN :u")
+                    .setParameter("u", userUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM roles WHERE useruuid IN :u")
+                    .setParameter("u", userUuids).executeUpdate();
+            em.createNativeQuery("DELETE FROM user WHERE uuid IN :u")
+                    .setParameter("u", userUuids).executeUpdate();
+        }
+        if (practiceUuid != null) {
+            em.createNativeQuery("DELETE FROM practice WHERE uuid = :p")
+                    .setParameter("p", practiceUuid).executeUpdate();
+        }
+    }
+}

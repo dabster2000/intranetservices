@@ -8,10 +8,12 @@ import dk.trustworks.intranet.recruitmentservice.dto.ApplicationStageRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationWithdrawRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.AssignTeamRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ExpectedStartDateRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.FormAnswersResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentApplicationService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -84,6 +86,9 @@ public class RecruitmentApplicationResource {
     @Inject
     RecruitmentApplicationService applicationService;
 
+    @Inject
+    CandidateProfileReadService profileReadService;
+
     // ---- Per-candidate collection ------------------------------------------------
 
     /**
@@ -127,6 +132,25 @@ public class RecruitmentApplicationResource {
         return Response.created(URI.create("/recruitment/applications/" + application.getUuid()))
                 .entity(applicationService.toResponse(application, position))
                 .build();
+    }
+
+    // ---- Form answers (P8) ---------------------------------------------------------
+
+    /**
+     * The application's public-form answers, labelled via
+     * {@code PublicApplyQuestions} (unknown keys fall back to the key).
+     * Visible exactly when the application is: an invisible partner-track
+     * application answers 404 (P8 contract). The candidate-scoped leg for
+     * unsolicited applicants lives on
+     * {@code GET /recruitment/candidates/{uuid}/answers}.
+     */
+    @GET
+    @Path("/applications/{uuid}/answers")
+    public FormAnswersResponse answers(@PathParam("uuid") UUID applicationUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
+        return profileReadService.answersForApplication(application.getUuid());
     }
 
     // ---- Stage moves ---------------------------------------------------------------
