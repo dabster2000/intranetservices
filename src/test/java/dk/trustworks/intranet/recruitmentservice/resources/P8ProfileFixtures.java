@@ -13,10 +13,10 @@ import java.util.UUID;
  * Events are seeded with raw INSERTs (the single-writer ArchUnit rule
  * excludes tests, and no reactor fires without an EventBus publish).
  */
-final class P8ProfileFixtures {
+public final class P8ProfileFixtures {
 
-    static final String PIPELINE_FLAG = "recruitment.pipeline.enabled";
-    static final String DOSSIER_FLAG = "recruitment.dossier.enabled";
+    public static final String PIPELINE_FLAG = "recruitment.pipeline.enabled";
+    public static final String DOSSIER_FLAG = "recruitment.dossier.enabled";
 
     private P8ProfileFixtures() {
     }
@@ -24,7 +24,7 @@ final class P8ProfileFixtures {
     // ---- Feature flags ---------------------------------------------------------
 
     /** Upsert a flag; returns the previous value (null = row was absent). */
-    static String setFlag(EntityManager em, String key, String value) {
+    public static String setFlag(EntityManager em, String key, String value) {
         List<?> current = em.createNativeQuery(
                         "SELECT setting_value FROM app_settings WHERE setting_key = :key")
                 .setParameter("key", key).getResultList();
@@ -44,7 +44,7 @@ final class P8ProfileFixtures {
     }
 
     /** Restore a flag to its pre-test value (null deletes the row). */
-    static void restoreFlag(EntityManager em, String key, String previous) {
+    public static void restoreFlag(EntityManager em, String key, String previous) {
         if (previous == null) {
             em.createNativeQuery("DELETE FROM app_settings WHERE setting_key = :key")
                     .setParameter("key", key).executeUpdate();
@@ -57,7 +57,7 @@ final class P8ProfileFixtures {
 
     // ---- Users, roles, leads ---------------------------------------------------
 
-    static void insertUser(EntityManager em, String uuid, String firstname, String lastname) {
+    public static void insertUser(EntityManager em, String uuid, String firstname, String lastname) {
         em.createNativeQuery("""
                         INSERT INTO user (uuid, firstname, lastname, email, username, password, type,
                                           created, cpr, birthday)
@@ -72,7 +72,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertRole(EntityManager em, String userUuid, String role) {
+    public static void insertRole(EntityManager em, String userUuid, String role) {
         em.createNativeQuery("INSERT INTO roles (uuid, role, useruuid) VALUES (:uuid, :role, :user)")
                 .setParameter("uuid", UUID.randomUUID().toString())
                 .setParameter("role", role)
@@ -80,7 +80,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertPractice(EntityManager em, String uuid) {
+    public static void insertPractice(EntityManager em, String uuid) {
         em.createNativeQuery("""
                         INSERT INTO practice (code, uuid, name, active, sort_order,
                                               created_at, updated_at, created_by)
@@ -91,7 +91,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertPracticeLead(EntityManager em, String userUuid, String practiceUuid) {
+    public static void insertPracticeLead(EntityManager em, String userUuid, String practiceUuid) {
         em.createNativeQuery("""
                         INSERT INTO practice_lead (uuid, practice_uuid, useruuid, startdate, enddate,
                                                    created_at, updated_at, created_by)
@@ -103,7 +103,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertTeamLeader(EntityManager em, String userUuid, String teamUuid) {
+    public static void insertTeamLeader(EntityManager em, String userUuid, String teamUuid) {
         em.createNativeQuery("""
                         INSERT INTO teamroles (uuid, teamuuid, useruuid, startdate, enddate, membertype)
                         VALUES (:uuid, :team, :user, '2024-01-01', NULL, 'LEADER')
@@ -116,7 +116,7 @@ final class P8ProfileFixtures {
 
     // ---- Positions, circles ----------------------------------------------------
 
-    static void insertPosition(EntityManager em, String uuid, String title, String track,
+    public static void insertPosition(EntityManager em, String uuid, String title, String track,
                                String practiceUuid, String teamUuid, String hiringOwnerUuid) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_positions
@@ -135,7 +135,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertCircleMember(EntityManager em, String positionUuid, String userUuid) {
+    public static void insertCircleMember(EntityManager em, String positionUuid, String userUuid) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_circle_members
                             (position_uuid, user_uuid, role_in_circle, added_at, added_by_uuid)
@@ -148,7 +148,7 @@ final class P8ProfileFixtures {
 
     // ---- Candidates & applications ---------------------------------------------
 
-    static void insertCandidate(EntityManager em, String uuid, String firstName, String lastName,
+    public static void insertCandidate(EntityManager em, String uuid, String firstName, String lastName,
                                 String status, String poolStatus, String tagsJson,
                                 String createdByUuid) {
         em.createNativeQuery("""
@@ -168,7 +168,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertOpenApplication(EntityManager em, String uuid, String candidateUuid,
+    public static void insertOpenApplication(EntityManager em, String uuid, String candidateUuid,
                                       String positionUuid, String stage) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_applications
@@ -184,7 +184,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertClosedApplication(EntityManager em, String uuid, String candidateUuid,
+    public static void insertClosedApplication(EntityManager em, String uuid, String candidateUuid,
                                         String positionUuid, String terminal) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_applications
@@ -206,7 +206,7 @@ final class P8ProfileFixtures {
      * Insert one event row and return its {@code seq}. {@code pii_state}
      * derives from the pii argument, mirroring the recorder.
      */
-    static long insertEvent(EntityManager em, String eventType, String candidateUuid,
+    public static long insertEvent(EntityManager em, String eventType, String candidateUuid,
                             String applicationUuid, String positionUuid,
                             String actorType, String actorUuid, String visibility,
                             String payloadJson, String piiJson) {
@@ -240,7 +240,7 @@ final class P8ProfileFixtures {
     // ---- Answers, files, consents ----------------------------------------------
 
     /** XOR ownership: pass exactly one of applicationUuid / candidateUuid. */
-    static void insertAnswer(EntityManager em, String applicationUuid, String candidateUuid,
+    public static void insertAnswer(EntityManager em, String applicationUuid, String candidateUuid,
                              String questionKey, String answer) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_application_answers
@@ -255,7 +255,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertFileRow(EntityManager em, String uuid, String relatedUuid, String filename) {
+    public static void insertFileRow(EntityManager em, String uuid, String relatedUuid, String filename) {
         em.createNativeQuery("""
                         INSERT INTO files (uuid, relateduuid, type, name, filename, uploaddate)
                         VALUES (:uuid, :related, 'DOCUMENT', :filename, :filename, CURDATE())
@@ -266,7 +266,7 @@ final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
-    static void insertConsent(EntityManager em, String uuid, String candidateUuid, String kind,
+    public static void insertConsent(EntityManager em, String uuid, String candidateUuid, String kind,
                               String status, String grantedAt, String expiresAt, String tokenHash) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_consents
@@ -287,7 +287,7 @@ final class P8ProfileFixtures {
 
     // ---- Cleanup ----------------------------------------------------------------
 
-    static void cleanupRecruitmentRows(EntityManager em, List<String> candidateUuids,
+    public static void cleanupRecruitmentRows(EntityManager em, List<String> candidateUuids,
                                        List<String> positionUuids, List<String> userUuids,
                                        String practiceUuid) {
         if (!candidateUuids.isEmpty()) {

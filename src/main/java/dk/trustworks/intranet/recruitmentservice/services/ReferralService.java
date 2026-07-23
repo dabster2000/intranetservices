@@ -1,9 +1,12 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.recruitmentservice.ai.RecruitmentAiDirectory;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralRow;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestions;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralRow;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateRequest;
@@ -13,6 +16,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.ReferralTriageResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.TriageQueueAnswer;
 import dk.trustworks.intranet.recruitmentservice.dto.TriageQueueCandidate;
 import dk.trustworks.intranet.recruitmentservice.dto.TriageQueueResponse;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
@@ -21,6 +25,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralClosedReason;
@@ -45,10 +50,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -94,6 +102,15 @@ public class ReferralService {
 
     @Inject
     RecruitmentVisibility visibility;
+
+    @Inject
+    RecruitmentAiFeatureFlag aiFeatureFlag;
+
+    @Inject
+    RecruitmentAiDirectory aiDirectory;
+
+    @Inject
+    ObjectMapper objectMapper;
 
     // ---- Submit ---------------------------------------------------------------
 
@@ -270,6 +287,8 @@ public class ReferralService {
         requireRecruiterTier(actor);
         List<RecruitmentReferral> referrals = RecruitmentReferral.list(
                 "status = ?1 order by submittedAt", RecruitmentReferralStatus.SUBMITTED);
+        Map<String, PendingReferralAiSuggestions> aiSuggestions =
+                pendingAiSuggestions(referrals.stream().map(RecruitmentReferral::getUuid).toList());
         List<PendingReferralRow> rows = referrals.stream()
                 .map(r -> new PendingReferralRow(
                         r.getUuid(),
@@ -280,9 +299,166 @@ public class ReferralService {
                         r.getLinkedinUrl(),
                         r.getEmail(),
                         r.getWhyText(),
-                        r.getSubmittedAt()))
+                        r.getSubmittedAt(),
+                        aiSuggestions.get(r.getUuid())))
                 .toList();
         return new PendingReferralsResponse(rows, rows.size());
+    }
+
+    // ---- Pending-row AI suggestions (P9, contract §6.3) -------------------------
+
+    /** Bounded scan over the latest referral-variant AI events (newest first). */
+    static final int AI_SUGGESTION_SCAN_CAP = 500;
+
+    /**
+     * The latest AI triage suggestions per pending referral, re-validated
+     * at read time (contract §6.3): one bounded event query (referral
+     * variants are the {@code AI_SUGGESTIONS_GENERATED} events WITHOUT a
+     * candidate subject — dossier §2.3), Java-joined on
+     * {@code payload.referral_uuid}, newest generation wins. A
+     * since-deactivated practice / no-longer-leading teamlead / invalid
+     * experience level nulls that field; names resolved batched (no N+1).
+     * Empty map when the referral-triage toggle is off.
+     */
+    private Map<String, PendingReferralAiSuggestions> pendingAiSuggestions(List<String> referralUuids) {
+        if (referralUuids.isEmpty() || !aiFeatureFlag.isReferralTriageEnabled()) {
+            return Map.of();
+        }
+        Set<String> wanted = new HashSet<>(referralUuids);
+        List<RecruitmentEvent> events = RecruitmentEvent
+                .<RecruitmentEvent>find("eventType = ?1 and candidateUuid is null order by seq desc",
+                        RecruitmentEventType.AI_SUGGESTIONS_GENERATED)
+                .page(0, AI_SUGGESTION_SCAN_CAP)
+                .list();
+
+        // Latest event per referral (list is seq-descending — first wins).
+        Map<String, RecruitmentEvent> latestByReferral = new HashMap<>();
+        Map<Long, Map<String, Object>> payloads = new HashMap<>();
+        for (RecruitmentEvent event : events) {
+            Map<String, Object> payload = parseJson(event.getPayload());
+            payloads.put(event.getSeq(), payload);
+            if (payload.get("referral_uuid") instanceof String uuid && wanted.contains(uuid)) {
+                latestByReferral.putIfAbsent(uuid, event);
+            }
+        }
+        if (latestByReferral.isEmpty()) {
+            return Map.of();
+        }
+
+        // Read-time re-validation context, each fetched once.
+        Map<String, String> activePracticeNames = aiDirectory.activePractices().stream()
+                .collect(Collectors.toMap(
+                        dk.trustworks.intranet.recruitmentservice.ai.AiReferralTriagePrompts.Option::uuid,
+                        dk.trustworks.intranet.recruitmentservice.ai.AiReferralTriagePrompts.Option::name));
+        Set<String> currentTeamleads = aiDirectory.currentTeamleadUuids();
+
+        Map<String, PendingReferralAiSuggestions> out = new HashMap<>();
+        Set<String> teamleadUuidsToName = new HashSet<>();
+        Map<String, String[]> rawByReferral = new HashMap<>();
+        Map<String, String[]> rationalesByReferral = new HashMap<>();
+        Map<String, LocalDateTime> generatedAtByReferral = new HashMap<>();
+
+        for (Map.Entry<String, RecruitmentEvent> entry : latestByReferral.entrySet()) {
+            RecruitmentEvent event = entry.getValue();
+            // [practiceUuid, experienceLevel, teamleadUuid]
+            String[] values = new String[3];
+            String[] rationales = new String[3];
+            for (Map<String, Object> suggestion : piiSuggestions(event)) {
+                String field = suggestion.get("field") instanceof String f ? f : "";
+                String value = suggestion.get("value") instanceof String v ? v : null;
+                String rationale = suggestion.get("rationale") instanceof String r ? r : null;
+                switch (field) {
+                    case AiReferralTriageReactorFields.PRACTICE -> {
+                        if (value != null && activePracticeNames.containsKey(value)) {
+                            values[0] = value;
+                            rationales[0] = rationale;
+                        }
+                    }
+                    case AiReferralTriageReactorFields.EXPERIENCE_LEVEL -> {
+                        if (value != null && isValidExperienceLevel(value)) {
+                            values[1] = value;
+                            rationales[1] = rationale;
+                        }
+                    }
+                    case AiReferralTriageReactorFields.RELEVANT_TEAMLEAD -> {
+                        if (value != null && currentTeamleads.contains(value)) {
+                            values[2] = value;
+                            rationales[2] = rationale;
+                            teamleadUuidsToName.add(value);
+                        }
+                    }
+                    default -> {
+                        // Unknown field code — ignore.
+                    }
+                }
+            }
+            if (values[0] == null && values[1] == null && values[2] == null) {
+                continue; // everything invalidated at read time — no panel
+            }
+            rawByReferral.put(entry.getKey(), values);
+            rationalesByReferral.put(entry.getKey(), rationales);
+            generatedAtByReferral.put(entry.getKey(), event.getOccurredAt());
+        }
+
+        Map<String, String> teamleadNames = aiDirectory.userNamesByUuid(teamleadUuidsToName);
+        for (Map.Entry<String, String[]> entry : rawByReferral.entrySet()) {
+            String[] values = entry.getValue();
+            String[] rationales = rationalesByReferral.get(entry.getKey());
+            out.put(entry.getKey(), new PendingReferralAiSuggestions(
+                    values[0],
+                    values[0] != null ? activePracticeNames.get(values[0]) : null,
+                    values[1],
+                    values[2],
+                    values[2] != null ? teamleadNames.get(values[2]) : null,
+                    new PendingReferralAiSuggestions.Rationales(
+                            rationales[0], rationales[1], rationales[2]),
+                    generatedAtByReferral.get(entry.getKey())));
+        }
+        return out;
+    }
+
+    /** Field codes of the referral-variant AI suggestions (contract §4.2). */
+    private static final class AiReferralTriageReactorFields {
+        static final String PRACTICE = "PRACTICE";
+        static final String EXPERIENCE_LEVEL = "EXPERIENCE_LEVEL";
+        static final String RELEVANT_TEAMLEAD = "RELEVANT_TEAMLEAD";
+    }
+
+    private static boolean isValidExperienceLevel(String value) {
+        try {
+            CandidateExperienceLevel.valueOf(value);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    private List<Map<String, Object>> piiSuggestions(RecruitmentEvent event) {
+        Map<String, Object> pii = parseJson(event.getPii());
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (pii.get("suggestions") instanceof List<?> raw) {
+            for (Object item : raw) {
+                if (item instanceof Map<?, ?> map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> suggestion = (Map<String, Object>) map;
+                    out.add(suggestion);
+                }
+            }
+        }
+        return out;
+    }
+
+    private Map<String, Object> parseJson(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                    });
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     // ---- Triage ---------------------------------------------------------------
@@ -352,6 +528,10 @@ public class ReferralService {
                 ? CandidateSource.PARTNER_REFERRAL
                 : CandidateSource.REFERRAL;
 
+        // Optional AI-suggested (always recruiter-editable) experience level
+        // — validated explicitly, garbage answers 400 (P9, contract §6.4).
+        CandidateExperienceLevel experienceLevel = optionalExperienceLevel(request.experienceLevel());
+
         // The existing ATS create path owns the invariants and the GDPR
         // Art. 14 bookkeeping — never bypassed (findings §P3 carry-over).
         CandidateResponse candidate = candidateService.createCandidate(new CandidateRequest(
@@ -360,7 +540,8 @@ public class ReferralService {
                 source, null,
                 referral.getReferrerUuid(), referral.getExternalReferrerName(),
                 sponsoringPartnerUuid, trimToNull(request.relevantTeamleadUuid()),
-                null, null, null, null, null, null, null), actor);
+                null, null, null, experienceLevel, null, null, null,
+                null, null), actor);
 
         boolean attached = false;
         String positionUuid = trimToNull(request.positionUuid());
@@ -605,6 +786,27 @@ public class ReferralService {
             throw badRequest("email must be a valid address");
         }
         return trimmed;
+    }
+
+    /**
+     * Optional {@link CandidateExperienceLevel} name (P9 triage extension) —
+     * absent stays null; garbage answers 400 with the contract's
+     * {@code INVALID_FIELD} error code (bean validation is inert, so the
+     * check is explicit).
+     */
+    private static CandidateExperienceLevel optionalExperienceLevel(String value) {
+        String trimmed = trimToNull(value);
+        if (trimmed == null) {
+            return null;
+        }
+        try {
+            return CandidateExperienceLevel.valueOf(trimmed.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "INVALID_FIELD",
+                            "message", "Invalid experienceLevel: " + trimmed))
+                    .build());
+        }
     }
 
     private static <E extends Enum<E>> E parseEnum(Class<E> type, String value, String field) {

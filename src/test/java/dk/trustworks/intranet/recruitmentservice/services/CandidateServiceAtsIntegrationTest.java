@@ -473,7 +473,9 @@ class CandidateServiceAtsIntegrationTest {
                     experienceLevel,
                     specializations,
                     securityClearance,
-                    securityRelevant);
+                    securityRelevant,
+                    null,
+                    null);
         }
     }
 }

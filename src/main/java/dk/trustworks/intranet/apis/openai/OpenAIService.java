@@ -760,10 +760,48 @@ public class OpenAIService {
                                         String refusalFallbackJson,
                                         String modelOverride,
                                         int maxOutputTokensOverride) {
+        return askWithSchemaAndImageInternal(system, userInstructionText, base64Image, mimeType,
+                jsonSchema, schemaName, refusalFallbackJson, modelOverride, maxOutputTokensOverride, null);
+    }
+
+    /**
+     * Vision + structured-output overload with an explicit Responses API storage choice —
+     * mirrors the {@code askQuestionWithSchema} store overload: existing overloads
+     * intentionally omit {@code store} and keep their previous request shape; privacy-
+     * sensitive callers (P9 recruitment AI reads candidate CVs) pass {@code false} to
+     * disable response application-state storage AND suppress response-body logging.
+     */
+    public String askWithSchemaAndImage(String system,
+                                        String userInstructionText,
+                                        String base64Image,
+                                        String mimeType,
+                                        ObjectNode jsonSchema,
+                                        String schemaName,
+                                        String refusalFallbackJson,
+                                        String modelOverride,
+                                        int maxOutputTokensOverride,
+                                        boolean store) {
+        return askWithSchemaAndImageInternal(system, userInstructionText, base64Image, mimeType,
+                jsonSchema, schemaName, refusalFallbackJson, modelOverride, maxOutputTokensOverride, store);
+    }
+
+    private String askWithSchemaAndImageInternal(String system,
+                                                 String userInstructionText,
+                                                 String base64Image,
+                                                 String mimeType,
+                                                 ObjectNode jsonSchema,
+                                                 String schemaName,
+                                                 String refusalFallbackJson,
+                                                 String modelOverride,
+                                                 int maxOutputTokensOverride,
+                                                 Boolean store) {
         String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
             ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
                     maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+            if (store != null) {
+                req.put("store", store);
+            }
 
             ArrayNode input = req.putArray("input");
             if (system != null && !system.isBlank()) {
@@ -795,20 +833,36 @@ public class OpenAIService {
             String payload = http.readEntity(String.class);
 
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s", http.getStatus(), chosenModel, payload);
+                if (Boolean.FALSE.equals(store)) {
+                    // Privacy-sensitive no-store calls may contain HR/candidate data. Do not risk
+                    // an upstream diagnostic echoing request fragments into application logs.
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
+                            http.getStatus(), chosenModel);
+                } else {
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s", http.getStatus(), chosenModel, payload);
+                }
                 return "{}";
             }
 
             JsonNode root = objectMapper.readTree(payload);
             String refusal = extractRefusal(root);
             if (refusal != null) {
-                log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
+                if (Boolean.FALSE.equals(store)) {
+                    log.warnf("[OpenAIService] Model refusal detected (model=%s; text suppressed)", chosenModel);
+                } else {
+                    log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
+                }
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
             return extractOutputTextOrEmpty(root);
 
         } catch (Exception e) {
-            log.errorf(e, "[OpenAIService] Responses request failed (schema + image, model=%s)", chosenModel);
+            if (Boolean.FALSE.equals(store)) {
+                log.errorf("[OpenAIService] Responses request failed (schema + image, model=%s, errorType=%s; details suppressed)",
+                        chosenModel, e.getClass().getSimpleName());
+            } else {
+                log.errorf(e, "[OpenAIService] Responses request failed (schema + image, model=%s)", chosenModel);
+            }
             return "{}";
         }
     }
@@ -816,6 +870,11 @@ public class OpenAIService {
     /** Exposes the configured vision model so callers can include it in their own logs. */
     public String getVisionModel() {
         return visionModel;
+    }
+
+    /** Exposes the configured default (text/schema) model so callers can record which model answered. */
+    public String getDefaultModel() {
+        return model;
     }
 
     /**

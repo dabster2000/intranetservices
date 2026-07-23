@@ -39,6 +39,8 @@ public record CandidateResponse(
         List<String> specializations,
         CandidateSecurityClearance securityClearance,
         Boolean securityRelevant,
+        List<String> languages,
+        String currentEmployer,
         CandidateLawfulBasis lawfulBasis,
         Boolean art14Required,
         LocalDateTime art14Deadline,
