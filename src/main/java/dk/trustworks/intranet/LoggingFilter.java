@@ -28,6 +28,13 @@ public class LoggingFilter implements ContainerRequestFilter {
             return;
         }
 
+        // Never body-log inbound Slack dispatch: the envelope carries Slack
+        // user/payload ids today and P14+ handler payloads may carry personal
+        // data (modal values, referral text) — the P13 no-PII-in-logs rule.
+        if (path.contains("/recruitment/slack/inbound")) {
+            return;
+        }
+
         MediaType mediaType = requestContext.getMediaType();
         boolean isJson = mediaType != null && mediaType.toString().startsWith(MediaType.APPLICATION_JSON);
 
