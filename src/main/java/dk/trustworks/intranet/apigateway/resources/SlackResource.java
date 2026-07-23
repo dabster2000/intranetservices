@@ -3,8 +3,6 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.communicationsservice.dto.NewLeadNotificationDTO;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import io.smallrye.common.annotation.Blocking;
-import io.vertx.ext.web.RoutingContext;
-import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -13,15 +11,22 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.Response;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 
-import static jakarta.ws.rs.core.MediaType.APPLICATION_FORM_URLENCODED;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
+/**
+ * Outbound Slack notifications triggered by intranet features.
+ * <p>
+ * The dead JWT-locked {@code POST /slack/events} and
+ * {@code POST /slack/action} stubs (never functional — Slack cannot send
+ * a Trustworks JWT) were removed in recruitment ATS P13 together with
+ * their unused {@code ChallengeRequest} DTO. Inbound Slack traffic now
+ * has a real, signature-verified path: the BFF's
+ * {@code /api/slack/interactions|commands|events} routes forwarding to
+ * {@code POST /recruitment/slack/inbound} (Slack spec §4.2).
+ */
 @JBossLog
 @RequestScoped
 @Path("/slack")
@@ -31,34 +36,6 @@ public class SlackResource {
 
     @Inject
     SlackService slackAPI;
-
-    @Blocking
-    @Produces(APPLICATION_JSON)
-    @Consumes(APPLICATION_JSON)
-    @Path("/events")
-    @POST
-    public String challenge(RoutingContext rc) {
-        log.debug("SlackResource.challenge");
-        log.debug("payload = " + rc.getBodyAsString());
-        String signature = rc.request().getHeader("X-Slack-Signature");
-        String timestamp = rc.request().getHeader("X-Slack-Request-Timestamp");
-        log.debug("signature = " + signature);
-        log.debug("timestamp = " + timestamp);
-        //slackAPI.sendMessage(signature, timestamp, rc.getBodyAsString());
-        return "";
-    }
-
-    @Blocking
-    @Produces(APPLICATION_JSON)
-    @Consumes(APPLICATION_FORM_URLENCODED)
-    @Path("/action")
-    @POST
-    public String challenge2(RoutingContext rc) {
-        String signature = rc.request().getHeader("X-Slack-Signature");
-        String timestamp = rc.request().getHeader("X-Slack-Request-Timestamp");
-        return "";//slackAPI.sendOtherMessage(signature, timestamp, rc.getBodyAsString());
-
-    }
 
     /**
      * Sends a new lead notification to Slack.
@@ -89,13 +66,4 @@ public class SlackResource {
                 .build();
         }
     }
-}
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-class ChallengeRequest {
-    private String token;
-    private String challenge;
-    private String type;
 }

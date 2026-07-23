@@ -1,0 +1,39 @@
+-- ===================================================================
+-- V443: Recruitment ATS expansion — Phase 12: Slack reactor & referrer
+--       notifications
+-- ===================================================================
+-- Feature: Recruitment ATS expansion (plan 2026-07-18 §P12)
+-- Domain:  recruitmentservice (notification channel routing)
+--
+-- Purpose:
+--   Seed the Slack channel-routing setting the P12 reactors read per
+--   event (no cache — routing changes take effect without redeploy):
+--
+--     recruitment.slack.channel.default
+--         The shared recruitment channel ID. Seeded BLANK: with no
+--         channel configured the reactors skip channel posts entirely,
+--         so P12 stays dark even when recruitment.pipeline.enabled is
+--         turned on — enabling notifications is a deliberate second
+--         step (set the channel ID, e.g. C0123456789).
+--
+--     recruitment.slack.channel.<practice_uuid>   (NOT seeded)
+--         Optional per-practice override, keyed by practice uuid (the
+--         registry idiom — never practice codes). A practice with no
+--         override, including a freshly created practice, falls back
+--         to the default channel with zero setup.
+--
+--   The two reactors' offset rows (recruitment_reactor_offsets) need
+--   no seeding here: the P1 startup guard seeds every new reactor to
+--   the stream head at boot — no historical replay.
+--
+-- Idempotency: INSERT IGNORE (unique setting_key) — re-runs never
+--   clobber an admin's configured channel. repair-at-start re-runs
+--   migrations across checkouts.
+--
+-- Rollback: the reactors go inert when the value is blank; full revert =
+--     DELETE FROM app_settings
+--       WHERE setting_key = 'recruitment.slack.channel.default';
+-- ===================================================================
+
+INSERT IGNORE INTO app_settings (setting_key, setting_value, category)
+VALUES ('recruitment.slack.channel.default', '', 'recruitment');
