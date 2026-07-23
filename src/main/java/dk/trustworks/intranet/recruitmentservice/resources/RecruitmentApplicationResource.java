@@ -175,8 +175,9 @@ public class RecruitmentApplicationResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
         boolean mayFastTrack = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
-        applicationService.changeStage(application, position, request.stage(), mayFastTrack, actor);
-        return applicationService.toResponse(application, position);
+        RecruitmentApplication updated =
+                applicationService.changeStage(application, position, request.stage(), mayFastTrack, actor);
+        return applicationService.toResponse(updated, position);
     }
 
     // ---- Terminals -----------------------------------------------------------------
@@ -200,8 +201,9 @@ public class RecruitmentApplicationResource {
         requireDecisionRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         boolean isRecruiterOrOwner = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
-        applicationService.reject(application, position, candidate, request, isRecruiterOrOwner, actor);
-        return applicationService.toResponse(application, position);
+        RecruitmentApplication updated =
+                applicationService.reject(application, position, candidate, request, isRecruiterOrOwner, actor);
+        return applicationService.toResponse(updated, position);
     }
 
     /** The candidate backed out (optional note → event pii). */
@@ -219,9 +221,9 @@ public class RecruitmentApplicationResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
-        applicationService.withdraw(application, position, candidate,
+        RecruitmentApplication updated = applicationService.withdraw(application, position, candidate,
                 request != null ? request.note() : null, actor);
-        return applicationService.toResponse(application, position);
+        return applicationService.toResponse(updated, position);
     }
 
     /**
@@ -238,8 +240,9 @@ public class RecruitmentApplicationResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
-        applicationService.returnToPool(application, position, candidate, actor);
-        return applicationService.toResponse(application, position);
+        RecruitmentApplication updated =
+                applicationService.returnToPool(application, position, candidate, actor);
+        return applicationService.toResponse(updated, position);
     }
 
     // ---- Plain updates -------------------------------------------------------------
@@ -259,8 +262,9 @@ public class RecruitmentApplicationResource {
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
-        applicationService.assignTeam(application, position, request.teamUuid(), actor);
-        return applicationService.toResponse(application, position);
+        RecruitmentApplication updated =
+                applicationService.assignTeam(application, position, request.teamUuid(), actor);
+        return applicationService.toResponse(updated, position);
     }
 
     /** Airtable's Ansættelsesdato — typically set at OFFER. */
@@ -278,9 +282,9 @@ public class RecruitmentApplicationResource {
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
-        applicationService.setExpectedStartDate(application, position,
+        RecruitmentApplication updated = applicationService.setExpectedStartDate(application, position,
                 request.expectedStartDate(), actor);
-        return applicationService.toResponse(application, position);
+        return applicationService.toResponse(updated, position);
     }
 
     // ---- Helpers --------------------------------------------------------------------
