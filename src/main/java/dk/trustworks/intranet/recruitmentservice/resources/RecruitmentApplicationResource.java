@@ -193,6 +193,7 @@ public class RecruitmentApplicationResource {
             throw badRequest(
                     "reasonCode is required — pick the closest coded reason; elaborate in the note");
         }
+        requireNoteWithinLimit(request.note());
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
@@ -210,6 +211,9 @@ public class RecruitmentApplicationResource {
     public ApplicationResponse withdraw(@PathParam("uuid") UUID applicationUuid,
                                         @Valid ApplicationWithdrawRequest request) {
         enforceFlag();
+        if (request != null) {
+            requireNoteWithinLimit(request.note());
+        }
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
@@ -338,6 +342,20 @@ public class RecruitmentApplicationResource {
     private static WebApplicationException badRequest(String message) {
         return new WebApplicationException(message, Response.Status.BAD_REQUEST);
     }
+
+    /**
+     * Explicit server-side cap for free-text notes (reject/withdraw). The
+     * DTOs carry {@code @Size(max = 2000)} but bean validation is inert in
+     * this backend — the check must live here (house rule; the BFF mirrors
+     * the same cap client-side).
+     */
+    private static void requireNoteWithinLimit(String note) {
+        if (note != null && note.length() > NOTE_MAX_LENGTH) {
+            throw badRequest("note must be at most " + NOTE_MAX_LENGTH + " characters");
+        }
+    }
+
+    private static final int NOTE_MAX_LENGTH = 2000;
 
     /**
      * Block the request when {@code recruitment.pipeline.enabled} is off,

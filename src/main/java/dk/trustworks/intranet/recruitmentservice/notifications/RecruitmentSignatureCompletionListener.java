@@ -6,6 +6,7 @@ import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import jakarta.enterprise.context.Dependent;
@@ -85,10 +86,23 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
     @Inject
     Config config;
 
+    @Inject
+    RecruitmentOfferBridge offerBridge;
+
     @Override
     @Transactional
     protected String doProcess() throws Exception {
         log.debug("RecruitmentSignatureCompletionListener: starting");
+
+        // P10: append SIGNING_COMPLETED to the recruitment event stream for
+        // ALL dossier-linked completed cases. This loop is deliberately
+        // separate from the email loop below with its OWN query: recruitment
+        // send-signature saves cases with a null SharePoint location, so
+        // sharepoint_upload_status never reaches 'UPLOADED' for them and the
+        // email query below would never match. Idempotency is durable — the
+        // bridge checks the event store for an existing SIGNING_COMPLETED
+        // with the same case_key (the in-memory set stays email-only).
+        int eventsAppended = appendSigningCompletedEvents();
 
         // Find dossier-linked signing cases that have COMPLETED status and
         // sharepoint_upload_status = UPLOADED. We join across the soft FK
@@ -107,7 +121,7 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
 
         if (rows.isEmpty()) {
             log.debug("No dossier-linked completed-and-uploaded cases; skipping");
-            return "COMPLETED: 0 notifications sent";
+            return "COMPLETED: 0 notifications sent, events_appended=" + eventsAppended;
         }
 
         int notified = 0;
@@ -149,10 +163,52 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
         }
 
         String summary = String.format(
-                "COMPLETED: total=%d, notified=%d, skipped=%d, failed=%d",
-                rows.size(), notified, skipped, failed);
+                "COMPLETED: total=%d, notified=%d, skipped=%d, failed=%d, events_appended=%d",
+                rows.size(), notified, skipped, failed, eventsAppended);
         log.info("RecruitmentSignatureCompletionListener finished: " + summary);
         return summary;
+    }
+
+    /**
+     * P10 event-append loop: every COMPLETED signing case joined to a
+     * dossier revision gets exactly one durable {@code SIGNING_COMPLETED}
+     * event — no SharePoint condition (recruitment cases never reach
+     * 'UPLOADED', see class javadoc of the email loop). Failures of a
+     * single case are logged and retried on the next 5-minute cycle; they
+     * never break the email path.
+     *
+     * @return number of events appended in this run
+     */
+    private int appendSigningCompletedEvents() {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT DISTINCT sc.case_key, cdr.dossier_uuid " +
+                "FROM signing_cases sc " +
+                "INNER JOIN candidate_dossier_revisions cdr " +
+                "  ON cdr.signing_case_key = sc.case_key " +
+                "WHERE sc.status = 'COMPLETED'")
+                .getResultList();
+
+        int appended = 0;
+        for (Object[] row : rows) {
+            String caseKey = (String) row[0];
+            String dossierUuid = (String) row[1];
+            if (caseKey == null || dossierUuid == null) {
+                continue;
+            }
+            try {
+                if (offerBridge.recordSigningCompletedIfNew(caseKey, dossierUuid)) {
+                    appended++;
+                }
+            } catch (RuntimeException e) {
+                log.errorf(e, "Failed to append SIGNING_COMPLETED for caseKey=%s: %s",
+                        caseKey, e.getMessage());
+                reportNonFatalError(
+                        "SIGNING_COMPLETED append failed for caseKey=" + caseKey
+                                + ": " + e.getMessage(), e);
+            }
+        }
+        return appended;
     }
 
     /**

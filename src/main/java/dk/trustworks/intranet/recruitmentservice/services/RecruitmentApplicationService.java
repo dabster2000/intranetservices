@@ -98,6 +98,9 @@ public class RecruitmentApplicationService {
     @Inject
     RecruitmentVisibility visibility;
 
+    @Inject
+    RecruitmentOfferBridge offerBridge;
+
     // ---- Create (attach candidate → position) ---------------------------------
 
     /**
@@ -245,6 +248,13 @@ public class RecruitmentApplicationService {
                 .payload("to", move.to().name())
                 .payload("direction", move.direction().name())
                 .payload("skipped_stages", move.skippedStages()));
+
+        // P10 offer bridge: every entry into OFFER (including re-entries and
+        // fast-track skips) emits OFFER_OPENED + links an existing dossier —
+        // same transaction, so the timeline never diverges from the move.
+        if (move.to() == RecruitmentStage.OFFER) {
+            offerBridge.onOfferEntered(application, position, move.from(), actor);
+        }
 
         log.infof("Application %s stage %s -> %s (%s) by actor=%s",
                 application.getUuid(), move.from(), move.to(), move.direction(), actor);

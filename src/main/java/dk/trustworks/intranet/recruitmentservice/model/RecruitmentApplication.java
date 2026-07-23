@@ -241,6 +241,41 @@ public class RecruitmentApplication extends PanacheEntityBase implements Auditab
     }
 
     /**
+     * Bridge-only transition into the {@code HIRED} stage — reached
+     * exclusively through the signing-completion → conversion bridge (P10),
+     * never through {@link #moveToStage(RecruitmentStage, List)}, which
+     * keeps hard-rejecting {@code HIRED} (spec §4.2 invariant 3).
+     * <p>
+     * <b>Precondition / call-site contract:</b> the ONLY legitimate caller
+     * is {@code RecruitmentOfferBridge.onCandidateConverted} (the
+     * conversion path). This method must NEVER be called from a resource
+     * or any other API-reachable path — {@code HIRED} is unreachable via
+     * the stage API by design, and adding a second caller would break
+     * that invariant.
+     * <p>
+     * {@code HIRED} is a STAGE, not a terminal: {@link #terminal} stays
+     * {@code NULL} — the enum has no HIRED value and the DB check
+     * {@code chk_ra_terminal_enum} would refuse one. Queries that mean
+     * "still in play" must therefore exclude {@code stage = HIRED}
+     * explicitly.
+     *
+     * @throws BusinessRuleViolation if the application is terminal or not
+     *         currently at {@code OFFER} — conversion of a candidate whose
+     *         open application is not at Offer is a state error
+     */
+    public void markHired() {
+        guardOpen("mark as hired");
+        if (stage != RecruitmentStage.OFFER) {
+            throw new BusinessRuleViolation(
+                    ("Cannot mark application %s as hired: it is in stage %s, not OFFER — "
+                            + "hiring happens from the Offer stage via conversion")
+                            .formatted(uuid, stage));
+        }
+        this.stage = RecruitmentStage.HIRED;
+        this.stageEnteredAt = LocalDateTime.now(ZoneOffset.UTC);
+    }
+
+    /**
      * Record the offer-stage team decision. Any team is valid — the
      * position's practice is a grouping attribute, never a constraint on
      * team choice (spec §4.1).
