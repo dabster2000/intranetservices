@@ -60,7 +60,7 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Column(name = "round", updatable = false)
     private Integer round;
 
-    /** UTC. */
+    /** Wall-clock Europe/Copenhagen as entered by the scheduler. */
     @Column(name = "scheduled_at")
     private LocalDateTime scheduledAt;
 
@@ -81,6 +81,15 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     /** PII-free: room name or {@code "Teams"} (spec §4.1). */
     @Column(name = "location", length = 200)
     private String location;
+
+    /**
+     * Room mailbox (Graph {@code /places/microsoft.graph.room}) invited as
+     * a {@code "resource"} attendee so the Outlook event books the room;
+     * {@code NULL} = no room booked. Persisted so a reschedule — which
+     * rebuilds the full attendee list — keeps and moves the booking.
+     */
+    @Column(name = "room_email", length = 255)
+    private String roomEmail;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 10, nullable = false)

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
@@ -46,6 +47,16 @@ import java.util.Optional;
 public class RecruitmentCalendarService {
 
     static final int DURATION_MINUTES = 60;
+
+    /**
+     * Interview times are wall-clock as entered by the scheduler (P11
+     * findings, deviation 8): {@code scheduledAt} is a naive
+     * {@code LocalDateTime} meaning Copenhagen local time. Graph must be
+     * told exactly that — an IANA zone id it resolves per date, so CET vs
+     * CEST (DST) is handled by Graph, not by us. Never send "UTC" here:
+     * Outlook would shift every event by the UTC offset.
+     */
+    static final String EVENT_TIME_ZONE = "Europe/Copenhagen";
 
     /**
      * Lazily resolved: the Graph REST client's OIDC filter needs the
@@ -146,6 +157,34 @@ public class RecruitmentCalendarService {
         }
     }
 
+    /**
+     * The tenant's bookable meeting rooms (Graph
+     * {@code /places/microsoft.graph.room}, requires {@code Place.Read.All}).
+     * Empty when the toggle is off or Graph fails (logged, never thrown) —
+     * the UI hides the room picker and scheduling degrades to free-text
+     * location, same posture as event sync.
+     */
+    public List<MeetingRoomsResponse.MeetingRoom> listRooms() {
+        if (!calendarEnabled) {
+            return List.of();
+        }
+        try {
+            GraphApiClient.RoomCollectionResponse response = graph().listRooms();
+            if (response == null || response.value() == null) {
+                return List.of();
+            }
+            return response.value().stream()
+                    .filter(room -> room.emailAddress() != null && !room.emailAddress().isBlank())
+                    .map(room -> new MeetingRoomsResponse.MeetingRoom(
+                            room.displayName(), room.emailAddress(),
+                            room.capacity(), room.building()))
+                    .toList();
+        } catch (Exception e) {
+            log.warnv("Graph rooms lookup failed: {0} — returning no rooms", e.getMessage());
+            return List.of();
+        }
+    }
+
     // ---- Shaping -----------------------------------------------------------
 
     private CalendarEventRequest buildEvent(RecruitmentInterview interview,
@@ -168,14 +207,24 @@ public class RecruitmentCalendarService {
         if (candidate.getEmail() != null && !candidate.getEmail().isBlank()) {
             attendees.add(required(candidate.getEmail(), candidateName(candidate)));
         }
+        if (interview.getRoomEmail() != null && !interview.getRoomEmail().isBlank()) {
+            // Graph's room-booking convention: the room mailbox is invited
+            // as a "resource" attendee, which books the room's calendar.
+            attendees.add(new CalendarEventRequest.Attendee(
+                    new CalendarEventRequest.Attendee.EmailAddress(
+                            interview.getRoomEmail(), interview.getLocation()),
+                    "resource"));
+        }
 
         return new CalendarEventRequest(
                 subject,
                 new CalendarEventRequest.ItemBody("text",
                         "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit."),
-                new CalendarEventRequest.DateTimeTimeZone(interview.getScheduledAt().toString(), "UTC"),
                 new CalendarEventRequest.DateTimeTimeZone(
-                        interview.getScheduledAt().plusMinutes(DURATION_MINUTES).toString(), "UTC"),
+                        interview.getScheduledAt().toString(), EVENT_TIME_ZONE),
+                new CalendarEventRequest.DateTimeTimeZone(
+                        interview.getScheduledAt().plusMinutes(DURATION_MINUTES).toString(),
+                        EVENT_TIME_ZONE),
                 interview.getLocation() != null
                         ? new CalendarEventRequest.EventLocation(interview.getLocation())
                         : null,

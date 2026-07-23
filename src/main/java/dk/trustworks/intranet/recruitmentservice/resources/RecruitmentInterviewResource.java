@@ -6,6 +6,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScheduleRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ScorecardSubmitRequest;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
@@ -14,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCalendarService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -34,6 +36,7 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.net.URI;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -69,6 +72,7 @@ public class RecruitmentInterviewResource {
 
     private static final String ADMIN_WILDCARD = "admin:*";
     private static final int LOCATION_MAX_LENGTH = 200;
+    private static final int ROOM_EMAIL_MAX_LENGTH = 255;
 
     @Inject
     RecruitmentFeatureFlag featureFlag;
@@ -84,6 +88,9 @@ public class RecruitmentInterviewResource {
 
     @Inject
     RecruitmentInterviewService interviewService;
+
+    @Inject
+    RecruitmentCalendarService calendarService;
 
     // ---- Scheduling ------------------------------------------------------------
 
@@ -102,6 +109,7 @@ public class RecruitmentInterviewResource {
             throw badRequest("scheduledAt is required — interviews are scheduled with a time");
         }
         requireLocationWithinLimit(request.location());
+        requireRoomEmailValid(request.roomEmail());
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
@@ -128,6 +136,7 @@ public class RecruitmentInterviewResource {
             throw badRequest("scheduledAt is required");
         }
         requireLocationWithinLimit(request.location());
+        requireRoomEmailValid(request.roomEmail());
         UUID actor = currentActor();
         RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
         RecruitmentApplication application = applicationOf(interview);
@@ -224,6 +233,21 @@ public class RecruitmentInterviewResource {
         enforceFlag();
         UUID actor = currentActor();
         return interviewService.listMine(actor.toString());
+    }
+
+    /**
+     * The bookable meeting rooms for the scheduling dialog's room picker.
+     * Empty (never an error) when the Graph calendar toggle is off or the
+     * lookup fails — the UI hides the picker. Write-tier: only schedulers
+     * need the list.
+     */
+    @GET
+    @Path("/interviews/rooms")
+    @RolesAllowed({"recruitment:write"})
+    public MeetingRoomsResponse rooms() {
+        enforceFlag();
+        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms();
+        return new MeetingRoomsResponse(rooms, rooms.size());
     }
 
     // ---- Helpers ----------------------------------------------------------------------
@@ -334,6 +358,22 @@ public class RecruitmentInterviewResource {
     private static void requireLocationWithinLimit(String location) {
         if (location != null && location.length() > LOCATION_MAX_LENGTH) {
             throw badRequest("location must be at most " + LOCATION_MAX_LENGTH + " characters");
+        }
+    }
+
+    /**
+     * Room mailbox sanity — length cap plus a minimal address shape.
+     * Blank is allowed: on reschedule it means "clear the booking".
+     */
+    private static void requireRoomEmailValid(String roomEmail) {
+        if (roomEmail == null || roomEmail.isBlank()) {
+            return;
+        }
+        if (roomEmail.length() > ROOM_EMAIL_MAX_LENGTH) {
+            throw badRequest("roomEmail must be at most " + ROOM_EMAIL_MAX_LENGTH + " characters");
+        }
+        if (!roomEmail.contains("@")) {
+            throw badRequest("roomEmail must be a room mailbox address");
         }
     }
 

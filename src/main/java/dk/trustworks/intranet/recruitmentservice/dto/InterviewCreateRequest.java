@@ -16,13 +16,17 @@ import java.util.List;
  * @param round            1..3, required for ROUND, must be null for INFORMAL
  * @param interviewerUuids the assigned interviewers (1–10 existing users)
  * @param location         optional, PII-free: room name or "Teams"
- * @param scheduledAt      required, UTC
+ * @param roomEmail        optional room mailbox (Graph places) to book as a
+ *                         "resource" attendee on the Outlook event
+ * @param scheduledAt      required, wall-clock Europe/Copenhagen as entered
+ *                         (the Graph bridge stamps the timezone)
  */
 public record InterviewCreateRequest(
         RecruitmentInterviewKind kind,
         Integer round,
         List<String> interviewerUuids,
         String location,
+        String roomEmail,
         LocalDateTime scheduledAt
 ) {
 }
