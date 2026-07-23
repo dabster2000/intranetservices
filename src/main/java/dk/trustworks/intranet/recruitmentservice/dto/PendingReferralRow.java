@@ -9,6 +9,10 @@ import java.time.LocalDateTime;
  * — the full referral facts. The referrer's display name is deliberately
  * NOT resolved server-side; the UI resolves {@link #referrerUuid} via its
  * employed-users hook (P2 precedent).
+ * <p>
+ * {@link #aiSuggestions} (P9, contract §6.3): the latest AI triage
+ * suggestions for the referral, re-validated at read time; {@code null}
+ * when no suggestions exist or the referral-triage toggle is off.
  */
 public record PendingReferralRow(
         String uuid,
@@ -19,6 +23,7 @@ public record PendingReferralRow(
         String linkedinUrl,
         String email,
         String whyText,
-        LocalDateTime submittedAt
+        LocalDateTime submittedAt,
+        PendingReferralAiSuggestions aiSuggestions
 ) {
 }
