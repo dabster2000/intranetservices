@@ -84,6 +84,10 @@ public class RecruitmentInterviewService {
     static final int MIN_SCORE = 1;
     static final int MAX_SCORE = 4;
 
+    /** {@code SCORECARD_SUBMITTED.payload.origin} values (P18 — the P14 referral idiom). */
+    public static final String ORIGIN_WEB = "web";
+    public static final String ORIGIN_SLACK = "slack";
+
     @Inject
     RecruitmentEventRecorder recorder;
 
@@ -232,6 +236,23 @@ public class RecruitmentInterviewService {
                                                 RecruitmentPosition position,
                                                 ScorecardSubmitRequest request,
                                                 UUID actor) {
+        return submitScorecard(detached, application, position, request, actor, ORIGIN_WEB);
+    }
+
+    /**
+     * Origin-aware variant (P18): the Slack scorecard modal executes THIS
+     * SAME command with {@link #ORIGIN_SLACK}, so the timeline shows
+     * provenance and reports can measure Slack-vs-web adoption
+     * ({@code payload.origin} — the P14 referral precedent). Everything
+     * else is byte-identical between the two fronts.
+     */
+    @Transactional
+    public RecruitmentScorecard submitScorecard(RecruitmentInterview detached,
+                                                RecruitmentApplication application,
+                                                RecruitmentPosition position,
+                                                ScorecardSubmitRequest request,
+                                                UUID actor,
+                                                String origin) {
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
         if (interview.getKind() == RecruitmentInterviewKind.INFORMAL) {
@@ -275,7 +296,8 @@ public class RecruitmentInterviewService {
         // filter. Free text goes to pii only (spec §4.1).
         RecruitmentEventBuilder event = interviewEvent(RecruitmentEventType.SCORECARD_SUBMITTED,
                 interview, application, position, actor)
-                .payload("scorecard_uuid", scorecard.getUuid());
+                .payload("scorecard_uuid", scorecard.getUuid())
+                .payload("origin", ORIGIN_SLACK.equals(origin) ? ORIGIN_SLACK : ORIGIN_WEB);
         if (notes != null) {
             event.pii("notes", notes);
         }

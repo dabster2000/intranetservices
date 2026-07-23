@@ -448,6 +448,12 @@ dk:
         # capable) model. Override per env with
         # DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL.
         draft-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL:gpt-4o-mini}
+      # P17 SLA sweep (recruitment-sla-sweep, daily 07:00 UTC): kill switch
+      # for the nudge DMs. The sweep is additionally a no-op while the
+      # recruitment.interviews.enabled app setting is off; the three
+      # thresholds live in app_settings (recruitment.sla.*, V447 seeds).
+      sla-sweep:
+        enabled: ${DK_TRUSTWORKS_RECRUITMENT_SLA_SWEEP_ENABLED:true}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,

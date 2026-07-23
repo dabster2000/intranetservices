@@ -68,6 +68,15 @@ public class BatchScheduler {
     boolean recruitmentCatchupEnabled;
 
     /**
+     * Kill switch for the recruitment SLA sweep (ATS expansion P17). Off =
+     * no nudge DMs at all; the landing page's task list keeps computing the
+     * same conditions per viewer. Independent of this switch, the sweep is
+     * a no-op while {@code recruitment.interviews.enabled} is off.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.sla-sweep.enabled", defaultValue = "true")
+    boolean recruitmentSlaSweepEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -441,6 +450,37 @@ public class BatchScheduler {
             jobOperator.start("recruitment-event-catchup", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-event-catchup: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Chase overdue scorecards, stalled debriefs and idle candidates with
+     * Slack DMs — the P17 SLA sweep ("the system chases, not the
+     * recruiter", ATS spec §8.4). Idempotent by event-derived bookkeeping
+     * (every DM appends a {@code *_NUDGED} event the next sweep respects),
+     * so a run on a draining ECS task is harmless. No-op while
+     * {@code recruitment.interviews.enabled} is off.
+     * <p>
+     * Schedule: daily at 07:00 UTC — nudges land at the start of the
+     * Copenhagen workday instead of pinging phones at night.
+     */
+    @Scheduled(cron = "0 0 7 * * ?")
+    void scheduleRecruitmentSlaSweep() {
+        if (!recruitmentSlaSweepEnabled) {
+            log.debug("recruitment-sla-sweep skipped: dk.trustworks.recruitment.sla-sweep.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-sla-sweep")) {
+                if (!jobOperator.getRunningExecutions("recruitment-sla-sweep").isEmpty()) {
+                    log.debug("recruitment-sla-sweep already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-sla-sweep batch job");
+            jobOperator.start("recruitment-sla-sweep", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-sla-sweep: " + e.getMessage());
         }
     }
 

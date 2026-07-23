@@ -46,6 +46,13 @@ import static org.mockito.Mockito.atLeast;
 @QuarkusTest
 class RecruitmentSignatureCompletionListenerEventTest {
 
+    /**
+     * Target company whose HR recipient list is configured in
+     * src/test/resources/application.properties
+     * ({@code recruitment.completion-notification.<this-uuid>}).
+     */
+    private static final String CONFIGURED_COMPANY_UUID = "11111111-1111-1111-1111-111111111111";
+
     @Inject
     EntityManager em;
 
@@ -163,17 +170,61 @@ class RecruitmentSignatureCompletionListenerEventTest {
         assertEquals(1, signingCompletedEvents().size(),
                 "durable idempotency: a rerun (deploy/restart) must not duplicate the timeline");
 
-        // Email path unchanged: our case never reached
-        // sharepoint_upload_status='UPLOADED', so no HR mail may reference
-        // this candidate. (Scoped to our fixture — the shared local DB can
-        // legitimately contain UPLOADED cases the unchanged email path
-        // picks up in the same run.)
+        // Email path: this fixture's candidate has no target_company_uuid, so
+        // recipient resolution finds no configured address and the email loop
+        // skips it silently. (The UPLOADED gate is gone — the case now MATCHES
+        // the email query; it simply has nowhere to send.) So no HR mail may
+        // reference this candidate. Scoped to our fixture — the shared local DB
+        // can legitimately contain other dossier-linked completed cases the
+        // email path picks up in the same run. The configured-recipient email
+        // path is proven by doProcess_recruitmentCaseWithNullUpload_... below.
         ArgumentCaptor<TrustworksMail> mails = ArgumentCaptor.forClass(TrustworksMail.class);
         Mockito.verify(mailResource, atLeast(0)).sendingHTML(mails.capture());
         boolean mailedForOurCase = mails.getAllValues().stream()
                 .anyMatch(m -> m.getSubject() != null && m.getSubject().contains(PII_SENTINEL + "-Listener"));
         assertTrue(!mailedForOurCase,
-                "no completion email may fire for a case that never reached UPLOADED");
+                "no completion email may fire when no recipient is configured for the company");
+    }
+
+    /**
+     * The dormant-email fix (deviation 3 / follow-up 4): a recruitment-created
+     * COMPLETED case with a NULL sharepoint_upload_status — the shape every
+     * send-signature case has — now triggers exactly ONE HR courtesy email
+     * once a recipient is configured for the candidate's target company. A
+     * second {@code doProcess} run (same JVM) sends no duplicate: the existing
+     * in-memory {@code NOTIFIED_CASE_KEYS} dedup holds. The SIGNING_COMPLETED
+     * event-append loop is unaffected — still exactly one event.
+     */
+    @Test
+    void doProcess_recruitmentCaseWithNullUpload_sendsExactlyOneEmail_andNoDuplicateOnRerun() {
+        // Point the fixture candidate at the company whose recipient list is
+        // configured in src/test/resources/application.properties so recipient
+        // resolution yields an address instead of skipping silently.
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery(
+                                "UPDATE recruitment_candidates SET target_company_uuid = :company WHERE uuid = :uuid")
+                        .setParameter("company", CONFIGURED_COMPANY_UUID)
+                        .setParameter("uuid", candidateUuid)
+                        .executeUpdate());
+
+        runListener();
+        runListener();
+
+        // Exactly one email for OUR case across both runs → the query now
+        // matches a NULL-upload case (fix) AND the rerun did not duplicate it
+        // (in-memory dedup). Scoped to our fixture's subject sentinel because
+        // the shared DB may hold other configured cases.
+        ArgumentCaptor<TrustworksMail> mails = ArgumentCaptor.forClass(TrustworksMail.class);
+        Mockito.verify(mailResource, atLeast(0)).sendingHTML(mails.capture());
+        long mailedForOurCase = mails.getAllValues().stream()
+                .filter(m -> m.getSubject() != null && m.getSubject().contains(PII_SENTINEL + "-Listener"))
+                .count();
+        assertEquals(1, mailedForOurCase,
+                "a NULL-upload recruitment case must email HR exactly once, with no duplicate on rerun");
+
+        // Event loop unchanged: still exactly one SIGNING_COMPLETED.
+        assertEquals(1, signingCompletedEvents().size(),
+                "email-path change must not affect the SIGNING_COMPLETED event loop");
     }
 
     private void runListener() {

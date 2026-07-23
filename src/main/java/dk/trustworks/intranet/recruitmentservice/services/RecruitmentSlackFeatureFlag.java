@@ -37,7 +37,8 @@ import java.util.Optional;
  *   <li>{@code recruitment.slack.lookup.enabled} — {@code /candidates}
  *       ephemeral lookup; seeded, inert until P14.</li>
  *   <li>{@code recruitment.slack.scorecard.enabled} — scorecard modal +
- *       actionable nudge buttons; seeded, inert until P18.</li>
+ *       the scorecard button on the nudge/kit DMs (P18). Off ⇒ those DMs
+ *       are deep-link-only (the explicit degradation chain).</li>
  *   <li>{@code recruitment.slack.app-home.enabled} — App Home
  *       dashboard; seeded, inert until P23.</li>
  *   <li>{@code recruitment.slack.morning-brief.enabled} — morning
@@ -106,7 +107,7 @@ public class RecruitmentSlackFeatureFlag {
         return readFlag(LOOKUP_KEY);
     }
 
-    /** Scorecard modal + actionable nudge buttons — toggle exists, feature ships in P18. */
+    /** Scorecard modal + the scorecard button on the nudge/kit DMs (P18). */
     public boolean isScorecardEnabled() {
         return readFlag(SCORECARD_KEY);
     }

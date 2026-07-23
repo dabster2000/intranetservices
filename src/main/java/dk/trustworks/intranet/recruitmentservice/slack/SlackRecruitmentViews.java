@@ -5,9 +5,11 @@ import com.slack.api.model.block.composition.OptionObject;
 import com.slack.api.model.view.View;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestions;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralClosedReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralRelation;
+import dk.trustworks.intranet.recruitmentservice.model.enums.ScorecardRecommendation;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCandidateFacts;
 
 import java.util.ArrayList;
@@ -26,6 +28,7 @@ import static com.slack.api.model.block.element.BlockElements.asContextElements;
 import static com.slack.api.model.block.element.BlockElements.checkboxes;
 import static com.slack.api.model.block.element.BlockElements.externalSelect;
 import static com.slack.api.model.block.element.BlockElements.plainTextInput;
+import static com.slack.api.model.block.element.BlockElements.radioButtons;
 import static com.slack.api.model.block.element.BlockElements.staticSelect;
 import static com.slack.api.model.view.Views.view;
 import static com.slack.api.model.view.Views.viewClose;
@@ -59,6 +62,10 @@ public final class SlackRecruitmentViews {
     public static final String TRIAGE_CREATE_SUBMIT = "recruitment_triage_create_submit";
     public static final String TRIAGE_DISMISS_SUBMIT = "recruitment_triage_dismiss_submit";
     public static final String CAPTURE_SUBMIT = "recruitment_capture_submit";
+    public static final String SCORECARD_SUBMIT = "recruitment_scorecard_submit";
+
+    /** action_id of the scorecard button on the nudge/kit DMs (block_actions key, P18). */
+    public static final String SCORECARD_OPEN = "recruitment_scorecard_open";
 
     // ---- Block ids ------------------------------------------------------------
     public static final String BLOCK_CANDIDATE_NAME = "candidate_name";
@@ -76,6 +83,10 @@ public final class SlackRecruitmentViews {
     public static final String BLOCK_CAPTURE_CANDIDATE = "capture_candidate";
     public static final String BLOCK_NOTE_TEXT = "note_text";
     public static final String BLOCK_NOTE_PRIVATE = "note_private";
+    /** Scorecard modal (P18): one {@code score_<CODE>} block per template attribute. */
+    public static final String BLOCK_SCORE_PREFIX = "score_";
+    public static final String BLOCK_RECOMMENDATION = "recommendation";
+    public static final String BLOCK_SCORECARD_NOTES = "scorecard_notes";
 
     /** action_id of the capture modal's candidate search (block_suggestion key). */
     public static final String CAPTURE_CANDIDATE_SELECT = "recruitment_capture_candidate_select";
@@ -85,6 +96,9 @@ public final class SlackRecruitmentViews {
 
     /** Modal inputs cap notes at Slack's text-object limit. */
     static final int NOTE_MAX_LENGTH = 3000;
+
+    /** The scorecard notes cap — matches the web form and the service rule (P11). */
+    static final int SCORECARD_NOTES_MAX_LENGTH = 2000;
 
     private SlackRecruitmentViews() {
     }
@@ -384,6 +398,143 @@ public final class SlackRecruitmentViews {
                                 + "|Open the timeline>"))),
                 context(c -> c.elements(asContextElements(markdownText(
                         "The note links back to the original Slack message for context."))))));
+    }
+
+    // ==========================================================================
+    // Scorecard modal — the full 90-second scorecard from Slack (P18, §5.6)
+    // ==========================================================================
+
+    /**
+     * One score anchor per template attribute — the same 1–4 vocabulary as
+     * the web {@code ScorecardDialog} ("same command with different fronts").
+     */
+    private static final Map<Integer, String> SCORE_ANCHORS = Map.of(
+            1, "Clear concern",
+            2, "Below the bar",
+            3, "Good",
+            4, "Outstanding");
+
+    /**
+     * The full scorecard as a modal (P18, Slack spec §5.6): the position's
+     * template attributes as 1–4 selects, the four-point recommendation as
+     * radios, optional notes. {@code private_metadata} carries the interview
+     * uuid — a CLAIM the submit handler re-authorizes through the same
+     * command as the web form ({@code RecruitmentInterviewService.submitScorecard}).
+     * The modal never displays anyone else's scorecard (blind rule §5.6).
+     */
+    public static View scorecardModal(String candidateName, String positionTitle, Integer round,
+                                      List<ScorecardAttribute> template, String interviewUuid) {
+        List<LayoutBlock> blocks = new ArrayList<>();
+        StringBuilder intro = new StringBuilder("Your scorecard for *")
+                .append(SlackCandidateFacts.mrkdwnSafe(candidateName)).append('*');
+        if (positionTitle != null) {
+            intro.append(" — *").append(SlackCandidateFacts.mrkdwnSafe(positionTitle)).append('*');
+        }
+        if (round != null) {
+            intro.append(" (round ").append(round).append(')');
+        }
+        intro.append(".\nRate each focus area from 1 to 4 and give your overall "
+                + "recommendation — it takes about 90 seconds.");
+        blocks.add(section(s -> s.text(markdownText(intro.toString()))));
+        blocks.add(context(c -> c.elements(asContextElements(markdownText(
+                ":lock: Scorecards are blind: your co-interviewers can't see your answers "
+                        + "before submitting their own, and you can't see theirs. "
+                        + "Everything unlocks in the intranet debrief once all are in.")))));
+        blocks.add(divider());
+        for (ScorecardAttribute attribute : template) {
+            blocks.add(input(i -> i
+                    .blockId(BLOCK_SCORE_PREFIX + attribute.code())
+                    .label(plainText(attribute.label()))
+                    .element(staticSelect(s -> s.actionId("value")
+                            .placeholder(plainText("Pick a score"))
+                            .options(scoreOptions())))));
+        }
+        blocks.add(input(i -> i
+                .blockId(BLOCK_RECOMMENDATION)
+                .label(plainText("Overall recommendation"))
+                .element(radioButtons(r -> r.actionId("value")
+                        .options(recommendationOptions())))
+                .hint(plainText("Your overall call on this interview — "
+                        + "'Yes, but…' belongs in the notes."))));
+        blocks.add(input(i -> i
+                .blockId(BLOCK_SCORECARD_NOTES)
+                .optional(true)
+                .label(plainText("Notes"))
+                .element(plainTextInput(t -> t.actionId("value").multiline(true)
+                        .maxLength(SCORECARD_NOTES_MAX_LENGTH)
+                        .placeholder(plainText("e.g. Structured the case well, but hesitated "
+                                + "on the pricing question…"))))
+                .hint(plainText("What stood out — concrete examples help the debrief. "
+                        + "Visible to the hiring team when scorecards unlock; "
+                        + "never shown to the candidate."))));
+
+        return view(v -> v
+                .type("modal")
+                .callbackId(SCORECARD_SUBMIT)
+                .privateMetadata(interviewUuid)
+                .title(viewTitle(t -> t.type("plain_text").text("Interview scorecard")))
+                .submit(viewSubmit(s -> s.type("plain_text").text("Submit scorecard")))
+                .close(viewClose(c -> c.type("plain_text").text("Cancel")))
+                .blocks(blocks));
+    }
+
+    /**
+     * Post-submit confirmation (modal swap). {@code missingCount} = assigned
+     * interviewers still to submit — progress counters are blind-rule-safe
+     * (the web surfaces show them too); scores/recommendations never appear.
+     */
+    public static View scorecardSubmittedView(String candidateName, int missingCount,
+                                              String baseUrl) {
+        String progress = missingCount == 0
+                ? "Yours was the last one — the debrief is ready, and the decision owner "
+                        + "has been notified automatically."
+                : "Waiting for " + missingCount + " more scorecard"
+                        + (missingCount == 1 ? "" : "s")
+                        + " from your co-interviewer" + (missingCount == 1 ? "" : "s") + ".";
+        return confirmationView("Scorecard submitted", asBlocks(
+                section(s -> s.text(markdownText(
+                        ":white_check_mark: *Thanks — your scorecard for "
+                                + SlackCandidateFacts.mrkdwnSafe(candidateName) + " is in.*\n"
+                                + progress))),
+                section(s -> s.text(markdownText(
+                        "<" + baseUrl + "/recruitment/interviews|Open your interviews in the "
+                                + "intranet> to read the debrief."))),
+                context(c -> c.elements(asContextElements(markdownText(
+                        "Now that you've submitted, your co-interviewers' scorecards become "
+                                + "visible to you in the intranet as they come in."))))));
+    }
+
+    /**
+     * The actions block carrying the scorecard button — hung on the SLA
+     * nudge DM and the interview-kit DM when
+     * {@code recruitment.slack.scorecard.enabled} is on (P18). The value is
+     * the interview uuid; the open handler re-authorizes it.
+     */
+    public static LayoutBlock scorecardActions(String interviewUuid) {
+        return com.slack.api.model.block.Blocks.actions(a -> a.elements(
+                com.slack.api.model.block.element.BlockElements.asElements(
+                        com.slack.api.model.block.element.BlockElements.button(b -> b
+                                .actionId(SCORECARD_OPEN)
+                                .value(interviewUuid)
+                                .style("primary")
+                                .text(plainText("Fill in scorecard"))))));
+    }
+
+    private static List<OptionObject> scoreOptions() {
+        List<OptionObject> options = new ArrayList<>(4);
+        for (int score = 1; score <= 4; score++) {
+            options.add(option(plainText(score + " — " + SCORE_ANCHORS.get(score)),
+                    String.valueOf(score)));
+        }
+        return options;
+    }
+
+    private static List<OptionObject> recommendationOptions() {
+        return List.of(
+                option(plainText("Strong yes"), ScorecardRecommendation.STRONG_YES.name()),
+                option(plainText("Yes"), ScorecardRecommendation.YES.name()),
+                option(plainText("No"), ScorecardRecommendation.NO.name()),
+                option(plainText("Strong no"), ScorecardRecommendation.STRONG_NO.name()));
     }
 
     // ==========================================================================
