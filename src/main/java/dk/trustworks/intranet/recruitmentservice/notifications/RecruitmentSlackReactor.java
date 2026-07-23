@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentReactor;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
@@ -14,10 +15,13 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSlaService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSlackFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.slack.SlackRecruitmentViews;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -36,7 +40,12 @@ import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventT
  * five notification moments — new application, new referral, debrief
  * ready, signing completed, position opened. These flat messages remain
  * the permanent degradation path when the P22 living cards are off
- * (Slack companion spec §3.3).
+ * (Slack companion spec §3.3). P18 adds two interviewer/owner-directed
+ * DM moments on top: the interview-kit DM on the interview lifecycle
+ * events (scheduled/moved/cancelled, with the scorecard button when
+ * {@code recruitment.slack.scorecard.enabled} is on) and the
+ * debrief-ready DM to the decision owner (deep link, never decision
+ * buttons — the locked intake-yes/judgment-no boundary).
  * <p>
  * Rules enforced here:
  * <ul>
@@ -90,6 +99,9 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
     @Inject
     SlackService slackService;
 
+    @Inject
+    RecruitmentSlaService slaService;
+
     @ConfigProperty(name = "dk.trustworks.recruitment.slack.base-url",
             defaultValue = "https://intra.trustworks.dk")
     String baseUrl;
@@ -114,7 +126,8 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
     protected void handle(RecruitmentEvent event) throws Exception {
         switch (event.getEventType()) {
             case APPLICATION_CREATED, REFERRAL_SUBMITTED, SCORECARD_SUBMITTED,
-                 SIGNING_COMPLETED, POSITION_OPENED -> {
+                 SIGNING_COMPLETED, POSITION_OPENED,
+                 INTERVIEW_SCHEDULED, INTERVIEW_RESCHEDULED, INTERVIEW_CANCELLED -> {
             }
             default -> {
                 return; // not ours — silent advance
@@ -122,6 +135,16 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         }
         if (!featureFlag.isPipelineEnabled()) {
             return; // side effects gated; offset advances, no backfill on later enable
+        }
+        switch (event.getEventType()) {
+            // P18: the interview-kit DM — interviewer-directed, never a
+            // channel post, so it bypasses the channel/circle delivery below.
+            case INTERVIEW_SCHEDULED, INTERVIEW_RESCHEDULED, INTERVIEW_CANCELLED -> {
+                interviewKitDms(event);
+                return;
+            }
+            default -> {
+            }
         }
         Notification notification = switch (event.getEventType()) {
             case APPLICATION_CREATED -> newApplication(event);
@@ -133,6 +156,15 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         };
         if (notification != null) {
             deliver(event, notification);
+            // P18: when the last scorecard lands, the debrief-ready
+            // notification also goes to the decision owner personally
+            // (spec §5.6 — deep link, no decision buttons). CIRCLE events
+            // skip this: their circle-member DMs above already reach the
+            // partner-track owners.
+            if (event.getEventType() == RecruitmentEventType.SCORECARD_SUBMITTED
+                    && event.getVisibility() != RecruitmentEventVisibility.CIRCLE) {
+                dmDecisionOwners(event, clamp(notification.message()));
+            }
         }
     }
 
@@ -365,6 +397,147 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             // Throws on transport failure → delivery retries via catch-up
             // (a rare duplicate DM beats a silently lost confidential ping).
             slackService.sendMessage(member, message);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // P18 — interview-kit DMs + the debrief-ready owner DM
+    // ------------------------------------------------------------------
+
+    /** Wall-clock Europe/Copenhagen, as the scheduler entered it (P11 model). */
+    private static final java.time.format.DateTimeFormatter KIT_TIME =
+            java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy 'at' HH:mm",
+                    java.util.Locale.ENGLISH);
+
+    /**
+     * The interview-kit DM (plan §P18 entry point): every assigned
+     * interviewer gets a DM when their interview is scheduled, moved or
+     * cancelled — candidate, position, round, time, place, the template's
+     * focus areas and the kit deep link. With
+     * {@code recruitment.slack.scorecard.enabled} on, scheduled/moved ROUND
+     * DMs carry the "Fill in scorecard" button; off ⇒ deep-link-only (the
+     * explicit degradation chain — nothing interactive is a prerequisite).
+     * <p>
+     * Interviewer-directed by construction: this never posts to a channel,
+     * so partner-track (CIRCLE) interviews DM exactly the people the P11
+     * interviewer grant already admits. Transport failures throw — the
+     * chassis retries the delivery (≤ {@link #maxDeliveryAttempts()});
+     * a rare duplicate DM beats a silently lost kit.
+     */
+    private void interviewKitDms(RecruitmentEvent event) throws Exception {
+        Object interviewUuid = payload(event).get("interview_uuid");
+        RecruitmentInterview interview = interviewUuid == null ? null
+                : RecruitmentInterview.findById(interviewUuid.toString());
+        if (interview == null) {
+            log.warnf("Slack reactor: %s seq %d without loadable interview — skipping",
+                    event.getEventType(), event.getSeq());
+            return;
+        }
+        RecruitmentCandidate candidate = findCandidate(event.getCandidateUuid());
+        RecruitmentPosition position = findPosition(event.getPositionUuid());
+        SlackCandidateFacts facts = SlackCandidateFacts.of(candidate, position, null);
+        String message = kitDmText(event.getEventType(), interview, facts, position);
+
+        boolean actionable = event.getEventType() != RecruitmentEventType.INTERVIEW_CANCELLED
+                && interview.getKind() == RecruitmentInterviewKind.ROUND
+                && slackFlags.isScorecardEnabled();
+        List<com.slack.api.model.block.LayoutBlock> blocks = actionable
+                ? List.of(
+                        com.slack.api.model.block.Blocks.section(s -> s.text(
+                                com.slack.api.model.block.composition.BlockCompositions
+                                        .markdownText(message))),
+                        SlackRecruitmentViews.scorecardActions(interview.getUuid()))
+                : null;
+
+        for (String interviewerUuid : interview.getInterviewerUuids()) {
+            User interviewer = User.findById(interviewerUuid);
+            if (interviewer == null || interviewer.getSlackusername() == null
+                    || interviewer.getSlackusername().isBlank()) {
+                log.infof("Slack reactor: interviewer %s has no Slack link — skipping kit DM",
+                        interviewerUuid);
+                continue;
+            }
+            if (blocks != null) {
+                slackService.sendMessage(interviewer, message, blocks);
+            } else {
+                slackService.sendMessage(interviewer, message);
+            }
+        }
+    }
+
+    /** Structural facts only: names/titles mrkdwn-escaped by the facts record. */
+    private String kitDmText(RecruitmentEventType type, RecruitmentInterview interview,
+                             SlackCandidateFacts facts, RecruitmentPosition position) {
+        boolean informal = interview.getRound() == null;
+        StringBuilder sb = new StringBuilder(256);
+        switch (type) {
+            case INTERVIEW_SCHEDULED -> sb.append(":calendar: *Interview scheduled* — you're ")
+                    .append(informal ? "having an informal chat with " : "interviewing ")
+                    .append(facts.displayName());
+            case INTERVIEW_RESCHEDULED -> sb.append(":calendar: *Interview moved* — your ")
+                    .append(informal ? "informal chat" : "interview").append(" with ")
+                    .append(facts.displayName());
+            default -> sb.append(":x: *Interview cancelled* — your ")
+                    .append(informal ? "informal chat" : "interview").append(" with ")
+                    .append(facts.displayName());
+        }
+        if (facts.positionTitle() != null) {
+            sb.append(" for *").append(facts.positionTitle()).append('*');
+        }
+        if (interview.getRound() != null) {
+            sb.append(" (round ").append(interview.getRound()).append(')');
+        }
+        if (type == RecruitmentEventType.INTERVIEW_CANCELLED) {
+            sb.append(" is cancelled — nothing more to do.");
+            return sb.toString();
+        }
+        if (interview.getScheduledAt() != null) {
+            sb.append(type == RecruitmentEventType.INTERVIEW_RESCHEDULED
+                            ? " has moved to " : " on ")
+                    .append(interview.getScheduledAt().format(KIT_TIME));
+        }
+        if (interview.getLocation() != null && !interview.getLocation().isBlank()) {
+            sb.append(" (").append(SlackCandidateFacts.mrkdwnSafe(interview.getLocation()))
+                    .append(')');
+        }
+        sb.append('.');
+        if (!informal && position != null && position.getScorecardTemplate() != null
+                && !position.getScorecardTemplate().isEmpty()) {
+            sb.append("\nFocus areas: ").append(position.getScorecardTemplate().stream()
+                    .map(a -> SlackCandidateFacts.mrkdwnSafe(a.label()))
+                    .reduce((a, b) -> a + ", " + b).orElse(""))
+                    .append('.');
+        }
+        sb.append("\nYour kit (CV, focus areas, scorecard): ")
+                .append(baseUrl).append("/recruitment/interviews");
+        return sb.toString();
+    }
+
+    /**
+     * The debrief-ready owner DM (P18, spec §5.6): the same structural
+     * message as the channel ping, sent personally to the decision owner —
+     * resolved through the P17 owner ladder (one rule, never
+     * re-implemented). Deliberately best-effort: a missed DM is backstopped
+     * by the P17 debrief-stalled nudge, and throwing here would re-post the
+     * already-delivered channel ping on retry.
+     */
+    private void dmDecisionOwners(RecruitmentEvent event, String message) {
+        RecruitmentPosition position = findPosition(event.getPositionUuid());
+        for (String ownerUuid : slaService.resolveOwners(position)) {
+            User owner = User.findById(ownerUuid);
+            if (owner == null || owner.getSlackusername() == null
+                    || owner.getSlackusername().isBlank()) {
+                log.infof("Slack reactor: decision owner %s has no Slack link — skipping "
+                        + "debrief-ready DM", ownerUuid);
+                continue;
+            }
+            try {
+                slackService.sendMessage(owner, message);
+            } catch (Exception e) {
+                log.warnf("Slack reactor: debrief-ready DM to owner %s failed — continuing "
+                        + "(the SLA debrief-stalled nudge backstops it): %s",
+                        ownerUuid, e.getMessage());
+            }
         }
     }
 
