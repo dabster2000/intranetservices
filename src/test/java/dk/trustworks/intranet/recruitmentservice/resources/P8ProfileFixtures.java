@@ -330,6 +330,69 @@ public final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
+    /**
+     * P17 variant: insert one interview scheduled a fixed number of hours
+     * in the PAST (negative = future) — the SLA sweep and landing tasks
+     * key on {@code scheduled_at} age.
+     */
+    public static void insertInterviewHoursAgo(EntityManager em, String uuid, String applicationUuid,
+                                String kind, Integer round, String interviewerUuidsJson,
+                                String status, int hoursAgo) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_interviews
+                            (uuid, application_uuid, kind, round, scheduled_at, interviewer_uuids,
+                             location, status, created_at, updated_at, created_by)
+                        VALUES (:uuid, :application, :kind, :round,
+                                DATE_SUB(UTC_TIMESTAMP(3), INTERVAL :hoursAgo HOUR), :interviewers,
+                                'Teams', :status, NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("application", applicationUuid)
+                .setParameter("kind", kind)
+                .setParameter("round", round)
+                .setParameter("hoursAgo", hoursAgo)
+                .setParameter("interviewers", interviewerUuidsJson)
+                .setParameter("status", status)
+                .executeUpdate();
+    }
+
+    /** P17: backdate an application's stage entry (idle-candidate fixtures). */
+    public static void backdateApplicationStageEntry(EntityManager em, String applicationUuid,
+                                int daysAgo) {
+        em.createNativeQuery("""
+                        UPDATE recruitment_applications
+                        SET stage_entered_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL :daysAgo DAY)
+                        WHERE uuid = :uuid
+                        """)
+                .setParameter("daysAgo", daysAgo)
+                .setParameter("uuid", applicationUuid)
+                .executeUpdate();
+    }
+
+    /** P17: backdate a scorecard submission (debrief-stalled fixtures). */
+    public static void backdateScorecard(EntityManager em, String scorecardUuid, int hoursAgo) {
+        em.createNativeQuery("""
+                        UPDATE recruitment_scorecards
+                        SET submitted_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL :hoursAgo HOUR)
+                        WHERE uuid = :uuid
+                        """)
+                .setParameter("hoursAgo", hoursAgo)
+                .setParameter("uuid", scorecardUuid)
+                .executeUpdate();
+    }
+
+    /** P17: backdate an event row (nudge-cap and re-nudge-spacing fixtures). */
+    public static void backdateEvent(EntityManager em, long seq, int hoursAgo) {
+        em.createNativeQuery("""
+                        UPDATE recruitment_events
+                        SET occurred_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL :hoursAgo HOUR)
+                        WHERE seq = :seq
+                        """)
+                .setParameter("hoursAgo", hoursAgo)
+                .setParameter("seq", seq)
+                .executeUpdate();
+    }
+
     /** Insert one submitted scorecard (scores keyed on the standard template). */
     public static void insertScorecard(EntityManager em, String uuid, String interviewUuid,
                                 String interviewerUuid, String recommendation) {

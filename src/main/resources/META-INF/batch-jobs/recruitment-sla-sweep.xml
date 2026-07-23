@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-sla-sweep" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment SLA Sweep Job (ATS expansion Phase 17)
+
+    Purpose:
+    "The system chases, not the recruiter" (spec §8.4): one daily pass
+    over the live pipeline that Slack-DMs the right person when
+    something sits too long —
+      * scorecard overdue  (> recruitment.sla.scorecard-overdue-hours,
+        max 2 nudges per interviewer per interview, never after
+        submission) -> DM to the assigned interviewer
+      * debrief stalled    (all scorecards in, unactioned
+        > recruitment.sla.debrief-stalled-hours) -> DM to the owner
+      * candidate idle     (> recruitment.sla.candidate-idle-days in
+        one stage) -> DM to the owner
+
+    Every DM appends its own *_NUDGED event; the sweep counts/dates
+    those events for caps and re-nudge spacing, so re-runs and
+    concurrent instances (ECS cutover) never double-ping. All side
+    effects are gated by recruitment.interviews.enabled (off = no-op).
+
+    Schedule:
+    Daily at 07:00 UTC via BatchScheduler (morning nudges, not 03:00
+    phone pings), gated by dk.trustworks.recruitment.sla-sweep.enabled
+    (default true).
+
+    Similar to:
+    recruitment-event-catchup.xml (the P1 reactor sweep)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="sweep-recruitment-slas">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentSlaSweepBatchlet"/>
+    </step>
+</job>

@@ -57,6 +57,21 @@ public enum RecruitmentEventType {
     SCORECARD_SUBMITTED,
     SCORECARD_NUDGED,
 
+    // --- SLA automation (P17) --------------------------------------------
+    /**
+     * The SLA sweep pinged the position's owner about an open application
+     * idle in its stage beyond the configured threshold. Catalog addition
+     * made in P17 — the spec §3.4 catalog covered only the scorecard nudge,
+     * but every reactor side effect is an event (findings §P17).
+     */
+    CANDIDATE_IDLE_NUDGED,
+    /**
+     * The SLA sweep pinged the decision owner about a debrief-ready round
+     * (all scorecards in) left unactioned beyond the configured threshold.
+     * Catalog addition made in P17 (findings §P17).
+     */
+    DEBRIEF_STALLED_NUDGED,
+
     // --- Communication & notes (P3, P15) --------------------------------
     EMAIL_SENT,
     NOTE_ADDED,
