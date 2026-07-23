@@ -33,7 +33,13 @@ import static io.restassured.RestAssured.given;
  *       HR/CXO/TECHPARTNER/DPO (+ADMIN) — the involved teamlead loses
  *       access;</li>
  *   <li>zero-application candidates stay visible to the profile-read tier
- *       but grant no involvement access.</li>
+ *       but grant no involvement access;</li>
+ *   <li>interviewer persona (P11 — completes the five-user matrix): an
+ *       assigned interviewer reads exactly their assigned candidate's
+ *       surfaces (incl. answers — "answers only for assigned candidates"),
+ *       nothing else; a cancelled assignment grants nothing; the grant
+ *       reaches partner-track candidates (explicit assignment by a
+ *       circle-authorized decision maker) and dies at HIRED.</li>
  * </ul>
  */
 @QuarkusTest
@@ -56,6 +62,7 @@ class RecruitmentCandidateProfileAuthzApiTest {
     private String practiceLead;
     private String dpoUser;
     private String plainUser;
+    private String interviewerUser;
 
     private String teamPosition;
     private String partnerPosition;
@@ -64,6 +71,10 @@ class RecruitmentCandidateProfileAuthzApiTest {
     private String partnerOnlyCandidate;
     private String noAppCandidate;
     private String hiredCandidate;
+
+    private String normalApplication;
+    private String partnerApplication;
+    private String hiredApplication;
 
     private String previousFlag;
 
@@ -80,12 +91,16 @@ class RecruitmentCandidateProfileAuthzApiTest {
         practiceLead = UUID.randomUUID().toString();
         dpoUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
+        interviewerUser = UUID.randomUUID().toString();
         teamPosition = UUID.randomUUID().toString();
         partnerPosition = UUID.randomUUID().toString();
         normalCandidate = UUID.randomUUID().toString();
         partnerOnlyCandidate = UUID.randomUUID().toString();
         noAppCandidate = UUID.randomUUID().toString();
         hiredCandidate = UUID.randomUUID().toString();
+        normalApplication = UUID.randomUUID().toString();
+        partnerApplication = UUID.randomUUID().toString();
+        hiredApplication = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, hrUser, "Rina", "Recruiter");
@@ -96,6 +111,7 @@ class RecruitmentCandidateProfileAuthzApiTest {
             P8ProfileFixtures.insertUser(em, practiceLead, "Pia", "Lead");
             P8ProfileFixtures.insertUser(em, dpoUser, "Dorte", "Dpo");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
+            P8ProfileFixtures.insertUser(em, interviewerUser, "Iben", "Interviewer");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
@@ -122,11 +138,11 @@ class RecruitmentCandidateProfileAuthzApiTest {
             P8ProfileFixtures.insertCandidate(em, hiredCandidate,
                     "PII_SENTINEL Hilda", "PII_SENTINEL Hyre", "HIRED", null, null, hrUser);
 
-            P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
+            P8ProfileFixtures.insertOpenApplication(em, normalApplication,
                     normalCandidate, teamPosition, "SCREENING");
-            P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
+            P8ProfileFixtures.insertOpenApplication(em, partnerApplication,
                     partnerOnlyCandidate, partnerPosition, "SCREENING");
-            P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
+            P8ProfileFixtures.insertOpenApplication(em, hiredApplication,
                     hiredCandidate, teamPosition, "HIRED");
 
             previousFlag = P8ProfileFixtures.setFlag(em, PIPELINE_FLAG, "true");
@@ -140,7 +156,7 @@ class RecruitmentCandidateProfileAuthzApiTest {
                     List.of(normalCandidate, partnerOnlyCandidate, noAppCandidate, hiredCandidate),
                     List.of(teamPosition, partnerPosition),
                     List.of(hrUser, adminUser, circleHr, involvedTeamlead, nonOwnerTeamlead,
-                            practiceLead, dpoUser, plainUser),
+                            practiceLead, dpoUser, plainUser, interviewerUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousFlag);
         });
@@ -214,6 +230,50 @@ class RecruitmentCandidateProfileAuthzApiTest {
     void noApplicationCandidate_visibleToProfileTier_notThroughInvolvement() {
         assertAllSurfaces(hrUser, noAppCandidate, 200);
         assertAllSurfaces(involvedTeamlead, noAppCandidate, 404);
+    }
+
+    // ---- Interviewer persona (P11 — the fifth user of the matrix) -----------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void interviewer_readsOnlyTheAssignedCandidate_onAllFourSurfaces() {
+        assignInterviewer(normalApplication, "SCHEDULED");
+        // Assigned: all four surfaces open — including answers ("answers
+        // only for assigned candidates", the P8 deferral closing here).
+        assertAllSurfaces(interviewerUser, normalCandidate, 200);
+        // Every other candidate stays invisible.
+        assertAllSurfaces(interviewerUser, noAppCandidate, 404);
+        assertAllSurfaces(interviewerUser, hiredCandidate, 404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void interviewer_withoutAssignment_orCancelledAssignment_reads404() {
+        assertAllSurfaces(interviewerUser, normalCandidate, 404);
+        assignInterviewer(normalApplication, "CANCELLED");
+        assertAllSurfaces(interviewerUser, normalCandidate, 404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void interviewer_assignmentReachesPartnerTrack_butDiesAtHired() {
+        // Explicit assignment by a circle-authorized decision maker admits
+        // the interviewer to the partner-track candidate's profile (kit
+        // access) — deliberate P11 rule, documented in RecruitmentVisibility.
+        assignInterviewer(partnerApplication, "SCHEDULED");
+        assertAllSurfaces(interviewerUser, partnerOnlyCandidate, 200);
+
+        // Assignment on the hired candidate grants nothing: the hired-file
+        // narrowing runs before involvement.
+        assignInterviewer(hiredApplication, "HELD");
+        assertAllSurfaces(interviewerUser, hiredCandidate, 404);
+    }
+
+    private void assignInterviewer(String applicationUuid, String status) {
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertInterview(em, UUID.randomUUID().toString(),
+                        applicationUuid, "ROUND", 1,
+                        "[\"" + interviewerUser + "\"]", status));
     }
 
     // ---- Helpers ------------------------------------------------------------------
