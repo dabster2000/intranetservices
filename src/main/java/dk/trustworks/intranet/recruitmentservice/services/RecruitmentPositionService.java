@@ -114,6 +114,7 @@ public class RecruitmentPositionService {
     @Transactional
     public RecruitmentPosition update(RecruitmentPosition position, PositionRequest request, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        position = managedPosition(position);
         if (position.getStatus() == RecruitmentPositionStatus.CLOSED) {
             throw new BusinessRuleViolation(
                     "Position %s is CLOSED and can no longer be edited".formatted(position.getUuid()));
@@ -183,6 +184,7 @@ public class RecruitmentPositionService {
     @Transactional
     public RecruitmentPosition close(RecruitmentPosition position, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        position = managedPosition(position);
         if (position.getStatus() == RecruitmentPositionStatus.CLOSED) {
             throw new BusinessRuleViolation(
                     "Position %s is already CLOSED".formatted(position.getUuid()));
@@ -195,6 +197,22 @@ public class RecruitmentPositionService {
                 .payload("hiring_track", position.getHiringTrack().name()));
         log.infof("Recruitment position closed: %s", position.getUuid());
         return position;
+    }
+
+    /**
+     * Re-load the row inside the current transaction. The resource loads
+     * positions OUTSIDE any transaction (for the visibility checks), and
+     * Quarkus Hibernate sessions are transaction-scoped — mutating the
+     * detached instance would silently never flush (the P4-era latent
+     * defect fixed alongside RecruitmentApplicationService; see its
+     * managedApplication javadoc).
+     */
+    private static RecruitmentPosition managedPosition(RecruitmentPosition detached) {
+        RecruitmentPosition managed = RecruitmentPosition.findById(detached.getUuid());
+        if (managed == null) {
+            throw new BusinessRuleViolation("Position no longer exists: " + detached.getUuid());
+        }
+        return managed;
     }
 
     // ---- Circle management -----------------------------------------------------

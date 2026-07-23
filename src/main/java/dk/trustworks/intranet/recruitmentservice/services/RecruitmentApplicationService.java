@@ -156,6 +156,7 @@ public class RecruitmentApplicationService {
                                               EventActor eventActor, String origin,
                                               boolean dedupeReview, UUID domainActor,
                                               String actorForLog) {
+        candidate = managedCandidate(candidate);
         if (candidate.isTerminal()) {
             throw new BusinessRuleViolation(
                     "Candidate %s is %s and cannot be attached to a position"
@@ -230,6 +231,7 @@ public class RecruitmentApplicationService {
                                               RecruitmentStage target,
                                               boolean mayFastTrack, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        application = managedApplication(application);
         StageMove move = application.moveToStage(target, position.getStageSet());
         if (move.direction() == RecruitmentApplication.MoveDirection.FORWARD
                 && move.skippedStages() && !mayFastTrack) {
@@ -279,6 +281,8 @@ public class RecruitmentApplicationService {
                                          ApplicationRejectRequest request,
                                          boolean isRecruiterOrOwner, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        application = managedApplication(application);
+        candidate = managedCandidate(candidate);
         if (candidate.getSponsoringPartnerUuid() != null && !isRecruiterOrOwner) {
             throw new WebApplicationException(Response
                     .status(Response.Status.FORBIDDEN)
@@ -313,6 +317,8 @@ public class RecruitmentApplicationService {
                                            RecruitmentCandidate candidate,
                                            String note, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        application = managedApplication(application);
+        candidate = managedCandidate(candidate);
         RecruitmentStage fromStage = application.getStage();
         application.withdraw();
 
@@ -343,6 +349,8 @@ public class RecruitmentApplicationService {
                                                RecruitmentPosition position,
                                                RecruitmentCandidate candidate, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        application = managedApplication(application);
+        candidate = managedCandidate(candidate);
         RecruitmentStage fromStage = application.getStage();
         application.returnToPool();
 
@@ -383,6 +391,7 @@ public class RecruitmentApplicationService {
                                              RecruitmentPosition position,
                                              String teamUuid, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
+        application = managedApplication(application);
         if (Team.findById(teamUuid) == null) {
             throw new WebApplicationException(
                     "Unknown team: " + teamUuid, Response.Status.BAD_REQUEST);
@@ -412,6 +421,7 @@ public class RecruitmentApplicationService {
                                                        LocalDate expectedStartDate, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
         Objects.requireNonNull(expectedStartDate, "expectedStartDate must not be null");
+        application = managedApplication(application);
         if (application.isTerminal()) {
             throw new BusinessRuleViolation(
                     "Cannot set an expected start date on application %s: it is closed (%s)"
@@ -499,6 +509,32 @@ public class RecruitmentApplicationService {
      * that acts on the deadline is P19. Closing one of several open
      * applications sets nothing.
      */
+    /**
+     * Re-load the row inside the current transaction. The resources load
+     * entities OUTSIDE any transaction (for the visibility checks), and
+     * Quarkus Hibernate sessions are transaction-scoped — mutating the
+     * detached instance passed in would pass every test that asserts on
+     * the response object while silently never flushing to the database
+     * (found the hard way in P11; the load-inside-tx idiom below is what
+     * CandidateService / ReferralService always did).
+     */
+    private static RecruitmentApplication managedApplication(RecruitmentApplication detached) {
+        RecruitmentApplication managed = RecruitmentApplication.findById(detached.getUuid());
+        if (managed == null) {
+            throw new BusinessRuleViolation("Application no longer exists: " + detached.getUuid());
+        }
+        return managed;
+    }
+
+    /** See {@link #managedApplication}. */
+    private static RecruitmentCandidate managedCandidate(RecruitmentCandidate detached) {
+        RecruitmentCandidate managed = RecruitmentCandidate.findById(detached.getUuid());
+        if (managed == null) {
+            throw new BusinessRuleViolation("Candidate no longer exists: " + detached.getUuid());
+        }
+        return managed;
+    }
+
     private void closeRetentionClockIfLastApplication(RecruitmentCandidate candidate) {
         long stillOpen = RecruitmentApplication.count(
                 "candidateUuid = ?1 and terminal is null", candidate.getUuid());
