@@ -513,8 +513,13 @@ public class RecruitmentInterviewService {
         return allAssignedSubmitted(interview, all) || decisionMade(application, interview);
     }
 
-    private static boolean allAssignedSubmitted(RecruitmentInterview interview,
-                                                List<RecruitmentScorecard> all) {
+    /**
+     * "Debrief ready" = every assigned interviewer has submitted. Public
+     * because P12's Slack reactor must compute debrief-readiness with this
+     * exact rule (findings §P11 carry-over).
+     */
+    public static boolean allAssignedSubmitted(RecruitmentInterview interview,
+                                               List<RecruitmentScorecard> all) {
         List<String> assigned = interview.getInterviewerUuids();
         if (assigned == null || assigned.isEmpty()) {
             return false;
