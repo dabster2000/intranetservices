@@ -237,10 +237,16 @@ class RecruitmentApplicationServiceIntegrationTest {
         assertTrue(String.valueOf(denied.getResponse().getEntity()).contains("guidance"),
                 "the 403 carries a guidance payload");
 
-        // Recruiter/owner tier may fast-track.
+        // Recruiter/owner tier may fast-track. Since P10 the skip INTO
+        // OFFER also fires the offer bridge, so the stage-change event is
+        // followed by OFFER_OPENED — the timeline shows both.
         changeStage(application, RecruitmentStage.OFFER, true);
-        RecruitmentEvent event = lastEvent(candidate);
-        assertTrue(event.getPayload().contains("\"skipped_stages\":true"));
+        List<RecruitmentEvent> events = eventsFor(candidate);
+        RecruitmentEvent stageChanged = events.get(events.size() - 2);
+        assertEquals(RecruitmentEventType.APPLICATION_STAGE_CHANGED, stageChanged.getEventType());
+        assertTrue(stageChanged.getPayload().contains("\"skipped_stages\":true"));
+        assertEquals(RecruitmentEventType.OFFER_OPENED, lastEvent(candidate).getEventType(),
+                "a fast-track entry into OFFER fires the P10 offer bridge");
     }
 
     @Test

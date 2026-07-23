@@ -110,6 +110,9 @@ public class CandidateConversionUseCase {
     @Inject
     dk.trustworks.intranet.aggregates.users.danlon.DanlonAssignmentService danlonAssignmentService;
 
+    @Inject
+    RecruitmentOfferBridge offerBridge;
+
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
         Objects.requireNonNull(req, "req must not be null");
@@ -234,6 +237,15 @@ public class CandidateConversionUseCase {
 
         // (h) Domain transition — guards re-checked inside the entity.
         candidate.markHired(UUID.fromString(user.uuid), actor);
+
+        // (h2, P10 bridge) Mark the candidate's OFFER application(s) HIRED and
+        // append APPLICATION_STAGE_CHANGED + CANDIDATE_HIRED to the event
+        // stream — same transaction, so a bridge failure rolls the whole
+        // conversion back ("no partial hires": state and events never
+        // diverge). Legacy dossier-only candidates without application rows
+        // still get their CANDIDATE_HIRED.
+        offerBridge.onCandidateConverted(candidate, user.uuid, req.teamUuid(),
+                plannedStart, actor);
 
         // (i) Close any still-OPEN dossiers.
         List<CandidateDossier> openDossiers = CandidateDossier

@@ -46,6 +46,7 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService.RecipientInfo;
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -174,6 +175,9 @@ public class RecruitmentResource {
 
     @Inject
     CandidateConversionUseCase candidateConversionUseCase;
+
+    @Inject
+    RecruitmentOfferBridge offerBridge;
 
     @Inject
     NextsignSigningService nextsignSigningService;
@@ -868,6 +872,12 @@ public class RecruitmentResource {
 
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
+
+        // P10 gate (fail-fast zone, BEFORE PDF generation and the NextSign
+        // call): a practice-track application at OFFER without a team
+        // decision blocks the send with 409 TEAM_NOT_ASSIGNED. Candidates
+        // without applications (pre-ATS dossier-only flow) pass untouched.
+        offerBridge.assertSignatureSendAllowed(candidate);
 
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
