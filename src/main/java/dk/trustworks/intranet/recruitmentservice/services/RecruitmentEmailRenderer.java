@@ -86,6 +86,24 @@ public final class RecruitmentEmailRenderer {
     }
 
     /**
+     * All merge-field-shaped tokens ({@code {{token}}}) still present in a
+     * text — the compose dialog's unresolved-token warning for content
+     * that was not produced by {@link #render} (the P16 AI draft, which is
+     * told to keep placeholders verbatim).
+     */
+    public static Set<String> tokensIn(String text) {
+        Set<String> tokens = new LinkedHashSet<>();
+        if (text == null || text.isEmpty()) {
+            return tokens;
+        }
+        Matcher matcher = MERGE_FIELD.matcher(text);
+        while (matcher.find()) {
+            tokens.add(matcher.group(1));
+        }
+        return tokens;
+    }
+
+    /**
      * Plain text → mail-client-safe HTML: escape, then newlines to
      * {@code <br>}, wrapped in a minimal container. Danish characters pass
      * through untouched (UTF-8 end to end — only markup-significant

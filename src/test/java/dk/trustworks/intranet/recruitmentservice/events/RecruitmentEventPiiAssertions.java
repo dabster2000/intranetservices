@@ -60,6 +60,7 @@ public final class RecruitmentEventPiiAssertions {
             "cover_letter", "cv", "cv_text",
             "comment", "comments",
             "brief", "evidence", "quote", "rationale",
+            "subject", "instruction",
             "employer", "current_employer");
 
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
