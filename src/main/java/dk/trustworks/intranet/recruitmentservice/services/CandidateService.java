@@ -620,6 +620,19 @@ public class CandidateService {
      */
     @Transactional
     public RecruitmentEvent addNote(UUID candidateUuid, NoteRequest note, UUID actor) {
+        return addNote(candidateUuid, note, actor, null, null);
+    }
+
+    /**
+     * {@link #addNote(UUID, NoteRequest, UUID)} with event provenance —
+     * the P14 Slack capture shortcut passes {@code origin='slack'} plus
+     * the captured message's permalink so the timeline shows where the
+     * note came from (P13 handler contract; plan §P14 capture). Both
+     * extras are structural facts (no free text) and live in the payload.
+     */
+    @Transactional
+    public RecruitmentEvent addNote(UUID candidateUuid, NoteRequest note, UUID actor,
+                                    String origin, String slackPermalink) {
         Objects.requireNonNull(note, "note must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
@@ -627,11 +640,16 @@ public class CandidateService {
             throw badRequest("Unknown note field: only " + NoteRequest.FIELD_SALARY_EXPECTATION
                     + " is supported");
         }
-        return eventRecorder.record(
-                candidateEvent(RecruitmentEventType.NOTE_ADDED, candidate, actor)
-                        .payload("private", Boolean.TRUE.equals(note.isPrivate()))
-                        .payload("field", note.field())
-                        .pii("text", note.text()));
+        var builder = candidateEvent(RecruitmentEventType.NOTE_ADDED, candidate, actor)
+                .payload("private", Boolean.TRUE.equals(note.isPrivate()))
+                .payload("field", note.field());
+        if (origin != null) {
+            builder.payload("origin", origin);
+        }
+        if (slackPermalink != null) {
+            builder.payload("slack_permalink", slackPermalink);
+        }
+        return eventRecorder.record(builder.pii("text", note.text()));
     }
 
     /**
