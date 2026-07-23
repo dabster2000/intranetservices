@@ -23,8 +23,8 @@ import java.util.Optional;
  *   <li>{@code recruitment.ai.brief.enabled} — candidate brief (P9).</li>
  *   <li>{@code recruitment.ai.referral-triage.enabled} — referral triage
  *       assist (P9).</li>
- *   <li>{@code recruitment.ai.email-composer.enabled} — seeded, inert
- *       until P16.</li>
+ *   <li>{@code recruitment.ai.email-composer.enabled} — AI email draft
+ *       button in the compose dialog (P16).</li>
  *   <li>{@code recruitment.ai.digest.weekly-funnel.enabled} — seeded,
  *       inert until P24.</li>
  *   <li>{@code recruitment.ai.digest.rejection-patterns.enabled} —
@@ -61,7 +61,7 @@ public class RecruitmentAiFeatureFlag {
         return readFlag(REFERRAL_TRIAGE_KEY);
     }
 
-    /** AI email composer — toggle exists, feature ships in P16. */
+    /** AI email composer — the draft endpoint + compose-dialog button (P16). */
     public boolean isEmailComposerEnabled() {
         return readFlag(EMAIL_COMPOSER_KEY);
     }

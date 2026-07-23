@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
+import dk.trustworks.intranet.recruitmentservice.ai.AiEmailDraftService;
 import dk.trustworks.intranet.recruitmentservice.dto.ApproveEmailRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.DraftEmailRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplatesResponse;
@@ -15,6 +17,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
@@ -37,6 +40,7 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -79,6 +83,9 @@ public class RecruitmentEmailResource {
     RecruitmentFeatureFlag featureFlag;
 
     @Inject
+    RecruitmentAiFeatureFlag aiFlags;
+
+    @Inject
     ScopeContext scopeContext;
 
     @Inject
@@ -89,6 +96,9 @@ public class RecruitmentEmailResource {
 
     @Inject
     RecruitmentEmailService emailService;
+
+    @Inject
+    AiEmailDraftService draftService;
 
     // ---- Templates -------------------------------------------------------------
 
@@ -185,6 +195,64 @@ public class RecruitmentEmailResource {
                 .build();
     }
 
+    // ---- AI draft (P16 — returns a draft only, never sends) -----------------------
+
+    /**
+     * Personalise a template body for the candidate with the AI composer
+     * (P16). <b>No send side effect</b> — the response is a draft the
+     * recruiter reviews, edits and sends through {@link #send}; the
+     * template's {@code auto_send} setting is irrelevant here by
+     * construction (there is no code path from this endpoint to the mail
+     * outbox). Gated on {@code recruitment.ai.email-composer.enabled}
+     * with the P9 toggle convention (404-style + resource-level
+     * {@code admin:*} bypass; the frontend hides the button on the
+     * literal flag).
+     * <p>
+     * Deliberately NOT {@code @Transactional} (§P9 security review M1):
+     * the OpenAI round-trip must not pin a pooled DB connection.
+     */
+    @POST
+    @Path("/candidates/{uuid}/emails/draft")
+    @RolesAllowed({"recruitment:write"})
+    public RenderedEmailResponse draft(@PathParam("uuid") UUID candidateUuid,
+                                       DraftEmailRequest request) {
+        enforceFlag();
+        enforceComposerToggle();
+        UUID actor = currentActor();
+        requireRecruiterTier(actor);
+        Objects.requireNonNull(request, "request body must not be null");
+        if (request.templateUuid() == null || request.templateUuid().isBlank()) {
+            throw badRequest("templateUuid is required — the AI composer personalises an existing template");
+        }
+        String instruction = blankToNull(request.instruction());
+        if (instruction != null && instruction.length() > AiEmailDraftService.INSTRUCTION_MAX_LENGTH) {
+            throw badRequest("instruction exceeds " + AiEmailDraftService.INSTRUCTION_MAX_LENGTH
+                    + " characters — keep it to a short sentence");
+        }
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
+        RecruitmentEmailTemplate template = RecruitmentEmailTemplate.findById(request.templateUuid());
+        if (template == null) {
+            throw new NotFoundException("Resource not found");
+        }
+        String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
+        RecruitmentApplication application = applicationUuid == null ? null
+                : RecruitmentApplication.findById(applicationUuid);
+        try {
+            AiEmailDraftService.Draft drafted = draftService.draft(candidate, template,
+                    application, instruction, actor.toString());
+            return new RenderedEmailResponse(drafted.subject(), drafted.body(),
+                    List.copyOf(drafted.unresolvedFields()));
+        } catch (IllegalStateException e) {
+            // OpenAI failure/refusal — a human-readable upstream error, no
+            // candidate data in the message.
+            throw new WebApplicationException(Response.status(Response.Status.BAD_GATEWAY)
+                    .entity(Map.of("error", "AI_DRAFT_FAILED",
+                            "message", "The AI draft could not be generated right now — try again, "
+                                    + "or write the email yourself"))
+                    .build());
+        }
+    }
+
     // ---- Review queue ------------------------------------------------------------
 
     @GET
@@ -258,6 +326,22 @@ public class RecruitmentEmailResource {
 
     private void enforceFlag() {
         if (featureFlag.isInterviewsEnabled()) {
+            return;
+        }
+        if (scopeContext.hasScope(ADMIN_WILDCARD)) {
+            return;
+        }
+        throw new NotFoundException("Resource not found");
+    }
+
+    /**
+     * The P16 composer toggle ({@code recruitment.ai.email-composer.enabled})
+     * — the P9 AI-toggle convention: 404-style feature-disabled error with
+     * the resource-level {@code admin:*} bypass (the toggle itself has no
+     * bypass; the frontend reads it literally and hides the button).
+     */
+    private void enforceComposerToggle() {
+        if (aiFlags.isEmailComposerEnabled()) {
             return;
         }
         if (scopeContext.hasScope(ADMIN_WILDCARD)) {

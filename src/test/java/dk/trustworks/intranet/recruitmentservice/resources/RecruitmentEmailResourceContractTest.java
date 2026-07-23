@@ -47,6 +47,7 @@ class RecruitmentEmailResourceContractTest {
         assertWrite("createTemplate", POST.class, "/email-templates");
         assertWrite("updateTemplate", PUT.class, "/email-templates/{uuid}");
         assertWrite("send", POST.class, "/candidates/{uuid}/emails/send");
+        assertWrite("draft", POST.class, "/candidates/{uuid}/emails/draft");
         assertWrite("approve", POST.class, "/emails/pending/{uuid}/approve");
         assertWrite("dismiss", POST.class, "/emails/pending/{uuid}/dismiss");
     }
