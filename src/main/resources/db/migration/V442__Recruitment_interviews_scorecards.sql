@@ -167,7 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_recr_scorecards_interviewer
 INSERT INTO page_registry
     (page_key, page_label, is_visible, react_route, required_roles, display_order, section, icon_name, is_external, external_url)
 VALUES
-    ('recruitment-interviews', 'My interviews', 1, '/recruitment/interviews', 'USER', 136, 'COMPANY', 'CalendarCheck', 0, NULL)
+    ('recruitment-interviews', 'My interviews', 1, '/recruitment/interviews', 'USER', 136, 'COMPANY', 'CalendarDays', 0, NULL)
 ON DUPLICATE KEY UPDATE
     page_label     = VALUES(page_label),
     is_visible     = VALUES(is_visible),
