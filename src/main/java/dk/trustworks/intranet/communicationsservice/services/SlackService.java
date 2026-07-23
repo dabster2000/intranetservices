@@ -119,6 +119,101 @@ public class SlackService {
         }
     }
 
+    /**
+     * Opens a modal view against a {@code trigger_id} (P14 — Slack inbound
+     * handlers). Trigger ids expire after 3 seconds, so callers invoke this
+     * synchronously inside the dispatch path. Throws on transport failure or
+     * a not-ok API response — the caller decides whether the interaction can
+     * degrade to an ephemeral notice.
+     */
+    public void openView(String triggerId, com.slack.api.model.view.View view)
+            throws IOException, SlackApiException {
+        var response = Slack.getInstance().methods(motherSlackBotToken)
+                .viewsOpen(req -> req.triggerId(triggerId).view(view));
+        if (!response.isOk()) {
+            log.errorf("Failed to open Slack view: %s", response.getError());
+            throw new RuntimeException("Slack API error: " + response.getError());
+        }
+    }
+
+    /**
+     * Pushes a view onto an already-open modal stack (P14 contract — no
+     * caller yet; the first stacked flow arrives with later phases).
+     * Same failure posture as {@link #openView}.
+     */
+    public void pushView(String triggerId, com.slack.api.model.view.View view)
+            throws IOException, SlackApiException {
+        var response = Slack.getInstance().methods(motherSlackBotToken)
+                .viewsPush(req -> req.triggerId(triggerId).view(view));
+        if (!response.isOk()) {
+            log.errorf("Failed to push Slack view: %s", response.getError());
+            throw new RuntimeException("Slack API error: " + response.getError());
+        }
+    }
+
+    /**
+     * Posts an ephemeral message (visible only to {@code slackUserId}) in a
+     * channel. Best-effort: logs and swallows on failure — an ephemeral is a
+     * courtesy, never load-bearing state.
+     */
+    public void postEphemeral(String channel, String slackUserId, String text) {
+        try {
+            var response = Slack.getInstance().methods(motherSlackBotToken)
+                    .chatPostEphemeral(req -> req.channel(channel).user(slackUserId).text(text));
+            if (!response.isOk()) {
+                log.errorf("Failed to post Slack ephemeral channel=%s: %s", channel, response.getError());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Error posting Slack ephemeral channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
+    /**
+     * Rewrites an existing bot message in place (P14 — triage-ping outcome
+     * rewrite). {@code blocks} may be null to reduce the message to plain
+     * text (how the triage buttons are removed). Best-effort: logs and
+     * swallows — the authoritative state lives in the intranet; a stale
+     * Slack message is cosmetic.
+     */
+    public void updateMessage(String channel, String ts, String text,
+                              java.util.List<com.slack.api.model.block.LayoutBlock> blocks) {
+        try {
+            var response = Slack.getInstance().methods(motherSlackBotToken)
+                    .chatUpdate(req -> {
+                        req.channel(channel).ts(ts).text(text);
+                        // chat.update keeps existing blocks unless explicitly
+                        // replaced — send an empty list to strip them.
+                        req.blocks(blocks != null ? blocks : java.util.List.of());
+                        return req;
+                    });
+            if (!response.isOk()) {
+                log.errorf("Failed to update Slack message channel=%s: %s", channel, response.getError());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Error updating Slack message channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
+    /**
+     * Resolves the permalink of a message (P14 capture provenance). Null on
+     * any failure — a note without its permalink still lands; provenance is
+     * best-effort.
+     */
+    public String getPermalink(String channel, String messageTs) {
+        try {
+            var response = Slack.getInstance().methods(motherSlackBotToken)
+                    .chatGetPermalink(req -> req.channel(channel).messageTs(messageTs));
+            if (!response.isOk()) {
+                log.warnf("Slack permalink lookup failed channel=%s: %s", channel, response.getError());
+                return null;
+            }
+            return response.getPermalink();
+        } catch (Exception e) {
+            log.warnf(e, "Error resolving Slack permalink channel=%s: %s", channel, e.getMessage());
+            return null;
+        }
+    }
+
     public void addUserToChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {

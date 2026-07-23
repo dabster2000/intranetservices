@@ -43,6 +43,7 @@ class RecruitmentSlackReactorTest {
 
     private static final String PIPELINE_FLAG = P8ProfileFixtures.PIPELINE_FLAG;
     private static final String BRIEF_FLAG = "recruitment.ai.brief.enabled";
+    private static final String TRIAGE_FLAG = "recruitment.slack.triage-actions.enabled";
     private static final String DEFAULT_KEY = RecruitmentSlackChannelRouter.DEFAULT_CHANNEL_KEY;
 
     @Inject
@@ -62,6 +63,7 @@ class RecruitmentSlackReactorTest {
 
     private String previousPipeline;
     private String previousBrief;
+    private String previousTriage;
     private String previousDefault;
     private String previousOverride;
 
@@ -85,6 +87,7 @@ class RecruitmentSlackReactorTest {
                     candidateUuid, positionUuid, "SCREENING");
             previousPipeline = P8ProfileFixtures.setFlag(em, PIPELINE_FLAG, "false");
             previousBrief = P8ProfileFixtures.setFlag(em, BRIEF_FLAG, "false");
+            previousTriage = P8ProfileFixtures.setFlag(em, TRIAGE_FLAG, "false");
             previousDefault = P8ProfileFixtures.setFlag(em, DEFAULT_KEY, "");
             previousOverride = null;
         });
@@ -107,6 +110,7 @@ class RecruitmentSlackReactorTest {
                     List.of(candidateUuid), List.of(positionUuid), List.of(actorUser), practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousPipeline);
             P8ProfileFixtures.restoreFlag(em, BRIEF_FLAG, previousBrief);
+            P8ProfileFixtures.restoreFlag(em, TRIAGE_FLAG, previousTriage);
             P8ProfileFixtures.restoreFlag(em, DEFAULT_KEY, previousDefault);
             P8ProfileFixtures.restoreFlag(em,
                     RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid,
@@ -453,5 +457,69 @@ class RecruitmentSlackReactorTest {
         assertTrue(messages.getAllValues().stream()
                         .anyMatch(m -> m.contains("Position opened") && m.contains("Senior Consultant")),
                 "position ping present");
+    }
+
+    // ---- P14: triage buttons on the new-referral ping -----------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void referralPing_carriesTriageButtons_whenTriageActionsOn() {
+        pipelineOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, TRIAGE_FLAG, "true"));
+        String referralUuid = QuarkusTransaction.requiringNew().call(() -> {
+            String uuid = P12NotificationFixtures.insertReferral(em, actorUser,
+                    "Betty Buttons", "why", "SUBMITTED", null);
+            P8ProfileFixtures.insertEvent(em, "REFERRAL_SUBMITTED", null, null, null,
+                    "USER", actorUser, "NORMAL",
+                    "{\"referral_uuid\":\"" + uuid + "\",\"relation\":\"COLLEAGUE\"}",
+                    "{\"candidate_name\":\"Betty Buttons\"}");
+            return uuid;
+        });
+
+        reactor.catchUp();
+
+        ArgumentCaptor<List<com.slack.api.model.block.LayoutBlock>> blocks =
+                ArgumentCaptor.forClass((Class) List.class);
+        ArgumentCaptor<String> fallback = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendMessage(anyString(), fallback.capture(), blocks.capture());
+        assertTrue(fallback.getValue().contains("New referral"),
+                "the flat text stays as notification fallback");
+
+        var actions = blocks.getValue().stream()
+                .filter(com.slack.api.model.block.ActionsBlock.class::isInstance)
+                .map(com.slack.api.model.block.ActionsBlock.class::cast)
+                .findFirst().orElseThrow(() -> new AssertionError("actions block missing"));
+        var buttons = actions.getElements().stream()
+                .map(com.slack.api.model.block.element.ButtonElement.class::cast)
+                .toList();
+        assertEquals(List.of("recruitment_triage_create", "recruitment_triage_view",
+                        "recruitment_triage_dismiss"),
+                buttons.stream().map(b -> b.getActionId()).toList());
+        assertEquals(referralUuid, buttons.get(0).getValue(),
+                "the create button carries the referral id");
+        assertEquals(referralUuid, buttons.get(2).getValue(),
+                "the dismiss button carries the referral id");
+        assertTrue(buttons.get(1).getUrl().endsWith("/recruitment/refer"),
+                "View-in-intranet is a URL button to the triage queue");
+    }
+
+    @Test
+    void referralPing_staysFlat_whenTriageActionsOff() {
+        pipelineOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() -> {
+            String uuid = P12NotificationFixtures.insertReferral(em, actorUser,
+                    "Flat Frida", "why", "SUBMITTED", null);
+            P8ProfileFixtures.insertEvent(em, "REFERRAL_SUBMITTED", null, null, null,
+                    "USER", actorUser, "NORMAL",
+                    "{\"referral_uuid\":\"" + uuid + "\",\"relation\":\"COLLEAGUE\"}",
+                    "{\"candidate_name\":\"Flat Frida\"}");
+        });
+
+        String message = channelMessageAfterCatchUp(1);
+        assertTrue(message.contains("New referral"),
+                "toggle off ⇒ the P12 flat ping — the permanent degradation path");
+        verify(slackService, never()).sendMessage(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.<com.slack.api.model.block.LayoutBlock>anyList());
     }
 }

@@ -114,8 +114,11 @@ public class SlackInboundDispatchService {
             return SlackInboundResponse.notLinked(NOT_LINKED_TEXT);
         }
 
-        // 3. Dedupe claim — atomic on the payload_key PK.
-        if (!claim(request)) {
+        // 3. Dedupe claim — atomic on the payload_key PK. block_suggestion
+        //    payloads are query-only (an options search fires on every
+        //    keystroke, has no side effects and must never burn payload
+        //    ids) — they skip the claim and go straight to dispatch.
+        if (!SlackInboundRequest.KIND_BLOCK_SUGGESTION.equals(request.kind()) && !claim(request)) {
             log.infof("Slack inbound dropped: duplicate payload (surface=%s kind=%s key=%s)",
                     request.surface(), request.kind(), request.handlerKey());
             return SlackInboundResponse.duplicate();

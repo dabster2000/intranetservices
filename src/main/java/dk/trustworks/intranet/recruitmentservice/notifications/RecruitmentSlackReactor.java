@@ -17,6 +17,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTr
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSlackFeatureFlag;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -81,6 +82,9 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
     RecruitmentAiFeatureFlag aiFlags;
 
     @Inject
+    RecruitmentSlackFeatureFlag slackFlags;
+
+    @Inject
     RecruitmentSlackChannelRouter router;
 
     @Inject
@@ -132,8 +136,17 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         }
     }
 
-    /** A built message plus the practice that routes it (nullable). */
-    private record Notification(String practiceUuid, String message) {
+    /**
+     * A built message plus the practice that routes it (nullable).
+     * {@code blocks} (nullable) upgrades the channel post to Block Kit —
+     * P14 uses it for the triage buttons on the new-referral ping;
+     * {@code message} stays the fallback/notification text either way.
+     */
+    private record Notification(String practiceUuid, String message,
+                                List<com.slack.api.model.block.LayoutBlock> blocks) {
+        Notification(String practiceUuid, String message) {
+            this(practiceUuid, message, null);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -182,7 +195,41 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         }
         sb.append(" referred by ").append(referrer)
                 .append(". Ready for triage.\n").append(baseUrl).append("/recruitment/refer");
-        return new Notification(null, sb.toString()); // referrals have no practice yet → default channel
+        // P14: with triage actions enabled the ping carries its action
+        // buttons (handled by the inbound pipeline behind the master gate);
+        // off ⇒ the P12 flat text — the permanent degradation path.
+        // Referrals have no practice yet → default channel either way.
+        if (!slackFlags.isTriageActionsEnabled()) {
+            return new Notification(null, sb.toString());
+        }
+        return new Notification(null, sb.toString(), triagePingBlocks(sb.toString(), referral));
+    }
+
+    /** The triage ping as Block Kit: the text section + the three actions. */
+    private List<com.slack.api.model.block.LayoutBlock> triagePingBlocks(
+            String message, RecruitmentReferral referral) {
+        return com.slack.api.model.block.Blocks.asBlocks(
+                com.slack.api.model.block.Blocks.section(s -> s.text(
+                        com.slack.api.model.block.composition.BlockCompositions.markdownText(message))),
+                com.slack.api.model.block.Blocks.actions(a -> a.elements(
+                        com.slack.api.model.block.element.BlockElements.asElements(
+                                com.slack.api.model.block.element.BlockElements.button(b -> b
+                                        .actionId("recruitment_triage_create")
+                                        .value(referral.getUuid())
+                                        .style("primary")
+                                        .text(com.slack.api.model.block.composition.BlockCompositions
+                                                .plainText("Create candidate"))),
+                                com.slack.api.model.block.element.BlockElements.button(b -> b
+                                        .actionId("recruitment_triage_view")
+                                        .url(baseUrl + "/recruitment/refer")
+                                        .text(com.slack.api.model.block.composition.BlockCompositions
+                                                .plainText("View in intranet"))),
+                                com.slack.api.model.block.element.BlockElements.button(b -> b
+                                        .actionId("recruitment_triage_dismiss")
+                                        .value(referral.getUuid())
+                                        .style("danger")
+                                        .text(com.slack.api.model.block.composition.BlockCompositions
+                                                .plainText("Dismiss")))))));
     }
 
     private Notification debriefReady(RecruitmentEvent event) {
@@ -271,7 +318,13 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             return;
         }
         router.channelFor(notification.practiceUuid()).ifPresentOrElse(
-                channel -> slackService.sendMessage(channel, message),
+                channel -> {
+                    if (notification.blocks() != null) {
+                        slackService.sendMessage(channel, message, notification.blocks());
+                    } else {
+                        slackService.sendMessage(channel, message);
+                    }
+                },
                 () -> log.debugf("Slack reactor: no channel configured for event seq %d — skipping",
                         event.getSeq()));
     }

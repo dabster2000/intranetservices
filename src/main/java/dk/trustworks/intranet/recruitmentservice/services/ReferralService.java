@@ -114,6 +114,10 @@ public class ReferralService {
 
     // ---- Submit ---------------------------------------------------------------
 
+    /** Event-payload origin markers (spec §3.4 provenance). */
+    public static final String ORIGIN_WEB = "web";
+    public static final String ORIGIN_SLACK = "slack";
+
     /**
      * Persist a new referral (status {@code SUBMITTED}) and append
      * {@code REFERRAL_SUBMITTED}: structural facts in payload
@@ -125,6 +129,18 @@ public class ReferralService {
      */
     @Transactional
     public ReferralCreateResponse submit(ReferralCreateRequest request, UUID actor) {
+        return submit(request, actor, ORIGIN_WEB);
+    }
+
+    /**
+     * {@link #submit(ReferralCreateRequest, UUID)} with an explicit event
+     * origin — the P14 Slack {@code /refer} handler passes
+     * {@link #ORIGIN_SLACK} so the timeline shows provenance and reports
+     * can measure Slack adoption (P13 handler contract). Identical
+     * validation and side effects.
+     */
+    @Transactional
+    public ReferralCreateResponse submit(ReferralCreateRequest request, UUID actor, String origin) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
 
@@ -155,7 +171,7 @@ public class ReferralService {
                 .payload("relation", relation.name())
                 .payload("has_linkedin", linkedinUrl != null)
                 .payload("has_email", email != null)
-                .payload("origin", "web")
+                .payload("origin", ORIGIN_SLACK.equals(origin) ? ORIGIN_SLACK : ORIGIN_WEB)
                 .pii("candidate_name", candidateName)
                 .pii("why_text", whyText);
         piiIfPresent(event, "linkedin_url", linkedinUrl);
@@ -322,6 +338,20 @@ public class ReferralService {
 
     /** Bounded scan over the latest referral-variant AI events (newest first). */
     static final int AI_SUGGESTION_SCAN_CAP = 500;
+
+    /**
+     * The re-validated AI triage suggestions for ONE pending referral —
+     * the P14 Slack triage modal's prefill source, sharing
+     * {@link #pendingAiSuggestions} with the web queue so both surfaces
+     * always show the same (re-validated) values. Null when the
+     * referral-triage toggle is off or no valid suggestions exist.
+     */
+    public PendingReferralAiSuggestions aiSuggestionsForPending(String referralUuid) {
+        if (referralUuid == null || referralUuid.isBlank()) {
+            return null;
+        }
+        return pendingAiSuggestions(List.of(referralUuid)).get(referralUuid);
+    }
 
     /**
      * The latest AI triage suggestions per pending referral, re-validated
@@ -503,6 +533,18 @@ public class ReferralService {
      */
     @Transactional
     public ReferralTriageResponse triage(UUID referralUuid, ReferralTriageRequest request, UUID actor) {
+        return triage(referralUuid, request, actor, ORIGIN_WEB);
+    }
+
+    /**
+     * {@link #triage(UUID, ReferralTriageRequest, UUID)} with an explicit
+     * event origin — the P14 Slack triage buttons pass
+     * {@link #ORIGIN_SLACK}. Identical authorization (recruiter tier,
+     * decision rights), validation, idempotency and side effects.
+     */
+    @Transactional
+    public ReferralTriageResponse triage(UUID referralUuid, ReferralTriageRequest request,
+                                         UUID actor, String origin) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
         requireRecruiterTier(actor);
@@ -520,15 +562,17 @@ public class ReferralService {
         }
 
         String action = request.action() == null ? "" : request.action().trim().toUpperCase(Locale.ROOT);
+        String eventOrigin = ORIGIN_SLACK.equals(origin) ? ORIGIN_SLACK : ORIGIN_WEB;
         return switch (action) {
-            case "CREATE_CANDIDATE" -> triageCreate(referral, request, actor);
-            case "DISMISS" -> triageDismiss(referral, request, actor);
+            case "CREATE_CANDIDATE" -> triageCreate(referral, request, actor, eventOrigin);
+            case "DISMISS" -> triageDismiss(referral, request, actor, eventOrigin);
             default -> throw badRequest("action is required: CREATE_CANDIDATE or DISMISS");
         };
     }
 
     private ReferralTriageResponse triageCreate(RecruitmentReferral referral,
-                                                ReferralTriageRequest request, UUID actor) {
+                                                ReferralTriageRequest request, UUID actor,
+                                                String origin) {
         String firstName = requireLength(request.firstName(), "firstName", 100);
         String lastName = requireLength(request.lastName(), "lastName", 100);
         String email = optionalEmail(request.email());
@@ -572,7 +616,8 @@ public class ReferralService {
                 .candidate(candidate.uuid())
                 .actorUser(actor.toString())
                 .payload("referral_uuid", referral.getUuid())
-                .payload("outcome", "CANDIDATE_CREATED"));
+                .payload("outcome", "CANDIDATE_CREATED")
+                .payload("origin", origin));
 
         log.infof("Referral %s triaged into candidate %s (source=%s, attached=%s) by actor=%s",
                 referral.getUuid(), candidate.uuid(), source, attached, actor);
@@ -580,7 +625,8 @@ public class ReferralService {
     }
 
     private ReferralTriageResponse triageDismiss(RecruitmentReferral referral,
-                                                 ReferralTriageRequest request, UUID actor) {
+                                                 ReferralTriageRequest request, UUID actor,
+                                                 String origin) {
         RecruitmentReferralClosedReason reason = parseEnum(RecruitmentReferralClosedReason.class,
                 request.dismissReason(), "dismissReason");
         referral.dismiss(reason, actor);
@@ -590,7 +636,8 @@ public class ReferralService {
                 .actorUser(actor.toString())
                 .payload("referral_uuid", referral.getUuid())
                 .payload("outcome", "DISMISSED")
-                .payload("dismiss_reason", reason.name()));
+                .payload("dismiss_reason", reason.name())
+                .payload("origin", origin));
 
         log.infof("Referral %s dismissed (%s) by actor=%s", referral.getUuid(), reason, actor);
         return new ReferralTriageResponse(referral.getUuid(), referral.getStatus(), null);

@@ -89,6 +89,17 @@ public class SlackInboundResource {
         optionalText(request.slackTeamId(), 32, "slackTeamId");
         optionalText(request.triggerId(), 80, "triggerId");
         optionalText(request.responseUrl(), 500, "responseUrl");
+        // P14 payload detail — generous caps, sized to what Slack itself
+        // sends (command text 4k, modal inputs ≤3k each, state JSON of a
+        // handful of blocks). Oversize is a contract breach, not traffic.
+        optionalText(request.text(), 4000, "text");
+        optionalText(request.channelId(), 32, "channelId");
+        optionalText(request.messageTs(), 32, "messageTs");
+        optionalText(request.messageText(), 4000, "messageText");
+        optionalText(request.actionValue(), 200, "actionValue");
+        optionalText(request.privateMetadata(), 3000, "privateMetadata");
+        optionalText(request.viewId(), 32, "viewId");
+        optionalText(request.stateValues(), 32768, "stateValues");
     }
 
     private void requireText(String value, int maxLength, String field) {
