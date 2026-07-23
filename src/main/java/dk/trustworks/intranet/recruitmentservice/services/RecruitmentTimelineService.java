@@ -47,6 +47,11 @@ import java.util.stream.Collectors;
  *       teamlead/hiring-owner of one of the candidate's positions) —
  *       otherwise the event stays, {@code pii} is withheld and
  *       {@code piiRedacted=true};</li>
+ *   <li>{@code SCORECARD_SUBMITTED} (P11): {@code pii} (the interviewer's
+ *       free-text notes) only for the AUTHOR and ADMIN — everyone else gets
+ *       {@code piiRedacted=true} and reads notes through the blind-filtered
+ *       scorecards/debrief endpoints. The timeline must never undercut the
+ *       server-side blind rule (spec §5.3);</li>
  *   <li>every other event includes {@code pii} for anyone with profile
  *       access.</li>
  * </ul>
@@ -149,7 +154,7 @@ public class RecruitmentTimelineService {
         Map<String, String> actorNames = resolveActorNames(page);
         List<TimelineEvent> events = page.stream()
                 .map(event -> toDto(event, payloads.get(event.getSeq()),
-                        actorNames, positions, compTier))
+                        actorNames, positions, compTier, viewerUuid, admin))
                 .toList();
         return new CandidateTimelineResponse(events, hasMore);
     }
@@ -178,10 +183,16 @@ public class RecruitmentTimelineService {
     private TimelineEvent toDto(RecruitmentEvent event, Map<String, Object> payload,
                                 Map<String, String> actorNames,
                                 Map<String, RecruitmentPosition> positions,
-                                boolean compTier) {
+                                boolean compTier, String viewerUuid, boolean admin) {
         boolean salaryNote = event.getEventType() == RecruitmentEventType.NOTE_ADDED
                 && NoteRequest.FIELD_SALARY_EXPECTATION.equals(payload.get("field"));
-        boolean redactPii = salaryNote && !compTier;
+        // P11 blind rule on the timeline: scorecard notes only for the
+        // author (and ADMIN) — everyone else reads them through the
+        // blind-filtered scorecards/debrief endpoints.
+        boolean scorecardNotes = event.getEventType() == RecruitmentEventType.SCORECARD_SUBMITTED
+                && !admin
+                && (viewerUuid == null || !viewerUuid.equals(event.getActorUuid()));
+        boolean redactPii = (salaryNote && !compTier) || scorecardNotes;
         Map<String, Object> pii = (redactPii || event.getPii() == null)
                 ? null
                 : parseJson(event.getPii());

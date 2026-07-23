@@ -415,7 +415,14 @@ public class RecruitmentVisibility {
      *       position the viewer can read per {@link #canReadPosition} —
      *       covers hiring owners, current teamleads of the position's team,
      *       current practice leads (non-partner positions of their practice)
-     *       and circle members.</li>
+     *       and circle members — OR an interview assignment on one of the
+     *       candidate's applications ({@link #hasInterviewAssignment}, P11:
+     *       "Interviewer = per-candidate assignment", spec §7.2). The
+     *       interviewer grant deliberately reaches partner-track candidates
+     *       too: assignment is an explicit involvement act made by a
+     *       circle-authorized decision maker, and the assignee needs the kit
+     *       (CV, answers). It does NOT grant position/board visibility, and
+     *       CIRCLE timeline events stay circle-filtered.</li>
      * </ol>
      * The partner circle stays a hard filter in every tier except ADMIN —
      * including the hired-file tier. Callers answer 404 (never 403) when
@@ -430,13 +437,41 @@ public class RecruitmentVisibility {
             return true;
         }
         if (candidate.getStatus() == CandidateStatus.HIRED) {
+            // Involvement (incl. interview assignment) never survives HIRED:
+            // colleagues must not browse a new colleague's interview file.
             return roles.stream().anyMatch(HIRED_FILE_ROLES::contains)
                     && !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
         if (roles.stream().anyMatch(PROFILE_READ_ROLES::contains)) {
             return !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
-        return !filterApplications(viewerUuid, candidate.getUuid()).isEmpty();
+        return !filterApplications(viewerUuid, candidate.getUuid()).isEmpty()
+                || hasInterviewAssignment(viewerUuid, candidate.getUuid());
+    }
+
+    /**
+     * Whether the viewer is an assigned interviewer on any non-cancelled
+     * interview of any of the candidate's applications (P11). Assignment is
+     * the spec §7.2 "Interviewer" tier: it grants candidate-profile
+     * involvement (kit access — CV, answers, timeline) for exactly this
+     * candidate, nothing position-wide. Cancelled interviews grant nothing.
+     */
+    public boolean hasInterviewAssignment(String viewerUuid, String candidateUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
+            return false;
+        }
+        return !em.createNativeQuery("""
+                        SELECT 1 FROM recruitment_interviews i
+                        JOIN recruitment_applications a ON a.uuid = i.application_uuid
+                        WHERE a.candidate_uuid = :candidate
+                          AND i.status <> 'CANCELLED'
+                          AND JSON_CONTAINS(i.interviewer_uuids, JSON_QUOTE(:viewer))
+                        LIMIT 1
+                        """)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("viewer", viewerUuid)
+                .getResultList()
+                .isEmpty();
     }
 
     /** Single-candidate variant of {@link #partnerTrackOnlyCandidateUuids}. */

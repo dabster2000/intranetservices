@@ -21,6 +21,10 @@ import java.util.Optional;
  *   <li>{@code recruitment.pipeline.enabled} — ATS expansion core flag 1
  *       (spec §11), gating the P2–P10 surfaces starting with the positions
  *       page ({@link #isPipelineEnabled()}). Seeded {@code false} by V433.</li>
+ *   <li>{@code recruitment.interviews.enabled} — ATS expansion core flag 2
+ *       (spec §11), gating the P11 interviews surfaces and scheduling
+ *       affordances ({@link #isInterviewsEnabled()}). Seeded {@code false}
+ *       by V433.</li>
  * </ul>
  */
 @ApplicationScoped
@@ -28,6 +32,7 @@ public class RecruitmentFeatureFlag {
 
     static final String SETTING_KEY = "recruitment.dossier.enabled";
     static final String PIPELINE_SETTING_KEY = "recruitment.pipeline.enabled";
+    static final String INTERVIEWS_SETTING_KEY = "recruitment.interviews.enabled";
 
     @Inject
     AppSettingService appSettingService;
@@ -49,6 +54,15 @@ public class RecruitmentFeatureFlag {
      */
     public boolean isPipelineEnabled() {
         return readFlag(PIPELINE_SETTING_KEY);
+    }
+
+    /**
+     * @return true iff the {@code recruitment.interviews.enabled} setting is
+     *         present and parses to {@code true}; false otherwise. Same
+     *         missing-means-off semantics as {@link #isEnabled()}.
+     */
+    public boolean isInterviewsEnabled() {
+        return readFlag(INTERVIEWS_SETTING_KEY);
     }
 
     private boolean readFlag(String key) {
