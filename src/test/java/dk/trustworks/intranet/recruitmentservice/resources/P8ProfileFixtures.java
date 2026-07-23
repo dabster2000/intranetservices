@@ -118,12 +118,28 @@ public final class P8ProfileFixtures {
 
     public static void insertPosition(EntityManager em, String uuid, String title, String track,
                                String practiceUuid, String teamUuid, String hiringOwnerUuid) {
+        insertPosition(em, uuid, title, track, practiceUuid, teamUuid, hiringOwnerUuid,
+                "[\"SCREENING\",\"INTERVIEW_1\",\"OFFER\",\"HIRED\"]",
+                STANDARD_SCORECARD_TEMPLATE_JSON);
+    }
+
+    /** The P2 standard 4-attribute framework, as the position column stores it. */
+    public static final String STANDARD_SCORECARD_TEMPLATE_JSON = """
+            [{"code":"WHY_CONSULTING","label":"Why consulting"},\
+            {"code":"COMMERCIAL_DRIVE","label":"Commercial drive"},\
+            {"code":"UNCERTAINTY","label":"Handling uncertainty"},\
+            {"code":"CULTURE_FIT","label":"Culture fit"}]""";
+
+    /** Full-control variant (P11: trimmed staff templates, custom stage sets). */
+    public static void insertPosition(EntityManager em, String uuid, String title, String track,
+                               String practiceUuid, String teamUuid, String hiringOwnerUuid,
+                               String stageSetJson, String scorecardTemplateJson) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_positions
                             (uuid, title, hiring_track, practice_uuid, team_uuid, hiring_owner_uuid,
-                             stage_set, status, opened_at, created_at, updated_at, created_by)
+                             stage_set, scorecard_template, status, opened_at, created_at, updated_at, created_by)
                         VALUES (:uuid, :title, :track, :practice, :team, :owner,
-                                '["SCREENING","INTERVIEW_1","OFFER","HIRED"]',
+                                :stageSet, :template,
                                 'OPEN', NOW(3), NOW(), NOW(), 'test')
                         """)
                 .setParameter("uuid", uuid)
@@ -132,6 +148,8 @@ public final class P8ProfileFixtures {
                 .setParameter("practice", practiceUuid)
                 .setParameter("team", teamUuid)
                 .setParameter("owner", hiringOwnerUuid)
+                .setParameter("stageSet", stageSetJson)
+                .setParameter("template", scorecardTemplateJson)
                 .executeUpdate();
     }
 
@@ -285,12 +303,70 @@ public final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
+    // ---- Interviews & scorecards (P11) -------------------------------------------
+
+    /**
+     * Insert one interview row. {@code interviewerUuidsJson} is the raw JSON
+     * array (e.g. {@code ["uuid-a","uuid-b"]}); {@code scheduledAt} may be
+     * null for "now + 1 day".
+     */
+    public static void insertInterview(EntityManager em, String uuid, String applicationUuid,
+                                String kind, Integer round, String interviewerUuidsJson,
+                                String status) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_interviews
+                            (uuid, application_uuid, kind, round, scheduled_at, interviewer_uuids,
+                             location, status, created_at, updated_at, created_by)
+                        VALUES (:uuid, :application, :kind, :round,
+                                DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 1 DAY), :interviewers,
+                                'Teams', :status, NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("application", applicationUuid)
+                .setParameter("kind", kind)
+                .setParameter("round", round)
+                .setParameter("interviewers", interviewerUuidsJson)
+                .setParameter("status", status)
+                .executeUpdate();
+    }
+
+    /** Insert one submitted scorecard (scores keyed on the standard template). */
+    public static void insertScorecard(EntityManager em, String uuid, String interviewUuid,
+                                String interviewerUuid, String recommendation) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_scorecards
+                            (uuid, interview_uuid, interviewer_uuid, scores, recommendation,
+                             submitted_at, created_at, updated_at, created_by)
+                        VALUES (:uuid, :interview, :interviewer,
+                                '{"WHY_CONSULTING":3,"COMMERCIAL_DRIVE":3,"UNCERTAINTY":3,"CULTURE_FIT":3}',
+                                :recommendation, UTC_TIMESTAMP(3), NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("interview", interviewUuid)
+                .setParameter("interviewer", interviewerUuid)
+                .setParameter("recommendation", recommendation)
+                .executeUpdate();
+    }
+
     // ---- Cleanup ----------------------------------------------------------------
 
     public static void cleanupRecruitmentRows(EntityManager em, List<String> candidateUuids,
                                        List<String> positionUuids, List<String> userUuids,
                                        String practiceUuid) {
         if (!candidateUuids.isEmpty()) {
+            // FK order: scorecards → interviews → applications (RESTRICT FKs).
+            em.createNativeQuery("""
+                            DELETE FROM recruitment_scorecards WHERE interview_uuid IN
+                            (SELECT i.uuid FROM recruitment_interviews i
+                             JOIN recruitment_applications a ON a.uuid = i.application_uuid
+                             WHERE a.candidate_uuid IN :c)
+                            """)
+                    .setParameter("c", candidateUuids).executeUpdate();
+            em.createNativeQuery("""
+                            DELETE FROM recruitment_interviews WHERE application_uuid IN
+                            (SELECT uuid FROM recruitment_applications WHERE candidate_uuid IN :c)
+                            """)
+                    .setParameter("c", candidateUuids).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_events WHERE candidate_uuid IN :c")
                     .setParameter("c", candidateUuids).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_application_answers WHERE candidate_uuid IN :c")

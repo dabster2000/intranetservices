@@ -228,6 +228,81 @@ public interface GraphApiClient {
         @PathParam("itemId") String itemId
     );
 
+    // ---- Calendar (Recruitment ATS P11: interview scheduling) --------------
+
+    /**
+     * Creates a calendar event in a user's default calendar. Used by the
+     * recruitment interview scheduler (behind
+     * {@code dk.trustworks.recruitment.graph.calendar.enabled}) — requires
+     * the app-level {@code Calendars.ReadWrite} permission.
+     *
+     * @param userPrincipal the mailbox owner (UPN/email or user id)
+     * @param event         the event to create
+     * @return the created event (only {@code id} is mapped)
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/user-post-events">Create event</a>
+     */
+    @POST
+    @Path("/users/{userPrincipal}/calendar/events")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    CalendarEvent createCalendarEvent(
+        @PathParam("userPrincipal") String userPrincipal,
+        CalendarEventRequest event
+    );
+
+    /**
+     * Updates a calendar event (partial PATCH — only non-null fields are
+     * sent). Attendees receive an updated invitation.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/event-update">Update event</a>
+     */
+    @PATCH
+    @Path("/users/{userPrincipal}/events/{eventId}")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    CalendarEvent updateCalendarEvent(
+        @PathParam("userPrincipal") String userPrincipal,
+        @PathParam("eventId") String eventId,
+        CalendarEventRequest patch
+    );
+
+    /**
+     * Deletes a calendar event — attendees receive a cancellation. 404 is
+     * treated as idempotent by the caller.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/event-delete">Delete event</a>
+     */
+    @DELETE
+    @Path("/users/{userPrincipal}/events/{eventId}")
+    void deleteCalendarEvent(
+        @PathParam("userPrincipal") String userPrincipal,
+        @PathParam("eventId") String eventId
+    );
+
+    /** Graph calendar event response — only the id is needed. */
+    record CalendarEvent(String id) { }
+
+    /**
+     * Graph calendar event create/patch body (subset of the Graph event
+     * resource). Null fields are omitted on PATCH.
+     */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    record CalendarEventRequest(
+        String subject,
+        ItemBody body,
+        DateTimeTimeZone start,
+        DateTimeTimeZone end,
+        EventLocation location,
+        java.util.List<Attendee> attendees
+    ) {
+        public record ItemBody(String contentType, String content) { }
+        public record DateTimeTimeZone(String dateTime, String timeZone) { }
+        public record EventLocation(String displayName) { }
+        public record Attendee(EmailAddress emailAddress, String type) {
+            public record EmailAddress(String address, String name) { }
+        }
+    }
+
     /**
      * Request body for a DriveItem PATCH (e.g. rename via {@code name}).
      */
