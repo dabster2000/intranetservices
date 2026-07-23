@@ -64,6 +64,16 @@ class RecruitmentResourceSendSignatureGateTest {
                     .setParameter("uuid", candidateUuid)
                     .setParameter("email", candidateUuid + "@example.com")
                     .setParameter("actor", actorUuid).executeUpdate();
+            // The send-signature endpoint now applies object-level authz
+            // (RecruitmentVisibility.canReadCandidateProfile) before the P10
+            // team gate. Give the acting user the ADMIN role so the candidate
+            // is always visible — this keeps the gate transparent so the tests
+            // below exercise the team gate itself, including the partner-track
+            // case a non-circle recruiter would (correctly) be 404'd from.
+            em.createNativeQuery(
+                            "INSERT INTO roles (uuid, role, useruuid) VALUES (:uuid, 'ADMIN', :actor)")
+                    .setParameter("uuid", UUID.randomUUID().toString())
+                    .setParameter("actor", actorUuid).executeUpdate();
             em.createNativeQuery("""
                             INSERT INTO candidate_dossiers
                                 (uuid, candidate_uuid, template_uuid, status)
@@ -105,6 +115,8 @@ class RecruitmentResourceSendSignatureGateTest {
                     .setParameter("c", candidateUuid).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid = :c")
                     .setParameter("c", candidateUuid).executeUpdate();
+            em.createNativeQuery("DELETE FROM roles WHERE useruuid = :actor")
+                    .setParameter("actor", actorUuid).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_positions WHERE uuid IN :p")
                     .setParameter("p", List.of(positionUuid, partnerPositionUuid)).executeUpdate();
             if (previousFlagValue == null) {

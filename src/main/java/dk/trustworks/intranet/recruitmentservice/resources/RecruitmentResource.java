@@ -111,6 +111,13 @@ import java.util.zip.ZipOutputStream;
  *   <li>Class-level {@code @RolesAllowed({"recruitment:read"})} sets the
  *       baseline; method-level {@code @RolesAllowed({"recruitment:write"})}
  *       overrides for write operations.</li>
+ *   <li>Object-level authorization on every per-candidate dossier endpoint
+ *       via {@link #requireVisibleCandidate(UUID)}: the scope alone is not
+ *       enough — the acting user (from {@code X-Requested-By}) must be able
+ *       to read the candidate per
+ *       {@link RecruitmentVisibility#canReadCandidateProfile}. Invisible
+ *       candidates answer 404 (never 403), mirroring the P8 profile reads —
+ *       existence of a partner-track candidate must not leak.</li>
  *   <li>{@link RecruitmentSecuredResponse} binds
  *       {@code RecruitmentRevisionResponseFilter} to this resource so revision
  *       snapshot bodies have sensitive placeholder values stripped for callers
@@ -289,6 +296,7 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}")
     public Response getCandidate(@PathParam("uuid") UUID uuid) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         return candidateService.findById(uuid)
                 .map(dto -> Response.ok(dto).build())
                 .orElseThrow(() -> new NotFoundException("Candidate not found: " + uuid));
@@ -300,6 +308,7 @@ public class RecruitmentResource {
     public Response updateCandidate(@PathParam("uuid") UUID uuid,
                                     @Valid CandidateRequest request) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse updated = candidateService.update(uuid, request, currentActor());
         return Response.ok(updated).build();
@@ -311,6 +320,7 @@ public class RecruitmentResource {
     public Response declineCandidate(@PathParam("uuid") UUID uuid,
                                      @Valid DeclineRequest request) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse result = candidateService.decline(uuid, request.reason(), currentActor());
         return Response.ok(result).build();
@@ -322,6 +332,7 @@ public class RecruitmentResource {
     public Response withdrawCandidate(@PathParam("uuid") UUID uuid,
                                       @Valid WithdrawRequest request) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse result = candidateService.withdraw(uuid, request.reason(), currentActor());
         return Response.ok(result).build();
@@ -448,6 +459,7 @@ public class RecruitmentResource {
     public Response convertCandidate(@PathParam("uuid") UUID uuid,
                                      @Valid ConvertRequest request) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
 
@@ -477,6 +489,7 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}/dossier")
     public Response getDossier(@PathParam("uuid") UUID uuid) {
         enforceFlag();
+        requireVisibleCandidate(uuid);
         return dossierService.loadForCandidate(uuid)
                 .map(d -> Response.ok(d).build())
                 .orElseThrow(() -> new NotFoundException("Dossier not found for candidate: " + uuid));
@@ -488,6 +501,7 @@ public class RecruitmentResource {
     public Response updateDossier(@PathParam("uuid") UUID candidateUuid,
                                   @Valid DossierRequest request) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         DossierResponse updated = dossierService.update(
@@ -501,6 +515,7 @@ public class RecruitmentResource {
     public Response addAppendix(@PathParam("uuid") UUID candidateUuid,
                                 AppendixUploadRequest request) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         if (request == null || request.originalFilename == null || request.originalFilename.isBlank()) {
             throw new WebApplicationException(
                     "originalFilename is required",
@@ -552,6 +567,7 @@ public class RecruitmentResource {
     public Response removeAppendix(@PathParam("uuid") UUID candidateUuid,
                                    @PathParam("fileUuid") String fileUuid) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         dossierService.removeAppendix(UUID.fromString(dossier.getUuid()), fileUuid, currentActor());
         return Response.noContent().build();
@@ -561,6 +577,7 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}/dossier/revisions")
     public Response listRevisions(@PathParam("uuid") UUID candidateUuid) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         List<RevisionResponse> revisions = dossierRevisionService.findByDossier(
                 UUID.fromString(dossier.getUuid()));
@@ -572,6 +589,7 @@ public class RecruitmentResource {
     public Response getRevision(@PathParam("uuid") UUID candidateUuid,
                                 @PathParam("revUuid") UUID revUuid) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         return dossierRevisionService.findById(revUuid)
                 .filter(r -> isRevisionForCandidate(r, candidateUuid))
                 .map(r -> Response.ok(r).build())
@@ -590,6 +608,7 @@ public class RecruitmentResource {
                                              @PathParam("revUuid") UUID revUuid,
                                              @PathParam("index") int index) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         CandidateDossierRevision revision = requireRevisionForCandidate(revUuid, candidateUuid);
         CandidateDossier dossier = requireDossierById(revision.getDossierUuid());
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(revision, dossier.getTemplateUuid());
@@ -634,6 +653,7 @@ public class RecruitmentResource {
             @PathParam("revUuid") UUID revisionUuid) {
 
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
 
         CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
         if (revision == null
@@ -684,6 +704,7 @@ public class RecruitmentResource {
             @PathParam("revUuid") UUID revisionUuid) {
 
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
 
         CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
         if (revision == null
@@ -723,6 +744,7 @@ public class RecruitmentResource {
             @PathParam("uuid") UUID candidateUuid,
             @PathParam("revUuid") UUID revisionUuid) {
         enforceFlag();
+        requireVisibleCandidate(candidateUuid);
         return dossierService.branchFromRevision(candidateUuid, revisionUuid, currentActor());
     }
 
@@ -743,7 +765,7 @@ public class RecruitmentResource {
         }
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         User sender = requireUser(actor);
 
@@ -806,7 +828,7 @@ public class RecruitmentResource {
         SendReviewRequest body = request != null ? request : new SendReviewRequest(null);
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
         // 1) Generate PDFs from the current draft (so bytes exist before the
@@ -870,7 +892,7 @@ public class RecruitmentResource {
         SendSignatureRequest body = request != null ? request : new SendSignatureRequest(null);
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
         // P10 gate (fail-fast zone, BEFORE PDF generation and the NextSign
@@ -1101,9 +1123,30 @@ public class RecruitmentResource {
         }
     }
 
-    private RecruitmentCandidate requireCandidate(UUID candidateUuid) {
+    /**
+     * Object-level authorization gate for the dossier endpoint family:
+     * resolve the candidate and apply the same profile-visibility rule as the
+     * P8 read surfaces ({@link RecruitmentVisibility#canReadCandidateProfile}).
+     * ADMIN always passes; the profile-read tier (HR/CXO/TECHPARTNER) passes
+     * except for partner-track-only candidates outside their circles; everyone
+     * else needs involvement via a readable application; HIRED files narrow to
+     * HR/CXO/TECHPARTNER/DPO. An existing-but-invisible candidate answers the
+     * same 404 as a nonexistent one — a partner-track candidate's existence
+     * must not leak.
+     * <p>
+     * The viewer is the {@code X-Requested-By} user (set by
+     * {@code HeaderInterceptor}). A missing/blank header fails closed to 404:
+     * every caller of these REST paths is the BFF, which always resolves the
+     * session user and sets the header — there are no system/job callers.
+     * Candidates with zero applications (legacy dossier-only flow) are never
+     * partner-track-only, so they stay visible to the profile-read tier.
+     */
+    private RecruitmentCandidate requireVisibleCandidate(UUID candidateUuid) {
+        String viewer = requestHeaderHolder.getUserUuid();
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
-        if (candidate == null) {
+        if (candidate == null
+                || viewer == null || viewer.isBlank()
+                || !visibility.canReadCandidateProfile(viewer, candidate)) {
             throw new NotFoundException("Candidate not found: " + candidateUuid);
         }
         return candidate;
