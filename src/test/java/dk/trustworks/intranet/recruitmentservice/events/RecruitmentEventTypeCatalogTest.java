@@ -25,6 +25,11 @@ class RecruitmentEventTypeCatalogTest {
         // REFERRAL_TRIAGED is the matching P6 addition: the triage decision
         // (create-candidate or dismiss) is a command with no spec §3.4 type
         // of its own. Recorded in findings §P6.
+        // CANDIDATE_IDLE_NUDGED and DEBRIEF_STALLED_NUDGED are the P17
+        // additions: the spec §3.4 catalog covered only SCORECARD_NUDGED,
+        // but the idle and debrief pings are reactor side effects too and
+        // "reactors' own side effects are recorded as events" (spec §3.4).
+        // Recorded in findings §P17.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -33,6 +38,7 @@ class RecruitmentEventTypeCatalogTest {
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
+                "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN",
@@ -46,9 +52,9 @@ class RecruitmentEventTypeCatalogTest {
                 .map(Enum::name)
                 .collect(Collectors.toSet());
         assertEquals(expected, actual,
-                "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED "
-                        + "and P6 REFERRAL_TRIAGED additions exactly");
-        assertEquals(42, RecruitmentEventType.values().length);
+                "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
+                        + "P6 REFERRAL_TRIAGED and P17 *_NUDGED additions exactly");
+        assertEquals(44, RecruitmentEventType.values().length);
     }
 
     @Test
