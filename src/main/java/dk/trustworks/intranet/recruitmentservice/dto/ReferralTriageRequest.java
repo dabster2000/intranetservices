@@ -18,6 +18,11 @@ package dk.trustworks.intranet.recruitmentservice.dto;
  *   <li><b>DISMISS</b>: {@link #dismissReason} required
  *       ({@code DUPLICATE} | {@code NOT_RELEVANT} | {@code OTHER}).</li>
  * </ul>
+ * {@link #experienceLevel} (P9, optional): a
+ * {@code CandidateExperienceLevel} name — typically prefilled from the
+ * AI triage suggestion, always recruiter-editable. Validated explicitly
+ * (bean validation is inert); garbage answers 400. Only the
+ * CREATE_CANDIDATE leg reads it.
  */
 public record ReferralTriageRequest(
         String action,
@@ -29,6 +34,7 @@ public record ReferralTriageRequest(
         String sponsoringPartnerUuid,
         String relevantTeamleadUuid,
         String positionUuid,
-        String dismissReason
+        String dismissReason,
+        String experienceLevel
 ) {
 }

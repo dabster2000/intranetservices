@@ -56,6 +56,8 @@ public record CandidateRequest(
         CandidateExperienceLevel experienceLevel,
         List<@Size(max = 100) String> specializations,
         CandidateSecurityClearance securityClearance,
-        Boolean securityRelevant
+        Boolean securityRelevant,
+        List<@Size(max = 120) String> languages,
+        @Size(max = 200) String currentEmployer
 ) {
 }

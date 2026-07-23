@@ -154,6 +154,22 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     @Column(name = "security_relevant")
     private Boolean securityRelevant;
 
+    /**
+     * Spoken/written languages — free-form JSON string array like
+     * {@link #tags} (V440, AI-suggestible via the P9 intake chips).
+     */
+    @Convert(converter = StringListConverter.class)
+    @Column(name = "languages", columnDefinition = "TEXT")
+    private List<String> languages;
+
+    /**
+     * Current employer (free text, V440, AI-suggestible). Classified as
+     * personal data on events — {@code current_employer} is a forbidden
+     * payload key; changes travel in the pii section.
+     */
+    @Column(name = "current_employer", length = 200)
+    private String currentEmployer;
+
     // ---- ATS: GDPR bookkeeping (data only until P19) ----------------------------
 
     /** System-maintained — never accepted from API clients. */

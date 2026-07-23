@@ -253,7 +253,7 @@ class ReferralServiceIntegrationTest {
                         PII_SENTINEL + "-Jane", PII_SENTINEL + "-Larsen",
                         null, null,
                         "javascript:alert(1)//linkedin.com",
-                        null, null, null, null)));
+                        null, null, null, null, null)));
         assertEquals(400, denied.getResponse().getStatus());
         assertEquals(RecruitmentReferralStatus.SUBMITTED,
                 reloadReferral(referralUuid).getStatus(), "nothing mutated");
@@ -602,12 +602,12 @@ class ReferralServiceIntegrationTest {
                 PII_SENTINEL + "-Jane", PII_SENTINEL + "-Larsen",
                 "jane.larsen@example.com", null,
                 "https://www.linkedin.com/in/janelarsen",
-                sponsoringPartnerUuid, null, positionUuid, null));
+                sponsoringPartnerUuid, null, positionUuid, null, null));
     }
 
     private ReferralTriageRequest dismissRequest(String reason) {
         return new ReferralTriageRequest("DISMISS",
-                null, null, null, null, null, null, null, null, reason);
+                null, null, null, null, null, null, null, null, reason, null);
     }
 
     private ReferralTriageResponse triage(String referralUuid, ReferralTriageRequest request) {

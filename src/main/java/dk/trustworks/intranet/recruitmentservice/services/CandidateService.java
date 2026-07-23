@@ -154,6 +154,8 @@ public class CandidateService {
         candidate.setSpecializations(normalizeStrings(req.specializations()));
         candidate.setSecurityClearance(req.securityClearance());
         candidate.setSecurityRelevant(req.securityRelevant());
+        candidate.setLanguages(normalizeStrings(req.languages()));
+        candidate.setCurrentEmployer(trimToNull(req.currentEmployer()));
         candidate.setLawfulBasis(CandidateLawfulBasis.LEGITIMATE_INTEREST);
         if (req.source() != null && req.source().requiresArt14Notice()) {
             candidate.setArt14Required(Boolean.TRUE);
@@ -180,6 +182,7 @@ public class CandidateService {
                 .payload("education_level", name(candidate.getEducationLevel()))
                 .payload("experience_level", name(candidate.getExperienceLevel()))
                 .payload("specializations", candidate.getSpecializations())
+                .payload("languages", candidate.getLanguages())
                 .payload("security_clearance", name(candidate.getSecurityClearance()))
                 .payload("security_relevant", candidate.getSecurityRelevant())
                 .payload("lawful_basis", candidate.getLawfulBasis().name())
@@ -190,6 +193,7 @@ public class CandidateService {
         piiIfPresent(event, "phone", candidate.getPhone());
         piiIfPresent(event, "linkedin_url", candidate.getLinkedinUrl());
         piiIfPresent(event, "external_referrer_name", candidate.getExternalReferrerName());
+        piiIfPresent(event, "current_employer", candidate.getCurrentEmployer());
         if (candidate.getSourceDetail() != null && !candidate.getSourceDetail().isEmpty()) {
             // The adaptive follow-up may carry reference names — the whole
             // blob is treated as personal data (spec §4.1).
@@ -440,6 +444,17 @@ public class CandidateService {
                     beforeAfter(candidate.getSecurityRelevant(), req.securityRelevant()));
             candidate.setSecurityRelevant(req.securityRelevant());
         }
+        if (req.languages() != null) {
+            List<String> normalized = normalizeStrings(req.languages());
+            if (!Objects.equals(nullSafeList(candidate.getLanguages()), nullSafeList(normalized))) {
+                structuralChanges.put("languages", beforeAfter(candidate.getLanguages(), normalized));
+                candidate.setLanguages(normalized);
+            }
+        }
+        // current_employer is a forbidden payload key — personal data, so
+        // the change travels in the pii section like the name fields.
+        applyPersonal(personalChanges, "current_employer", candidate.getCurrentEmployer(),
+                trimToNull(req.currentEmployer()), candidate::setCurrentEmployer);
 
         if (!structuralChanges.isEmpty() || !personalChanges.isEmpty()) {
             List<String> changedFields = new ArrayList<>(structuralChanges.keySet());
@@ -725,6 +740,8 @@ public class CandidateService {
                 c.getSpecializations(),
                 c.getSecurityClearance(),
                 c.getSecurityRelevant(),
+                c.getLanguages(),
+                c.getCurrentEmployer(),
                 c.getLawfulBasis(),
                 c.getArt14Required(),
                 c.getArt14Deadline(),
