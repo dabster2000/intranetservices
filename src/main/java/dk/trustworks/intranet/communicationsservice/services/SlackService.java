@@ -120,6 +120,31 @@ public class SlackService {
     }
 
     /**
+     * DMs a Block Kit message to a user (P18 — the actionable scorecard
+     * nudge/kit DMs). Unlike the best-effort channel variant this THROWS on
+     * transport failure <em>and</em> on a not-ok API response — callers pair
+     * the DM with bookkeeping in one transaction (the P17 DM-before-event
+     * discipline), so a swallowed {@code invalid_blocks} would silently
+     * record a nudge nobody received. {@code fallbackText} is the
+     * notification/preview text and the degradation content for clients
+     * that cannot render blocks.
+     */
+    public void sendMessage(User user, String fallbackText,
+                            java.util.List<com.slack.api.model.block.LayoutBlock> blocks)
+            throws SlackApiException, IOException {
+        Slack slack = Slack.getInstance();
+        log.info("Sending block message to " + user.getUsername());
+        ChatPostMessageResponse response = slack.methods(motherSlackBotToken)
+                .chatPostMessage(req -> req
+                        .channel(user.getSlackusername())
+                        .text(fallbackText)
+                        .blocks(blocks));
+        if (!response.isOk()) {
+            throw new IOException("Slack block DM failed: " + response.getError());
+        }
+    }
+
+    /**
      * Opens a modal view against a {@code trigger_id} (P14 — Slack inbound
      * handlers). Trigger ids expire after 3 seconds, so callers invoke this
      * synchronously inside the dispatch path. Throws on transport failure or

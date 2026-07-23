@@ -44,6 +44,7 @@ class RecruitmentSlackReactorTest {
     private static final String PIPELINE_FLAG = P8ProfileFixtures.PIPELINE_FLAG;
     private static final String BRIEF_FLAG = "recruitment.ai.brief.enabled";
     private static final String TRIAGE_FLAG = "recruitment.slack.triage-actions.enabled";
+    private static final String SCORECARD_TOGGLE = "recruitment.slack.scorecard.enabled";
     private static final String DEFAULT_KEY = RecruitmentSlackChannelRouter.DEFAULT_CHANNEL_KEY;
 
     @Inject
@@ -57,6 +58,8 @@ class RecruitmentSlackReactorTest {
 
     private String practiceUuid;
     private String actorUser;
+    private String interviewer1;
+    private String interviewer2;
     private String positionUuid;
     private String candidateUuid;
     private String applicationUuid;
@@ -64,6 +67,7 @@ class RecruitmentSlackReactorTest {
     private String previousPipeline;
     private String previousBrief;
     private String previousTriage;
+    private String previousScorecardToggle;
     private String previousDefault;
     private String previousOverride;
 
@@ -75,8 +79,14 @@ class RecruitmentSlackReactorTest {
         candidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
 
+        interviewer1 = UUID.randomUUID().toString();
+        interviewer2 = UUID.randomUUID().toString();
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, actorUser, "Rina", "Recruiter");
+            P8ProfileFixtures.insertUser(em, interviewer1, "Ivan", "Interviewer");
+            P8ProfileFixtures.insertUser(em, interviewer2, "Carla", "CoInterviewer");
+            P12NotificationFixtures.setUserSlackLink(em, interviewer1, "U-P18-I1");
+            P12NotificationFixtures.setUserSlackLink(em, interviewer2, "U-P18-I2");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             P8ProfileFixtures.insertPosition(em, positionUuid, "Senior Consultant",
                     "PRACTICE_TEAM", practiceUuid, null, null);
@@ -88,6 +98,7 @@ class RecruitmentSlackReactorTest {
             previousPipeline = P8ProfileFixtures.setFlag(em, PIPELINE_FLAG, "false");
             previousBrief = P8ProfileFixtures.setFlag(em, BRIEF_FLAG, "false");
             previousTriage = P8ProfileFixtures.setFlag(em, TRIAGE_FLAG, "false");
+            previousScorecardToggle = P8ProfileFixtures.setFlag(em, SCORECARD_TOGGLE, "false");
             previousDefault = P8ProfileFixtures.setFlag(em, DEFAULT_KEY, "");
             previousOverride = null;
         });
@@ -107,10 +118,12 @@ class RecruitmentSlackReactorTest {
                     .setParameter("a", actorUser).executeUpdate();
             P12NotificationFixtures.deleteReferralsBy(em, actorUser);
             P8ProfileFixtures.cleanupRecruitmentRows(em,
-                    List.of(candidateUuid), List.of(positionUuid), List.of(actorUser), practiceUuid);
+                    List.of(candidateUuid), List.of(positionUuid),
+                    List.of(actorUser, interviewer1, interviewer2), practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousPipeline);
             P8ProfileFixtures.restoreFlag(em, BRIEF_FLAG, previousBrief);
             P8ProfileFixtures.restoreFlag(em, TRIAGE_FLAG, previousTriage);
+            P8ProfileFixtures.restoreFlag(em, SCORECARD_TOGGLE, previousScorecardToggle);
             P8ProfileFixtures.restoreFlag(em, DEFAULT_KEY, previousDefault);
             P8ProfileFixtures.restoreFlag(em,
                     RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid,
@@ -395,6 +408,181 @@ class RecruitmentSlackReactorTest {
         assertTrue(message.contains("round 1"));
         assertFalse(message.contains("STRONG_YES"), "recommendations never reach Slack (P11 rule)");
         assertFalse(message.contains(PII_SENTINEL), "scorecard notes never reach Slack");
+    }
+
+    // ---- P18: interview-kit DMs + the debrief-ready owner DM -------------------------
+
+    private long insertInterviewLifecycleEvent(String type, String interviewUuid, Integer round) {
+        String kind = round == null ? "INFORMAL" : "ROUND";
+        return QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.insertEvent(em, type, candidateUuid, applicationUuid,
+                        positionUuid, "USER", actorUser, "NORMAL",
+                        "{\"interview_uuid\":\"" + interviewUuid + "\",\"kind\":\"" + kind
+                                + "\"" + (round == null ? "" : ",\"round\":" + round) + "}",
+                        null));
+    }
+
+    /** All DM texts sent to the given user via the plain-text DM overload. */
+    private List<String> dmTextsTo(String userUuid) {
+        ArgumentCaptor<dk.trustworks.intranet.domain.user.entity.User> users =
+                ArgumentCaptor.forClass(dk.trustworks.intranet.domain.user.entity.User.class);
+        ArgumentCaptor<String> texts = ArgumentCaptor.forClass(String.class);
+        try {
+            verify(slackService, org.mockito.Mockito.atLeast(0))
+                    .sendMessage(users.capture(), texts.capture());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+        return java.util.stream.IntStream.range(0, users.getAllValues().size())
+                .filter(i -> userUuid.equals(users.getAllValues().get(i).getUuid()))
+                .mapToObj(i -> texts.getAllValues().get(i))
+                .toList();
+    }
+
+    @Test
+    void interviewScheduled_kitDmToEachInterviewer_deepLinkOnlyWhileToggleOff() throws Exception {
+        pipelineOnWithChannel("C-DEFAULT");
+        String interviewUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertInterview(em, interviewUuid, applicationUuid, "ROUND", 1,
+                        "[\"" + interviewer1 + "\",\"" + interviewer2 + "\"]", "SCHEDULED"));
+        insertInterviewLifecycleEvent("INTERVIEW_SCHEDULED", interviewUuid, 1);
+
+        reactor.catchUp();
+
+        for (String interviewer : List.of(interviewer1, interviewer2)) {
+            List<String> dms = dmTextsTo(interviewer);
+            assertEquals(1, dms.size(), "one kit DM per assigned interviewer");
+            String dm = dms.getFirst();
+            assertTrue(dm.contains("Interview scheduled"), dm);
+            assertTrue(dm.contains("Anna Ager"), "kit names the candidate");
+            assertTrue(dm.contains("Senior Consultant"), "kit carries the position");
+            assertTrue(dm.contains("round 1"), "kit states the round");
+            assertTrue(dm.contains("Why consulting"), "kit lists the focus areas");
+            assertTrue(dm.contains("/recruitment/interviews"), "kit deep link");
+        }
+        // Toggle off ⇒ never the Block Kit DM overload (deep-link-only —
+        // the explicit degradation chain).
+        verify(slackService, never()).sendMessage(
+                any(dk.trustworks.intranet.domain.user.entity.User.class), anyString(), any());
+        // No channel post for kit DMs — interviewer-directed by construction.
+        verify(slackService, never()).sendMessage(anyString(), anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void interviewScheduled_toggleOn_kitDmCarriesScorecardButton() {
+        pipelineOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, SCORECARD_TOGGLE, "true"));
+        String interviewUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertInterview(em, interviewUuid, applicationUuid, "ROUND", 1,
+                        "[\"" + interviewer1 + "\"]", "SCHEDULED"));
+        insertInterviewLifecycleEvent("INTERVIEW_SCHEDULED", interviewUuid, 1);
+
+        reactor.catchUp();
+
+        ArgumentCaptor<dk.trustworks.intranet.domain.user.entity.User> user =
+                ArgumentCaptor.forClass(dk.trustworks.intranet.domain.user.entity.User.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<List<com.slack.api.model.block.LayoutBlock>> blocks =
+                ArgumentCaptor.forClass((Class) List.class);
+        try {
+            verify(slackService).sendMessage(user.capture(), text.capture(), blocks.capture());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+        assertEquals(interviewer1, user.getValue().getUuid());
+        assertTrue(text.getValue().contains("Interview scheduled"),
+                "fallback text stays the full kit message");
+        String rendered = blocks.getValue().toString();
+        assertTrue(rendered.contains("recruitment_scorecard_open"),
+                "the scorecard button hangs on the kit DM: " + rendered);
+        assertTrue(rendered.contains(interviewUuid), "button value = interview uuid");
+    }
+
+    @Test
+    void interviewCancelled_dmWithoutButton_evenWithToggleOn() throws Exception {
+        pipelineOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, SCORECARD_TOGGLE, "true"));
+        String interviewUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertInterview(em, interviewUuid, applicationUuid, "ROUND", 2,
+                        "[\"" + interviewer1 + "\"]", "CANCELLED"));
+        insertInterviewLifecycleEvent("INTERVIEW_CANCELLED", interviewUuid, 2);
+
+        reactor.catchUp();
+
+        List<String> dms = dmTextsTo(interviewer1);
+        assertEquals(1, dms.size());
+        assertTrue(dms.getFirst().contains("Interview cancelled"), dms.getFirst());
+        assertTrue(dms.getFirst().contains("nothing more to do"), dms.getFirst());
+        verify(slackService, never()).sendMessage(
+                any(dk.trustworks.intranet.domain.user.entity.User.class), anyString(), any());
+    }
+
+    @Test
+    void interviewScheduled_unlinkedInterviewer_visibleSkip_othersStillDmed() {
+        pipelineOnWithChannel("C-DEFAULT");
+        String unlinked = UUID.randomUUID().toString();
+        String interviewUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() -> {
+            P8ProfileFixtures.insertUser(em, unlinked, "Ulla", "Unlinked");
+            P8ProfileFixtures.insertInterview(em, interviewUuid, applicationUuid, "ROUND", 1,
+                    "[\"" + interviewer1 + "\",\"" + unlinked + "\"]", "SCHEDULED");
+        });
+        insertInterviewLifecycleEvent("INTERVIEW_SCHEDULED", interviewUuid, 1);
+        try {
+            reactor.catchUp();
+            assertEquals(1, dmTextsTo(interviewer1).size(), "linked interviewer gets the kit");
+            assertEquals(0, dmTextsTo(unlinked).size(), "unlinked interviewer skipped, not fatal");
+        } finally {
+            QuarkusTransaction.requiringNew().run(() ->
+                    em.createNativeQuery("DELETE FROM user WHERE uuid = :u")
+                            .setParameter("u", unlinked).executeUpdate());
+        }
+    }
+
+    @Test
+    void debriefReady_alsoDmsTheDecisionOwner_deepLinkNoButtons() throws Exception {
+        pipelineOnWithChannel("C-DEFAULT");
+        // interviewer1 doubles as the position's hiring owner — the P17
+        // owner ladder's first rung (shared code, RecruitmentSlaService).
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("UPDATE recruitment_positions SET hiring_owner_uuid = :o "
+                                + "WHERE uuid = :p")
+                        .setParameter("o", interviewer1)
+                        .setParameter("p", positionUuid).executeUpdate());
+        String interviewUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() -> {
+            P8ProfileFixtures.insertInterview(em, interviewUuid, applicationUuid, "ROUND", 1,
+                    "[\"" + interviewer2 + "\"]", "HELD");
+            P8ProfileFixtures.insertScorecard(em, UUID.randomUUID().toString(),
+                    interviewUuid, interviewer2, "STRONG_YES");
+            P8ProfileFixtures.insertEvent(em, "SCORECARD_SUBMITTED", candidateUuid,
+                    applicationUuid, positionUuid, "USER", interviewer2, "NORMAL",
+                    "{\"interview_uuid\":\"" + interviewUuid
+                            + "\",\"kind\":\"ROUND\",\"round\":1,\"origin\":\"slack\"}",
+                    "{\"notes\":\"" + PII_SENTINEL + " note\"}");
+        });
+
+        String channelMessage = channelMessageAfterCatchUp(1);
+        assertTrue(channelMessage.contains("Debrief ready"), "channel ping unchanged");
+
+        List<String> ownerDms = dmTextsTo(interviewer1);
+        assertEquals(1, ownerDms.size(), "the decision owner is DM'ed personally");
+        String dm = ownerDms.getFirst();
+        assertTrue(dm.contains("Debrief ready"), dm);
+        assertTrue(dm.contains("/recruitment/candidates/" + candidateUuid),
+                "deep link — the decision happens in the intranet");
+        assertFalse(dm.contains("STRONG_YES"), "no scores/recommendations (blind rule)");
+        assertFalse(dm.contains(PII_SENTINEL), "no scorecard notes");
+        // No decision buttons anywhere in Slack (the locked boundary):
+        // the owner DM uses the plain-text overload, never blocks.
+        verify(slackService, never()).sendMessage(
+                any(dk.trustworks.intranet.domain.user.entity.User.class), anyString(), any());
     }
 
     // ---- Slack mrkdwn injection ------------------------------------------------------

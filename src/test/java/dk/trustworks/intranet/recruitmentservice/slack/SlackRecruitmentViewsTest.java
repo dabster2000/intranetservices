@@ -11,6 +11,7 @@ import com.slack.api.model.block.element.StaticSelectElement;
 import com.slack.api.model.view.View;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestions;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -208,6 +209,84 @@ class SlackRecruitmentViewsTest {
         String savedText = allMrkdwn(saved.getBlocks());
         assertFalse(savedText.contains("<https://evil.example|"));
         assertTrue(savedText.contains("(private)"), "privacy choice is confirmed back");
+    }
+
+    // ---- Scorecard modal (P18) ---------------------------------------------------
+
+    @Test
+    void scorecardModal_templateDriven_blindRuleExplained() {
+        List<ScorecardAttribute> template = List.of(
+                new ScorecardAttribute("WHY_CONSULTING", "Why consulting"),
+                new ScorecardAttribute("CULTURE_FIT", "Culture fit"));
+        View view = SlackRecruitmentViews.scorecardModal(
+                HOSTILE_NAME, "Senior Consultant", 2, template, "interview-1");
+
+        assertEquals("modal", view.getType());
+        assertEquals(SlackRecruitmentViews.SCORECARD_SUBMIT, view.getCallbackId());
+        assertEquals("interview-1", view.getPrivateMetadata(),
+                "private_metadata carries the interview uuid (plan §P18)");
+        assertTrue(view.getTitle().getText().length() <= 24, "Slack caps modal titles at 24 chars");
+
+        List<InputBlock> inputs = inputs(view.getBlocks());
+        assertEquals(List.of("score_WHY_CONSULTING", "score_CULTURE_FIT",
+                        "recommendation", "scorecard_notes"),
+                inputs.stream().map(InputBlock::getBlockId).toList(),
+                "one select per template attribute, in template order");
+        // Scores and recommendation required; notes optional (the web form's split).
+        assertFalse(isOptional(inputs.get(0)));
+        assertFalse(isOptional(inputs.get(2)));
+        assertTrue(isOptional(inputs.get(3)));
+        // The 1–4 selects carry the web dialog's anchors.
+        StaticSelectElement score = (StaticSelectElement) inputs.get(0).getElement();
+        assertEquals(List.of("1", "2", "3", "4"),
+                score.getOptions().stream().map(o -> o.getValue()).toList());
+        assertTrue(score.getOptions().get(0).getText().getText().contains("Clear concern"));
+        assertTrue(score.getOptions().get(3).getText().getText().contains("Outstanding"));
+        // Notes mirror the service's 2000-char cap client-side, with help text.
+        PlainTextInputElement notes = (PlainTextInputElement) inputs.get(3).getElement();
+        assertEquals(2000, notes.getMaxLength());
+        assertTrue(notes.isMultiline());
+        assertNotNull(inputs.get(3).getHint());
+        assertNotNull(inputs.get(2).getHint(), "recommendation carries its help text");
+
+        String text = allMrkdwn(view.getBlocks());
+        assertTrue(text.contains("blind"), "the blind rule is explained in plain language");
+        assertTrue(text.contains("90 seconds"), "the 90-second promise (spec §8.5)");
+        assertFalse(text.contains("<https://evil.example|"),
+                "hostile candidate names never render as live markup");
+    }
+
+    @Test
+    void scorecardSubmittedView_progressCopy_neverContent() {
+        View waiting = SlackRecruitmentViews.scorecardSubmittedView(
+                HOSTILE_NAME, 2, "https://intra.trustworks.dk");
+        String waitingText = allMrkdwn(waiting.getBlocks());
+        assertTrue(waitingText.contains("Waiting for 2 more scorecards"));
+        assertTrue(waitingText.contains("/recruitment/interviews"), "debrief deep link");
+        assertFalse(waitingText.contains("<https://evil.example|"));
+        assertNull(waiting.getSubmit(), "confirmation views have no submit — only Done");
+
+        View last = SlackRecruitmentViews.scorecardSubmittedView(
+                "Jane Jensen", 0, "https://intra.trustworks.dk");
+        String lastText = allMrkdwn(last.getBlocks());
+        assertTrue(lastText.contains("the debrief is ready"),
+                "last-card copy announces debrief readiness");
+        assertTrue(lastText.contains("decision owner"),
+                "…and that the owner is notified — no decision buttons in Slack");
+    }
+
+    @Test
+    void scorecardActions_singlePrimaryButton_carriesInterviewUuid() {
+        LayoutBlock block = SlackRecruitmentViews.scorecardActions("interview-42");
+        assertTrue(block instanceof ActionsBlock);
+        ActionsBlock actions = (ActionsBlock) block;
+        assertEquals(1, actions.getElements().size(), "one button — the deep link lives in the text");
+        com.slack.api.model.block.element.ButtonElement button =
+                (com.slack.api.model.block.element.ButtonElement) actions.getElements().get(0);
+        assertEquals(SlackRecruitmentViews.SCORECARD_OPEN, button.getActionId());
+        assertEquals("interview-42", button.getValue());
+        assertEquals("primary", button.getStyle());
+        assertEquals("Fill in scorecard", button.getText().getText());
     }
 
     private static RecruitmentReferral referral(String candidateName) {

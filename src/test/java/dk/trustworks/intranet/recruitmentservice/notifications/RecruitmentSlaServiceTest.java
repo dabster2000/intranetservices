@@ -199,7 +199,7 @@ class RecruitmentSlaServiceTest {
         assertEquals(1, dms.size(), "exactly one DM to the assigned interviewer");
         assertTrue(dms.get(0).contains(marker), "DM names the candidate");
         assertTrue(dms.get(0).contains("/recruitment/interviews"),
-                "deep-link-only until P18 adds the button");
+                "deep-link-only while the P18 scorecard toggle is off (degradation chain)");
         // Routed as a DM to the user — never to a channel (the String
         // overloads are the channel paths; the sweep must not touch them).
         verify(slackService, never()).sendMessage(anyString(), anyString());
@@ -213,6 +213,43 @@ class RecruitmentSlaServiceTest {
         assertTrue(event.getPayload().contains("\"nudged_user_uuid\":\"" + interviewerUser + "\""));
         assertTrue(event.getPayload().contains("\"nudge_number\":1"));
         assertEquals("SCHEDULER", event.getActorType().name());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void scorecardNudge_p18ToggleOn_dmCarriesTheScorecardButton() {
+        String previousScorecard = QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.setFlag(em, "recruitment.slack.scorecard.enabled", "true"));
+        try {
+            insertOverdueInterview(30);
+
+            slaService.sweep();
+
+            // The Block Kit DM overload carries the button; the plain-text
+            // overload stays untouched for this nudge.
+            ArgumentCaptor<User> user = ArgumentCaptor.forClass(User.class);
+            ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<List<com.slack.api.model.block.LayoutBlock>> blocks =
+                    ArgumentCaptor.forClass((Class) List.class);
+            try {
+                verify(slackService).sendMessage(user.capture(), text.capture(), blocks.capture());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+            assertEquals(interviewerUser, user.getValue().getUuid());
+            assertTrue(text.getValue().contains("Scorecard overdue"),
+                    "fallback text stays the full nudge message");
+            String rendered = blocks.getValue().toString();
+            assertTrue(rendered.contains("recruitment_scorecard_open"),
+                    "the button's action id: " + rendered);
+            assertTrue(rendered.contains(interviewUuid),
+                    "the button carries the interview uuid");
+            // Bookkeeping unchanged — same event, same cap accounting.
+            assertEquals(1, eventsOf(RecruitmentEventType.SCORECARD_NUDGED).size());
+        } finally {
+            QuarkusTransaction.requiringNew().run(() -> P8ProfileFixtures.restoreFlag(em,
+                    "recruitment.slack.scorecard.enabled", previousScorecard));
+        }
     }
 
     @Test

@@ -20,6 +20,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentIntervie
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCandidateFacts;
+import dk.trustworks.intranet.recruitmentservice.slack.SlackRecruitmentViews;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -114,6 +115,9 @@ public class RecruitmentSlaService {
 
     @Inject
     RecruitmentSlaThresholds thresholds;
+
+    @Inject
+    RecruitmentSlackFeatureFlag slackFlags;
 
     @Inject
     SlackService slackService;
@@ -214,7 +218,14 @@ public class RecruitmentSlaService {
                 int nudgeNumber = priorNudges.size() + 1;
                 String message = scorecardNudgeText(candidate, position,
                         interview.getRound(), nudgeNumber);
-                boolean sent = nudge(counters, interviewerUuid, message, () ->
+                // P18: with the scorecard toggle on, the nudge carries the
+                // "Fill in scorecard" button (Slack spec §5.6); off ⇒ the
+                // P17 deep-link-only text — the explicit degradation chain.
+                List<com.slack.api.model.block.LayoutBlock> blocks =
+                        inTx(slackFlags::isScorecardEnabled)
+                                ? scorecardNudgeBlocks(message, interview.getUuid())
+                                : null;
+                boolean sent = nudge(counters, interviewerUuid, message, blocks, () ->
                         eventRecorder.record(RecruitmentEventBuilder
                                 .event(RecruitmentEventType.SCORECARD_NUDGED)
                                 .candidate(application.getCandidateUuid())
@@ -379,9 +390,11 @@ public class RecruitmentSlaService {
 
     /**
      * The owner ladder (class javadoc): hiring owner → partner-circle
-     * OWNERs → current team leads → nobody.
+     * OWNERs → current team leads → nobody. Public since P18 — the Slack
+     * reactor's debrief-ready owner DM resolves its recipient with this
+     * exact rule (one ladder, never re-implemented).
      */
-    List<String> resolveOwners(RecruitmentPosition position) {
+    public List<String> resolveOwners(RecruitmentPosition position) {
         if (position == null) {
             return List.of();
         }
@@ -424,8 +437,12 @@ public class RecruitmentSlaService {
      * DM one user and append the bookkeeping event in the same transaction
      * (DM first — the event commits only when the DM went out). Returns
      * true when both happened; a missing Slack link is an INFO skip.
+     * {@code blocks} (nullable) upgrades the DM to Block Kit — P18 uses it
+     * for the scorecard button; {@code message} stays the fallback text.
      */
-    private boolean nudge(Counters counters, String userUuid, String message, Runnable bookkeeping) {
+    private boolean nudge(Counters counters, String userUuid, String message,
+                          List<com.slack.api.model.block.LayoutBlock> blocks,
+                          Runnable bookkeeping) {
         User user = inTx(() -> User.findById(userUuid));
         if (user == null || user.getSlackusername() == null || user.getSlackusername().isBlank()) {
             log.infof("SLA sweep: user %s has no Slack link — skipping nudge DM", userUuid);
@@ -434,7 +451,11 @@ public class RecruitmentSlaService {
         try {
             QuarkusTransaction.requiringNew().run(() -> {
                 try {
-                    slackService.sendMessage(user, message);
+                    if (blocks != null) {
+                        slackService.sendMessage(user, message, blocks);
+                    } else {
+                        slackService.sendMessage(user, message);
+                    }
                 } catch (Exception e) {
                     throw new IllegalStateException("Slack DM failed", e);
                 }
@@ -447,6 +468,16 @@ public class RecruitmentSlaService {
                     userUuid);
             return false;
         }
+    }
+
+    /** The nudge text as a section plus the P18 scorecard button. */
+    private static List<com.slack.api.model.block.LayoutBlock> scorecardNudgeBlocks(
+            String message, String interviewUuid) {
+        return List.of(
+                com.slack.api.model.block.Blocks.section(s -> s.text(
+                        com.slack.api.model.block.composition.BlockCompositions
+                                .markdownText(message))),
+                SlackRecruitmentViews.scorecardActions(interviewUuid));
     }
 
     /**
