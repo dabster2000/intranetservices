@@ -240,6 +240,19 @@ public class ReferralService {
         if (referral.getStatus() == RecruitmentReferralStatus.CLOSED || candidate == null) {
             return RecruitmentReferralDerivedStatus.CLOSED;
         }
+        return deriveCandidateMilestone(candidate, applications);
+    }
+
+    /**
+     * The candidate-side milestone derivation (steps 2–6 of
+     * {@link #deriveStatus}), shared with P12's
+     * {@code ReferrerNotificationReactor} so referrer DMs and the
+     * "My referrals" page compute milestones from the exact same code
+     * (findings §P6 carry-over).
+     */
+    public static RecruitmentReferralDerivedStatus deriveCandidateMilestone(
+            RecruitmentCandidate candidate,
+            List<RecruitmentApplication> applications) {
         if (candidate.getStatus() == CandidateStatus.HIRED) {
             return RecruitmentReferralDerivedStatus.HIRED;
         }
