@@ -439,6 +439,15 @@ dk:
       # Read-side e-conomic load (finance-load-economics). Staging false.
       economics-load:
         enabled: ${FINANCE_ECONOMICS_LOAD_ENABLED:true}
+    recruitment:
+      ai:
+        # Model for the P16 AI email composer (AiEmailDraftService) — drafts
+        # personalised candidate emails from Danish templates. Runs with
+        # temperature 0.7 for natural prose, which the gpt-5 family rejects
+        # with HTTP 400, so this must stay a gpt-4o-family (temperature-
+        # capable) model. Override per env with
+        # DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL.
+        draft-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL:gpt-4o-mini}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,

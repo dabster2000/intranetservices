@@ -35,6 +35,12 @@ public class LoggingFilter implements ContainerRequestFilter {
             return;
         }
 
+        // Never body-log candidate emails (P15): send/render/approve bodies
+        // carry rendered candidate correspondence — the same no-PII rule.
+        if (path.contains("/emails/") && path.contains("/recruitment/")) {
+            return;
+        }
+
         MediaType mediaType = requestContext.getMediaType();
         boolean isJson = mediaType != null && mediaType.toString().startsWith(MediaType.APPLICATION_JSON);
 
