@@ -30,6 +30,9 @@ class RecruitmentEventTypeCatalogTest {
         // but the idle and debrief pings are reactor side effects too and
         // "reactors' own side effects are recorded as events" (spec §3.4).
         // Recorded in findings §P17.
+        // CONSENT_EXPIRED is the P19 addition: the consent lifecycle has an
+        // EXPIRED status (spec §4.1) but the §3.4 catalog had no type for
+        // the sweep's expiry bookkeeping. Recorded in findings §P19.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -41,7 +44,7 @@ class RecruitmentEventTypeCatalogTest {
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
-                "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN",
+                "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
                 "ART14_NOTICE_SENT", "DSAR_RECEIVED", "DSAR_EXPORTED", "CANDIDATE_ANONYMIZED",
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
                 "CIRCLE_MEMBER_ADDED", "CIRCLE_MEMBER_REMOVED",
@@ -53,8 +56,9 @@ class RecruitmentEventTypeCatalogTest {
                 .collect(Collectors.toSet());
         assertEquals(expected, actual,
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
-                        + "P6 REFERRAL_TRIAGED and P17 *_NUDGED additions exactly");
-        assertEquals(44, RecruitmentEventType.values().length);
+                        + "P6 REFERRAL_TRIAGED, P17 *_NUDGED and P19 CONSENT_EXPIRED "
+                        + "additions exactly");
+        assertEquals(45, RecruitmentEventType.values().length);
     }
 
     @Test

@@ -45,8 +45,12 @@ import static org.mockito.ArgumentMatchers.anyString;
 @QuarkusTest
 class RecruitmentCandidateDocumentsConsentsApiTest {
 
+    // Two DISTINCT sentinels since P19: token_hash carries a UNIQUE index
+    // (V448 — the consent-page lookup), so two rows can no longer share one.
     private static final String TOKEN_HASH_SENTINEL =
             "TOKEN_HASH_SENTINEL_0123456789abcdef0123456789abcdef";
+    private static final String TOKEN_HASH_SENTINEL_2 =
+            "TOKEN_HASH_SENTINEL_fedcba9876543210fedcba9876543210";
 
     @Inject
     EntityManager em;
@@ -99,7 +103,7 @@ class RecruitmentCandidateDocumentsConsentsApiTest {
                     "TALENT_POOL_RETENTION", "GRANTED",
                     "2026-01-10 12:00:00", "2027-01-10 12:00:00", TOKEN_HASH_SENTINEL);
             P8ProfileFixtures.insertConsent(em, UUID.randomUUID().toString(), candidate,
-                    "TALENT_POOL_RETENTION", "REQUESTED", null, null, TOKEN_HASH_SENTINEL);
+                    "TALENT_POOL_RETENTION", "REQUESTED", null, null, TOKEN_HASH_SENTINEL_2);
 
             previousFlag = P8ProfileFixtures.setFlag(em, PIPELINE_FLAG, "true");
         });
@@ -209,6 +213,8 @@ class RecruitmentCandidateDocumentsConsentsApiTest {
         String body = response.asString();
         assertFalse(body.contains(TOKEN_HASH_SENTINEL),
                 "token_hash value must never serialize");
+        assertFalse(body.contains(TOKEN_HASH_SENTINEL_2),
+                "token_hash value must never serialize (REQUESTED row)");
         assertFalse(body.toLowerCase(Locale.ROOT).contains("token"),
                 "no token-ish key may appear in the consents JSON");
         assertTrue(body.contains("\"kind\""), "sanity: contract fields present");

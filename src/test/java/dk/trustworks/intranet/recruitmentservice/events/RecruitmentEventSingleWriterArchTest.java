@@ -20,6 +20,12 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * other class persists, mutates, or even instantiates
  * {@link RecruitmentEvent}.
  * <p>
+ * P19 amendment (the P1 carry-over, consciously made): GDPR anonymization
+ * is the single permitted mutation of the store —
+ * {@code RecruitmentAnonymizerService} rewrites {@code pii}/{@code pii_state}
+ * (never payload, never deletes) and is exempted from the append-only rule
+ * by name. Every other class remains banned.
+ * <p>
  * Known limitation: calls made through an upcast
  * ({@code PanacheEntityBase e = event; e.persist();}) or raw
  * {@code EntityManager.persist(Object)} carry a different bytecode owner and
@@ -40,13 +46,19 @@ class RecruitmentEventSingleWriterArchTest {
                             + "append events via RecruitmentEventRecorder.record(builder) (spec §3.2)");
 
     @ArchTest
-    static final ArchRule nobody_deletes_or_bulk_updates_recruitment_events =
+    static final ArchRule nobody_but_the_anonymizer_deletes_or_bulk_updates_recruitment_events =
             noClasses()
+                    .that().doNotHaveFullyQualifiedName(
+                            dk.trustworks.intranet.recruitmentservice.services
+                                    .RecruitmentAnonymizerService.class.getName())
                     .should().callMethodWhere(
                             target(owner(equivalentTo(RecruitmentEvent.class)))
                                     .and(target(nameMatching("delete.*|update.*"))))
-                    .because("the event stream is append-only; the single permitted mutation "
-                            + "(GDPR pii anonymization, P19) will get its own reviewed path");
+                    .because("the event stream is append-only; the single permitted mutation is "
+                            + "GDPR pii anonymization (P19) — RecruitmentAnonymizerService "
+                            + "rewrites pii/pii_state and NOTHING else (no deletes, no payload "
+                            + "edits; its referral-leg native query is part of the same "
+                            + "reviewed path)");
 
     @ArchTest
     static final ArchRule only_the_recorder_instantiates_recruitment_events =

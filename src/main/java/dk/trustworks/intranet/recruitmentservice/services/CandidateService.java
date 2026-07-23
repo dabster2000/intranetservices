@@ -78,6 +78,9 @@ public class CandidateService {
     RecruitmentVisibility visibility;
 
     @Inject
+    RecruitmentGdprParameters gdprParameters;
+
+    @Inject
     jakarta.persistence.EntityManager em;
 
     /** Bulk tag calls carry at most this many candidates (P8 contract). */
@@ -272,6 +275,18 @@ public class CandidateService {
                 case SILVER_MEDALISTS -> {
                     where.append(" AND poolStatus = :viewPoolStatus");
                     params.put("viewPoolStatus", CandidatePoolStatus.SILVER_MEDALIST);
+                }
+                case CONSENT_EXPIRING -> {
+                    // P19 saved view: pooled candidates whose retention
+                    // deadline is inside the renewal window — about to be
+                    // deleted unless they (re-)grant pool consent. Includes
+                    // past-deadline stragglers (deleted on the next sweep).
+                    where.append(" AND status = :viewStatus"
+                            + " AND retentionDeadline IS NOT NULL"
+                            + " AND retentionDeadline <= :viewDeadlineHorizon");
+                    params.put("viewStatus", CandidateStatus.POOLED);
+                    params.put("viewDeadlineHorizon", LocalDateTime.now(ZoneOffset.UTC)
+                            .plusDays(gdprParameters.renewalFirstDays()));
                 }
                 case ALL -> {
                     // No extra predicate — the default view.

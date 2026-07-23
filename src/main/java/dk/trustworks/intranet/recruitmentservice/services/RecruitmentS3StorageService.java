@@ -169,6 +169,40 @@ public class RecruitmentS3StorageService {
     }
 
     /**
+     * Delete EVERY stored file linked to a candidate — CVs, cover letters,
+     * generated dossier PDFs, appendices, identity documents (all writers
+     * above stamp {@code File.relateduuid = candidateUuid} for exactly this
+     * moment). The GDPR anonymizer's S3 leg (ATS P19, spec §5.5 — one of
+     * the four enumerated anonymization targets). Deletes both the S3
+     * object and the {@code files} row per file; S3 deletes are idempotent,
+     * so a retried anonymization run is harmless.
+     *
+     * @return how many files were deleted
+     */
+    public int deleteAllCandidateFiles(UUID candidateUuid) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        List<File> files = File.list("relateduuid", candidateUuid.toString());
+        for (File file : files) {
+            s3FileService.delete(file.getUuid());
+        }
+        if (!files.isEmpty()) {
+            log.infof("Deleted %d stored files for candidate=%s (GDPR anonymization)",
+                    files.size(), candidateUuid);
+        }
+        return files.size();
+    }
+
+    /**
+     * Metadata of every stored file linked to a candidate (uuid, name,
+     * upload date — never the bytes). The DSAR export's document list
+     * (ATS P19).
+     */
+    public List<File> listCandidateFiles(UUID candidateUuid) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        return File.list("relateduuid", candidateUuid.toString());
+    }
+
+    /**
      * Persist each template-generated PDF in S3 and return the
      * {@code (filename, fileUuid)} refs for the revision snapshot. Appendix
      * PDFs (already in S3) are not duplicated — only PDFs with

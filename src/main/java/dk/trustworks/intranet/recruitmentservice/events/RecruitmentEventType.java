@@ -87,6 +87,15 @@ public enum RecruitmentEventType {
     CONSENT_REQUESTED,
     CONSENT_GRANTED,
     CONSENT_WITHDRAWN,
+    /**
+     * A GRANTED consent ran past its {@code expires_at} and the nightly
+     * GDPR sweep flipped it to EXPIRED. Catalog addition made in P19 —
+     * the spec §4.1 consent lifecycle has an EXPIRED status but the
+     * spec §3.4 catalog had no type for the sweep's expiry bookkeeping,
+     * and "reactors' own side effects are recorded as events"
+     * (findings §P19).
+     */
+    CONSENT_EXPIRED,
     ART14_NOTICE_SENT,
     DSAR_RECEIVED,
     DSAR_EXPORTED,
