@@ -27,6 +27,7 @@ public record InterviewResponse(
         Integer round,
         LocalDateTime scheduledAt,
         String location,
+        String roomEmail,
         RecruitmentInterviewStatus status,
         List<InterviewerInfo> interviewers,
         boolean scorecardRequired,

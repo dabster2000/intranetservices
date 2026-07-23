@@ -279,6 +279,29 @@ public interface GraphApiClient {
         @PathParam("eventId") String eventId
     );
 
+    /**
+     * Lists the tenant's bookable meeting rooms. Used by the recruitment
+     * interview scheduler's room picker — requires the app-level
+     * {@code Place.Read.All} permission.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/place-list">List places</a>
+     */
+    @GET
+    @Path("/places/microsoft.graph.room")
+    @Produces(MediaType.APPLICATION_JSON)
+    RoomCollectionResponse listRooms();
+
+    /** Graph places response — the subset of the room resource we use. */
+    record RoomCollectionResponse(@JsonProperty("value") java.util.List<Room> value) {
+        public record Room(
+            String id,
+            String displayName,
+            String emailAddress,
+            Integer capacity,
+            String building
+        ) { }
+    }
+
     /** Graph calendar event response — only the id is needed. */
     record CalendarEvent(String id) { }
 

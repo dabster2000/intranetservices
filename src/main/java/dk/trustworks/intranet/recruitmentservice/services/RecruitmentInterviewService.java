@@ -142,6 +142,7 @@ public class RecruitmentInterviewService {
         interview.setScheduledAt(request.scheduledAt());
         interview.setInterviewerUuids(interviewers);
         interview.setLocation(trimToNull(request.location()));
+        interview.setRoomEmail(trimToNull(request.roomEmail()));
         interview.setStatus(RecruitmentInterviewStatus.SCHEDULED);
         interview.persist();
 
@@ -154,6 +155,7 @@ public class RecruitmentInterviewService {
                 .payload("scheduled_at", interview.getScheduledAt().toString())
                 .payload("interviewer_uuids", interviewers)
                 .payload("location", interview.getLocation())
+                .payload("room_email", interview.getRoomEmail())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
         return interview;
     }
@@ -180,6 +182,10 @@ public class RecruitmentInterviewService {
         if (request.location() != null) {
             interview.setLocation(trimToNull(request.location()));
         }
+        if (request.roomEmail() != null) {
+            // null = keep; blank = clear the booking (same tri-state as location).
+            interview.setRoomEmail(trimToNull(request.roomEmail()));
+        }
         if (request.interviewerUuids() != null) {
             interview.setInterviewerUuids(normalizeInterviewers(request.interviewerUuids()));
         }
@@ -191,6 +197,7 @@ public class RecruitmentInterviewService {
                 .payload("scheduled_at", interview.getScheduledAt().toString())
                 .payload("interviewer_uuids", interview.getInterviewerUuids())
                 .payload("location", interview.getLocation())
+                .payload("room_email", interview.getRoomEmail())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
         return interview;
     }
@@ -566,6 +573,7 @@ public class RecruitmentInterviewService {
                 interview.getRound(),
                 interview.getScheduledAt(),
                 interview.getLocation(),
+                interview.getRoomEmail(),
                 interview.getStatus(),
                 interviewerInfos(interview, scorecards, names),
                 interview.getKind() == RecruitmentInterviewKind.ROUND,

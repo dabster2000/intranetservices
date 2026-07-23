@@ -143,6 +143,129 @@ class RecruitmentCalendarServiceTest {
     }
 
     @Test
+    void eventTimes_wallClockCopenhagen_summerDate() {
+        service.calendarEnabled = true;
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-summer"));
+
+        // Aug 1 = CEST. The wall-clock string must pass through untouched,
+        // stamped Europe/Copenhagen — never "UTC" (that shifted every event
+        // by the UTC offset in Outlook).
+        QuarkusTransaction.requiringNew().run(() ->
+                service.createEvent(interview(), candidate(), position()));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        assertEquals("2026-08-01T10:00", body.getValue().start().dateTime());
+        assertEquals("Europe/Copenhagen", body.getValue().start().timeZone());
+        assertEquals("2026-08-01T11:00", body.getValue().end().dateTime());
+        assertEquals("Europe/Copenhagen", body.getValue().end().timeZone());
+    }
+
+    @Test
+    void eventTimes_wallClockCopenhagen_winterDate() {
+        service.calendarEnabled = true;
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-winter"));
+
+        // Jan 15 = CET. Same IANA id year-round: Graph resolves CET vs CEST
+        // from the event date, so DST needs no handling on our side.
+        RecruitmentInterview interview = interview();
+        interview.setScheduledAt(LocalDateTime.of(2027, 1, 15, 14, 0));
+        QuarkusTransaction.requiringNew().run(() ->
+                service.createEvent(interview, candidate(), position()));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        assertEquals("2027-01-15T14:00", body.getValue().start().dateTime());
+        assertEquals("Europe/Copenhagen", body.getValue().start().timeZone());
+        assertEquals("2027-01-15T15:00", body.getValue().end().dateTime());
+        assertEquals("Europe/Copenhagen", body.getValue().end().timeZone());
+    }
+
+    @Test
+    void roomEmail_invitedAsResourceAttendee_peopleStayRequired() {
+        service.calendarEnabled = true;
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-room"));
+
+        RecruitmentInterview interview = interview();
+        interview.setRoomEmail("room-hq2@trustworks.dk");
+        QuarkusTransaction.requiringNew().run(() ->
+                service.createEvent(interview, candidate(), position()));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+                body.getValue().attendees();
+        List<GraphApiClient.CalendarEventRequest.Attendee> resources = attendees.stream()
+                .filter(a -> "resource".equals(a.type()))
+                .toList();
+        assertEquals(1, resources.size(), "the room mailbox is the one resource attendee");
+        assertEquals("room-hq2@trustworks.dk", resources.get(0).emailAddress().address());
+        assertEquals("HQ meeting room 2", resources.get(0).emailAddress().name(),
+                "the room label rides along as the attendee display name");
+        assertTrue(attendees.stream()
+                        .filter(a -> !"resource".equals(a.type()))
+                        .allMatch(a -> "required".equals(a.type())),
+                "people are still plain required attendees");
+    }
+
+    @Test
+    void withoutRoomEmail_noResourceAttendee() {
+        service.calendarEnabled = true;
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-no-room"));
+
+        QuarkusTransaction.requiringNew().run(() ->
+                service.createEvent(interview(), candidate(), position()));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        assertTrue(body.getValue().attendees().stream()
+                .noneMatch(a -> "resource".equals(a.type())));
+    }
+
+    // ---- Rooms lookup ----------------------------------------------------------
+
+    @Test
+    void rooms_toggleOff_returnsEmpty_neverTouchesGraph() {
+        service.calendarEnabled = false;
+        assertTrue(service.listRooms().isEmpty());
+        verifyNoInteractions(graph);
+    }
+
+    @Test
+    void rooms_toggleOn_mapsRooms_skippingRoomsWithoutMailbox() {
+        service.calendarEnabled = true;
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-2", "Unbookable corner", null, null, null))));
+
+        var rooms = service.listRooms();
+
+        assertEquals(1, rooms.size(), "a room without a mailbox cannot be booked — dropped");
+        assertEquals("HQ meeting room 2", rooms.get(0).displayName());
+        assertEquals("room-hq2@trustworks.dk", rooms.get(0).emailAddress());
+        assertEquals(8, rooms.get(0).capacity());
+        assertEquals("HQ", rooms.get(0).building());
+    }
+
+    @Test
+    void rooms_graphFailure_returnsEmpty_neverThrows() {
+        service.calendarEnabled = true;
+        when(graph.listRooms())
+                .thenThrow(new RuntimeException("Graph 403: missing Place.Read.All"));
+        assertTrue(service.listRooms().isEmpty());
+    }
+
+    @Test
     void graphFailure_isSwallowed_schedulingNeverBreaks() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))

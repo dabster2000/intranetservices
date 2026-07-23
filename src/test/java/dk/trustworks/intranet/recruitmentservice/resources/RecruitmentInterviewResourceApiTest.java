@@ -27,6 +27,7 @@ import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -581,7 +582,83 @@ class RecruitmentInterviewResourceApiTest {
                 .then().statusCode(404);
     }
 
+    // ---- Room booking ---------------------------------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void roomEmail_persistsOnCreate_rescheduleKeepsOrClears() {
+        String interviewUuid = given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("kind", "ROUND", "round", 1,
+                        "interviewerUuids", List.of(interviewerA),
+                        "location", "HQ meeting room 2",
+                        "roomEmail", "room-hq2@trustworks.dk",
+                        "scheduledAt", "2026-08-01T10:00:00"))
+                .when().post("/recruitment/applications/{uuid}/interviews", applicationUuid)
+                .then().statusCode(201)
+                .extract().path("interviewUuid");
+        assertEquals("room-hq2@trustworks.dk", roomEmailInDb(interviewUuid));
+
+        // Absent roomEmail on reschedule = keep the booking.
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("scheduledAt", "2026-08-02T10:00:00"))
+                .when().post("/recruitment/interviews/{uuid}/schedule", interviewUuid)
+                .then().statusCode(200);
+        assertEquals("room-hq2@trustworks.dk", roomEmailInDb(interviewUuid));
+
+        // Blank roomEmail = clear the booking.
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("scheduledAt", "2026-08-03T10:00:00", "roomEmail", ""))
+                .when().post("/recruitment/interviews/{uuid}/schedule", interviewUuid)
+                .then().statusCode(200);
+        assertNull(roomEmailInDb(interviewUuid));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void roomEmail_withoutAnAddressShape_isRejected() {
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("kind", "ROUND", "round", 1,
+                        "interviewerUuids", List.of(interviewerA),
+                        "roomEmail", "not-a-mailbox",
+                        "scheduledAt", "2026-08-01T10:00:00"))
+                .when().post("/recruitment/applications/{uuid}/interviews", applicationUuid)
+                .then().statusCode(400);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void rooms_calendarToggleOff_returnsEmptyList() {
+        // The Graph calendar toggle is off in the test profile — the rooms
+        // surface answers an empty list (the UI hides the picker), never an
+        // error.
+        given().header("X-Requested-By", teamleadUser)
+                .when().get("/recruitment/interviews/rooms")
+                .then().statusCode(200)
+                .body("totalCount", is(0))
+                .body("rooms", hasSize(0));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void rooms_requiresWriteScope() {
+        given().header("X-Requested-By", teamleadUser)
+                .when().get("/recruitment/interviews/rooms")
+                .then().statusCode(403);
+    }
+
     // ---- Helpers ------------------------------------------------------------------------------
+
+    private String roomEmailInDb(String interviewUuid) {
+        return QuarkusTransaction.requiringNew().call(() ->
+                (String) em.createNativeQuery(
+                                "SELECT room_email FROM recruitment_interviews WHERE uuid = :u")
+                        .setParameter("u", interviewUuid)
+                        .getSingleResult());
+    }
 
     private String createRoundOne(String actor, List<String> interviewers) {
         return given().header("X-Requested-By", actor)
