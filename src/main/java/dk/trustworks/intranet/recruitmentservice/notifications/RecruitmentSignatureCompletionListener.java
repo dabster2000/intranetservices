@@ -27,8 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Periodic listener that fans out HR notifications when a dossier-linked
- * NextSign signing case has fully completed and its signed documents have
- * been uploaded to SharePoint.
+ * NextSign signing case has fully completed. Recruitment-created cases never
+ * upload their signed documents to SharePoint (send-signature persists them
+ * with a null SharePoint location), so this listener only requires COMPLETED
+ * status — it does <strong>not</strong> gate on the SharePoint upload state.
  *
  * <h3>Why a polling batchlet (and not a CDI event observer)?</h3>
  * The natural integration point would be to emit a CDI event from
@@ -104,23 +106,29 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
         // with the same case_key (the in-memory set stays email-only).
         int eventsAppended = appendSigningCompletedEvents();
 
-        // Find dossier-linked signing cases that have COMPLETED status and
-        // sharepoint_upload_status = UPLOADED. We join across the soft FK
-        // (signing_cases.case_key = candidate_dossier_revisions.signing_case_key)
-        // and surface the candidate UUID so we can resolve target_company_uuid
-        // and recipient details below.
+        // Find dossier-linked signing cases that have COMPLETED status. We
+        // join across the soft FK (signing_cases.case_key =
+        // candidate_dossier_revisions.signing_case_key) and surface the
+        // dossier UUID so we can resolve target_company_uuid and recipient
+        // details below. This query is intentionally the same shape as the
+        // event-append loop's (dossier-linked + COMPLETED, no SharePoint
+        // condition): recruitment send-signature saves cases with a null
+        // SharePoint location, so sharepoint_upload_status never reaches
+        // 'UPLOADED' for them — gating the email on UPLOADED kept it dormant
+        // for every recruitment-created case. Since the INNER JOIN means every
+        // matched row is dossier-linked (i.e. recruitment-owned), dropping the
+        // UPLOADED condition is correct for the whole result set.
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
-                "SELECT sc.case_key, cdr.dossier_uuid " +
+                "SELECT DISTINCT sc.case_key, cdr.dossier_uuid " +
                 "FROM signing_cases sc " +
                 "INNER JOIN candidate_dossier_revisions cdr " +
                 "  ON cdr.signing_case_key = sc.case_key " +
-                "WHERE sc.status = 'COMPLETED' " +
-                "  AND sc.sharepoint_upload_status = 'UPLOADED'")
+                "WHERE sc.status = 'COMPLETED'")
                 .getResultList();
 
         if (rows.isEmpty()) {
-            log.debug("No dossier-linked completed-and-uploaded cases; skipping");
+            log.debug("No dossier-linked completed cases; skipping");
             return "COMPLETED: 0 notifications sent, events_appended=" + eventsAppended;
         }
 
@@ -294,7 +302,6 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
         return "<p>Candidate <strong>"
                 + HtmlEscape.escape(candidate.getFirstName()) + " " + HtmlEscape.escape(candidate.getLastName())
                 + "</strong> has signed all contracts.</p>"
-                + "<p>The signed documents have been uploaded to SharePoint.</p>"
                 + "<p>Open the dossier in the intranet to review next steps "
                 + "(<code>/recruitment/" + candidate.getUuid() + "</code>).</p>";
     }
