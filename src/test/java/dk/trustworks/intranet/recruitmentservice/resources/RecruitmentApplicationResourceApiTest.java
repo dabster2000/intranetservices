@@ -152,6 +152,36 @@ class RecruitmentApplicationResourceApiTest {
                 .statusCode(400);
     }
 
+    /**
+     * The 2000-char note cap must be enforced server-side ({@code @Size} is
+     * inert in this backend) — QA finding B-1. Both free-text terminals.
+     */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void rejectWithOversizedNote_is400() {
+        given()
+                .contentType("application/json")
+                .header("X-Requested-By", recruiterUser)
+                .body("{\"reasonCode\": \"OTHER\", \"note\": \"" + "x".repeat(2001) + "\"}")
+                .when()
+                .post("/recruitment/applications/{uuid}/reject", applicationUuid)
+                .then()
+                .statusCode(400);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void withdrawWithOversizedNote_is400() {
+        given()
+                .contentType("application/json")
+                .header("X-Requested-By", recruiterUser)
+                .body("{\"note\": \"" + "x".repeat(2001) + "\"}")
+                .when()
+                .post("/recruitment/applications/{uuid}/withdraw", applicationUuid)
+                .then()
+                .statusCode(400);
+    }
+
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
     void partnerReferralReject_byTeamlead_is403WithGuidance() {

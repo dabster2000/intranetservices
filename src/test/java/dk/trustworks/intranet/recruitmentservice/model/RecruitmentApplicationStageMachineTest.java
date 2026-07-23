@@ -162,4 +162,56 @@ class RecruitmentApplicationStageMachineTest {
         application.assignTeam("team-uuid");
         assertEquals("team-uuid", application.getAssignedTeamUuid());
     }
+
+    // ---- markHired (P10 bridge-only transition) -----------------------------------
+
+    @Test
+    void markHired_fromOffer_setsStageHired_terminalStaysNull() {
+        RecruitmentApplication application = openApplication(RecruitmentStage.OFFER);
+        LocalDateTime before = application.getStageEnteredAt();
+
+        application.markHired();
+
+        assertEquals(RecruitmentStage.HIRED, application.getStage());
+        assertNull(application.getTerminal(),
+                "HIRED is a STAGE, not a terminal — the terminal enum has no HIRED value");
+        assertTrue(application.getStageEnteredAt().isAfter(before),
+                "stage_entered_at must reset when the bridge marks the hire");
+    }
+
+    @Test
+    void markHired_fromNonOfferStage_isRejected() {
+        for (RecruitmentStage stage : List.of(RecruitmentStage.SCREENING,
+                RecruitmentStage.INTERVIEW_1, RecruitmentStage.INTERVIEW_2)) {
+            RecruitmentApplication application = openApplication(stage);
+            assertThrows(BusinessRuleViolation.class, application::markHired,
+                    "conversion requires the open application to be at OFFER, was " + stage);
+        }
+    }
+
+    @Test
+    void markHired_onTerminalApplication_isRejected() {
+        RecruitmentApplication application = openApplication(RecruitmentStage.OFFER);
+        application.withdraw();
+        assertThrows(BusinessRuleViolation.class, application::markHired,
+                "a closed application can never be hired");
+    }
+
+    @Test
+    void markHired_onAlreadyHiredApplication_isRejected() {
+        RecruitmentApplication application = openApplication(RecruitmentStage.OFFER);
+        application.markHired();
+        assertThrows(BusinessRuleViolation.class, application::markHired,
+                "HIRED is not OFFER — a second markHired is a state error");
+    }
+
+    @Test
+    void moveToStage_hired_staysRejected_evenAfterMarkHiredExists() {
+        // The P10 bridge method must NOT soften the stage-machine invariant:
+        // HIRED remains unreachable through moveToStage (spec §4.2 inv. 3).
+        RecruitmentApplication application = openApplication(RecruitmentStage.OFFER);
+        assertThrows(BusinessRuleViolation.class,
+                () -> application.moveToStage(RecruitmentStage.HIRED, FULL_SET));
+        assertEquals(RecruitmentStage.OFFER, application.getStage(), "stage unchanged");
+    }
 }
