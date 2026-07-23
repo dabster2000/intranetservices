@@ -6,6 +6,8 @@ import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
+import dk.trustworks.intranet.recruitmentservice.dto.BulkTagsRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.BulkTagsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
@@ -221,18 +223,49 @@ public class RecruitmentResource {
             @QueryParam("experience") String experience,
             @QueryParam("specialization") String specialization,
             @QueryParam("clearance") String clearance,
+            @QueryParam("source") String source,
+            @QueryParam("view") String view,
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("20") int size) {
         enforceFlag();
         // Lenient viewer resolution: rows carry per-viewer application info
         // (P4) when the X-Requested-By header is present; legacy callers
         // without it still get the list (with empty application lists)
-        // rather than a 400 — deploy-order safety.
+        // rather than a 400 — deploy-order safety. The P8 partner-row gap
+        // filter treats a missing viewer as circle-less (fail closed).
         String viewer = requestHeaderHolder.getUserUuid();
         CandidateListResponse result = candidateService.list(
-                status, search, tag, education, experience, specialization, clearance, page, size,
+                status, search, tag, education, experience, specialization, clearance,
+                source, view, page, size,
                 viewer != null && !viewer.isBlank() ? viewer : null);
         return Response.ok(result).build();
+    }
+
+    /**
+     * P8 database-grid bulk action: union-add tags to up to 200 candidates
+     * through the existing tag path — one {@code CANDIDATE_UPDATED} per
+     * actually-changed candidate, nothing for no-ops. Recruiter tier
+     * (ADMIN/HR/CXO) enforced here AND in the service (defense in depth);
+     * invisible targets answer 404 for the whole call.
+     */
+    @POST
+    @Path("/candidates/tags/bulk")
+    @RolesAllowed({"recruitment:write"})
+    public Response bulkAddTags(BulkTagsRequest request) {
+        enforcePipelineFlag();
+        if (request == null) {
+            throw new WebApplicationException(
+                    "request body is required", Response.Status.BAD_REQUEST);
+        }
+        UUID actor = currentActor();
+        if (!visibility.isRecruiterTier(actor.toString())) {
+            throw new WebApplicationException(
+                    "Bulk tagging is reserved for the recruiter tier",
+                    Response.Status.FORBIDDEN);
+        }
+        int updated = candidateService.bulkAddTags(
+                request.candidateUuids(), request.addTags(), actor);
+        return Response.ok(new BulkTagsResponse(updated)).build();
     }
 
     @POST

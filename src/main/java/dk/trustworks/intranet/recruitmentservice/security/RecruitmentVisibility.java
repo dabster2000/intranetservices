@@ -2,8 +2,10 @@ package dk.trustworks.intranet.recruitmentservice.security;
 
 import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
@@ -19,7 +21,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -56,6 +57,19 @@ public class RecruitmentVisibility {
     static final String ROLE_ADMIN = "ADMIN";
     /** Recruiter-tier roles: see every non-partner position. */
     static final Set<String> RECRUITER_TIER_ROLES = Set.of("HR", "CXO");
+    /**
+     * Profile-read tier (P8, contract §P8-Timeline): roles that read every
+     * candidate profile except partner-track-only candidates outside their
+     * circles. TECHPARTNER joins HR/CXO here — it is the dossier flow's
+     * existing production audience (findings §P3 deviation 12).
+     */
+    static final Set<String> PROFILE_READ_ROLES = Set.of("HR", "CXO", "TECHPARTNER");
+    /**
+     * Hired-file tier (spec §7.2 field gate): once a candidate is HIRED,
+     * profile access narrows to these roles (+ ADMIN) — colleagues must not
+     * browse a new colleague's interview file. DPO joins for GDPR duties.
+     */
+    static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "CXO", "TECHPARTNER", "DPO");
 
     @Inject
     EntityManager em;
@@ -307,40 +321,53 @@ public class RecruitmentVisibility {
 
     /**
      * Apply the position-visibility rule to a pre-fetched application list
-     * with per-call (not per-row) lookups. The decision logic mirrors
-     * {@link #canReadPosition} exactly — change them together.
+     * with per-call (not per-row) lookups. Delegates the per-position
+     * decision to {@link #readablePositionUuids} — the single batched twin
+     * of {@link #canReadPosition}.
      */
     private List<RecruitmentApplication> filterApplicationsBatch(
             String viewerUuid, List<RecruitmentApplication> applications) {
         if (applications.isEmpty()) {
             return applications;
         }
-        Set<String> roles = rolesOf(viewerUuid);
-        boolean admin = roles.contains(ROLE_ADMIN);
-        boolean recruiterTier = roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
-
         List<String> positionUuids = applications.stream()
                 .map(RecruitmentApplication::getPositionUuid)
                 .distinct()
                 .toList();
-        Map<String, RecruitmentPosition> positions = RecruitmentPosition
-                .<RecruitmentPosition>list("uuid in ?1", positionUuids).stream()
-                .collect(Collectors.toMap(RecruitmentPosition::getUuid, Function.identity()));
+        List<RecruitmentPosition> positions =
+                RecruitmentPosition.list("uuid in ?1", positionUuids);
+        Set<String> readable = readablePositionUuids(viewerUuid, positions);
+        // Defensive: an application whose position row is gone (FK makes
+        // this unreachable) is filtered out with the rest.
+        return applications.stream()
+                .filter(application -> readable.contains(application.getPositionUuid()))
+                .toList();
+    }
 
-        Set<String> circled = admin ? Set.of()
-                : RecruitmentCircleMember.<RecruitmentCircleMember>list("userUuid", viewerUuid).stream()
-                        .map(RecruitmentCircleMember::getPositionUuid)
-                        .collect(Collectors.toSet());
+    /**
+     * Batched twin of {@link #canReadPosition} over pre-fetched positions:
+     * the subset of position uuids the viewer may read, resolved with ONE
+     * viewer-context lookup (roles, circle memberships, led teams/practices
+     * each fetched once — never per row). The decision logic mirrors
+     * {@link #canReadPosition} exactly — change them together. Consumers:
+     * application filtering (P4) and the P8 timeline's CIRCLE-event filter.
+     */
+    public Set<String> readablePositionUuids(String viewerUuid,
+                                             Collection<RecruitmentPosition> positions) {
+        if (positions == null || positions.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        boolean admin = roles.contains(ROLE_ADMIN);
+        boolean recruiterTier = roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+
+        Set<String> circled = admin ? Set.of() : circledPositionUuids(viewerUuid);
         Set<String> ledTeams = (admin || recruiterTier) ? Set.of()
                 : new HashSet<>(currentlyLedTeams(viewerUuid));
         Set<String> ledPractices = (admin || recruiterTier) ? Set.of()
                 : new HashSet<>(currentlyLedPractices(viewerUuid));
 
-        return applications.stream().filter(application -> {
-            RecruitmentPosition position = positions.get(application.getPositionUuid());
-            if (position == null) {
-                return false; // Defensive — FK makes this unreachable.
-            }
+        return positions.stream().filter(position -> {
             if (admin) {
                 return true;
             }
@@ -350,10 +377,150 @@ public class RecruitmentVisibility {
             if (recruiterTier) {
                 return true;
             }
-            return viewerUuid.equals(position.getHiringOwnerUuid())
+            return viewerUuid != null && (viewerUuid.equals(position.getHiringOwnerUuid())
                     || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
-                    || (position.getPracticeUuid() != null && ledPractices.contains(position.getPracticeUuid()));
-        }).toList();
+                    || (position.getPracticeUuid() != null && ledPractices.contains(position.getPracticeUuid())));
+        }).map(RecruitmentPosition::getUuid).collect(Collectors.toSet());
+    }
+
+    /** The position uuids of every circle the viewer belongs to (one query). */
+    private Set<String> circledPositionUuids(String viewerUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return Set.of();
+        }
+        return RecruitmentCircleMember.<RecruitmentCircleMember>list("userUuid", viewerUuid).stream()
+                .map(RecruitmentCircleMember::getPositionUuid)
+                .collect(Collectors.toSet());
+    }
+
+    // ---- Candidate profile visibility (P8) -----------------------------------
+
+    /**
+     * May the viewer read this candidate's profile — timeline, form answers,
+     * documents, consents (P8 contract, binding)? Tiers, in order:
+     * <ol>
+     *   <li>{@code ADMIN} → always, including hired files and partner
+     *       track.</li>
+     *   <li><b>Hired-file restriction</b> (spec §7.2 field gate): once the
+     *       candidate's status is {@link CandidateStatus#HIRED} (set by the
+     *       conversion flow's {@code markHired}), access narrows to
+     *       {@link #HIRED_FILE_ROLES} — involvement alone (teamlead, hiring
+     *       owner, practice lead, circle member) no longer grants access.</li>
+     *   <li>Profile-read tier ({@link #PROFILE_READ_ROLES}) → yes, minus
+     *       <em>partner-track-only</em> candidates: ALL of the candidate's
+     *       applications sit on PARTNER positions and the viewer is in none
+     *       of those circles (the spec §7.2 hard circle filter, applied to
+     *       candidates).</li>
+     *   <li>Involvement tier (everyone else): at least one application on a
+     *       position the viewer can read per {@link #canReadPosition} —
+     *       covers hiring owners, current teamleads of the position's team,
+     *       current practice leads (non-partner positions of their practice)
+     *       and circle members.</li>
+     * </ol>
+     * The partner circle stays a hard filter in every tier except ADMIN —
+     * including the hired-file tier. Callers answer 404 (never 403) when
+     * this returns {@code false}: existence must not leak.
+     */
+    public boolean canReadCandidateProfile(String viewerUuid, RecruitmentCandidate candidate) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidate == null) {
+            return false;
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        if (roles.contains(ROLE_ADMIN)) {
+            return true;
+        }
+        if (candidate.getStatus() == CandidateStatus.HIRED) {
+            return roles.stream().anyMatch(HIRED_FILE_ROLES::contains)
+                    && !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
+        }
+        if (roles.stream().anyMatch(PROFILE_READ_ROLES::contains)) {
+            return !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
+        }
+        return !filterApplications(viewerUuid, candidate.getUuid()).isEmpty();
+    }
+
+    /** Single-candidate variant of {@link #partnerTrackOnlyCandidateUuids}. */
+    public boolean isPartnerTrackOnly(String viewerUuid, String candidateUuid) {
+        return !partnerTrackOnlyCandidateUuids(viewerUuid, candidateUuid).isEmpty();
+    }
+
+    /**
+     * The candidates that are <b>partner-track-only for this viewer</b>:
+     * they have at least one application, ALL their applications sit on
+     * {@code PARTNER}-track positions, and the viewer is in none of those
+     * circles. These rows are invisible to the viewer everywhere — the P8
+     * database grid excludes them query-level (the P4 carry-over "partner-row
+     * gap", findings §P4), profile reads answer 404, and bulk mutations treat
+     * them as nonexistent. Candidates with zero applications are never in
+     * this set (they remain visible). ADMIN viewers get an empty set.
+     * <p>
+     * One query, evaluated in the database (no N+1): a candidate is in the
+     * set when no application of theirs sits on a position that is either
+     * non-partner or partner-with-the-viewer-in-the-circle. A {@code null}
+     * viewer (legacy callers without {@code X-Requested-By}) is treated as
+     * "no circles, not admin" — fail closed.
+     *
+     * @param candidateUuid optional: restrict the check to one candidate
+     *                      ({@code null} = whole table, for list queries)
+     */
+    @SuppressWarnings("unchecked")
+    public List<String> partnerTrackOnlyCandidateUuids(String viewerUuid, String candidateUuid) {
+        if (viewerUuid != null && rolesOf(viewerUuid).contains(ROLE_ADMIN)) {
+            return List.of();
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT DISTINCT ra.candidate_uuid
+                FROM recruitment_applications ra
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM recruitment_applications ra2
+                    JOIN recruitment_positions p2 ON p2.uuid = ra2.position_uuid
+                    WHERE ra2.candidate_uuid = ra.candidate_uuid
+                      AND (p2.hiring_track <> 'PARTNER'
+                           OR EXISTS (SELECT 1 FROM recruitment_circle_members m
+                                      WHERE m.position_uuid = p2.uuid
+                                        AND m.user_uuid = :viewer))
+                )
+                """);
+        if (candidateUuid != null) {
+            sql.append(" AND ra.candidate_uuid = :candidate");
+        }
+        var query = em.createNativeQuery(sql.toString())
+                // Blank sentinel for headerless callers: matches no circle row.
+                .setParameter("viewer", viewerUuid != null ? viewerUuid : "");
+        if (candidateUuid != null) {
+            query.setParameter("candidate", candidateUuid);
+        }
+        return query.getResultList();
+    }
+
+    /**
+     * The comp tier for a candidate's salary-expectation data (P8 contract):
+     * {@code ADMIN}, recruiter tier (HR/CXO), or teamlead/hiring-owner of
+     * one of the candidate's positions. Interviewers, practice leads and
+     * profile-read TECHPARTNERs are deliberately outside — they see the
+     * event, not the amount (spec §7.2 {@code recruitment:comp} row).
+     *
+     * @param candidatePositions the (pre-fetched) positions of the
+     *                           candidate's applications — batched by the
+     *                           caller, never re-fetched per event
+     */
+    public boolean isCompTierFor(String viewerUuid, Collection<RecruitmentPosition> candidatePositions) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return false;
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+            return true;
+        }
+        if (candidatePositions == null || candidatePositions.isEmpty()) {
+            return false;
+        }
+        if (candidatePositions.stream().anyMatch(p -> viewerUuid.equals(p.getHiringOwnerUuid()))) {
+            return true;
+        }
+        Set<String> ledTeams = new HashSet<>(currentlyLedTeams(viewerUuid));
+        return candidatePositions.stream()
+                .anyMatch(p -> p.getTeamUuid() != null && ledTeams.contains(p.getTeamUuid()));
     }
 
     /**

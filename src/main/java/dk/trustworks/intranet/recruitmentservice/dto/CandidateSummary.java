@@ -25,6 +25,8 @@ public record CandidateSummary(
          * partner-track applications are absent for non-circle viewers.
          * Empty when the candidate is in no pipeline (P4).
          */
-        List<CandidateApplicationInfo> activeApplications
+        List<CandidateApplicationInfo> activeApplications,
+        /** Last mutation of the candidate row — the P8 grid's "Updated" column. */
+        LocalDateTime updatedAt
 ) {
 }

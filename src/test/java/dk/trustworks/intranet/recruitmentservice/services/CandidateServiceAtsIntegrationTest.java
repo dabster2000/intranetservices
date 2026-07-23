@@ -328,35 +328,35 @@ class CandidateServiceAtsIntegrationTest {
                 .build());
 
         assertOnlyContains(candidateService.list(null, null, "tag-" + marker,
-                null, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
+                null, null, null, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
         assertOnlyContains(candidateService.list(null, null, null,
-                null, null, "Spec-" + marker, null, 0, 100, null), pm.uuid(), dev.uuid());
+                null, null, "Spec-" + marker, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
 
         CandidateListResponse cleared = candidateService.list(null, null, null,
-                null, null, null, "CLEARED", 0, 1000, null);
+                null, null, null, "CLEARED", null, null, 0, 1000, null);
         assertTrue(uuidsOf(cleared).contains(pm.uuid()));
         assertFalse(uuidsOf(cleared).contains(dev.uuid()));
 
         CandidateListResponse seniors = candidateService.list(null, null, null,
-                null, "SENIOR", null, null, 0, 1000, null);
+                null, "SENIOR", null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(seniors).contains(pm.uuid()));
         assertFalse(uuidsOf(seniors).contains(dev.uuid()));
 
         CandidateListResponse masters = candidateService.list(null, null, null,
-                "MASTER", null, null, null, 0, 1000, null);
+                "MASTER", null, null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(masters).contains(pm.uuid()));
         assertFalse(uuidsOf(masters).contains(dev.uuid()));
 
         // The POOLED status filter finds pool candidates.
         candidateService.pool(UUID.fromString(dev.uuid()), CandidatePoolStatus.SILVER_MEDALIST, actor);
         CandidateListResponse pooled = candidateService.list("POOLED", null, null,
-                null, null, null, null, 0, 1000, null);
+                null, null, null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(pooled).contains(dev.uuid()));
         assertFalse(uuidsOf(pooled).contains(pm.uuid()));
 
         WebApplicationException badFilter = assertThrows(WebApplicationException.class,
                 () -> candidateService.list(null, null, null, "NOT_A_LEVEL",
-                        null, null, null, 0, 10, null));
+                        null, null, null, null, null, 0, 10, null));
         assertEquals(400, badFilter.getResponse().getStatus());
     }
 

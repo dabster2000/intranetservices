@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.dto.CircleMemberRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.PositionBoardResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PositionListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PositionRequest;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
@@ -8,6 +9,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentBoardService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentPositionService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -80,6 +82,9 @@ public class RecruitmentPositionResource {
     @Inject
     RecruitmentPositionService positionService;
 
+    @Inject
+    RecruitmentBoardService boardService;
+
     // ---- Read -----------------------------------------------------------------
 
     /**
@@ -104,6 +109,21 @@ public class RecruitmentPositionResource {
     public RecruitmentPosition get(@PathParam("uuid") UUID uuid) {
         enforceFlag();
         return requireVisiblePosition(uuid, currentActor());
+    }
+
+    /**
+     * The position's pipeline board (P7): open applications grouped into
+     * one column per {@code stage_set} entry (HIRED included), cards oldest
+     * {@code stageEnteredAt} first with server-computed idle flags, and the
+     * terminal outcomes summarized in a rail. Read-only; same visibility
+     * rule as {@link #get} — an invisible position answers 404, never 403.
+     */
+    @GET
+    @Path("/{uuid}/board")
+    public PositionBoardResponse board(@PathParam("uuid") UUID uuid) {
+        enforceFlag();
+        RecruitmentPosition position = requireVisiblePosition(uuid, currentActor());
+        return boardService.board(position);
     }
 
     // ---- Mutations ---------------------------------------------------------------
