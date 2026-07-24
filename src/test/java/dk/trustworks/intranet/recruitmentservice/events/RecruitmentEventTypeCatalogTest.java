@@ -37,6 +37,9 @@ class RecruitmentEventTypeCatalogTest {
         // batchlet's DMs are scheduled side effects and the sweep's
         // idempotency key ("reactors' own side effects are recorded as
         // events", spec §3.4). Recorded in findings §P23.
+        // DPO_DIGEST_SENT is the matching P24 addition: the DPO exception
+        // digest's DMs are scheduled side effects and the run's per-
+        // (recipient, week) idempotency key. Recorded in findings §P24.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -46,6 +49,7 @@ class RecruitmentEventTypeCatalogTest {
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
+                "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
@@ -60,9 +64,9 @@ class RecruitmentEventTypeCatalogTest {
                 .collect(Collectors.toSet());
         assertEquals(expected, actual,
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
-                        + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED "
-                        + "and P23 MORNING_BRIEF_SENT additions exactly");
-        assertEquals(46, RecruitmentEventType.values().length);
+                        + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
+                        + "P23 MORNING_BRIEF_SENT and P24 DPO_DIGEST_SENT additions exactly");
+        assertEquals(47, RecruitmentEventType.values().length);
     }
 
     @Test

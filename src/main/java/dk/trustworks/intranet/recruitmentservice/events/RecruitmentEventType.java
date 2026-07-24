@@ -80,6 +80,16 @@ public enum RecruitmentEventType {
      * reactor side effect (findings §P23).
      */
     MORNING_BRIEF_SENT,
+    /**
+     * The digest batchlet DMed a DPO-role holder the weekly exception
+     * digest (Slack spec §5.10). One event per (recipient, ISO week) —
+     * the run's idempotency key; a re-run only DMs recipients with no
+     * event for the week. {@code candidate_uuid} NULL; payload carries
+     * structural counts only. Catalog addition made in P24 — a scheduled
+     * side effect is an event like every other reactor side effect
+     * (findings §P24).
+     */
+    DPO_DIGEST_SENT,
 
     // --- Communication & notes (P3, P15) --------------------------------
     EMAIL_SENT,

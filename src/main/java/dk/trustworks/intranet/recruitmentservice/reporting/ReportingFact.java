@@ -42,6 +42,14 @@ public enum ReportingFact {
     /** One referral triaged. Dims: person=referrer, outcome=CANDIDATE_CREATED|DISMISSED, detail=origin. */
     REFERRAL_TRIAGED,
 
+    /**
+     * One SLA nudge DM sent (P17 sweep; projected since P24 — the weekly
+     * digest's "scorecard SLA stats" input). Dims: position/practice/track,
+     * detail=the nudge event type (SCORECARD_NUDGED | CANDIDATE_IDLE_NUDGED |
+     * DEBRIEF_STALLED_NUDGED). Historical nudges enter via rebuild.
+     */
+    NUDGE_SENT,
+
     // --- GDPR compliance counters (all: cnt only) ------------------------
     /** Dims: detail=channel (EMAIL|MANUAL). */
     ART14_NOTICE_SENT,

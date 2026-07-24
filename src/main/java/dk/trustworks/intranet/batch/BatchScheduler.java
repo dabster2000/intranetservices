@@ -97,6 +97,16 @@ public class BatchScheduler {
     boolean recruitmentMorningBriefEnabled;
 
     /**
+     * Kill switch for the recruitment digests (ATS expansion P24): the
+     * weekly AI funnel narrative, the quarterly AI rejection-pattern
+     * narrative and the weekly DPO exception digest. Off = none of the
+     * three run at all. Independent of this switch, each digest is a
+     * no-op while its own {@code app_settings} toggles are off.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.digest.enabled", defaultValue = "true")
+    boolean recruitmentDigestEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -534,6 +544,38 @@ public class BatchScheduler {
             jobOperator.start("recruitment-morning-brief", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-morning-brief: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The P24 digests: the weekly AI funnel narrative, the quarterly AI
+     * rejection-pattern narrative and the weekly DPO exception digest —
+     * one DAILY pass in which each digest decides for itself whether its
+     * period needs generating (event-derived idempotency), so Monday
+     * delivery self-heals on later weekdays after an OpenAI/Slack outage
+     * and a run on a draining ECS task is harmless. No-op per digest
+     * while its own {@code app_settings} toggles are off.
+     * <p>
+     * Schedule: daily at 06:30 UTC — after the 05:45 GDPR sweep (the DPO
+     * digest reports post-sweep state), before the 07:00 SLA sweep.
+     */
+    @Scheduled(cron = "0 30 6 * * ?")
+    void scheduleRecruitmentDigest() {
+        if (!recruitmentDigestEnabled) {
+            log.debug("recruitment-digest skipped: dk.trustworks.recruitment.digest.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-digest")) {
+                if (!jobOperator.getRunningExecutions("recruitment-digest").isEmpty()) {
+                    log.debug("recruitment-digest already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-digest batch job");
+            jobOperator.start("recruitment-digest", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-digest: " + e.getMessage());
         }
     }
 

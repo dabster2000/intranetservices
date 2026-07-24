@@ -230,6 +230,49 @@ public class SlackService {
     }
 
     /**
+     * Lists the HUMAN members of a channel with the admin token (P24 — the
+     * DPO digest's circle/channel-membership drift check). Paginates
+     * {@code conversations.members} and filters bot users (incl. Slackbot)
+     * via {@code users.info}, so the mother/admin bots — members of every
+     * channel they post to — never appear as "drift". Throws on transport
+     * failure or a not-ok API response; the drift check treats that as
+     * "check unavailable", never as an empty channel.
+     */
+    public List<String> listHumanChannelMembers(String channelId) throws IOException, SlackApiException {
+        List<String> members = new ArrayList<>();
+        String cursor = null;
+        do {
+            final String pageCursor = cursor;
+            ConversationsMembersResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                    .conversationsMembers(req -> req.channel(channelId).limit(200).cursor(pageCursor));
+            if (!response.isOk()) {
+                throw new IOException("Slack channel member listing failed: " + response.getError());
+            }
+            if (response.getMembers() != null) {
+                members.addAll(response.getMembers());
+            }
+            cursor = response.getResponseMetadata() == null
+                    ? null : response.getResponseMetadata().getNextCursor();
+        } while (cursor != null && !cursor.isEmpty());
+
+        List<String> humans = new ArrayList<>();
+        for (String memberId : members) {
+            if ("USLACKBOT".equals(memberId)) {
+                continue;
+            }
+            var info = Slack.getInstance().methods(adminSlackBotToken)
+                    .usersInfo(req -> req.user(memberId));
+            if (!info.isOk()) {
+                throw new IOException("Slack user info lookup failed: " + info.getError());
+            }
+            if (info.getUser() != null && !Boolean.TRUE.equals(info.getUser().isBot())) {
+                humans.add(memberId);
+            }
+        }
+        return humans;
+    }
+
+    /**
      * DMs a Block Kit message to a user (P18 — the actionable scorecard
      * nudge/kit DMs). Unlike the best-effort channel variant this THROWS on
      * transport failure <em>and</em> on a not-ok API response — callers pair

@@ -151,6 +151,14 @@ public class RecruitmentReportingProjector extends RecruitmentReactor {
                             .outcome(str(payload.get("outcome")))
                             .detail(origin(payload)));
 
+            // The three P17 SLA nudges as one fact keyed by nudge type
+            // (P24 — the weekly digest's "scorecard SLA stats" input;
+            // historical nudges enter via rebuild, findings §P20).
+            case SCORECARD_NUDGED, CANDIDATE_IDLE_NUDGED, DEBRIEF_STALLED_NUDGED ->
+                    increment(event, ReportingFact.NUDGE_SENT,
+                            positionDims(event, payload)
+                                    .detail(event.getEventType().name()));
+
             case ART14_NOTICE_SENT -> increment(event, ReportingFact.ART14_NOTICE_SENT,
                     Dims.none().detail(str(payload.get("channel"))));
 
