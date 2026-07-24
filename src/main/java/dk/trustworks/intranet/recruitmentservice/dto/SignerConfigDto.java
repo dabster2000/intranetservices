@@ -9,7 +9,13 @@ import jakarta.validation.constraints.NotBlank;
  * reference, so the client can edit the dossier's signers free-form before
  * sending for signature.
  *
- * @param group         arbitrary grouping label (e.g. "Trustworks", "Candidate")
+ * @param group         1-based signing group as a decimal string ("1", "2", …),
+ *                      mirroring {@code template_default_signers.signer_group}:
+ *                      signers sharing a group sign in parallel, lower groups
+ *                      sign before higher ones. Blank or non-numeric values are
+ *                      read as group 1 at send time. NOT a free-text label —
+ *                      writing one here collapses the signer into the first
+ *                      round.
  * @param name          display name presented to the recipient
  * @param email         signer email — required for any signer
  * @param signing       true if this party performs an actual signature; false
