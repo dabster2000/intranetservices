@@ -120,6 +120,116 @@ public class SlackService {
     }
 
     /**
+     * Posts a Block Kit message and returns the message {@code ts} (P22 —
+     * the living root card, whose ts is the {@code chat.update} target and
+     * the {@code thread_ts} anchor for event replies). Unlike the
+     * best-effort channel variant this THROWS on transport failure and on
+     * a not-ok API response: the caller records the returned ts in the
+     * threads projection, and a swallowed failure would either record a
+     * card that does not exist or lose one that does.
+     */
+    public String sendMessageReturningTs(String channel, String fallbackText,
+                                         java.util.List<com.slack.api.model.block.LayoutBlock> blocks)
+            throws SlackApiException, IOException {
+        ChatPostMessageResponse response = Slack.getInstance().methods(motherSlackBotToken)
+                .chatPostMessage(req -> req
+                        .channel(channel)
+                        .text(fallbackText)
+                        .blocks(blocks));
+        if (!response.isOk()) {
+            throw new IOException("Slack root-card post failed: " + response.getError());
+        }
+        return response.getTs();
+    }
+
+    /**
+     * Posts a plain-text reply into a message thread (P22 — living-card
+     * event replies). Best-effort: logs and swallows — the intranet is the
+     * system of record and the {@code chat.update}d root card carries
+     * current state either way; throwing here would re-run the whole
+     * reactor delivery and duplicate side effects that already happened.
+     */
+    public void sendThreadReply(String channel, String threadTs, String message) {
+        try {
+            ChatPostMessageResponse response = Slack.getInstance().methods(motherSlackBotToken)
+                    .chatPostMessage(req -> req
+                            .channel(channel)
+                            .threadTs(threadTs)
+                            .text(message));
+            if (!response.isOk()) {
+                log.errorf("Failed to send Slack thread reply channel=%s: %s",
+                        channel, response.getError());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Error sending Slack thread reply channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
+    /**
+     * Creates a PRIVATE channel with the admin token and returns its id
+     * (P22 — partner-track circle channels; the public
+     * {@link #createChannel} variant predates it and stays untouched).
+     * Throws on transport failure or a not-ok API response so the reactor
+     * delivery retries — a partner position without its private channel
+     * degrades to circle-member DMs until the channel exists.
+     */
+    public String createPrivateChannel(String channelName) throws IOException, SlackApiException {
+        ConversationsCreateResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsCreate(r -> r.name(channelName).isPrivate(true));
+        if (!response.isOk()) {
+            throw new IOException("Slack private-channel create failed: " + response.getError());
+        }
+        return response.getChannel().getId();
+    }
+
+    /**
+     * Invites a user to a channel with the admin token (P22 — circle
+     * membership sync). {@code already_in_channel} is a success (the
+     * reconciliation goal state already holds); anything else throws so
+     * the reactor delivery retries and membership converges on the circle.
+     * The best-effort {@link #addUserToChannel} predates this and keeps
+     * its swallow posture for its existing callers.
+     */
+    public void inviteToChannel(User user, String channelId) throws IOException, SlackApiException {
+        ConversationsInviteResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsInvite(req -> req.channel(channelId)
+                        .users(Collections.singletonList(user.getSlackusername())));
+        if (!response.isOk() && !"already_in_channel".equals(response.getError())) {
+            throw new IOException("Slack channel invite failed: " + response.getError());
+        }
+    }
+
+    /**
+     * Removes a user from a channel with the admin token (P22 — circle
+     * membership sync). {@code not_in_channel} is a success; anything else
+     * throws so the delivery retries. Sibling of {@link #inviteToChannel}.
+     */
+    public void kickFromChannel(User user, String channelId) throws IOException, SlackApiException {
+        ConversationsKickResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsKick(req -> req.channel(channelId).user(user.getSlackusername()));
+        if (!response.isOk() && !"not_in_channel".equals(response.getError())) {
+            throw new IOException("Slack channel kick failed: " + response.getError());
+        }
+    }
+
+    /**
+     * Archives a channel with the admin token (P22 — partner channel on
+     * POSITION_CLOSED). {@code already_archived} / {@code is_archived} are
+     * successes (idempotent under redelivery); anything else throws so the
+     * delivery retries. The boolean-returning {@link #closeChannel}
+     * predates this and keeps its posture for its existing callers.
+     */
+    public void archiveChannel(String channelId) throws IOException, SlackApiException {
+        ConversationsArchiveResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsArchive(r -> r.channel(channelId));
+        if (!response.isOk()
+                && !"already_archived".equals(response.getError())
+                && !"is_archived".equals(response.getError())) {
+            throw new IOException("Slack channel archive failed: " + response.getError());
+        }
+    }
+
+    /**
      * DMs a Block Kit message to a user (P18 — the actionable scorecard
      * nudge/kit DMs). Unlike the best-effort channel variant this THROWS on
      * transport failure <em>and</em> on a not-ok API response — callers pair
@@ -216,6 +326,28 @@ public class SlackService {
             }
         } catch (Exception e) {
             log.errorf(e, "Error updating Slack message channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
+    /**
+     * Rewrites an existing bot message and THROWS on failure (P22 — the
+     * living root card and the anonymization redaction). {@code chat.update}
+     * is naturally idempotent, so the caller's reactor delivery can safely
+     * retry the whole event; contrast {@link #updateMessage}, whose swallow
+     * posture suits cosmetic rewrites only. {@code blocks} may be null to
+     * reduce the message to plain text.
+     */
+    public void updateMessageStrict(String channel, String ts, String text,
+                                    java.util.List<com.slack.api.model.block.LayoutBlock> blocks)
+            throws SlackApiException, IOException {
+        var response = Slack.getInstance().methods(motherSlackBotToken)
+                .chatUpdate(req -> {
+                    req.channel(channel).ts(ts).text(text);
+                    req.blocks(blocks != null ? blocks : java.util.List.of());
+                    return req;
+                });
+        if (!response.isOk()) {
+            throw new IOException("Slack message update failed: " + response.getError());
         }
     }
 

@@ -66,6 +66,15 @@ public record SlackCandidateFacts(
                 : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
+    /**
+     * {@code LINKEDIN_AD} → {@code Linkedin ad} — enum codes never reach
+     * Slack raw. Shared by every Slack builder (P12 flat pings, P22 cards).
+     */
+    public static String humanizeCode(String enumName) {
+        String lower = enumName.toLowerCase().replace('_', ' ');
+        return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
+    }
+
     /** Display name with a neutral fallback so a builder never prints "null". */
     public String displayName() {
         return candidateName == null || candidateName.isBlank() ? "Unknown candidate" : candidateName;
