@@ -30,12 +30,15 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.net.URI;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -240,13 +243,26 @@ public class RecruitmentInterviewResource {
      * Empty (never an error) when the Graph calendar toggle is off or the
      * lookup fails — the UI hides the picker. Write-tier: only schedulers
      * need the list.
+     * <p>
+     * Optional {@code start} (ISO local datetime, wall-clock
+     * Europe/Copenhagen): when present, each room carries its free/busy
+     * state for the 60-minute interview slot beginning there — the picker
+     * then offers only free rooms. Invalid values → 400.
      */
     @GET
     @Path("/interviews/rooms")
     @RolesAllowed({"recruitment:write"})
-    public MeetingRoomsResponse rooms() {
+    public MeetingRoomsResponse rooms(@QueryParam("start") String start) {
         enforceFlag();
-        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms();
+        LocalDateTime slotStart = null;
+        if (start != null && !start.isBlank()) {
+            try {
+                slotStart = LocalDateTime.parse(start);
+            } catch (DateTimeParseException e) {
+                throw new WebApplicationException("start must be an ISO local datetime", 400);
+            }
+        }
+        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms(slotStart);
         return new MeetingRoomsResponse(rooms, rooms.size());
     }
 

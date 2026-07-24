@@ -72,6 +72,9 @@ public class CandidateService {
     RecruitmentEventRecorder eventRecorder;
 
     @Inject
+    RecruitmentS3StorageService storageService;
+
+    @Inject
     RecruitmentApplicationService applicationService;
 
     @Inject
@@ -665,6 +668,37 @@ public class CandidateService {
             builder.payload("slack_permalink", slackPermalink);
         }
         return eventRecorder.record(builder.pii("text", note.text()));
+    }
+
+    /**
+     * Store a manually uploaded candidate document (CV, cover letter or
+     * other) in S3 and append the {@code DOCUMENT_UPLOADED} event with
+     * {@code origin='manual'} and the acting recruiter — same payload
+     * contract as the P5 public-form uploads, so the P8 Documents tab and
+     * timeline render it with no changes. File-format/size validation is
+     * the resource's job (shared {@code PublicApplyDocuments} rules).
+     *
+     * @return the stored file's uuid
+     */
+    @Transactional
+    public String uploadDocument(UUID candidateUuid, String kind, byte[] bytes,
+                                 String contentType, String safeFilename,
+                                 String rawFilename, UUID actor) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(actor, "actor must not be null");
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        String fileUuid = storageService.storeApplicationDocument(
+                bytes, safeFilename, UUID.fromString(candidate.getUuid()));
+        eventRecorder.record(candidateEvent(RecruitmentEventType.DOCUMENT_UPLOADED, candidate, actor)
+                .payload("file_uuid", fileUuid)
+                .payload("kind", kind)
+                .payload("content_type", contentType)
+                .payload("size_bytes", bytes.length)
+                .payload("origin", "manual")
+                .pii("filename", rawFilename));
+        log.infof("Stored manual document candidate=%s fileUuid=%s kind=%s size=%d actor=%s",
+                candidate.getUuid(), fileUuid, kind, bytes.length, actor);
+        return fileUuid;
     }
 
     /**
