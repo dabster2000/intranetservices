@@ -266,6 +266,67 @@ class RecruitmentCalendarServiceTest {
     }
 
     @Test
+    void rooms_withoutStart_noFreeBusyLookup_availableNull() {
+        service.calendarEnabled = true;
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
+
+        var rooms = service.listRooms(null);
+
+        assertEquals(1, rooms.size());
+        assertEquals(null, rooms.get(0).available());
+        verify(graph, never()).getSchedule(anyString(), any());
+    }
+
+    @Test
+    void rooms_withStart_marksFreeAndBusy_fromOneGetScheduleCall() {
+        service.calendarEnabled = true;
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-2", "HQ meeting room 3", "room-hq3@trustworks.dk", 4, "HQ"))));
+        when(graph.getSchedule(anyString(), any()))
+                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "room-hq2@trustworks.dk", "0"),
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "room-hq3@trustworks.dk", "2"))));
+
+        var rooms = service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0));
+
+        assertEquals(2, rooms.size());
+        assertEquals(Boolean.TRUE, rooms.get(0).available(), "all-zero view = free");
+        assertEquals(Boolean.FALSE, rooms.get(1).available(), "non-zero digit = busy");
+
+        // One call for both rooms, wall-clock Copenhagen 60-minute window.
+        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        verify(graph).getSchedule(eq("room-hq2@trustworks.dk"), body.capture());
+        assertEquals(List.of("room-hq2@trustworks.dk", "room-hq3@trustworks.dk"),
+                body.getValue().schedules());
+        assertEquals("2026-08-01T10:00", body.getValue().startTime().dateTime());
+        assertEquals("Europe/Copenhagen", body.getValue().startTime().timeZone());
+        assertEquals("2026-08-01T11:00", body.getValue().endTime().dateTime());
+    }
+
+    @Test
+    void rooms_withStart_freeBusyFailure_roomsStillReturned_availableNull() {
+        service.calendarEnabled = true;
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
+        when(graph.getSchedule(anyString(), any()))
+                .thenThrow(new RuntimeException("Graph 503"));
+
+        var rooms = service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0));
+
+        assertEquals(1, rooms.size(), "a broken free/busy lookup must not hide rooms");
+        assertEquals(null, rooms.get(0).available());
+    }
+
+    @Test
     void graphFailure_isSwallowed_schedulingNeverBreaks() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))

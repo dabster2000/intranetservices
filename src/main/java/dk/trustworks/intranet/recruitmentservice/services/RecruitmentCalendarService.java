@@ -16,8 +16,11 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -47,6 +50,9 @@ import java.util.Optional;
 public class RecruitmentCalendarService {
 
     static final int DURATION_MINUTES = 60;
+
+    /** Graph getSchedule accepts at most 20 schedules per call. */
+    static final int GET_SCHEDULE_BATCH = 20;
 
     /**
      * Interview times are wall-clock as entered by the scheduler (P11
@@ -165,24 +171,86 @@ public class RecruitmentCalendarService {
      * location, same posture as event sync.
      */
     public List<MeetingRoomsResponse.MeetingRoom> listRooms() {
+        return listRooms(null);
+    }
+
+    /**
+     * As {@link #listRooms()}, but when {@code start} is given each room
+     * additionally carries its free/busy state for the interview slot
+     * {@code [start, start + 60 min)} (one Graph {@code getSchedule} call
+     * for all rooms). Availability failures degrade to {@code available =
+     * null} — never to an empty room list; a broken free/busy lookup must
+     * not block scheduling.
+     */
+    public List<MeetingRoomsResponse.MeetingRoom> listRooms(LocalDateTime start) {
         if (!calendarEnabled) {
             return List.of();
         }
+        List<MeetingRoomsResponse.MeetingRoom> rooms;
         try {
             GraphApiClient.RoomCollectionResponse response = graph().listRooms();
             if (response == null || response.value() == null) {
                 return List.of();
             }
-            return response.value().stream()
+            rooms = response.value().stream()
                     .filter(room -> room.emailAddress() != null && !room.emailAddress().isBlank())
                     .map(room -> new MeetingRoomsResponse.MeetingRoom(
                             room.displayName(), room.emailAddress(),
-                            room.capacity(), room.building()))
+                            room.capacity(), room.building(), null))
                     .toList();
         } catch (Exception e) {
             log.warnv("Graph rooms lookup failed: {0} — returning no rooms", e.getMessage());
             return List.of();
         }
+        if (start == null || rooms.isEmpty()) {
+            return rooms;
+        }
+        Map<String, Boolean> freeByRoom = roomAvailability(
+                rooms.stream().map(MeetingRoomsResponse.MeetingRoom::emailAddress).toList(),
+                start);
+        return rooms.stream()
+                .map(room -> new MeetingRoomsResponse.MeetingRoom(
+                        room.displayName(), room.emailAddress(),
+                        room.capacity(), room.building(),
+                        freeByRoom.get(room.emailAddress())))
+                .toList();
+    }
+
+    /**
+     * Free/busy per room mailbox for {@code [start, start + 60 min)} via
+     * Graph {@code getSchedule} (max 20 schedules per call — batched).
+     * A room is available only when its whole availability view is "0"s.
+     * Failures return an empty map (= unknown), logged, never thrown.
+     */
+    private Map<String, Boolean> roomAvailability(List<String> roomEmails, LocalDateTime start) {
+        Map<String, Boolean> result = new HashMap<>();
+        try {
+            for (int i = 0; i < roomEmails.size(); i += GET_SCHEDULE_BATCH) {
+                List<String> batch = roomEmails.subList(i,
+                        Math.min(i + GET_SCHEDULE_BATCH, roomEmails.size()));
+                GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
+                        batch.get(0),
+                        new GraphApiClient.ScheduleRequest(
+                                batch,
+                                new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
+                                new CalendarEventRequest.DateTimeTimeZone(
+                                        start.plusMinutes(DURATION_MINUTES).toString(), EVENT_TIME_ZONE),
+                                DURATION_MINUTES));
+                if (response == null || response.value() == null) {
+                    continue;
+                }
+                for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
+                    if (info.scheduleId() == null || info.availabilityView() == null) {
+                        continue;
+                    }
+                    result.put(info.scheduleId(), info.availabilityView().chars().allMatch(c -> c == '0'));
+                }
+            }
+        } catch (Exception e) {
+            log.warnv("Graph free/busy lookup failed: {0} — rooms shown without availability",
+                    e.getMessage());
+        }
+        return result;
     }
 
     // ---- Shaping -----------------------------------------------------------
