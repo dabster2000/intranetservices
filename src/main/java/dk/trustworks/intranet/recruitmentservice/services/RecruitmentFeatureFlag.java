@@ -25,6 +25,12 @@ import java.util.Optional;
  *       (spec §11), gating the P11 interviews surfaces and scheduling
  *       affordances ({@link #isInterviewsEnabled()}). Seeded {@code false}
  *       by V433.</li>
+ *   <li>{@code recruitment.gdpr.enabled} — ATS expansion core flag 3
+ *       (spec §11), gating the P19 GDPR engine ({@link #isGdprEnabled()}).
+ *       Seeded {@code false} by V433. <b>Enabling this flag is the moment
+ *       automatic deletion starts</b> (plan §P19): the nightly sweep begins
+ *       anonymizing candidates past their retention deadline. Enable on
+ *       staging for at least two sweep cycles before production.</li>
  * </ul>
  */
 @ApplicationScoped
@@ -33,6 +39,7 @@ public class RecruitmentFeatureFlag {
     static final String SETTING_KEY = "recruitment.dossier.enabled";
     static final String PIPELINE_SETTING_KEY = "recruitment.pipeline.enabled";
     static final String INTERVIEWS_SETTING_KEY = "recruitment.interviews.enabled";
+    static final String GDPR_SETTING_KEY = "recruitment.gdpr.enabled";
 
     @Inject
     AppSettingService appSettingService;
@@ -63,6 +70,18 @@ public class RecruitmentFeatureFlag {
      */
     public boolean isInterviewsEnabled() {
         return readFlag(INTERVIEWS_SETTING_KEY);
+    }
+
+    /**
+     * @return true iff the {@code recruitment.gdpr.enabled} setting is
+     *         present and parses to {@code true}; false otherwise. Same
+     *         missing-means-off semantics as {@link #isEnabled()}. Gates
+     *         every P19 side effect — renewal emails, consent expiry and
+     *         auto-anonymization (the sweep) as well as the DPO actions
+     *         and the public consent page.
+     */
+    public boolean isGdprEnabled() {
+        return readFlag(GDPR_SETTING_KEY);
     }
 
     private boolean readFlag(String key) {

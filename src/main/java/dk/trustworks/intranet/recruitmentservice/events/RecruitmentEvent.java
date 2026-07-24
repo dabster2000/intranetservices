@@ -22,10 +22,11 @@ import java.time.LocalDateTime;
  * handlers describe events with {@link RecruitmentEventBuilder} and hand them
  * to the recorder; they never touch this class directly.
  * <p>
- * The entity is deliberately immutable from Java (no setters): after Phase 1
- * the only mutation the event store ever sees is GDPR anonymization (P19)
- * rewriting {@code pii}/{@code pii_state}, which will get its own narrow
- * domain method when it lands.
+ * The entity is deliberately immutable from Java (no setters): the only
+ * mutation the event store ever sees is GDPR anonymization rewriting
+ * {@code pii}/{@code pii_state} — since P19 that path exists and lives
+ * exclusively in {@code RecruitmentAnonymizerService} (bulk update, exempted
+ * by name in the ArchUnit rule).
  */
 @Getter
 @Entity

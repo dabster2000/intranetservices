@@ -454,6 +454,20 @@ dk:
       # thresholds live in app_settings (recruitment.sla.*, V447 seeds).
       sla-sweep:
         enabled: ${DK_TRUSTWORKS_RECRUITMENT_SLA_SWEEP_ENABLED:true}
+      # P19 GDPR sweep (recruitment-gdpr-sweep, daily 05:45 UTC): kill
+      # switch for the whole clock (consent expiry, renewal emails,
+      # auto-anonymization). The sweep is additionally a no-op while the
+      # recruitment.gdpr.enabled app setting is off — that flag, not this
+      # property, is the deliberate "automatic deletion starts now"
+      # decision (plan §P19); cadence lives in app_settings
+      # (recruitment.gdpr.*, V448 seeds).
+      gdpr-sweep:
+        enabled: ${DK_TRUSTWORKS_RECRUITMENT_GDPR_SWEEP_ENABLED:true}
+      # P19 public consent page: base URL the tokenized /consent/[token]
+      # links in renewal emails are built on (the intranet frontend hosts
+      # the page, excluded from its auth gate like /apply).
+      consent:
+        base-url: ${DK_TRUSTWORKS_RECRUITMENT_CONSENT_BASE_URL:https://intra.trustworks.dk}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,
