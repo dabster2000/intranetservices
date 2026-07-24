@@ -88,6 +88,15 @@ public class BatchScheduler {
     boolean recruitmentGdprSweepEnabled;
 
     /**
+     * Kill switch for the recruitment morning briefs (ATS expansion P23).
+     * Off = no interviewer brief DMs at all. Independent of this switch,
+     * the run is a no-op while {@code recruitment.pipeline.enabled} or
+     * {@code recruitment.slack.morning-brief.enabled} is off.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.morning-brief.enabled", defaultValue = "true")
+    boolean recruitmentMorningBriefEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -492,6 +501,39 @@ public class BatchScheduler {
             jobOperator.start("recruitment-sla-sweep", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-sla-sweep: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The P23 morning interviewer briefs (Slack spec §5.8): one DM per
+     * interviewer on days they have scheduled interviews — candidate,
+     * time, place, focus areas, kit link and the scorecard button.
+     * Idempotent by event-derived bookkeeping (every briefed pair appends
+     * a {@code MORNING_BRIEF_SENT} event the next run respects), so a run
+     * on a draining ECS task is harmless. No-op while
+     * {@code recruitment.pipeline.enabled} or
+     * {@code recruitment.slack.morning-brief.enabled} is off.
+     * <p>
+     * Schedule: daily at 06:00 UTC — 07:00/08:00 in Copenhagen, before
+     * the workday and before the 07:00 UTC SLA sweep.
+     */
+    @Scheduled(cron = "0 0 6 * * ?")
+    void scheduleRecruitmentMorningBrief() {
+        if (!recruitmentMorningBriefEnabled) {
+            log.debug("recruitment-morning-brief skipped: dk.trustworks.recruitment.morning-brief.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-morning-brief")) {
+                if (!jobOperator.getRunningExecutions("recruitment-morning-brief").isEmpty()) {
+                    log.debug("recruitment-morning-brief already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-morning-brief batch job");
+            jobOperator.start("recruitment-morning-brief", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-morning-brief: " + e.getMessage());
         }
     }
 

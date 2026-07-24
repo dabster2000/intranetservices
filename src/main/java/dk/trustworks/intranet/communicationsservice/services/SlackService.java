@@ -287,6 +287,26 @@ public class SlackService {
     }
 
     /**
+     * Publishes (replaces) a user's App Home view (P23 — the recruitment
+     * dashboard on the mother app's Home tab). {@code slackUserId} is the
+     * Slack member id ({@code U…}) from {@code user.slackusername}. Unlike
+     * modal opens there is no trigger id — the view can be published at any
+     * time, whether or not the user has the tab open. Throws on transport
+     * failure or a not-ok API response; App Home callers treat that as
+     * best-effort (the tab is a convenience mirror — staleness is fine, a
+     * blocked reactor is not).
+     */
+    public void publishView(String slackUserId, com.slack.api.model.view.View view)
+            throws IOException, SlackApiException {
+        var response = Slack.getInstance().methods(motherSlackBotToken)
+                .viewsPublish(req -> req.userId(slackUserId).view(view));
+        if (!response.isOk()) {
+            log.errorf("Failed to publish Slack home view: %s", response.getError());
+            throw new RuntimeException("Slack API error: " + response.getError());
+        }
+    }
+
+    /**
      * Posts an ephemeral message (visible only to {@code slackUserId}) in a
      * channel. Best-effort: logs and swallows on failure — an ephemeral is a
      * courtesy, never load-bearing state.

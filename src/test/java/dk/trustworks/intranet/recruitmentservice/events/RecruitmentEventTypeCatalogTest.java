@@ -33,6 +33,10 @@ class RecruitmentEventTypeCatalogTest {
         // CONSENT_EXPIRED is the P19 addition: the consent lifecycle has an
         // EXPIRED status (spec §4.1) but the §3.4 catalog had no type for
         // the sweep's expiry bookkeeping. Recorded in findings §P19.
+        // MORNING_BRIEF_SENT is the P23 addition: the morning-brief
+        // batchlet's DMs are scheduled side effects and the sweep's
+        // idempotency key ("reactors' own side effects are recorded as
+        // events", spec §3.4). Recorded in findings §P23.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -41,7 +45,7 @@ class RecruitmentEventTypeCatalogTest {
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
-                "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED",
+                "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
@@ -56,9 +60,9 @@ class RecruitmentEventTypeCatalogTest {
                 .collect(Collectors.toSet());
         assertEquals(expected, actual,
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
-                        + "P6 REFERRAL_TRIAGED, P17 *_NUDGED and P19 CONSENT_EXPIRED "
-                        + "additions exactly");
-        assertEquals(45, RecruitmentEventType.values().length);
+                        + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED "
+                        + "and P23 MORNING_BRIEF_SENT additions exactly");
+        assertEquals(46, RecruitmentEventType.values().length);
     }
 
     @Test

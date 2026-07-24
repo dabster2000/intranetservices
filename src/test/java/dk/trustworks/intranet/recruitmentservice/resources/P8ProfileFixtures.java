@@ -306,6 +306,32 @@ public final class P8ProfileFixtures {
     // ---- Interviews & scorecards (P11) -------------------------------------------
 
     /**
+     * P23 variant: insert one interview at an EXPLICIT wall-clock timestamp
+     * (Europe/Copenhagen, the P11 model) — the morning brief keys on the
+     * Copenhagen calendar day, which the UTC-relative fixtures can't hit
+     * reliably around midnight.
+     */
+    public static void insertInterviewAt(EntityManager em, String uuid, String applicationUuid,
+                                String kind, Integer round, String interviewerUuidsJson,
+                                String status, java.time.LocalDateTime scheduledAt) {
+        em.createNativeQuery("""
+                        INSERT INTO recruitment_interviews
+                            (uuid, application_uuid, kind, round, scheduled_at, interviewer_uuids,
+                             location, status, created_at, updated_at, created_by)
+                        VALUES (:uuid, :application, :kind, :round, :scheduledAt, :interviewers,
+                                'Teams', :status, NOW(), NOW(), 'test')
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("application", applicationUuid)
+                .setParameter("kind", kind)
+                .setParameter("round", round)
+                .setParameter("scheduledAt", scheduledAt)
+                .setParameter("interviewers", interviewerUuidsJson)
+                .setParameter("status", status)
+                .executeUpdate();
+    }
+
+    /**
      * Insert one interview row. {@code interviewerUuidsJson} is the raw JSON
      * array (e.g. {@code ["uuid-a","uuid-b"]}); {@code scheduledAt} may be
      * null for "now + 1 day".

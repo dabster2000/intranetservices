@@ -71,6 +71,15 @@ public enum RecruitmentEventType {
      * Catalog addition made in P17 (findings §P17).
      */
     DEBRIEF_STALLED_NUDGED,
+    /**
+     * The morning-brief batchlet DMed an interviewer about one of today's
+     * scheduled interviews (Slack spec §5.8). One event per
+     * (interviewer, interview, brief date) — the sweep's idempotency key;
+     * a re-run only briefs pairs with no event for today. Catalog addition
+     * made in P23 — a scheduled side effect is an event like every other
+     * reactor side effect (findings §P23).
+     */
+    MORNING_BRIEF_SENT,
 
     // --- Communication & notes (P3, P15) --------------------------------
     EMAIL_SENT,
