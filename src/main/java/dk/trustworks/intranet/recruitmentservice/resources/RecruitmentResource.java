@@ -530,19 +530,20 @@ public class RecruitmentResource {
         Objects.requireNonNull(request, "request body must not be null");
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
 
-        // Fire-and-forget the SharePoint copy after the conversion tx has
-        // committed. Doing it inline would hold DB row locks on the
-        // candidate/dossier/revision/appendix tables for 2-8 seconds while
-        // Graph API uploads each PDF (efficiency finding H2). On failure,
-        // sharepoint_move_status stays PENDING/PARTIAL/FAILED and the retry
-        // batchlet picks it up on its 5-minute cadence — no caller retry
-        // needed.
+        // Fire-and-forget the document copy after the conversion tx has
+        // committed (S3→S3 promotion while the employee_documents promotion
+        // writer is ON; legacy SharePoint copy otherwise). Doing it inline
+        // would hold DB row locks on the candidate/dossier/revision/appendix
+        // tables while the copy runs (efficiency finding H2). On failure the
+        // status stays PENDING/FAILED and the 5-minute re-drive (nextsign-
+        // status-sync sweep / SharePoint retry batchlet) picks it up — no
+        // caller retry needed.
         final UUID asyncCandidateUuid = uuid;
         managedExecutor.execute(() -> {
             try {
-                candidateConversionUseCase.runSharePointCopy(asyncCandidateUuid);
+                candidateConversionUseCase.runPostConversionCopy(asyncCandidateUuid);
             } catch (Exception e) {
-                log.errorf(e, "Async SharePoint copy failed for candidate=%s — batchlet will retry",
+                log.errorf(e, "Async document copy failed for candidate=%s — the 5-minute re-drive will retry",
                         asyncCandidateUuid);
             }
         });

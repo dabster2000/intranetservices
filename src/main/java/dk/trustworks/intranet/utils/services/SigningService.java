@@ -960,10 +960,23 @@ public class SigningService {
      */
     @Transactional
     public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners, String sharepointLocationUuid) {
-        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, sharepointLocationUuid: %s)",
-            caseKey, totalSigners, sharepointLocationUuid);
+        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, sharepointLocationUuid, null);
+    }
+
+    /**
+     * Full variant carrying the source template UUID (employee-documents
+     * spec §6.5.1): persisted on the case so the S3 archival step can map
+     * the template's {@code TemplateCategory} to an employee-document
+     * category at completion time. Null for template-less cases.
+     */
+    @Transactional
+    public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners,
+                                String sharepointLocationUuid, String templateUuid) {
+        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, sharepointLocationUuid: %s, templateUuid: %s)",
+            caseKey, totalSigners, sharepointLocationUuid, templateUuid);
 
         SigningCase entity = new SigningCase();
+        entity.setTemplateUuid(templateUuid);
         entity.setCaseKey(caseKey);
         entity.setUserUuid(userUuid);
         entity.setDocumentName(documentName);

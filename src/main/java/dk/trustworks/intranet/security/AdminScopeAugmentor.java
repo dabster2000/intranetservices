@@ -73,7 +73,7 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             // Signing & documents
             "signing:read", "signing:write",
             "dashboard:read", "dashboard:write",
-            "documents:read", "documents:write",
+            "documents:read", "documents:write", "documents:gdpr",
 
             // Knowledge
             "knowledge:read", "knowledge:write",

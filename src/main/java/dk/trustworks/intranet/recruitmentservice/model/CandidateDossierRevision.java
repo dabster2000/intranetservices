@@ -88,6 +88,19 @@ public class CandidateDossierRevision extends PanacheEntityBase {
     @Column(name = "s3_retention_until")
     private LocalDateTime s3RetentionUntil;
 
+    /**
+     * JSON array of {@code {filename, fileUuid}} entries for the SIGNED
+     * PDFs archived to candidate staging when the linked signing case
+     * completes (employee-documents spec §6.5.2 — closes the NextSign
+     * durability gap; mirror of {@link #generatedPdfsSnapshot}). Written
+     * by the archival step of the nextsign-status-sync batchlet while the
+     * {@code employee_documents.writers.signing} toggle is ON; mutable
+     * because it is set after the revision row was created.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "signed_pdfs_snapshot", columnDefinition = "JSON")
+    private String signedPdfsSnapshot;
+
     @Column(name = "recipient_email", length = 255, nullable = false, updatable = false)
     private String recipientEmail;
 
