@@ -144,6 +144,39 @@ public class RecruitmentS3StorageService {
     }
 
     /**
+     * Store a SIGNED PDF downloaded from NextSign into the candidate's
+     * staging space (employee-documents spec §6.5.2 — the signed document
+     * becomes durable the minute the case completes, independent of
+     * conversion). Same {@code trustworksfiles} bucket, same
+     * {@code relateduuid = candidateUuid} linkage, so the GDPR
+     * anonymizer's {@link #deleteAllCandidateFiles} automatically covers
+     * it for never-hired candidates, and the conversion promotion moves
+     * it to the employee store like every other staged file.
+     *
+     * @return the new {@code fileUuid} the caller records in the dossier
+     *         revision's {@code signed_pdfs_snapshot}.
+     */
+    public String storeSignedDocument(byte[] bytes, String filename, UUID candidateUuid) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+
+        String fileUuid = UUID.randomUUID().toString();
+        File file = new File(
+                fileUuid,
+                candidateUuid.toString(),
+                "DOCUMENT",
+                filename,
+                filename,
+                LocalDate.now(),
+                bytes);
+        s3FileService.save(file);
+        log.infof("Stored signed recruitment document candidate=%s fileUuid=%s size=%d",
+                candidateUuid, fileUuid, bytes.length);
+        return fileUuid;
+    }
+
+    /**
      * Fetch the bytes of a previously stored generated PDF.
      *
      * @throws IllegalStateException if the file is not found in S3

@@ -371,6 +371,9 @@ bucket:
   expenses: expensefiles
   files: trustworksfiles
   invoices: ${INVOICE_S3:invoicefiles-test}
+  # Dedicated compliance-hardened store for employee documents (spec §6.1).
+  # Wired per env via deploy.yml / deploy-production.yml like INVOICE_S3.
+  employee-documents: ${EMPLOYEE_DOCS_S3:trustworks-employee-documents-staging}
 edenai:
   api:
     key: ${EDENAI_APIKEY:xx}

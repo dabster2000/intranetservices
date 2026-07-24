@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="employee-documents-retention" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Employee Documents Retention Job (S3-only employee documents, spec §6.10)
+
+    Purpose:
+    The employee half of "GDPR runs itself": hard-delete every stored
+    document (all S3 object versions + rows) of ex-employees whose latest
+    status is TERMINATED and whose termination date is more than
+    employee_documents.retention.years (default 5, decision D4) years ago.
+    Per-user RETENTION_DELETE audit rows + one run-summary row snapshotting
+    the policy in force. At most retention.nightly-user-cap users per run.
+
+    Armed at runtime by the employee_documents.retention.enabled app
+    setting (seeded OFF by V452) - ENABLING THAT SETTING ON THE SETTINGS
+    TAB IS THE MOMENT AUTOMATIC DELETION STARTS. While unarmed the job is
+    a cheap no-op, so shipping it dark is safe.
+
+    Idempotency: an erased user has no employee_documents rows left and is
+    never selected again; S3 deletes are idempotent. Re-runs and draining-
+    task double-runs are harmless.
+
+    Schedule:
+    Daily at 02:10 UTC via BatchScheduler (the slot the retired
+    s3-retention-cleanup reaper used), gated by
+    dk.trustworks.employee-documents.retention-job.enabled (default true).
+
+    Similar to:
+    recruitment-gdpr-sweep.xml (the candidate-side GDPR clock)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="sweep-employee-documents-retention">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="employeeDocumentsRetentionBatchlet"/>
+    </step>
+</job>

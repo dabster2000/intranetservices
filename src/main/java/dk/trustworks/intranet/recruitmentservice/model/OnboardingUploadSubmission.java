@@ -77,6 +77,15 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     @Column(name = "sharepoint_web_url", length = 1024)
     private String sharepointWebUrl;
 
+    /**
+     * {@code employee_documents.uuid} for user-flow uploads stored via the
+     * S3 employee-document path (employee-documents spec §6.5.4, V454) —
+     * set instead of {@link #sharepointDriveItemId} while the
+     * {@code employee_documents.writers.onboarding} toggle is ON.
+     */
+    @Column(name = "employee_document_uuid", length = 36)
+    private String employeeDocumentUuid;
+
     @Column(name = "original_filename", length = 500, nullable = false)
     private String originalFilename;
 

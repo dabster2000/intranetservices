@@ -99,6 +99,12 @@ public class OnboardingUploadService {
     SharePointService sharePointService;
 
     @Inject
+    dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.EmployeeDocumentService employeeDocumentService;
+
+    @Inject
     RecruitmentHrSlackNotifier recruitmentHrSlackNotifier;
 
     @Inject
@@ -187,16 +193,28 @@ public class OnboardingUploadService {
             throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
         }
 
-        // For the user flow, resolve the SharePoint location now so any
-        // configuration / user-state failure surfaces before we attempt the
-        // upload (and before we have something to compensate for).
-        UserUploadContext userCtx = userFlow ? resolveUserUploadContext(token.getUserUuid()) : null;
+        // Single-path S3 switch (employee-documents spec §6.5.4): while the
+        // employee_documents.writers.onboarding toggle is ON, user-flow
+        // uploads land in the employee document store instead of SharePoint
+        // — no SharePoint location resolution needed at all.
+        boolean userFlowToS3 = userFlow && employeeDocumentsFeatureFlag.isOnboardingWriterEnabled();
+
+        // For the legacy user flow, resolve the SharePoint location now so
+        // any configuration / user-state failure surfaces before we attempt
+        // the upload (and before we have something to compensate for).
+        UserUploadContext userCtx = (userFlow && !userFlowToS3)
+                ? resolveUserUploadContext(token.getUserUuid()) : null;
 
         // ── 2. Pre-resolve Slack notification context (no further reads
         //       needed once we hand off to the notifier). ────────────────
-        NotificationContext notifyCtx = candidateFlow
-                ? buildCandidateNotificationContext(token.getCandidateUuid())
-                : buildUserNotificationContext(userCtx);
+        NotificationContext notifyCtx;
+        if (candidateFlow) {
+            notifyCtx = buildCandidateNotificationContext(token.getCandidateUuid());
+        } else if (userFlowToS3) {
+            notifyCtx = buildUserNotificationContextFromDb(token.getUserUuid());
+        } else {
+            notifyCtx = buildUserNotificationContext(userCtx);
+        }
 
         // ── 3. Upload bytes — outside any DB transaction. ────────────────
         OnboardingUploadSubmission row = new OnboardingUploadSubmission();
@@ -208,6 +226,7 @@ public class OnboardingUploadService {
 
         // Storage handles for compensating delete on persist failure.
         String uploadedS3FileUuid = null;
+        String uploadedEmployeeDocumentUuid = null;
         String uploadedSharepointDriveItemId = null;
         String uploadedSharepointSiteUrl = null;
         String uploadedSharepointDriveName = null;
@@ -219,6 +238,22 @@ public class OnboardingUploadService {
             row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.S3);
             row.setS3FileUuid(fileUuid);
             uploadedS3FileUuid = fileUuid;
+        } else if (userFlowToS3) {
+            // Employee-documents path (spec §6.5.4): straight into the
+            // user's employee file — category IDENTITY, source ONBOARDING,
+            // system writer (no interactive actor).
+            dk.trustworks.intranet.documentservice.model.EmployeeDocument doc =
+                    employeeDocumentService.store(new dk.trustworks.intranet.documentservice.services
+                            .EmployeeDocumentService.StoreCommand(
+                            token.getUserUuid(), bytes, safeFilename, normalisedContentType,
+                            dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory.IDENTITY,
+                            humanDocumentTypeLabel(type),
+                            dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.ONBOARDING,
+                            null, null, false, false, null, null, false));
+            row.setUserUuid(token.getUserUuid());
+            row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.S3);
+            row.setEmployeeDocumentUuid(doc.getUuid());
+            uploadedEmployeeDocumentUuid = doc.getUuid();
         } else {
             DriveItem driveItem = sharePointService.uploadFile(
                     userCtx.siteUrl(), userCtx.driveName(),
@@ -246,7 +281,7 @@ public class OnboardingUploadService {
             // to 409 ALREADY_SUBMITTED — what the second caller would have
             // received from the precheck.
             if (isUniqueViolation(pe)) {
-                compensateStorageUpload(uploadedS3FileUuid,
+                compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid,
                         uploadedSharepointSiteUrl, uploadedSharepointDriveName,
                         uploadedSharepointDriveItemId, tokenUuid, type);
                 throw alreadySubmitted();
@@ -254,7 +289,7 @@ public class OnboardingUploadService {
             // Any other persistence failure → still try to compensate (we
             // would otherwise leave an orphan in storage with no audit row),
             // then re-throw so the resource maps it to a 5xx.
-            compensateStorageUpload(uploadedS3FileUuid,
+            compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid,
                     uploadedSharepointSiteUrl, uploadedSharepointDriveName,
                     uploadedSharepointDriveItemId, tokenUuid, type);
             throw pe;
@@ -383,14 +418,55 @@ public class OnboardingUploadService {
     }
 
     /**
+     * User-flow display context for the S3 employee-documents path — no
+     * SharePoint location involved, so resolve name/username directly.
+     * No link URL: HR finds the documents on the employee's HR Documents
+     * tab.
+     */
+    private NotificationContext buildUserNotificationContextFromDb(String userUuid) {
+        String displayName = "unknown";
+        try {
+            User user = User.findById(userUuid);
+            if (user != null) {
+                String full = (nullSafe(user.getFirstname()) + " " + nullSafe(user.getLastname())).trim();
+                String username = nullSafe(user.getUsername());
+                displayName = full.isEmpty() ? username : full + " (" + username + ")";
+            }
+        } catch (RuntimeException e) {
+            log.debugf(e, "Could not resolve user name for uuid=%s", userUuid);
+        }
+        return new NotificationContext(displayName, "");
+    }
+
+    /** Human label for the identity-document type (used as the document label). */
+    static String humanDocumentTypeLabel(OnboardingDocumentType type) {
+        return switch (type) {
+            case DRIVERS_LICENSE -> "Driver's license";
+            case HEALTH_INSURANCE -> "Health insurance card";
+            case CRIMINAL_RECORD -> "Criminal record certificate";
+        };
+    }
+
+    /**
      * Best-effort compensating delete of a just-uploaded storage object.
      * Failures are logged at ERROR with all metadata needed to manually
      * clean up the orphan; we never propagate a compensation failure to
      * the caller — they already have a 409/500 to deal with.
      */
-    private void compensateStorageUpload(String s3FileUuid,
+    private void compensateStorageUpload(String s3FileUuid, String employeeDocumentUuid,
                                          String spSiteUrl, String spDriveName, String spDriveItemId,
                                          String tokenUuid, OnboardingDocumentType type) {
+        if (employeeDocumentUuid != null) {
+            try {
+                employeeDocumentService.delete(employeeDocumentUuid, null);
+                log.infof("Compensating delete OK token=%s type=%s storage=EMPLOYEE_DOCS uuid=%s",
+                        tokenUuid, type, employeeDocumentUuid);
+            } catch (RuntimeException e) {
+                log.errorf(e, "ORPHAN: compensating employee-document delete FAILED token=%s type=%s uuid=%s",
+                        tokenUuid, type, employeeDocumentUuid);
+            }
+            return;
+        }
         if (s3FileUuid != null) {
             try {
                 recruitmentS3StorageService.deleteGeneratedPdf(s3FileUuid);

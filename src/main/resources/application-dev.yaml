@@ -161,6 +161,12 @@ e-conomics:
 currencyapi:
   key: ${API_KEY:xx}
 bucket:
+  # Local MinIO bucket (created by the minio-init container in
+  # local-env/docker-compose.yml). The quarkus.s3.endpoint-override above
+  # points the injected S3Client at MinIO, so the employee-documents store
+  # is fully testable locally — unlike the legacy hand-rolled S3 clients,
+  # which ignore this config and fail closed without AWS credentials.
+  employee-documents: ${EMPLOYEE_DOCS_S3:employee-documents-local}
   expenses: expensefiles
   files: trustworksfiles
   invoices: ${INVOICE_S3:invoicefiles-test}
