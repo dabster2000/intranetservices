@@ -40,6 +40,9 @@ class RecruitmentEventTypeCatalogTest {
         // DPO_DIGEST_SENT is the matching P24 addition: the DPO exception
         // digest's DMs are scheduled side effects and the run's per-
         // (recipient, week) idempotency key. Recorded in findings §P24.
+        // AI_ASSISTANT_EXCHANGE is the P25 addition: every @Recruiting-
+        // assistant exchange is logged for spot review (question in pii,
+        // answer skeleton in payload). Recorded in findings §P25.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -57,7 +60,7 @@ class RecruitmentEventTypeCatalogTest {
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
                 "CIRCLE_MEMBER_ADDED", "CIRCLE_MEMBER_REMOVED",
                 "AI_SUGGESTIONS_GENERATED", "AI_SUGGESTION_RESOLVED", "AI_BRIEF_GENERATED",
-                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED");
+                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -65,16 +68,19 @@ class RecruitmentEventTypeCatalogTest {
         assertEquals(expected, actual,
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
-                        + "P23 MORNING_BRIEF_SENT and P24 DPO_DIGEST_SENT additions exactly");
-        assertEquals(47, RecruitmentEventType.values().length);
+                        + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT and "
+                        + "P25 AI_ASSISTANT_EXCHANGE additions exactly");
+        assertEquals(48, RecruitmentEventType.values().length);
     }
 
     @Test
-    void fiveAiTypes_definedUpfront() {
+    void aiTypes_fiveUpfrontPlusTheP25Exchange() {
         long aiTypes = java.util.Arrays.stream(RecruitmentEventType.values())
                 .filter(t -> t.name().startsWith("AI_"))
                 .count();
-        assertEquals(5, aiTypes, "the five AI_* types must exist from P1 (plan §P1 scope)");
+        // The five AI_* types exist since P1 (plan §P1 scope);
+        // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25).
+        assertEquals(6, aiTypes, "five P1 AI_* types + the P25 AI_ASSISTANT_EXCHANGE");
     }
 
     @Test

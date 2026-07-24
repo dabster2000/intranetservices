@@ -132,5 +132,17 @@ public enum RecruitmentEventType {
     AI_SUGGESTION_RESOLVED,
     AI_BRIEF_GENERATED,
     AI_EMAIL_DRAFT_GENERATED,
-    AI_DIGEST_GENERATED
+    AI_DIGEST_GENERATED,
+    /**
+     * One @Recruiting-assistant exchange (Slack spec §5.11): a user
+     * mentioned the bot and the assistant replied. The spot-review log —
+     * the question text lives in {@code pii} (it can name a person), the
+     * answer SKELETON (intent, outcome, which fact kinds were included —
+     * never the reply prose) in {@code payload}. Candidate subject set
+     * only on single-match answered exchanges, so the GDPR anonymizer
+     * scrubs the question with the rest of that candidate's pii. Catalog
+     * addition made in P25 — "reactors' own side effects are recorded as
+     * events" applied to the conversational surface (findings §P25).
+     */
+    AI_ASSISTANT_EXCHANGE
 }
