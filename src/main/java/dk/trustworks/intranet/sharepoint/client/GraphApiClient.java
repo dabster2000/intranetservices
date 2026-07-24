@@ -302,6 +302,46 @@ public interface GraphApiClient {
         ) { }
     }
 
+    /**
+     * Free/busy lookup for up to 20 mailboxes (rooms) in one call. Used by
+     * the recruitment room picker to hide rooms already booked for the
+     * chosen interview slot — covered by the app-level
+     * {@code Calendars.ReadWrite} permission.
+     *
+     * @param userPrincipal any resolvable mailbox to anchor the call (a
+     *                      room's own address works)
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/calendar-getschedule">getSchedule</a>
+     */
+    @POST
+    @Path("/users/{userPrincipal}/calendar/getSchedule")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    ScheduleCollectionResponse getSchedule(
+        @PathParam("userPrincipal") String userPrincipal,
+        ScheduleRequest request
+    );
+
+    /** Request body of {@code getSchedule}. */
+    record ScheduleRequest(
+        java.util.List<String> schedules,
+        CalendarEventRequest.DateTimeTimeZone startTime,
+        CalendarEventRequest.DateTimeTimeZone endTime,
+        Integer availabilityViewInterval
+    ) { }
+
+    /**
+     * {@code getSchedule} response. {@code availabilityView} is one digit
+     * per interval; "0" = free — any other digit means busy/tentative/OOF.
+     */
+    record ScheduleCollectionResponse(
+        @JsonProperty("value") java.util.List<ScheduleInformation> value
+    ) {
+        public record ScheduleInformation(
+            String scheduleId,
+            String availabilityView
+        ) { }
+    }
+
     /** Graph calendar event response — only the id is needed. */
     record CalendarEvent(String id) { }
 

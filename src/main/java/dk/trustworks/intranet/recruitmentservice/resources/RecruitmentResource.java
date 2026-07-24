@@ -49,6 +49,7 @@ import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
+import dk.trustworks.intranet.recruitmentservice.util.PublicApplyDocuments;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.signing.domain.SigningCase;
@@ -80,11 +81,14 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.StreamingOutput;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.context.ManagedExecutor;
+import org.jboss.resteasy.reactive.RestForm;
+import org.jboss.resteasy.reactive.multipart.FileUpload;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -92,6 +96,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.zip.ZipEntry;
@@ -417,6 +422,68 @@ public class RecruitmentResource {
                 .entity(Map.of(
                         "eventId", event.getEventId(),
                         "occurredAt", event.getOccurredAt().toString()))
+                .build();
+    }
+
+    /** Kinds a manually uploaded candidate document may carry. */
+    private static final Set<String> DOCUMENT_KINDS = Set.of("CV", "COVER_LETTER", "OTHER");
+
+    /**
+     * Manual document upload on a candidate (P8 Documents tab): PDF/JPEG/PNG,
+     * same size/magic-byte rules as the public apply forms
+     * ({@link PublicApplyDocuments}). Emits {@code DOCUMENT_UPLOADED} with
+     * {@code origin='manual'} and the acting recruiter.
+     */
+    @POST
+    @Path("/candidates/{uuid}/documents")
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @RolesAllowed({"recruitment:write"})
+    public Response uploadDocument(@PathParam("uuid") UUID uuid,
+                                   @RestForm("kind") String kind,
+                                   @RestForm("file") FileUpload file) {
+        enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
+        if (kind == null || !DOCUMENT_KINDS.contains(kind)) {
+            throw new WebApplicationException(
+                    "kind must be one of " + DOCUMENT_KINDS, Response.Status.BAD_REQUEST);
+        }
+        if (file == null || file.size() == 0) {
+            throw new WebApplicationException("file is required", Response.Status.BAD_REQUEST);
+        }
+        if (file.size() > PublicApplyDocuments.MAX_BYTES) {
+            throw new WebApplicationException("File exceeds the 10 MB limit",
+                    Response.Status.BAD_REQUEST);
+        }
+        byte[] bytes;
+        try {
+            bytes = Files.readAllBytes(file.uploadedFile());
+        } catch (IOException e) {
+            log.errorf(e, "Failed to read uploaded document bytes for candidate=%s", uuid);
+            throw new WebApplicationException("Failed to read the uploaded file",
+                    Response.Status.INTERNAL_SERVER_ERROR);
+        }
+        String contentType = PublicApplyDocuments.normaliseContentType(file.contentType());
+        if (!PublicApplyDocuments.ALLOWED_MIME_TYPES.contains(contentType)
+                || !PublicApplyDocuments.magicMatches(contentType, bytes)) {
+            throw new WebApplicationException("Only PDF, JPEG and PNG files are accepted",
+                    Response.Status.UNSUPPORTED_MEDIA_TYPE);
+        }
+        String rawName = file.fileName();
+        String safeName = PublicApplyDocuments.sanitiseFilename(rawName);
+        if (safeName.isBlank()) {
+            safeName = "document" + switch (contentType) {
+                case "application/pdf" -> ".pdf";
+                case "image/jpeg" -> ".jpg";
+                default -> ".png";
+            };
+        }
+        String piiName = rawName == null || rawName.isBlank()
+                ? safeName
+                : (rawName.length() > 255 ? rawName.substring(0, 255) : rawName);
+        String fileUuid = candidateService.uploadDocument(
+                uuid, kind, bytes, contentType, safeName, piiName, currentActor());
+        return Response.status(Response.Status.CREATED)
+                .entity(Map.of("fileUuid", fileUuid))
                 .build();
     }
 
