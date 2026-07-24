@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-digest" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Digest Job (ATS expansion Phase 24)
+
+    Purpose:
+    Three periodic digests in one daily pass, each deciding for itself
+    whether its period needs generating (event-derived idempotency):
+
+    1. Weekly AI funnel narrative (recruitment.ai.digest.weekly-funnel
+       .enabled): Danish prose over the P20 reporting projection's
+       aggregates - numbers and enum codes only, never candidate data -
+       appended as AI_DIGEST_GENERATED (narrative in payload so it
+       survives anonymization) and posted to the recruitment channel by
+       the SlackDigestRenderer reactor. One per ISO week.
+
+    2. Quarterly AI rejection-pattern narrative (recruitment.ai.digest
+       .rejection-patterns.enabled): same construction, one per ended
+       FISCAL quarter (July-June year), generated within the first 14
+       days of the new quarter - no retroactive backfill.
+
+    3. DPO exception digest (recruitment.slack.dpo-digest.enabled +
+       recruitment.gdpr.enabled): one weekly DM per DPO-role holder -
+       Art. 14 notices due, consents expiring, open DSARs, upcoming
+       auto-anonymizations and the partner-channel membership drift
+       check. Every delivered DM appends DPO_DIGEST_SENT; the run only
+       DMs recipients with no event for the week. An empty week still
+       says "Nothing needs you this week".
+
+    The daily cadence makes Monday delivery self-heal: a failed Monday
+    (OpenAI or Slack outage) retries Tuesday on the same period key.
+    One failing digest never stops the others.
+
+    Schedule:
+    Daily at 06:30 UTC via BatchScheduler - after the 05:45 GDPR sweep
+    (the DPO digest reports post-sweep state), gated by
+    dk.trustworks.recruitment.digest.enabled (default true).
+
+    Similar to:
+    recruitment-morning-brief.xml (the P23 clock-driven DM sweep)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="run-recruitment-digests">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentDigestBatchlet"/>
+    </step>
+</job>

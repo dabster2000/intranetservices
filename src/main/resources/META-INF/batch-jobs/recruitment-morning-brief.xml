@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-morning-brief" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Morning Brief Job (ATS expansion Phase 23)
+
+    Purpose:
+    One morning Slack DM per interviewer on days they have scheduled
+    interviews (Slack spec §5.8): candidate, position, round (or
+    informal chat), time and place, the template's focus areas, the
+    kit deep link and - when recruitment.slack.scorecard.enabled is
+    on - a "Fill in scorecard" button per round. No interviews that
+    day means no message.
+
+    Every briefed (interviewer, interview) pair appends its own
+    MORNING_BRIEF_SENT event carrying brief_date; the run only briefs
+    pairs with no event for today, so re-runs and concurrent
+    instances (ECS cutover) never double-DM. Only interviews in
+    SCHEDULED state at run time brief - rescheduling is respected by
+    construction. All side effects are gated by
+    recruitment.pipeline.enabled AND
+    recruitment.slack.morning-brief.enabled (off = no-op).
+
+    Schedule:
+    Daily at 06:00 UTC via BatchScheduler (07:00/08:00 Copenhagen -
+    before the workday and before the 07:00 UTC SLA sweep), gated by
+    dk.trustworks.recruitment.morning-brief.enabled (default true).
+
+    Similar to:
+    recruitment-sla-sweep.xml (the P17 clock-driven sweep)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="send-recruitment-morning-briefs">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentMorningBriefBatchlet"/>
+    </step>
+</job>

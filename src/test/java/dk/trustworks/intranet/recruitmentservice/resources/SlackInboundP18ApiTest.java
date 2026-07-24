@@ -446,6 +446,9 @@ class SlackInboundP18ApiTest {
                 "recruitment_scorecard_open");
         envelope.put("triggerId", "trg-" + UUID.randomUUID());
         envelope.put("actionValue", interviewUuid);
+        // Real DM/channel block_actions carry a response_url (App Home ones
+        // don't — that path is covered by the P23 outcome-modal tests).
+        envelope.put("responseUrl", "https://hooks.slack.com/actions/T-p18test/1/xyz");
         return envelope;
     }
 

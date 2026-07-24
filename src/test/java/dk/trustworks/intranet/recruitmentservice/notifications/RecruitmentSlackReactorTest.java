@@ -45,6 +45,7 @@ class RecruitmentSlackReactorTest {
     private static final String BRIEF_FLAG = "recruitment.ai.brief.enabled";
     private static final String TRIAGE_FLAG = "recruitment.slack.triage-actions.enabled";
     private static final String SCORECARD_TOGGLE = "recruitment.slack.scorecard.enabled";
+    private static final String CARDS_TOGGLE = "recruitment.slack.cards.enabled";
     private static final String DEFAULT_KEY = RecruitmentSlackChannelRouter.DEFAULT_CHANNEL_KEY;
 
     @Inject
@@ -68,6 +69,7 @@ class RecruitmentSlackReactorTest {
     private String previousBrief;
     private String previousTriage;
     private String previousScorecardToggle;
+    private String previousCardsToggle;
     private String previousDefault;
     private String previousOverride;
 
@@ -99,6 +101,7 @@ class RecruitmentSlackReactorTest {
             previousBrief = P8ProfileFixtures.setFlag(em, BRIEF_FLAG, "false");
             previousTriage = P8ProfileFixtures.setFlag(em, TRIAGE_FLAG, "false");
             previousScorecardToggle = P8ProfileFixtures.setFlag(em, SCORECARD_TOGGLE, "false");
+            previousCardsToggle = P8ProfileFixtures.setFlag(em, CARDS_TOGGLE, "false");
             previousDefault = P8ProfileFixtures.setFlag(em, DEFAULT_KEY, "");
             previousOverride = null;
         });
@@ -124,6 +127,7 @@ class RecruitmentSlackReactorTest {
             P8ProfileFixtures.restoreFlag(em, BRIEF_FLAG, previousBrief);
             P8ProfileFixtures.restoreFlag(em, TRIAGE_FLAG, previousTriage);
             P8ProfileFixtures.restoreFlag(em, SCORECARD_TOGGLE, previousScorecardToggle);
+            P8ProfileFixtures.restoreFlag(em, CARDS_TOGGLE, previousCardsToggle);
             P8ProfileFixtures.restoreFlag(em, DEFAULT_KEY, previousDefault);
             P8ProfileFixtures.restoreFlag(em,
                     RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid,
@@ -709,5 +713,25 @@ class RecruitmentSlackReactorTest {
                 "toggle off ⇒ the P12 flat ping — the permanent degradation path");
         verify(slackService, never()).sendMessage(anyString(), anyString(),
                 org.mockito.ArgumentMatchers.<com.slack.api.model.block.LayoutBlock>anyList());
+    }
+
+    // ---- P22 handover: living cards own the channel surface -----------------------
+
+    @Test
+    void cardsOn_newApplicationFlatPingSuppressed_positionPingStays() {
+        pipelineOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, CARDS_TOGGLE, "true"));
+        insertApplicationCreated("NORMAL");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertEvent(em, "POSITION_OPENED", null, null, positionUuid,
+                        "USER", actorUser, "NORMAL",
+                        "{\"title\":\"Senior Consultant\",\"hiring_track\":\"PRACTICE_TEAM\"}", null));
+
+        // Exactly ONE channel post — the position ping. The new-application
+        // moment is the card reactor's surface now (root card, not a flat ping).
+        String message = channelMessageAfterCatchUp(1);
+        assertTrue(message.contains("Position opened"),
+                "non-card moments keep their flat pings with cards on");
     }
 }

@@ -155,7 +155,20 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             default -> null;
         };
         if (notification != null) {
-            deliver(event, notification);
+            // P22: with living cards on, the card reactor owns the channel
+            // surface for the two application-thread moments this reactor
+            // used to post flat (new application → root card; debrief ready
+            // → thread reply) — including the CIRCLE DM fallback, which the
+            // card reactor performs itself when no private channel exists.
+            // Everything else (referral/position/signing pings, all DMs)
+            // stays here; with cards off these flat posts remain the
+            // permanent degradation path (Slack spec §3.3).
+            boolean cardOwnsChannelSurface = slackFlags.isCardsEnabled()
+                    && (event.getEventType() == RecruitmentEventType.APPLICATION_CREATED
+                            || event.getEventType() == RecruitmentEventType.SCORECARD_SUBMITTED);
+            if (!cardOwnsChannelSurface) {
+                deliver(event, notification);
+            }
             // P18: when the last scorecard lands, the debrief-ready
             // notification also goes to the decision owner personally
             // (spec §5.6 — deep link, no decision buttons). CIRCLE events
@@ -596,10 +609,9 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         return name.isEmpty() ? "unknown" : SlackCandidateFacts.mrkdwnSafe(name);
     }
 
-    /** {@code LINKEDIN_AD} → {@code Linkedin ad} — enum codes never reach Slack raw. */
+    /** {@code LINKEDIN_AD} → {@code Linkedin ad} — shared code, P22 hoisted it to the facts record. */
     private static String humanize(String enumName) {
-        String lower = enumName.toLowerCase().replace('_', ' ');
-        return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
+        return SlackCandidateFacts.humanizeCode(enumName);
     }
 
     /** Hard safety clamp — builders keep structural parts far below this. */

@@ -66,11 +66,11 @@ public class SlackScorecardOpenButtonHandler implements SlackInboundHandler {
                 || interview.getKind() != RecruitmentInterviewKind.ROUND
                 || !interview.isActive()
                 || !interview.isAssigned(actor.getUuid())) {
-            return SlackInboundResponse.handled(NOT_AVAILABLE_TEXT);
+            return notice(request, NOT_AVAILABLE_TEXT);
         }
         if (RecruitmentScorecard.count("interviewUuid = ?1 and interviewerUuid = ?2",
                 interview.getUuid(), actor.getUuid()) > 0) {
-            return SlackInboundResponse.handled(ALREADY_SUBMITTED_TEXT);
+            return notice(request, ALREADY_SUBMITTED_TEXT);
         }
         RecruitmentApplication application =
                 RecruitmentApplication.findById(interview.getApplicationUuid());
@@ -81,7 +81,7 @@ public class SlackScorecardOpenButtonHandler implements SlackInboundHandler {
         if (application == null || position == null || template == null || template.isEmpty()) {
             // A round without a template can't be scored anywhere — the web
             // form would refuse too. Structurally broken data, not authz.
-            return SlackInboundResponse.handled(NOT_AVAILABLE_TEXT);
+            return notice(request, NOT_AVAILABLE_TEXT);
         }
         RecruitmentCandidate candidate =
                 RecruitmentCandidate.findById(application.getCandidateUuid());
@@ -96,6 +96,27 @@ public class SlackScorecardOpenButtonHandler implements SlackInboundHandler {
             return SlackInboundResponse.handled(
                     "The scorecard couldn't open — please click the button again.");
         }
+    }
+
+    /**
+     * Deliver a deny/done notice on whichever channel the surface has.
+     * DM buttons carry a {@code response_url} → the BFF posts the
+     * ephemeral. App Home buttons (P23) have NO {@code response_url}, so
+     * the notice would vanish silently — open a small outcome modal
+     * against the {@code trigger_id} instead (best-effort; a stale Home
+     * row deserves an answer, not a dead click).
+     */
+    private SlackInboundResponse notice(SlackInboundRequest request, String text) {
+        if (request.responseUrl() == null && request.triggerId() != null) {
+            try {
+                slackService.openView(request.triggerId(),
+                        SlackRecruitmentViews.outcomeView("Scorecard", text));
+                return SlackInboundResponse.handled(null);
+            } catch (Exception e) {
+                log.debugf("Slack scorecard-open: outcome view failed: %s", e.getMessage());
+            }
+        }
+        return SlackInboundResponse.handled(text);
     }
 
     private static RecruitmentInterview resolveInterview(String actionValue) {

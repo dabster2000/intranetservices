@@ -71,6 +71,25 @@ public enum RecruitmentEventType {
      * Catalog addition made in P17 (findings §P17).
      */
     DEBRIEF_STALLED_NUDGED,
+    /**
+     * The morning-brief batchlet DMed an interviewer about one of today's
+     * scheduled interviews (Slack spec §5.8). One event per
+     * (interviewer, interview, brief date) — the sweep's idempotency key;
+     * a re-run only briefs pairs with no event for today. Catalog addition
+     * made in P23 — a scheduled side effect is an event like every other
+     * reactor side effect (findings §P23).
+     */
+    MORNING_BRIEF_SENT,
+    /**
+     * The digest batchlet DMed a DPO-role holder the weekly exception
+     * digest (Slack spec §5.10). One event per (recipient, ISO week) —
+     * the run's idempotency key; a re-run only DMs recipients with no
+     * event for the week. {@code candidate_uuid} NULL; payload carries
+     * structural counts only. Catalog addition made in P24 — a scheduled
+     * side effect is an event like every other reactor side effect
+     * (findings §P24).
+     */
+    DPO_DIGEST_SENT,
 
     // --- Communication & notes (P3, P15) --------------------------------
     EMAIL_SENT,
@@ -113,5 +132,17 @@ public enum RecruitmentEventType {
     AI_SUGGESTION_RESOLVED,
     AI_BRIEF_GENERATED,
     AI_EMAIL_DRAFT_GENERATED,
-    AI_DIGEST_GENERATED
+    AI_DIGEST_GENERATED,
+    /**
+     * One @Recruiting-assistant exchange (Slack spec §5.11): a user
+     * mentioned the bot and the assistant replied. The spot-review log —
+     * the question text lives in {@code pii} (it can name a person), the
+     * answer SKELETON (intent, outcome, which fact kinds were included —
+     * never the reply prose) in {@code payload}. Candidate subject set
+     * only on single-match answered exchanges, so the GDPR anonymizer
+     * scrubs the question with the rest of that candidate's pii. Catalog
+     * addition made in P25 — "reactors' own side effects are recorded as
+     * events" applied to the conversational surface (findings §P25).
+     */
+    AI_ASSISTANT_EXCHANGE
 }
