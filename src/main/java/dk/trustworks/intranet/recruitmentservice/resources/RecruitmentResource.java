@@ -1286,15 +1286,72 @@ public class RecruitmentResource {
         }
     }
 
-    private static List<SignerInfo> mapSigners(List<SignerConfigDto> signers) {
+    /**
+     * Signing group applied when a dossier signer carries no usable group.
+     * Mirrors {@code template_default_signers.signer_group DEFAULT 1} — i.e.
+     * "everyone signs in parallel" unless the dossier says otherwise.
+     */
+    private static final int DEFAULT_SIGNER_GROUP = 1;
+
+    /**
+     * Maps dossier signer config onto NextSign recipients, honouring the
+     * configured signing group.
+     *
+     * <p>{@link SignerConfigDto#group()} carries the 1-based signing group
+     * (see {@code template_default_signers.signer_group}: "same group =
+     * parallel"). NextSign turns that into a sequential {@code order} — a
+     * recipient is only emailed once every lower order has signed. This
+     * method previously assigned {@code group = 1, 2, 3…} by list position,
+     * which put every signer in their own sequential round, so only the
+     * first one in the list was ever notified.
+     *
+     * <p>The distinct configured groups are dense-ranked so the lowest always
+     * becomes NextSign order 0. Without that, a dossier whose groups start at
+     * 2 (group 1 deleted in the editor) would produce a case with no order-0
+     * recipient and NextSign would notify nobody.
+     */
+    // Package-private for direct unit testing of the group mapping.
+    static List<SignerInfo> mapSigners(List<SignerConfigDto> signers) {
+        List<Integer> configured = signers.stream()
+                .map(s -> parseSignerGroup(s.group()))
+                .toList();
+        List<Integer> ranks = configured.stream().distinct().sorted().toList();
+
         List<SignerInfo> out = new ArrayList<>(signers.size());
-        int group = 1;
-        for (SignerConfigDto s : signers) {
+        for (int i = 0; i < signers.size(); i++) {
+            SignerConfigDto s = signers.get(i);
             String role = s.role() != null ? s.role() : (s.signing() ? "signer" : "copy");
+            // SignerInfo.group is 1-based; NextsignSigningService subtracts 1
+            // to produce the 0-based NextSign order.
+            int group = ranks.indexOf(configured.get(i)) + 1;
             out.add(new SignerInfo(group, s.name(), s.email(), role, s.signing(), s.needsCpr()));
-            group++;
         }
         return out;
+    }
+
+    /**
+     * Reads a dossier signer's group as a positive integer. Blank, null,
+     * non-numeric and non-positive values fall back to
+     * {@link #DEFAULT_SIGNER_GROUP} so a malformed entry makes the signer
+     * parallel with the first round rather than dropping them behind one.
+     */
+    static int parseSignerGroup(String rawGroup) {
+        if (rawGroup == null || rawGroup.isBlank()) {
+            return DEFAULT_SIGNER_GROUP;
+        }
+        try {
+            int parsed = Integer.parseInt(rawGroup.trim());
+            if (parsed < 1) {
+                log.warnf("Dossier signer group '%s' is not positive — defaulting to group %d",
+                        rawGroup, DEFAULT_SIGNER_GROUP);
+                return DEFAULT_SIGNER_GROUP;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            log.warnf("Dossier signer group '%s' is not numeric — defaulting to group %d",
+                    rawGroup, DEFAULT_SIGNER_GROUP);
+            return DEFAULT_SIGNER_GROUP;
+        }
     }
 
     private static List<String> collectSigningSchemas(List<SignerConfigDto> signers) {
