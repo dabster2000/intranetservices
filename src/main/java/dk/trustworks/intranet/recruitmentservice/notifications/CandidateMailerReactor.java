@@ -137,6 +137,14 @@ public class CandidateMailerReactor extends RecruitmentReactor {
         RecruitmentEmailRenderer.Rendered rendered =
                 emailService.render(template, candidate, position);
 
+        // The template's copy policy applies to automatic sends too — an
+        // auto-rejection BCCs the panel that met the candidate, which is
+        // most of the point of copying at all. SENDER resolves to nobody
+        // here: no human acted, so the Reply-To falls back to the
+        // configured recruiting mailbox as well.
+        RecruitmentEmailService.EmailCopies copies = emailService.copiesFor(
+                template, candidate, event.getApplicationUuid(), null);
+
         boolean partnerReferralRejection =
                 event.getEventType() == RecruitmentEventType.APPLICATION_REJECTED
                         && candidate.getSource() == CandidateSource.PARTNER_REFERRAL;
@@ -145,7 +153,8 @@ public class CandidateMailerReactor extends RecruitmentReactor {
                     template.getTemplateKey(), template.getUuid(),
                     rendered.subject(), rendered.body(), "AUTO", null,
                     RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT).actorSystem(),
-                    event.getVisibility());
+                    event.getVisibility(),
+                    emailService.replyToFallback(), copies);
             return;
         }
         // Review-first: queue once per (trigger event, template) — the DB
@@ -159,7 +168,7 @@ public class CandidateMailerReactor extends RecruitmentReactor {
                 ? RecruitmentPendingEmailReason.PARTNER_REFERRAL
                 : RecruitmentPendingEmailReason.REVIEW_FIRST_TEMPLATE;
         RecruitmentPendingEmail pending = emailService.queueForReview(candidate,
-                event.getApplicationUuid(), template, rendered, reason, event.getEventId());
+                event.getApplicationUuid(), template, rendered, reason, event.getEventId(), copies);
         if (pending.getStatus() != RecruitmentPendingEmailStatus.PENDING) {
             throw new IllegalStateException("queued pending email must be PENDING");
         }

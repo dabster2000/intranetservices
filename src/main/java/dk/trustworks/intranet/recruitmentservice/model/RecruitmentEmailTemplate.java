@@ -2,11 +2,14 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -69,6 +72,23 @@ public class RecruitmentEmailTemplate extends PanacheEntityBase implements Audit
     /** {@code false} = trigger ignored + hidden from the compose picker. */
     @Column(name = "active", nullable = false)
     private boolean active = true;
+
+    /**
+     * CSV of {@link dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole}
+     * — which internal people are copied on this template's sends. Empty
+     * (the default, and what every pre-V455 template keeps) copies nobody.
+     * Resolved to people at send time and visibility-filtered.
+     */
+    @Column(name = "copy_roles", length = 120, nullable = false)
+    private String copyRoles = "";
+
+    /**
+     * Whether the copies are invisible ({@code BCC}, the default) or
+     * visible to the candidate ({@code CC}).
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "copy_mode", length = 3, nullable = false)
+    private RecruitmentEmailCopyMode copyMode = RecruitmentEmailCopyMode.BCC;
 
     // ---- Audit columns (house Auditable pattern) ---------------------------
 

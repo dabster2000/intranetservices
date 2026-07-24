@@ -34,12 +34,32 @@ public class TrustworksMail extends PanacheEntityBase {
     private List<EmailAttachment> attachments = new ArrayList<>();
 
     /**
-     * Optional Reply-To address. Only honoured by the immediate-send path
-     * ({@link dk.trustworks.intranet.communicationsservice.resources.MailResource#sendWithAttachments}),
-     * because the queued JBeret send job does not persist this field.
+     * Optional Reply-To address. Persisted since V455, so BOTH send paths
+     * honour it — the immediate one
+     * ({@link dk.trustworks.intranet.communicationsservice.resources.MailResource#sendWithAttachments})
+     * and the queued JBeret {@code mail-send} job. Null = no Reply-To
+     * header, which is what every pre-V455 caller keeps.
      */
-    @Transient
+    @Column(name = "reply_to")
     private String replyTo;
+
+    /**
+     * Optional display name rendered in front of the configured
+     * {@code quarkus.mailer.from} address ("Trustworks Rekruttering
+     * &lt;no-reply@trustworks.dk&gt;"). The envelope address itself is
+     * never overridden: SES verifies sender identities, and a per-person
+     * From would risk a 554 rejection. Null = the bare configured address.
+     */
+    @Column(name = "from_name")
+    private String fromName;
+
+    /** Comma-separated visible copies; null or blank = none. */
+    @Column(name = "cc")
+    private String cc;
+
+    /** Comma-separated invisible copies; null or blank = none. */
+    @Column(name = "bcc")
+    private String bcc;
 
     public TrustworksMail(String uuid, String to, String subject, String body) {
         this.uuid = uuid;

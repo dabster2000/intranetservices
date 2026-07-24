@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
 import dk.trustworks.intranet.security.AuditEntityListener;
@@ -76,6 +77,21 @@ public class RecruitmentPendingEmail extends PanacheEntityBase implements Audita
     /** Rendered plain-text body snapshot (personal data). */
     @Column(name = "body", columnDefinition = "TEXT", nullable = false)
     private String body;
+
+    /**
+     * CSV of {@code users.uuid} resolved at queue time — the internal
+     * people this email will copy (§P15 deviation 5's snapshot semantics
+     * applied to the copy list: approving sends what the recruiter
+     * reviewed, even if the template's policy changed since). UUIDs only,
+     * never addresses — no new personal-data surface for the P19 scrub.
+     */
+    @Column(name = "copy_user_uuids", length = 1000)
+    private String copyUserUuids;
+
+    /** Copy mode snapshot; the approver may override it before sending. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "copy_mode", length = 3, nullable = false)
+    private RecruitmentEmailCopyMode copyMode = RecruitmentEmailCopyMode.BCC;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 12, nullable = false)

@@ -13,6 +13,8 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,18 +28,14 @@ public class MailResource {
     @Inject
     Mailer mailer;
 
-    @ConfigProperty(name = "quarkus.mailer.username")
-    String username;
-
-    @ConfigProperty(name = "quarkus.mailer.password")
-    String password;
+    @ConfigProperty(name = "quarkus.mailer.from")
+    String defaultFrom;
 
     @Transactional
     public void sendingHTML(TrustworksMail mail) {
-        log.info("MailResource.sendingHTML");
-        log.info("mail = " + mail);
-        log.info("username = " + username);
-        log.info("password = " + password);
+        // Deliberately does NOT log the mail object: its toString carries
+        // subject and body, and callers include candidate correspondence.
+        log.infof("MailResource.sendingHTML queued mail %s", mail.getUuid());
 
         mail.setStatus(MailStatus.READY);
         mail.persist();
@@ -49,10 +47,55 @@ public class MailResource {
         Optional<TrustworksMail> optMail = TrustworksMail.find("status = ?1", MailStatus.READY).firstResultOptional();
         optMail.ifPresent(mail -> {
             log.info("Sending delayed email uuid: " + mail.getUuid());
-            mailer.send(Mail.withHtml(mail.getTo(), mail.getSubject(), mail.getBody()));
+            mailer.send(applyHeaders(Mail.withHtml(mail.getTo(), mail.getSubject(), mail.getBody()), mail));
             mail.setStatus(MailStatus.SENT);
             TrustworksMail.update("status = ?1 where uuid like ?2", mail.getStatus(), mail.getUuid());
         });
+    }
+
+    /**
+     * Apply the optional sender/reply/copy headers persisted since V455.
+     * Every field is nullable and skipped when absent, so a pre-V455 caller
+     * produces exactly the message it always did.
+     * <p>
+     * {@code fromName} only decorates the configured
+     * {@code quarkus.mailer.from} address ("Name &lt;addr&gt;") — the
+     * envelope address is never swapped, because SES rejects unverified
+     * sender identities with a 554.
+     */
+    Mail applyHeaders(Mail out, TrustworksMail mail) {
+        if (isSet(mail.getFromName())) {
+            out.setFrom(mail.getFromName().trim() + " <" + defaultFrom + ">");
+        }
+        if (isSet(mail.getReplyTo())) {
+            out.setReplyTo(mail.getReplyTo().trim());
+        }
+        for (String cc : splitAddresses(mail.getCc())) {
+            out.addCc(cc);
+        }
+        for (String bcc : splitAddresses(mail.getBcc())) {
+            out.addBcc(bcc);
+        }
+        return out;
+    }
+
+    private static boolean isSet(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /** Split a stored comma-separated address list; empty for null/blank. */
+    private static List<String> splitAddresses(String raw) {
+        if (!isSet(raw)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+            }
+        }
+        return out;
     }
 
     @Transactional
@@ -99,10 +142,7 @@ public class MailResource {
                         "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Trustworks</span></span></span></p>\n" +
                         "<p>&nbsp;</p>\n" +
                         "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><em><span style=\"font-size:10.0pt\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Hvis du har takket ja&nbsp;til at modtage e-mails med tilbud&nbsp;om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig. </span></span></em></span></span></p>");
-        log.info("MailResource.sendingHTML");
-        log.info("mail = " + mail);
-        log.info("username = " + username);
-        log.info("password = " + password);
+        log.infof("MailResource sending conference mail %s", mail.getUuid());
 
         mailer.send(Mail.withHtml(
                 mail.getTo(),
@@ -143,10 +183,7 @@ public class MailResource {
                         "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til os p&aring;&nbsp;</em><a href=\"&ldquo;mailto:forefrontkonf@trustworks.dk&rdquo;\"><em>forefrontkonf@trustworks.dk</em></a><em>., s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"&ldquo;http://forefront.34.241.72.253.nip.io/faq/&rdquo;\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
 
-        log.info("MailResource.sendingHTML");
-        log.info("mail = " + mail);
-        log.info("username = " + username);
-        log.info("password = " + password);
+        log.infof("MailResource sending conference mail %s", mail.getUuid());
 
         mailer.send(Mail.withHtml(
                         mail.getTo(),
@@ -177,10 +214,7 @@ public class MailResource {
                         "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
 
-        log.info("MailResource.sendingHTML");
-        log.info("mail = " + mail);
-        log.info("username = " + username);
-        log.info("password = " + password);
+        log.infof("MailResource sending conference mail %s", mail.getUuid());
 
         mailer.send(Mail.withHtml(
                         mail.getTo(),
@@ -211,10 +245,7 @@ public class MailResource {
                         "<p>&nbsp;</p>\n" +
                         "<p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
-        log.info("MailResource.sendingHTML");
-        log.info("mail = " + mail);
-        log.info("username = " + username);
-        log.info("password = " + password);
+        log.infof("MailResource sending conference mail %s", mail.getUuid());
 
         mailer.send(Mail.withHtml(
                         mail.getTo(),
@@ -251,15 +282,11 @@ public class MailResource {
         log.info("attachment count = " + (trustworksMail.getAttachments() != null ? trustworksMail.getAttachments().size() : 0));
 
         try {
-            Mail mail = Mail.withHtml(
+            Mail mail = applyHeaders(Mail.withHtml(
                 trustworksMail.getTo(),
                 trustworksMail.getSubject(),
                 trustworksMail.getBody()
-            );
-
-            if (trustworksMail.getReplyTo() != null && !trustworksMail.getReplyTo().isBlank()) {
-                mail.setReplyTo(trustworksMail.getReplyTo());
-            }
+            ), trustworksMail);
 
             // Add attachments if present
             if (trustworksMail.hasAttachments()) {

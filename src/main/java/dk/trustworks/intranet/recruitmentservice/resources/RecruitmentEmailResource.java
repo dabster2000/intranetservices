@@ -2,7 +2,11 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.ai.AiEmailDraftService;
 import dk.trustworks.intranet.recruitmentservice.dto.ApproveEmailRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.CopyOptionsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.CopyRecipientResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DraftEmailRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.EmailSettingsRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.EmailSettingsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplatesResponse;
@@ -16,8 +20,11 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailCopyResolver;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
@@ -34,15 +41,20 @@ import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * REST entry point for candidate emails (ATS plan §P15): template
@@ -100,6 +112,9 @@ public class RecruitmentEmailResource {
     @Inject
     AiEmailDraftService draftService;
 
+    @Inject
+    RecruitmentEmailCopyResolver copyResolver;
+
     // ---- Templates -------------------------------------------------------------
 
     @GET
@@ -127,7 +142,8 @@ public class RecruitmentEmailResource {
         RecruitmentEmailTemplate template = emailService.createTemplate(
                 request.templateKey(), request.name(), request.subject(), request.body(),
                 Boolean.TRUE.equals(request.autoSend()),
-                request.active() == null || request.active());
+                request.active() == null || request.active(),
+                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
         return Response.status(Response.Status.CREATED)
                 .entity(EmailTemplateResponse.of(template))
                 .build();
@@ -145,7 +161,8 @@ public class RecruitmentEmailResource {
         RecruitmentEmailTemplate template = emailService.updateTemplate(uuid.toString(),
                 request.name(), request.subject(), request.body(),
                 Boolean.TRUE.equals(request.autoSend()),
-                request.active() == null || request.active());
+                request.active() == null || request.active(),
+                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
         if (template == null) {
             throw new NotFoundException("Resource not found");
         }
@@ -189,10 +206,70 @@ public class RecruitmentEmailResource {
         String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
         RecruitmentEmailService.RecruitmentPendingEmailResult result = emailService.sendManual(
                 candidate.getUuid(), blankToNull(request.templateUuid()), applicationUuid,
-                request.subject().trim(), request.body(), actor.toString());
+                request.subject().trim(), request.body(), actor.toString(),
+                request.copyUserUuids(), copyModeOrNull(request.copyMode()));
         return Response.status(Response.Status.CREATED)
                 .entity(result)
                 .build();
+    }
+
+    /**
+     * Everyone this candidate's email may copy, with the picked template's
+     * policy already applied — one call, so the dialog needs no client-side
+     * authorization or policy logic. Read-only and side-effect free.
+     */
+    @GET
+    @Path("/candidates/{uuid}/emails/copy-options")
+    public CopyOptionsResponse copyOptions(@PathParam("uuid") UUID candidateUuid,
+                                           @QueryParam("templateUuid") String templateUuid,
+                                           @QueryParam("applicationUuid") String applicationUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        requireRecruiterTier(actor);
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
+        String ownApplication = ownApplicationOrNull(candidate, applicationUuid);
+        RecruitmentEmailTemplate template = blankToNull(templateUuid) == null ? null
+                : RecruitmentEmailTemplate.findById(templateUuid);
+
+        List<RecruitmentEmailCopyResolver.CopyRecipient> pool =
+                copyResolver.eligiblePool(candidate, ownApplication, actor.toString());
+        Set<String> preselected = emailService
+                .copiesFor(template, candidate, ownApplication, actor.toString())
+                .recipients().stream()
+                .map(RecruitmentEmailCopyResolver.CopyRecipient::userUuid)
+                .collect(Collectors.toSet());
+
+        return new CopyOptionsResponse(
+                pool.stream()
+                        .map(r -> CopyRecipientResponse.of(r, preselected.contains(r.userUuid())))
+                        .toList(),
+                (template == null ? RecruitmentEmailCopyMode.BCC : template.getCopyMode()).name(),
+                emailService.replyToFor(actor.toString()));
+    }
+
+    // ---- Sender & reply settings --------------------------------------------------
+
+    @GET
+    @Path("/email-settings")
+    public EmailSettingsResponse emailSettings() {
+        enforceFlag();
+        requireRecruiterTier(currentActor());
+        return new EmailSettingsResponse(
+                emailService.replyToFallback() == null ? "" : emailService.replyToFallback(),
+                emailService.fromName(),
+                emailService.fromAddress());
+    }
+
+    @PUT
+    @Path("/email-settings")
+    @RolesAllowed({"recruitment:write"})
+    public EmailSettingsResponse updateEmailSettings(EmailSettingsRequest request) {
+        enforceFlag();
+        UUID actor = currentActor();
+        requireRecruiterTier(actor);
+        Objects.requireNonNull(request, "request body must not be null");
+        emailService.updateReplyToFallback(request.replyToFallback(), actor.toString());
+        return emailSettings();
     }
 
     // ---- AI draft (P16 — returns a draft only, never sends) -----------------------
@@ -272,7 +349,8 @@ public class RecruitmentEmailResource {
                             || !visibility.canReadCandidateProfile(actor.toString(), candidate)) {
                         return null;
                     }
-                    return PendingEmailResponse.of(pending, candidate);
+                    return PendingEmailResponse.of(pending, candidate,
+                            snapshotCopies(pending, candidate));
                 })
                 .filter(Objects::nonNull)
                 .toList();
@@ -297,12 +375,15 @@ public class RecruitmentEmailResource {
             throw badRequest("body exceeds " + RecruitmentEmailService.BODY_MAX_LENGTH + " characters");
         }
         RecruitmentPendingEmail approved = emailService.approve(pendingUuid.toString(),
-                subject, body, actor.toString());
+                subject, body, actor.toString(),
+                request == null ? null : request.copyUserUuids(),
+                copyModeOrNull(request == null ? null : request.copyMode()));
         if (approved == null) {
             throw new NotFoundException("Resource not found");
         }
-        return PendingEmailResponse.of(approved,
-                RecruitmentCandidate.findById(approved.getCandidateUuid()));
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(approved.getCandidateUuid());
+        return PendingEmailResponse.of(approved, candidate, snapshotCopies(approved, candidate));
     }
 
     @POST
@@ -318,11 +399,62 @@ public class RecruitmentEmailResource {
         if (dismissed == null) {
             throw new NotFoundException("Resource not found");
         }
-        return PendingEmailResponse.of(dismissed,
-                RecruitmentCandidate.findById(dismissed.getCandidateUuid()));
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(dismissed.getCandidateUuid());
+        return PendingEmailResponse.of(dismissed, candidate, snapshotCopies(dismissed, candidate));
     }
 
     // ---- Helpers -----------------------------------------------------------------
+
+    /**
+     * The queue row's snapshotted copy list, re-resolved for display —
+     * which also re-applies the read matrix, so a person who lost their
+     * involvement while the row waited simply disappears from the list the
+     * approver sees (and from the send).
+     */
+    private List<CopyRecipientResponse> snapshotCopies(RecruitmentPendingEmail pending,
+                                                       RecruitmentCandidate candidate) {
+        if (candidate == null) {
+            return List.of();
+        }
+        return copyResolver.resolveExplicit(candidate,
+                        RecruitmentEmailCopyResolver.splitUserUuids(pending.getCopyUserUuids()))
+                .stream()
+                .map(recipient -> CopyRecipientResponse.of(recipient, true))
+                .toList();
+    }
+
+    /** Parse the copy-role list from the wire; unknown tokens are rejected. */
+    private Set<RecruitmentEmailCopyRole> copyRolesOf(List<String> roles) {
+        if (roles == null || roles.isEmpty()) {
+            return Set.of();
+        }
+        Set<RecruitmentEmailCopyRole> parsed = new LinkedHashSet<>();
+        for (String role : roles) {
+            parsed.add(RecruitmentEmailCopyRole.parse(role)
+                    .orElseThrow(() -> badRequest("Unknown copy role '" + role
+                            + "' — expected INTERVIEWERS, SENDER or HIRING_OWNER")));
+        }
+        return parsed;
+    }
+
+    /** Copy mode with the BCC default; unknown values are rejected. */
+    private RecruitmentEmailCopyMode copyModeOf(String mode) {
+        RecruitmentEmailCopyMode parsed = copyModeOrNull(mode);
+        return parsed == null ? RecruitmentEmailCopyMode.BCC : parsed;
+    }
+
+    /** Copy mode override; null when absent, rejected when unrecognised. */
+    private RecruitmentEmailCopyMode copyModeOrNull(String mode) {
+        if (blankToNull(mode) == null) {
+            return null;
+        }
+        try {
+            return RecruitmentEmailCopyMode.valueOf(mode.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw badRequest("copyMode must be BCC or CC");
+        }
+    }
 
     private void enforceFlag() {
         if (featureFlag.isInterviewsEnabled()) {
