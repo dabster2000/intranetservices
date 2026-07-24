@@ -85,4 +85,23 @@ class RecruitmentEmailRendererTest {
         String html = RecruitmentEmailRenderer.toHtml("æøå ÆØÅ é");
         assertTrue(html.contains("æøå ÆØÅ é"));
     }
+
+    // ---- P19: caller-supplied extras (the consent link) -----------------
+
+    @Test
+    void extras_resolveTheConsentLink_onlyWhenSupplied() {
+        String body = "Klik her: {{consent_link}}";
+
+        RecruitmentEmailRenderer.Rendered without = RecruitmentEmailRenderer.render(
+                "Emne", body, null, null);
+        assertTrue(without.body().contains("{{consent_link}}"),
+                "without extras the token stays VISIBLE (manual send cannot mint a token)");
+        assertTrue(without.unresolvedFields().contains("consent_link"));
+
+        RecruitmentEmailRenderer.Rendered with = RecruitmentEmailRenderer.render(
+                "Emne", body, null, null,
+                java.util.Map.of("consent_link", "https://intra.trustworks.dk/consent/abc123"));
+        assertTrue(with.body().contains("https://intra.trustworks.dk/consent/abc123"));
+        assertTrue(with.unresolvedFields().isEmpty());
+    }
 }

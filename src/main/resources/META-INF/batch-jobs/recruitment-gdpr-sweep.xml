@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-gdpr-sweep" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment GDPR Sweep Job (ATS expansion Phase 19)
+
+    Purpose:
+    "GDPR runs itself" (spec §8.9): one nightly pass over the retention
+    machinery -
+      * consent expiry     GRANTED consents past expires_at flip to
+                           EXPIRED (+ CONSENT_EXPIRED event)
+      * consent renewal    POOLED candidates get the CONSENT_RENEWAL
+                           email with a tokenized /consent/[token] link
+                           at retention-30d, one repeat at -7d
+                           (recruitment.gdpr.renewal-*-days, V448 seeds)
+      * auto-anonymization candidates past retention_deadline with no
+                           live consent are irreversibly anonymized
+                           (RecruitmentAnonymizerService, mode AUTO,
+                           CANDIDATE_ANONYMIZED event)
+
+    Idempotency is event-/state-derived per sub-sweep, so re-runs and
+    concurrent instances (ECS cutover) are harmless. All side effects
+    are gated by recruitment.gdpr.enabled (off = no-op) - ENABLING THAT
+    FLAG IS THE MOMENT AUTOMATIC DELETION STARTS (plan P19); enable on
+    staging for at least two sweep cycles first.
+
+    Schedule:
+    Daily at 05:45 UTC via BatchScheduler (after the 02:00-05:00
+    cleanup/refresh cluster, before the 07:00 SLA sweep), gated by
+    dk.trustworks.recruitment.gdpr-sweep.enabled (default true).
+
+    Similar to:
+    recruitment-sla-sweep.xml (the P17 clock sweep)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="sweep-recruitment-gdpr">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentGdprSweepBatchlet"/>
+    </step>
+</job>

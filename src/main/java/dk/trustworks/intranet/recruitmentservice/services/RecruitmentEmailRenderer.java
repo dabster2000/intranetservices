@@ -21,6 +21,11 @@ import java.util.regex.Pattern;
  *   <li>{@code {{candidate_full_name}}} — e.g. "Anna Jensen"</li>
  *   <li>{@code {{position_title}}} — e.g. "Senior Consultant"; empty when
  *       the email has no position context (e.g. unsolicited candidates)</li>
+ *   <li>{@code {{consent_link}}} — the tokenized public consent-page URL
+ *       (P19); resolves ONLY in the GDPR sweep's renewal send, which
+ *       passes it via the extras overload — everywhere else the token
+ *       stays visible as an unresolved placeholder (by design: a manual
+ *       send of the renewal template cannot mint a token)</li>
  * </ul>
  * Unknown tokens are left untouched so they stay VISIBLE in the compose
  * preview and the review queue — a recruiter sees the problem instead of
@@ -44,7 +49,19 @@ public final class RecruitmentEmailRenderer {
 
     public static Rendered render(String subjectTemplate, String bodyTemplate,
                                   RecruitmentCandidate candidate, RecruitmentPosition position) {
+        return render(subjectTemplate, bodyTemplate, candidate, position, Map.of());
+    }
+
+    /**
+     * Render with caller-supplied extra merge values on top of the standard
+     * candidate/position vocabulary (P19: the sweep passes
+     * {@code consent_link}). Extras win on key collision.
+     */
+    public static Rendered render(String subjectTemplate, String bodyTemplate,
+                                  RecruitmentCandidate candidate, RecruitmentPosition position,
+                                  Map<String, String> extras) {
         Map<String, String> values = mergeValues(candidate, position);
+        values.putAll(extras);
         Set<String> unresolved = new LinkedHashSet<>();
         String subject = substitute(subjectTemplate, values, unresolved);
         String body = substitute(bodyTemplate, values, unresolved);

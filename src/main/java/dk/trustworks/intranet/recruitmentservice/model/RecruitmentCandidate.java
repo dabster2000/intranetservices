@@ -336,6 +336,41 @@ public class RecruitmentCandidate extends PanacheEntityBase {
         return status != CandidateStatus.ACTIVE && status != CandidateStatus.POOLED;
     }
 
+    /**
+     * GDPR anonymization of THIS row (ATS P19, spec §5.5): every column
+     * that can carry personal data is nulled or replaced with a fixed
+     * placeholder; the structural skeleton (source enum, education /
+     * experience levels, specialization codes, clearance, dates, soft FKs
+     * to employees) survives so statistics keep working. Irreversible by
+     * design. Only {@code RecruitmentAnonymizerService} calls this — the
+     * row scrub is one step of the four-target anonymization contract
+     * (events pii, answers, S3 documents are the service's other legs).
+     * <p>
+     * The caller guards state: HIRED candidates leave the recruitment
+     * retention regime (spec §5.5) and an already-ANONYMIZED candidate is
+     * a no-op at the service layer.
+     */
+    public void anonymize() {
+        this.firstName = "Anonymized";
+        this.lastName = "Candidate";
+        this.email = null;
+        this.phone = null;
+        this.linkedinUrl = null;
+        this.notes = null;
+        this.declineReason = null;
+        this.sourceDetail = null;          // reference names live inside
+        this.externalReferrerName = null;
+        this.tags = null;                  // free-form text
+        this.educationOther = null;        // free-form text
+        this.currentEmployer = null;
+        this.languages = null;             // free-form text (AI chips)
+        this.sharepointFolderPath = null;  // contains the candidate's name
+        this.poolStatus = null;
+        this.retentionDeadline = null;     // the clock has been consumed
+        this.status = CandidateStatus.ANONYMIZED;
+        this.anonymizedAt = LocalDateTime.now(java.time.ZoneOffset.UTC);
+    }
+
     private void guardActive(String operation) {
         if (status != CandidateStatus.ACTIVE) {
             throw new BusinessRuleViolation(

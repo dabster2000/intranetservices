@@ -70,6 +70,16 @@ public class RecruitmentConsent extends PanacheEntityBase implements Auditable {
     @Column(name = "token_hash", length = 64)
     private String tokenHash;
 
+    /**
+     * UTC moment after which the public consent-page token is refused
+     * (V448). Stamped at mint — the sweep sets it to the candidate's
+     * retention deadline, so a link never outlives the data it controls.
+     * Never serialized (token bookkeeping is server-internal).
+     */
+    @JsonIgnore
+    @Column(name = "token_expires_at", columnDefinition = "DATETIME(3)")
+    private LocalDateTime tokenExpiresAt;
+
     // ---- Audit columns (house Auditable pattern) ---------------------------
 
     @Column(name = "created_at", nullable = false, updatable = false)

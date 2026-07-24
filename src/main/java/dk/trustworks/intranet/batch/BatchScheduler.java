@@ -77,6 +77,17 @@ public class BatchScheduler {
     boolean recruitmentSlaSweepEnabled;
 
     /**
+     * Kill switch for the recruitment GDPR sweep (ATS expansion P19). Off =
+     * no consent expiry, no renewal emails, no auto-anonymization at all.
+     * Independent of this switch, the sweep is a no-op while the
+     * {@code recruitment.gdpr.enabled} app setting is off — that flag, not
+     * this property, is the deliberate "automatic deletion starts now"
+     * decision (plan §P19).
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.gdpr-sweep.enabled", defaultValue = "true")
+    boolean recruitmentGdprSweepEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -481,6 +492,38 @@ public class BatchScheduler {
             jobOperator.start("recruitment-sla-sweep", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-sla-sweep: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The P19 GDPR clock ("GDPR runs itself", ATS spec §8.9): expire stale
+     * consents, send tokenized consent-renewal emails, auto-anonymize past
+     * the retention deadline. Idempotent by event-/state-derived
+     * bookkeeping per sub-sweep, so a run on a draining ECS task is
+     * harmless. No-op while {@code recruitment.gdpr.enabled} is off —
+     * enabling that flag is the moment automatic deletion starts.
+     * <p>
+     * Schedule: daily at 05:45 UTC — after the 02:00–05:00 cleanup/refresh
+     * cluster, before the 07:00 SLA sweep (a freshly-anonymized candidate
+     * can no longer be nudged about).
+     */
+    @Scheduled(cron = "0 45 5 * * ?")
+    void scheduleRecruitmentGdprSweep() {
+        if (!recruitmentGdprSweepEnabled) {
+            log.debug("recruitment-gdpr-sweep skipped: dk.trustworks.recruitment.gdpr-sweep.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-gdpr-sweep")) {
+                if (!jobOperator.getRunningExecutions("recruitment-gdpr-sweep").isEmpty()) {
+                    log.debug("recruitment-gdpr-sweep already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-gdpr-sweep batch job");
+            jobOperator.start("recruitment-gdpr-sweep", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-gdpr-sweep: " + e.getMessage());
         }
     }
 

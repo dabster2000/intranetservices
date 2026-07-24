@@ -21,8 +21,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
 /**
- * Backend defense-in-depth rate limiting for the P5 public application
- * surface: the ALB exposes {@code POST /apply/*} to the internet, so the
+ * Backend defense-in-depth rate limiting for the public recruitment
+ * surfaces: the ALB exposes {@code POST /apply/*} (P5 application forms)
+ * and {@code POST /consent/*} (P19 consent page) to the internet, so the
  * backend throttles submissions regardless of what sits in front of it.
  * Sliding window (60 s), 429 + {@code Retry-After} — modeled on
  * {@code security/apiclient/TokenRateLimitFilter}.
@@ -84,7 +85,7 @@ public class PublicApplyRateLimitFilter implements ContainerRequestFilter {
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        if (!enabled || !isPublicApplyPost(requestContext)) {
+        if (!enabled || !isRateLimitedPublicPost(requestContext)) {
             return;
         }
         String bucketKey = resolveBucketKey(
@@ -101,7 +102,8 @@ public class PublicApplyRateLimitFilter implements ContainerRequestFilter {
         if (!decision.allowed()) {
             // The key is infrastructure-derived (rightmost XFF, or the
             // BFF's ALB-verified client IP) — never request payload.
-            log.warnf("Rate limit exceeded for %s on POST /apply/*", bucketKey);
+            log.warnf("Rate limit exceeded for %s on %s", bucketKey,
+                    requestContext.getUriInfo().getPath());
             requestContext.abortWith(Response.status(429)
                     .header("Retry-After", decision.retryAfterSeconds())
                     .type(MediaType.APPLICATION_JSON_TYPE)
@@ -146,7 +148,7 @@ public class PublicApplyRateLimitFilter implements ContainerRequestFilter {
         return "client:" + clientIpHeader.trim();
     }
 
-    static boolean isPublicApplyPost(ContainerRequestContext context) {
+    static boolean isRateLimitedPublicPost(ContainerRequestContext context) {
         if (!"POST".equalsIgnoreCase(context.getMethod())) {
             return false;
         }
@@ -157,7 +159,8 @@ public class PublicApplyRateLimitFilter implements ContainerRequestFilter {
         if (!path.startsWith("/")) {
             path = "/" + path;
         }
-        return path.equals("/apply") || path.startsWith("/apply/");
+        return path.equals("/apply") || path.startsWith("/apply/")
+                || path.equals("/consent") || path.startsWith("/consent/");
     }
 
     /**
