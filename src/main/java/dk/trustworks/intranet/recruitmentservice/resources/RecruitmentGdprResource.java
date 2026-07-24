@@ -170,7 +170,11 @@ public class RecruitmentGdprResource {
                     rendered.subject(), rendered.body(), "ART14_NOTICE", null,
                     RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                             .actorUser(actor),
-                    emailService.visibilityFor(candidate.getUuid()));
+                    emailService.visibilityFor(candidate.getUuid()),
+                    // A DPO notice must be answerable: the acting DPO takes
+                    // the replies, falling back to the recruiting mailbox.
+                    emailService.replyToFor(actor),
+                    emailService.copiesFor(template, candidate, null, actor));
             noticeEvent.payload("template_key", template.getTemplateKey());
         }
         eventRecorder.record(noticeEvent);

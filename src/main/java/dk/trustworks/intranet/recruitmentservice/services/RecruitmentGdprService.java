@@ -292,7 +292,11 @@ public class RecruitmentGdprService {
                         .payload("renewal_number", renewalNumber)
                         .payload("retention_deadline", deadlineKey)
                         .payload("consent_uuid", minted.consentUuid()),
-                emailService.visibilityFor(candidateUuid));
+                emailService.visibilityFor(candidateUuid),
+                // A clock-driven send has no human actor: replies go to the
+                // configured recruiting mailbox, never into the void.
+                emailService.replyToFallback(),
+                emailService.copiesFor(template, candidate, null, null));
         log.infof("GDPR sweep: renewal email %d/%d queued for candidate %s (deadline %s)",
                 renewalNumber, MAX_RENEWALS_PER_DEADLINE, candidateUuid, deadlineKey);
         return true;

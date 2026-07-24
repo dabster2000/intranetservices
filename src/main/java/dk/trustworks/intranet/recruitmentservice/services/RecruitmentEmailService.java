@@ -2,6 +2,8 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.model.enums.MailStatus;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.model.AppSetting;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
@@ -11,16 +13,20 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
+import dk.trustworks.intranet.services.AppSettingService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -63,11 +69,44 @@ public class RecruitmentEmailService {
 
     private static final Pattern TEMPLATE_KEY_PATTERN = Pattern.compile("[A-Z][A-Z0-9_]{1,59}");
 
+    /**
+     * Reply-To used when no human sent the mail (the reactor's
+     * acknowledgements and auto-rejections, the GDPR sweep's consent
+     * renewals). Seeded to {@code hr@trustworks.dk} by V455, editable on
+     * {@code /recruitment/settings}; blank means no Reply-To header at all
+     * (the pre-V455 behaviour).
+     */
+    public static final String SETTING_REPLY_TO_FALLBACK = "recruitment.email.reply-to-fallback";
+    private static final String SETTING_CATEGORY = "recruitment";
+
+    private static final Pattern EMAIL_PATTERN =
+            Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+
     @Inject
     EntityManager em;
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
+
+    @Inject
+    AppSettingService appSettingService;
+
+    @Inject
+    RecruitmentEmailCopyResolver copyResolver;
+
+    /**
+     * Display name in front of {@code quarkus.mailer.from}. The envelope
+     * address is never overridden — SES verifies sender identities and a
+     * per-recruiter From would risk a 554 — so warmth is bought with the
+     * display name plus a real Reply-To instead.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.email.from-name",
+            defaultValue = "Trustworks Rekruttering")
+    String fromName;
+
+    /** The SES-verified sender address; shown read-only on the settings page. */
+    @ConfigProperty(name = "quarkus.mailer.from")
+    String fromAddress;
 
     // ------------------------------------------------------------------
     // Templates
@@ -79,7 +118,9 @@ public class RecruitmentEmailService {
 
     @Transactional
     public RecruitmentEmailTemplate createTemplate(String templateKey, String name, String subject,
-                                                   String body, boolean autoSend, boolean active) {
+                                                   String body, boolean autoSend, boolean active,
+                                                   Set<RecruitmentEmailCopyRole> copyRoles,
+                                                   RecruitmentEmailCopyMode copyMode) {
         String key = normalizeKey(templateKey);
         validateTemplateFields(name, subject, body);
         if (RecruitmentEmailTemplate.count("templateKey = ?1", key) > 0) {
@@ -92,13 +133,17 @@ public class RecruitmentEmailService {
         template.setBody(body);
         template.setAutoSend(autoSend);
         template.setActive(active);
+        template.setCopyRoles(RecruitmentEmailCopyRole.toCsv(copyRoles));
+        template.setCopyMode(copyMode == null ? RecruitmentEmailCopyMode.BCC : copyMode);
         template.persist();
         return template;
     }
 
     @Transactional
     public RecruitmentEmailTemplate updateTemplate(String uuid, String name, String subject,
-                                                   String body, boolean autoSend, boolean active) {
+                                                   String body, boolean autoSend, boolean active,
+                                                   Set<RecruitmentEmailCopyRole> copyRoles,
+                                                   RecruitmentEmailCopyMode copyMode) {
         RecruitmentEmailTemplate template = RecruitmentEmailTemplate.findById(uuid);
         if (template == null) {
             return null;
@@ -109,6 +154,8 @@ public class RecruitmentEmailService {
         template.setBody(body);
         template.setAutoSend(autoSend);
         template.setActive(active);
+        template.setCopyRoles(RecruitmentEmailCopyRole.toCsv(copyRoles));
+        template.setCopyMode(copyMode == null ? RecruitmentEmailCopyMode.BCC : copyMode);
         return template;
     }
 
@@ -174,18 +221,29 @@ public class RecruitmentEmailService {
     @Transactional
     public RecruitmentPendingEmailResult sendManual(String candidateUuid, String templateUuid,
                                                     String applicationUuid, String subject,
-                                                    String body, String actorUserUuid) {
+                                                    String body, String actorUserUuid,
+                                                    List<String> copyUserUuids,
+                                                    RecruitmentEmailCopyMode copyMode) {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         requireEmail(candidate);
         RecruitmentEmailTemplate template = templateUuid == null ? null
                 : RecruitmentEmailTemplate.findById(templateUuid);
         String templateKey = template == null ? null : template.getTemplateKey();
+        // An explicit list (even an empty one) is the recruiter's decision
+        // and wins; a null list means "whatever the template asks for".
+        EmailCopies copies = copyUserUuids == null
+                ? copiesFor(template, candidate, applicationUuid, actorUserUuid)
+                : copiesOf(candidate, copyUserUuids,
+                        copyMode != null ? copyMode
+                                : template != null ? template.getCopyMode()
+                                        : RecruitmentEmailCopyMode.BCC);
         String mailUuid = send(candidate, applicationUuid, positionUuidOf(applicationUuid),
                 templateKey, template == null ? null : template.getUuid(),
                 subject, body, "MANUAL", null,
                 RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                         .actorUser(actorUserUuid),
-                visibilityFor(candidate.getUuid()));
+                visibilityFor(candidate.getUuid()),
+                replyToFor(actorUserUuid), copies);
         return new RecruitmentPendingEmailResult(mailUuid, templateKey);
     }
 
@@ -217,7 +275,9 @@ public class RecruitmentEmailService {
                                                   RecruitmentEmailTemplate template,
                                                   RecruitmentEmailRenderer.Rendered rendered,
                                                   RecruitmentPendingEmailReason reason,
-                                                  String triggerEventUuid) {
+                                                  String triggerEventUuid,
+                                                  EmailCopies copies) {
+        EmailCopies snapshot = copies == null ? EmailCopies.none() : copies;
         RecruitmentPendingEmail pending = new RecruitmentPendingEmail();
         pending.setCandidateUuid(candidate.getUuid());
         pending.setApplicationUuid(applicationUuid);
@@ -228,6 +288,11 @@ public class RecruitmentEmailService {
         pending.setSubject(rendered.subject());
         pending.setBody(rendered.body());
         pending.setTriggerEventUuid(triggerEventUuid);
+        // Snapshot the resolved copy list next to the rendered text
+        // (§P15 deviation 5): approving sends what the recruiter reviewed,
+        // even if the template's policy changed in the meantime.
+        pending.setCopyUserUuids(RecruitmentEmailCopyResolver.userUuidsOf(snapshot.recipients()));
+        pending.setCopyMode(snapshot.mode());
         pending.persist();
         return pending;
     }
@@ -241,7 +306,9 @@ public class RecruitmentEmailService {
      */
     @Transactional
     public RecruitmentPendingEmail approve(String pendingUuid, String editedSubject,
-                                           String editedBody, String actorUserUuid) {
+                                           String editedBody, String actorUserUuid,
+                                           List<String> copyUserUuids,
+                                           RecruitmentEmailCopyMode copyMode) {
         RecruitmentPendingEmail pending = em.find(RecruitmentPendingEmail.class, pendingUuid,
                 LockModeType.PESSIMISTIC_WRITE);
         if (pending == null) {
@@ -254,12 +321,21 @@ public class RecruitmentEmailService {
                 ? pending.getSubject() : editedSubject.trim();
         String body = editedBody == null || editedBody.isBlank()
                 ? pending.getBody() : editedBody;
+        // Same rule as the manual path: an explicit list is the approver's
+        // decision; null falls back to the snapshot taken at queue time.
+        // Either way the people are re-authorized now, not at queue time —
+        // involvement can have changed while the row waited.
+        List<String> effectiveUuids = copyUserUuids != null ? copyUserUuids
+                : RecruitmentEmailCopyResolver.splitUserUuids(pending.getCopyUserUuids());
+        EmailCopies copies = copiesOf(candidate, effectiveUuids,
+                copyMode != null ? copyMode : pending.getCopyMode());
         send(candidate, pending.getApplicationUuid(), positionUuidOf(pending.getApplicationUuid()),
                 pending.getTemplateKey(), pending.getTemplateUuid(),
                 subject, body, "REVIEW_APPROVED", pending.getUuid(),
                 RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                         .actorUser(actorUserUuid),
-                visibilityFor(candidate.getUuid()));
+                visibilityFor(candidate.getUuid()),
+                replyToFor(actorUserUuid), copies);
         pending.setStatus(RecruitmentPendingEmailStatus.APPROVED);
         pending.setResolvedAt(LocalDateTime.now(ZoneOffset.UTC));
         pending.setResolvedBy(actorUserUuid);
@@ -298,22 +374,62 @@ public class RecruitmentEmailService {
     // ------------------------------------------------------------------
 
     /**
+     * The internal copies applied to one send: the mode and the already
+     * resolved, already visibility-filtered recipients. {@link #none()} is
+     * the "candidate only" case, which is what every send did before V455.
+     */
+    public record EmailCopies(RecruitmentEmailCopyMode mode,
+                              List<RecruitmentEmailCopyResolver.CopyRecipient> recipients) {
+
+        public EmailCopies {
+            mode = mode == null ? RecruitmentEmailCopyMode.BCC : mode;
+            recipients = recipients == null ? List.of() : List.copyOf(recipients);
+        }
+
+        public static EmailCopies none() {
+            return new EmailCopies(RecruitmentEmailCopyMode.BCC, List.of());
+        }
+
+        public boolean isEmpty() {
+            return recipients.isEmpty();
+        }
+    }
+
+    /**
      * Persist the outgoing mail (status {@code READY} — the JBeret
      * {@code mail-send} outbox job delivers asynchronously with retry) and
      * append {@code EMAIL_SENT}, both in the caller's transaction.
-     * Payload carries structural facts only; recipient, subject and body
-     * are pii (anonymization contract).
+     * Payload carries structural facts only; recipient, subject, body,
+     * Reply-To and the copy addresses are pii (anonymization contract —
+     * the copied people's UUIDs stay in payload so P20 can count comms
+     * reach after anonymization).
      *
+     * @param replyTo where a reply goes; null/blank omits the header
+     * @param copies  internal copies, already resolved and authorized
      * @return the mail row's uuid
      */
     public String send(RecruitmentCandidate candidate, String applicationUuid, String positionUuid,
                        String templateKey, String templateUuid, String subject, String body,
                        String trigger, String pendingUuid, RecruitmentEventBuilder eventBase,
-                       RecruitmentEventVisibility visibility) {
+                       RecruitmentEventVisibility visibility,
+                       String replyTo, EmailCopies copies) {
+        EmailCopies effectiveCopies = copies == null ? EmailCopies.none() : copies;
         String mailUuid = UUID.randomUUID().toString();
         TrustworksMail mail = new TrustworksMail(mailUuid, candidate.getEmail(),
                 subject, RecruitmentEmailRenderer.toHtml(body));
         mail.setStatus(MailStatus.READY);
+        mail.setFromName(fromName);
+        if (replyTo != null && !replyTo.isBlank()) {
+            mail.setReplyTo(replyTo.trim());
+        }
+        String copyAddresses = RecruitmentEmailCopyResolver.addressesOf(effectiveCopies.recipients());
+        if (copyAddresses != null) {
+            if (effectiveCopies.mode() == RecruitmentEmailCopyMode.CC) {
+                mail.setCc(copyAddresses);
+            } else {
+                mail.setBcc(copyAddresses);
+            }
+        }
         mail.persist();
 
         RecruitmentEventBuilder event = eventBase
@@ -335,10 +451,104 @@ public class RecruitmentEmailService {
         if (pendingUuid != null) {
             event.payload("pending_email_uuid", pendingUuid);
         }
+        if (replyTo != null && !replyTo.isBlank()) {
+            event.pii("reply_to", replyTo.trim());
+        }
+        if (!effectiveCopies.isEmpty()) {
+            // Structural in payload (survives anonymization — P20 counts
+            // reach from it), addresses in pii.
+            event.payload("copy_mode", effectiveCopies.mode().name())
+                    .payload("copy_count", effectiveCopies.recipients().size())
+                    .payload("copy_user_uuids", effectiveCopies.recipients().stream()
+                            .map(RecruitmentEmailCopyResolver.CopyRecipient::userUuid).toList())
+                    .pii(effectiveCopies.mode() == RecruitmentEmailCopyMode.CC
+                            ? "cc_emails" : "bcc_emails", copyAddresses);
+        }
         eventRecorder.record(event);
-        log.infof("EMAIL_SENT queued mail=%s candidate=%s template=%s trigger=%s",
-                mailUuid, candidate.getUuid(), templateKey, trigger);
+        log.infof("EMAIL_SENT queued mail=%s candidate=%s template=%s trigger=%s copies=%d/%s",
+                mailUuid, candidate.getUuid(), templateKey, trigger,
+                effectiveCopies.recipients().size(), effectiveCopies.mode());
         return mailUuid;
+    }
+
+    // ------------------------------------------------------------------
+    // Reply routing
+    // ------------------------------------------------------------------
+
+    /**
+     * Where a candidate's reply should go: the acting recruiter's own
+     * address when a human sent the mail, otherwise the configured
+     * fallback ({@link #SETTING_REPLY_TO_FALLBACK}). Returns null only
+     * when there is no actor AND the fallback has been blanked — the
+     * deliberate "no Reply-To" opt-out.
+     */
+    public String replyToFor(String actorUserUuid) {
+        if (actorUserUuid != null && !actorUserUuid.isBlank()) {
+            User actor = User.findById(actorUserUuid);
+            if (actor != null && actor.getEmail() != null && !actor.getEmail().isBlank()) {
+                return actor.getEmail().trim();
+            }
+        }
+        return replyToFallback();
+    }
+
+    /** Display name in front of the configured sender address. */
+    public String fromName() {
+        return fromName;
+    }
+
+    /** The SES-verified envelope address every candidate email is sent from. */
+    public String fromAddress() {
+        return fromAddress;
+    }
+
+    /** The configured fallback address; null when unset or blanked. */
+    public String replyToFallback() {
+        return appSettingService.findByKey(SETTING_REPLY_TO_FALLBACK)
+                .map(AppSetting::getSettingValue)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .orElse(null);
+    }
+
+    /**
+     * Set the fallback. An empty value is legal and means "send without a
+     * Reply-To header"; anything else must look like an email address.
+     */
+    @Transactional
+    public void updateReplyToFallback(String value, String actorUserUuid) {
+        String normalized = value == null ? "" : value.trim();
+        if (!normalized.isEmpty() && !EMAIL_PATTERN.matcher(normalized).matches()) {
+            throw new BusinessRuleViolation(
+                    "The reply-to address must be a valid email address, or empty to send without one");
+        }
+        appSettingService.saveSetting(SETTING_REPLY_TO_FALLBACK, normalized,
+                SETTING_CATEGORY, actorUserUuid);
+    }
+
+    // ------------------------------------------------------------------
+    // Copy resolution
+    // ------------------------------------------------------------------
+
+    /**
+     * The copies a template asks for, resolved against this candidate.
+     * A null template (blank email) copies nobody.
+     */
+    public EmailCopies copiesFor(RecruitmentEmailTemplate template, RecruitmentCandidate candidate,
+                                 String applicationUuid, String actorUserUuid) {
+        if (template == null) {
+            return EmailCopies.none();
+        }
+        Set<RecruitmentEmailCopyRole> roles =
+                RecruitmentEmailCopyRole.parseCsv(template.getCopyRoles());
+        return new EmailCopies(template.getCopyMode(),
+                copyResolver.resolve(candidate, applicationUuid, roles, actorUserUuid));
+    }
+
+    /** An explicit per-send override: caller-chosen people, re-authorized here. */
+    public EmailCopies copiesOf(RecruitmentCandidate candidate, List<String> userUuids,
+                                RecruitmentEmailCopyMode mode) {
+        return new EmailCopies(mode, copyResolver.resolveExplicit(candidate, userUuids));
     }
 
     // ------------------------------------------------------------------
