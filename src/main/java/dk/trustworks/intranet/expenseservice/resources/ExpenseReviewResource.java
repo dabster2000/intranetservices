@@ -18,12 +18,14 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
+@JBossLog
 @Path("/expenses/review")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -120,8 +122,16 @@ public class ExpenseReviewResource {
         }
     }
 
-    private ExpenseReviewListItemDTO toDTO(Expense e) {
-        User u = User.findById(e.getUseruuid());
+    // Package-private for unit testing. A null useruuid must not abort the whole
+    // queue: findById(null) throws IllegalArgumentException, and one bad row would
+    // 500 every segment that includes it.
+    ExpenseReviewListItemDTO toDTO(Expense e) {
+        User u = null;
+        if (e.getUseruuid() != null) {
+            u = User.findById(e.getUseruuid());
+        } else {
+            log.warnf("Expense %s is in the review inbox with a null useruuid; listing it without an employee name", e.getUuid());
+        }
         String name = u != null ? (u.getFirstname() + " " + u.getLastname()) : null;
         // photoUrl is fetched separately by the frontend via /files/photo/{useruuid}; leave null here
         String photo = null;
