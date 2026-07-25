@@ -7,10 +7,12 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
@@ -23,7 +25,6 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.ArrayList;
-import java.util.Optional;
 
 @Tag(name = "login")
 @JBossLog
@@ -34,18 +35,28 @@ public class LoginResource {
     @Inject
     UserService userAPI;
 
+    /**
+     * Kill switch for the legacy username/password login endpoint ({@code GET /login}).
+     *
+     * <p>The endpoint is {@code @PermitAll} and takes credentials as query parameters, which means
+     * every call writes the plaintext password into the HTTP access log. It is disabled by default.
+     *
+     * <p>To re-enable: flip {@code defaultValue} to {@code "true"} here, or set
+     * {@code login.legacy-endpoint.enabled=true} (env {@code LOGIN_LEGACY_ENDPOINT_ENABLED}).
+     * While disabled, the endpoint answers {@code 404} so it is indistinguishable from a route
+     * that does not exist.
+     */
+    @ConfigProperty(name = "login.legacy-endpoint.enabled", defaultValue = "false")
+    boolean legacyLoginEnabled;
+
     @GET
     @PermitAll
-    public LoginTokenResult login(@QueryParam("username") String username, @QueryParam("password") String password, @QueryParam("dev") Optional<String> dev) throws Exception {
+    public LoginTokenResult login(@QueryParam("username") String username, @QueryParam("password") String password) throws Exception {
+        if (!legacyLoginEnabled) {
+            throw new NotFoundException();
+        }
         log.info("LoginResource.login");
         log.info("username = " + username + ", password = " + password);
-        if(dev.isPresent() && dev.get().equals("test") && !password.equals("hul")) {
-            log.info("Test login");
-            return new LoginTokenResult("not_a_real_token", "035b4af1-7b43-4a26-81c6-76ecf49cadae", true, "", new ArrayList<>());
-        } else if(password.equals("hul")) {
-            log.info("Password i hul");
-            return new LoginTokenResult("", "", false, "Wrong password", new ArrayList<>());
-        }
         return userAPI.login(username, password);
     }
 

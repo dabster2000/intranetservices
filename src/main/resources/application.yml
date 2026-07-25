@@ -81,7 +81,9 @@ quarkus:
     baseline-description: initial baseline
     out-of-order: true
   swagger-ui:
-    always-include: true
+    # Disabled everywhere. Build-time property: re-enabling requires a rebuild, not just a restart.
+    enable: false
+    always-include: false
   smallrye-openapi:
     filter: dk.trustworks.intranet.security.PublicOnlyOASFilter
   keycloak:
