@@ -14,7 +14,10 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Status;
+import jakarta.transaction.Synchronization;
 import jakarta.transaction.Transactional;
+import jakarta.transaction.TransactionSynchronizationRegistry;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
@@ -56,10 +59,46 @@ public class ExpenseService {
     EventBus eventBus;
 
     @Inject
+    TransactionSynchronizationRegistry txSyncRegistry;
+
+    @Inject
     ExpenseDecisionLogService logs;
 
     @Inject
     ExpenseCreatedConsumer expenseCreatedConsumer;
+
+    /**
+     * Publish the {@code expense.validate} event only after the surrounding
+     * transaction commits. {@link ExpenseCreatedConsumer} looks the expense up
+     * in its own transaction, so publishing mid-transaction lets it read the
+     * database before the insert (or state reset) is visible — it then logs
+     * "Expense not found" (or skips on the stale state) and AI validation
+     * silently waits for the 50-minute sweep. Mirrors
+     * {@link dk.trustworks.intranet.aggregates.sender.AggregateEventSender}.
+     * Without an active transaction the data is already visible, so the event
+     * is published immediately.
+     */
+    private void publishValidateEventAfterCommit(String expenseUuid) {
+        try {
+            txSyncRegistry.registerInterposedSynchronization(new Synchronization() {
+                @Override
+                public void beforeCompletion() {}
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status == Status.STATUS_COMMITTED) {
+                        try {
+                            eventBus.publish("expense.validate", expenseUuid);
+                        } catch (Exception ex) {
+                            log.error("Failed to publish expense.validate after commit for uuid=" + expenseUuid, ex);
+                        }
+                    }
+                }
+            });
+        } catch (Exception e) {
+            eventBus.publish("expense.validate", expenseUuid);
+        }
+    }
 
     public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
@@ -124,12 +163,8 @@ public class ExpenseService {
             }
             log.info("Expense file stored in S3 for " + expense.getUuid());
 
-            // Publish EventBus event to validate asynchronously
-            try {
-                eventBus.send("expense.validate", expense.getUuid());
-            } catch (Exception ex) {
-                log.error("Failed to publish expense created event for uuid=" + expense.getUuid(), ex);
-            }
+            // Publish EventBus event to validate asynchronously once the insert is committed
+            publishValidateEventAfterCommit(expense.getUuid());
 
         } catch (Exception e) {
             log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
@@ -549,7 +584,7 @@ public class ExpenseService {
         e.setAiConfidence(null);
         e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
-        eventBus.publish("expense.validate", uuid);
+        publishValidateEventAfterCommit(uuid);
     }
 
     /**
@@ -581,6 +616,6 @@ public class ExpenseService {
         e.setAiConfidence(null);
         e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
-        eventBus.publish("expense.validate", uuid);
+        publishValidateEventAfterCommit(uuid);
     }
 }

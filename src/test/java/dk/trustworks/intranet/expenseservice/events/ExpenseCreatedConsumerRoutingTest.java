@@ -38,6 +38,7 @@ class ExpenseCreatedConsumerRoutingTest {
         e.setUseruuid("u");
         e.setAmount(450.0);
         e.setAccount("3585");
+        e.setAccountname("Restaurant");
         e.setExpensedate(java.time.LocalDate.now());
         e.setDatecreated(java.time.LocalDate.now());
         e.setStatus("CREATED");

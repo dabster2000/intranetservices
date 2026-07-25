@@ -1,29 +1,40 @@
 package dk.trustworks.intranet.expenseservice.services;
 
+import dk.trustworks.intranet.expenseservice.events.ExpenseValidateEventRecorder;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
-import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 @QuarkusTest
 class ExpenseServiceEditRevalidatesTest {
 
     @Inject ExpenseService svc;
-    @InjectMock EventBus bus;
+    @Inject ExpenseValidateEventRecorder recorder;
+    // The EventBus is a @Singleton bean and cannot be @InjectMock'ed; the real
+    // bus delivers to ExpenseValidateEventRecorder, and the real consumer is
+    // made a no-op by stubbing the AI/file services with a transient error.
+    @InjectMock ExpenseAIValidationService aiSvc;
+    @InjectMock ExpenseFileService fileSvc;
 
     @Test
     void editingResetsToSubmittedAndPublishesEvent() {
+        when(fileSvc.getFileById(any())).thenReturn(null);
+        when(aiSvc.extractExpenseData(any())).thenReturn("stub receipt text");
+        when(aiSvc.validateWithExtractedText(any(), any(), any(), any(), any(), any()))
+            .thenReturn(ExpenseAIValidationService.AIResult.error("Validation error: test stub"));
+
         Expense e = new Expense();
         e.setUuid(java.util.UUID.randomUUID().toString());
         e.setUseruuid("user-1");
         e.setAmount(100.0);
         e.setAccount("3585");
+        e.setAccountname("Test account");
         e.setExpensedate(java.time.LocalDate.now());
         e.setDatecreated(java.time.LocalDate.now());
         e.setStatus("CREATED");
@@ -41,7 +52,8 @@ class ExpenseServiceEditRevalidatesTest {
         assertEquals("SUBMITTED", after.getState());
         assertNull(after.getAttentionOwner());
         assertNull(after.getAiValidationApproved());
-        verify(bus).publish(eq("expense.validate"), eq(e.getUuid()));
+        assertNotNull(recorder.awaitReceipt(e.getUuid(), 10_000),
+            "expense.validate was never published for the reopened expense");
     }
 
     @Test
@@ -51,6 +63,7 @@ class ExpenseServiceEditRevalidatesTest {
         selected.setUseruuid("user-1");
         selected.setAmount(100.0);
         selected.setAccount("3585");
+        selected.setAccountname("Test account");
         selected.setExpensedate(java.time.LocalDate.now().minusDays(5));
         selected.setDatecreated(java.time.LocalDate.now().minusDays(5));
         selected.setStatus("VALIDATED");
