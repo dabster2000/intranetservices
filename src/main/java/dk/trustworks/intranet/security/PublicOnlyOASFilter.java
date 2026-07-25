@@ -10,7 +10,13 @@ import java.util.Map;
 
 /**
  * OpenAPI filter that removes all paths except those under {@code /public}.
- * Referenced from {@code application.yml} via {@code quarkus.smallrye-openapi.filter}.
+ *
+ * <p>Referenced from {@code application.yml} via {@code mp.openapi.filter}. It was previously
+ * wired up as {@code quarkus.smallrye-openapi.filter}, which Quarkus reports as an unrecognized
+ * key and ignores — so the filter never ran and the spec published the entire API surface.
+ *
+ * <p>Currently inert either way: {@code quarkus.smallrye-openapi.enabled} is {@code false}, so no
+ * document is served. This matters again the moment someone turns the spec back on.
  */
 public class PublicOnlyOASFilter implements OASFilter {
 
@@ -20,7 +26,9 @@ public class PublicOnlyOASFilter implements OASFilter {
 
         List<String> toRemove = new ArrayList<>();
         for (Map.Entry<String, PathItem> entry : openAPI.getPaths().getPathItems().entrySet()) {
-            if (!entry.getKey().startsWith("/public") && !entry.getKey().startsWith("/login") && !entry.getKey().equals("/auth/token")) {
+            // /login is deliberately absent: the legacy credentials-in-query-string endpoint is
+            // disabled and must not be advertised if the spec is ever re-enabled.
+            if (!entry.getKey().startsWith("/public") && !entry.getKey().equals("/auth/token")) {
                 toRemove.add(entry.getKey());
             }
         }

@@ -81,9 +81,14 @@ quarkus:
     baseline-description: initial baseline
     out-of-order: true
   swagger-ui:
-    always-include: true
+    # Disabled everywhere. Build-time property: re-enabling requires a rebuild, not just a restart.
+    enable: false
+    always-include: false
   smallrye-openapi:
-    filter: dk.trustworks.intranet.security.PublicOnlyOASFilter
+    # /q/openapi off too: with the UI gone it had no consumer (3 hits in 30 days, all from the
+    # UI itself). Runtime property, so QUARKUS_SMALLRYE_OPENAPI_ENABLED=true reopens it without
+    # a rebuild — if you do, confirm mp.openapi.filter below is still taking effect first.
+    enabled: false
   keycloak:
     devservices:
       enabled: false
@@ -273,6 +278,12 @@ mp:
       issuer: https://trustworks.dk
       publickey:
         location: META-INF/resources/publicKey.pem
+  openapi:
+    # Moved here from quarkus.smallrye-openapi.filter, which Quarkus logs as an unrecognized key
+    # and ignores — so this filter never actually ran and /q/openapi published the whole API,
+    # not just the /public allowlist. mp.openapi.filter is the key SmallRye reads.
+    # Only matters if quarkus.smallrye-openapi.enabled is turned back on.
+    filter: dk.trustworks.intranet.security.PublicOnlyOASFilter
 feature:
   # Attribution-driven internal invoice line generation (spec 2026-04-21).
   # When true, internal-invoice creation and cascade regeneration derive lines

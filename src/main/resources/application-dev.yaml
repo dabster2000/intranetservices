@@ -23,8 +23,9 @@ quarkus:
     baseline-version: 1.0
     baseline-description: initial baseline
   swagger-ui:
-    enable: true
-    always-include: true
+    # Disabled everywhere, dev included, so the prod build can never inherit an enabled UI.
+    enable: false
+    always-include: false
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
