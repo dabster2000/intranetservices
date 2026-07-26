@@ -297,6 +297,13 @@ public class ExpenseResource {
             throw new WebApplicationException("Expense not found", 404);
         }
 
+        String actorUuid = header.getUserUuid();
+        boolean isAccountingReviewer = identity.hasRole("expenses:review");
+        boolean isOwner = actorUuid != null && actorUuid.equals(existing.getUseruuid());
+        if (!isAccountingReviewer && !isOwner) {
+            throw new ForbiddenException("not the expense owner");
+        }
+
         if (expense.getClassification() != null) {
             expense.setUseruuid(existing.getUseruuid());
             classificationService.applyResolvedAccount(expense);
@@ -329,10 +336,13 @@ public class ExpenseResource {
             classificationService.persistSubmittedClassification(existing);
         }
 
-        // If the row is sitting in a review state waiting on the employee, this edit
-        // counts as a fix attempt: clear the review flags, log the edit, and re-fire
-        // AI validation. No-op for any other review_state.
-        expenseService.maybeReopenForRevalidation(uuid, header.getUserUuid());
+        // If the row is sitting in a review state waiting on the employee, an edit by the
+        // owner counts as a fix attempt: clear the review flags, log the edit, and re-fire
+        // AI validation. No-op for any other review_state. Reviewer edits are excluded —
+        // they must not be logged and attributed as employee fixes.
+        if (isOwner) {
+            expenseService.maybeReopenForRevalidation(uuid, actorUuid);
+        }
     }
 
     @DELETE
