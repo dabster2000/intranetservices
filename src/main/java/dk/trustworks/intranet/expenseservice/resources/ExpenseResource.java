@@ -302,43 +302,18 @@ public class ExpenseResource {
             classificationService.applyResolvedAccount(expense);
         }
 
-        // Build dynamic update query based on what's being updated
-        StringBuilder updateQuery = new StringBuilder();
-        List<Object> params = new java.util.ArrayList<>();
-
-        if (expense.getAmount() != null) {
-            updateQuery.append("amount = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getAmount());
-        }
-        if (expense.getAccount() != null) {
-            updateQuery.append("account = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getAccount());
-        }
-        if (expense.getAccountname() != null) {
-            updateQuery.append("accountname = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getAccountname());
-        }
-        if (expense.getDescription() != null) {
-            updateQuery.append("description = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getDescription());
-        }
-        if (expense.getProjectuuid() != null) {
-            updateQuery.append("projectuuid = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getProjectuuid());
-        }
-        if (expense.getExpensedate() != null) {
-            updateQuery.append("expensedate = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getExpensedate());
-        }
-
-        if (!updateQuery.isEmpty()) {
-            // Remove trailing comma and space
-            updateQuery.setLength(updateQuery.length() - 2);
-            updateQuery.append(" WHERE uuid = ?").append(params.size() + 1);
-            params.add(uuid);
-
-            Expense.update(updateQuery.toString(), params.toArray());
-        }
+        // Apply the client's edits to the MANAGED entity (null = field not being updated).
+        // A bulk JPQL update here would bypass the persistence context: any later dirtying
+        // of `existing` (classification below, or maybeReopenForRevalidation) makes the
+        // commit flush write the stale pre-edit snapshot back, silently reverting the edit
+        // without bumping @Version. Same clobber class as the sync note in
+        // ExpenseService.updateStatus.
+        if (expense.getAmount() != null) existing.setAmount(expense.getAmount());
+        if (expense.getAccount() != null) existing.setAccount(expense.getAccount());
+        if (expense.getAccountname() != null) existing.setAccountname(expense.getAccountname());
+        if (expense.getDescription() != null) existing.setDescription(expense.getDescription());
+        if (expense.getProjectuuid() != null) existing.setProjectuuid(expense.getProjectuuid());
+        if (expense.getExpensedate() != null) existing.setExpensedate(expense.getExpensedate());
 
         // Receipt replacement: when the client sends a new base64 file, overwrite
         // the existing S3 object under the same uuid key.
