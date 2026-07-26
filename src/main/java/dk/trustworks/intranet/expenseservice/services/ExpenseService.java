@@ -593,6 +593,15 @@ public class ExpenseService {
      * current review state. Use case: rule catalog or prompt was edited and a
      * previously-decided expense should be re-judged under the new policy.
      *
+     * <p>Only the AI-decided head is eligible: status CREATED (blocked /
+     * needs attention) and VALIDATED (AI-approved, still queued for upload —
+     * reset to CREATED, pulling it back out of the upload queue). Any other
+     * status is rejected with 409: the expense has already gone to e-conomic
+     * (re-approval would create a duplicate voucher), is a technical exception
+     * owned by accounting, or is terminal — and the {@code @PreUpdate} state
+     * sync would re-derive {@code state} from such a status at flush anyway,
+     * silently undoing the SUBMITTED reset.
+     *
      * <p>Unlike {@link #maybeReopenForRevalidation}, this clears {@code aiRuleId}
      * and {@code aiRuleIdsJson} too — the next AI run overwrites them anyway,
      * and the prior values are preserved in the expense_decision_log row this
@@ -604,7 +613,13 @@ public class ExpenseService {
         if (e == null) {
             throw new jakarta.ws.rs.NotFoundException("expense not found: " + uuid);
         }
+        if (!STATUS_CREATED.equals(e.getStatus()) && !STATUS_VALIDATED.equals(e.getStatus())) {
+            throw new jakarta.ws.rs.WebApplicationException(
+                    "expense " + uuid + " cannot be re-validated from status " + e.getStatus(),
+                    Response.Status.CONFLICT);
+        }
         logs.recordAdminForceRevalidate(e, actorUuid);
+        e.setStatus(STATUS_CREATED);                 // required by the consumer's status guard
         e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
         e.setAttentionOwner(null);
         e.setAttentionKind(null);
