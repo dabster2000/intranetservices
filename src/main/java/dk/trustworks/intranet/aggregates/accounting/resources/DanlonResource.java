@@ -24,12 +24,12 @@ import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.smallrye.common.constraint.NotNull;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.SystemException;
-import jakarta.transaction.TransactionManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
@@ -63,8 +63,6 @@ import static jakarta.transaction.Transactional.TxType.REQUIRED;
 @SecurityRequirement(name = "jwt")
 public class DanlonResource {
 
-    @Inject
-    TransactionManager tm;
     @Inject
     UserService userService;
     @Inject
@@ -415,9 +413,8 @@ public class DanlonResource {
     @PUT
     @Path("/employees/salarysupplements/create")
     @RolesAllowed({"salaries:write"})
-    @Transactional(REQUIRED)
     @CacheInvalidateAll(cacheName = "work-cache")
-    public void createTimeStampSalarySupplements(@QueryParam("month") String strMonth) throws SystemException {
+    public void createTimeStampSalarySupplements(@QueryParam("month") String strMonth) {
         LocalDate month = dateIt(strMonth).withDayOfMonth(1);
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
 
@@ -425,29 +422,36 @@ public class DanlonResource {
             // Skip users without a Danløn number
             if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
 
-            List<Work> vacationList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
-            List<Work> workHoursList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), WORK_HOURS, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
-            List<TransportationRegistration> unPaidRegistrations = transportationRegistrationService.findByUseruuidAndUnpaidAndMonth(user.getUuid(), month);
-            List<Expense> unPaidExpenses = expenseService.findByUserAndUnpaidAndMonth(user.getUuid(), month);
-
-            boolean isAnyPaidOut = false;
-
-            if(vacationList.stream().anyMatch(Work::isPaidOut)) isAnyPaidOut = true;
-            if(workHoursList.stream().anyMatch(Work::isPaidOut)) isAnyPaidOut = true;
-            if(unPaidRegistrations.stream().anyMatch(TransportationRegistration::isPaidOut)) isAnyPaidOut = true;
-            if(unPaidExpenses.stream().anyMatch(Expense::isPaidOut)) isAnyPaidOut = true;
-
-            if(isAnyPaidOut) {
-                tm.setRollbackOnly();
-                log.warnf("Salary supplements timestamp aborted — already paid out for user %s", user.getUsername());
-                return;
-            }
-
-            vacationList.forEach(workService::setPaidAndUpdate);
-            workHoursList.forEach(workService::setPaidAndUpdate);
-            unPaidRegistrations.forEach(transportationRegistrationService::setPaidAndUpdate);
-            unPaidExpenses.forEach(expenseService::setPaidAndUpdate);
+            // One transaction per user: X-locks on the user's work/expense rows are released
+            // per chunk instead of accumulating month-wide across all users, which contended
+            // with the 5-minute BI drain and concurrent work saves. A user whose rows were
+            // already paid out is skipped (re-run safe) instead of aborting the whole month.
+            QuarkusTransaction.requiringNew().run(() -> timestampSalarySupplementsForUser(user, month));
         }
+    }
+
+    private void timestampSalarySupplementsForUser(User user, LocalDate month) {
+        List<Work> vacationList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
+        List<Work> workHoursList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), WORK_HOURS, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
+        List<TransportationRegistration> unPaidRegistrations = transportationRegistrationService.findByUseruuidAndUnpaidAndMonth(user.getUuid(), month);
+        List<Expense> unPaidExpenses = expenseService.findByUserAndUnpaidAndMonth(user.getUuid(), month);
+
+        boolean isAnyPaidOut = false;
+
+        if(vacationList.stream().anyMatch(Work::isPaidOut)) isAnyPaidOut = true;
+        if(workHoursList.stream().anyMatch(Work::isPaidOut)) isAnyPaidOut = true;
+        if(unPaidRegistrations.stream().anyMatch(TransportationRegistration::isPaidOut)) isAnyPaidOut = true;
+        if(unPaidExpenses.stream().anyMatch(Expense::isPaidOut)) isAnyPaidOut = true;
+
+        if(isAnyPaidOut) {
+            log.warnf("Salary supplements timestamp skipped — already paid out for user %s", user.getUsername());
+            return;
+        }
+
+        vacationList.forEach(workService::setPaidAndUpdate);
+        workHoursList.forEach(workService::setPaidAndUpdate);
+        unPaidRegistrations.forEach(transportationRegistrationService::setPaidAndUpdate);
+        unPaidExpenses.forEach(expenseService::setPaidAndUpdate);
     }
 
     @PUT
