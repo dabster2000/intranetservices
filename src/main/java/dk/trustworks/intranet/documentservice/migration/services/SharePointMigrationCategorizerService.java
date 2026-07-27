@@ -250,10 +250,13 @@ public class SharePointMigrationCategorizerService {
                     .append(pathFilenamePairs.get(i)[0]).append(" | ")
                     .append(pathFilenamePairs.get(i)[1]).append('\n');
         }
+        // gpt-5-family models spend max_output_tokens on hidden reasoning
+        // before emitting JSON — 8192 proved too tight for a 44-entry batch
+        // in the matcher (empty output). The cap costs nothing unless used.
         String response = openAIService.askQuestionWithSchema(
                 categorizerSystemPrompt(), userMsg.toString(),
                 batchSchema(), "employee_document_categories",
-                null, aiModel, 8192, false);
+                null, aiModel, 32768, false);
         return parseBatchVerdicts(response, pathFilenamePairs.size());
     }
 
@@ -263,7 +266,7 @@ public class SharePointMigrationCategorizerService {
         String response = openAIService.askQuestionWithSchema(
                 categorizerSystemPrompt(), userMsg,
                 singleSchema(), "employee_document_category",
-                null, aiModel, 2048, false);
+                null, aiModel, 8192, false);
         try {
             return parseVerdict(objectMapper.readTree(response));
         } catch (Exception e) {
@@ -278,7 +281,13 @@ public class SharePointMigrationCategorizerService {
         for (int i = 0; i < expected; i++) verdicts.add(AiVerdict.inconclusiveVerdict());
         try {
             JsonNode results = objectMapper.readTree(responseJson).path("results");
-            if (!results.isArray()) return verdicts;
+            if (!results.isArray()) {
+                // "{}" here means the model emitted nothing (token budget
+                // exhausted by reasoning) — the whole batch degrades to the
+                // rule table + needs_review, which the run summary shows.
+                log.warnf("AI categorizer response had no results array — whole batch falls back to the rule table");
+                return verdicts;
+            }
             for (JsonNode node : results) {
                 int index = node.path("index").asInt(-1);
                 if (index < 0 || index >= expected) continue;
