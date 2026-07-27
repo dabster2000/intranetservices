@@ -7,6 +7,7 @@ import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrati
 import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrationJobRunner.JobStatus;
 import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrationJobRunner.JobType;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointFolderMatcherService;
+import dk.trustworks.intranet.documentservice.migration.services.SharePointMappingTransferService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCategorizerService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCopyService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCrawlerService;
@@ -78,6 +79,9 @@ public class DocumentMigrationResource {
 
     @Inject
     SharePointMigrationReportService reportService;
+
+    @Inject
+    SharePointMappingTransferService mappingTransferService;
 
     @Inject
     EmployeeDocumentsParameters parameters;
@@ -213,6 +217,28 @@ public class DocumentMigrationResource {
         return QuarkusTransaction.requiringNew().call(() -> matcherService.loadDirectory()).stream()
                 .sorted((a, b) -> a.fullName().compareToIgnoreCase(b.fullName()))
                 .toList();
+    }
+
+    // ── Mapping transfer (2a-9): prod-confirmed matching → staging ────────
+
+    /** uuid-keyed mapping export — no names travel (runbook 2a-9). */
+    @GET
+    @Path("/mappings/export")
+    public SharePointMappingTransferService.MappingExport exportMappings() {
+        return mappingTransferService.export();
+    }
+
+    /**
+     * Import a mapping export. Fail-closed per entry (unknown users
+     * rejected against THIS environment's user table); idempotent —
+     * existing mappings are never overwritten.
+     */
+    @POST
+    @Path("/mappings/import")
+    @RolesAllowed({"documents:write"})
+    public SharePointMappingTransferService.ImportSummary importMappings(
+            SharePointMappingTransferService.MappingExport request) {
+        return mappingTransferService.importMappings(request);
     }
 
     // ── Stage-3 resolution (admin card) ────────────────────────────────────
