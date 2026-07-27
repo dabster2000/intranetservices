@@ -41,6 +41,7 @@ public class EmployeeDocumentsFeatureFlag {
     static final String WRITER_ONBOARDING_KEY = "employee_documents.writers.onboarding.enabled";
     static final String RETENTION_KEY = "employee_documents.retention.enabled";
     static final String REVIEW_SLACK_NOTIFY_KEY = "employee_documents.review.slack-notify.enabled";
+    static final String MIGRATION_AI_KEY = "employee_documents.migration.ai.enabled";
 
     @Inject
     AppSettingService appSettingService;
@@ -78,6 +79,17 @@ public class EmployeeDocumentsFeatureFlag {
     /** Slack message to the HR channel when an employee self-uploads. */
     public boolean isReviewSlackNotifyEnabled() {
         return readFlag(REVIEW_SLACK_NOTIFY_KEY);
+    }
+
+    /**
+     * TEMPORARY (Phase 2a, decision A5): AI assist for the SharePoint
+     * migration matcher/categorizer. OFF ⇒ the migration still works,
+     * purely deterministically (AI-tier folders go to the manual queue;
+     * the categorizer uses the §9.5 rule table only). Seeded 'false' by
+     * V457; removed again with the migration tooling (spec §9.8).
+     */
+    public boolean isMigrationAiEnabled() {
+        return readFlag(MIGRATION_AI_KEY);
     }
 
     private boolean readFlag(String key) {

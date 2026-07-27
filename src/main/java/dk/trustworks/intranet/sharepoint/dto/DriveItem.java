@@ -22,7 +22,8 @@ public record DriveItem(
     Folder folder,
     File file,
     @JsonProperty("parentReference") ParentReference parentReference,
-    @JsonProperty("@microsoft.graph.downloadUrl") String downloadUrl
+    @JsonProperty("@microsoft.graph.downloadUrl") String downloadUrl,
+    @JsonProperty("eTag") String eTag
 ) {
     /**
      * Determines if this item is a folder.
