@@ -210,6 +210,137 @@ public class EmployeeDocumentService {
         return doc;
     }
 
+    // ── Store (migration bytes) ────────────────────────────────────────────
+
+    /** Byte-level store command for the Phase-2a SharePoint migration (runbook 2a-4). */
+    public record MigrationStoreCommand(
+            String userUuid,
+            byte[] bytes,
+            String filename,
+            String contentTypeHint,
+            EmployeeDocumentCategory category,
+            String label,
+            String migratedFrom,
+            java.time.LocalDateTime originalTimestamp) { }
+
+    /** Result: the row plus whether the type had to be sniffed (⇒ needs_review). */
+    public record MigrationStoreResult(EmployeeDocument document, boolean created, boolean typeSniffed) { }
+
+    /**
+     * Migration write path (spec §9.4a): same S3-then-narrow-TX shape as
+     * {@link #store}, but — per the migration rules — no size cap, and
+     * unknown/blocked content types are stored with a sniffed content
+     * type and flagged {@code needs_review=1} instead of being rejected
+     * (the corpus predates the D6 allow-list). Idempotent per
+     * {@code migratedFrom} provenance: a re-run returns the existing row
+     * and writes nothing. The SharePoint {@code lastModifiedDateTime} is
+     * carried into {@code created_at} (native update — the column is
+     * DB-defaulted and not insertable via the entity). Audited as MIGRATE.
+     */
+    public MigrationStoreResult storeMigrated(MigrationStoreCommand cmd) {
+        requireValidUserUuid(cmd.userUuid());
+        if (cmd.bytes() == null || cmd.bytes().length == 0) {
+            throw badRequest("EMPTY_FILE", "The migrated file is empty.");
+        }
+        if (cmd.migratedFrom() == null || cmd.migratedFrom().isBlank()) {
+            throw badRequest("MISSING_PROVENANCE", "Migration writes require a migratedFrom provenance.");
+        }
+
+        EmployeeDocument existing = EmployeeDocument.findByProvenance(trimTo(cmd.migratedFrom(), 1024));
+        if (existing != null) {
+            log.debugf("storeMigrated: source %s already migrated as %s — skipping",
+                    cmd.migratedFrom(), existing.getUuid());
+            return new MigrationStoreResult(existing, false, false);
+        }
+
+        String contentType = normalizeContentType(cmd.contentTypeHint());
+        boolean typeSniffed = false;
+        if (!ALLOWED_MIME_TYPES.contains(contentType) || !magicMatches(contentType, cmd.bytes())) {
+            contentType = sniffContentType(cmd.bytes(), cmd.filename());
+            typeSniffed = true;
+        }
+
+        String safeFilename = sanitizeFilename(cmd.filename());
+        if (safeFilename.isBlank()) safeFilename = "document";
+
+        String docUuid = UUID.randomUUID().toString();
+        String key = buildKey(cmd.userUuid(), docUuid, safeFilename);
+
+        EmployeeDocument doc = new EmployeeDocument();
+        doc.setUuid(docUuid);
+        doc.setUserUuid(cmd.userUuid());
+        doc.setS3Key(key);
+        doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
+        doc.setLabel(trimTo(cmd.label() == null || cmd.label().isBlank() ? null : cmd.label(), 255));
+        doc.setOriginalFilename(trimTo(safeFilename, 500));
+        doc.setContentType(contentType);
+        doc.setFileSizeBytes(cmd.bytes().length);
+        doc.setSha256(sha256Hex(cmd.bytes()));
+        doc.setSource(EmployeeDocumentSource.MIGRATION);
+        doc.setNeedsReview(typeSniffed);
+        doc.setUploadedBy(null);
+        doc.setMigratedFrom(trimTo(cmd.migratedFrom(), 1024));
+
+        storage.put(key, cmd.bytes(), contentType, objectMetadata(doc));
+        try {
+            persistMigratedWithAudit(doc, new EmployeeDocumentAudit(
+                    docUuid, cmd.userUuid(), null,
+                    EmployeeDocumentAuditAction.MIGRATE,
+                    auditDetail(doc) + " from " + trimTo(cmd.migratedFrom(), 500)),
+                    cmd.originalTimestamp());
+        } catch (RuntimeException e) {
+            compensateStorage(key, docUuid);
+            throw e;
+        }
+
+        log.infof("Employee document migrated uuid=%s user=%s size=%d sniffed=%s",
+                docUuid, cmd.userUuid(), cmd.bytes().length, typeSniffed);
+        return new MigrationStoreResult(doc, true, typeSniffed);
+    }
+
+    @Transactional
+    void persistMigratedWithAudit(EmployeeDocument doc, EmployeeDocumentAudit auditRow,
+                                  java.time.LocalDateTime originalTimestamp) {
+        doc.persist();
+        auditRow.persist();
+        if (originalTimestamp != null) {
+            // created_at is DB-defaulted (insertable=false on the entity);
+            // the migration carries the SharePoint timestamp into it so the
+            // corpus keeps its historical ordering.
+            getEntityManager()
+                    .createNativeQuery("UPDATE employee_documents SET created_at = ?1 WHERE uuid = ?2")
+                    .setParameter(1, originalTimestamp)
+                    .setParameter(2, doc.getUuid())
+                    .executeUpdate();
+        }
+    }
+
+    private jakarta.persistence.EntityManager getEntityManager() {
+        return EmployeeDocument.getEntityManager();
+    }
+
+    /**
+     * Best-effort content sniffing for legacy corpus types outside the D6
+     * allow-list: magic bytes first, extension second, octet-stream last.
+     */
+    static String sniffContentType(byte[] bytes, String filename) {
+        if (bytes != null && bytes.length >= 4) {
+            if (bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F') return "application/pdf";
+            if ((bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8) return "image/jpeg";
+            if ((bytes[0] & 0xff) == 0x89 && bytes[1] == 0x50) return "image/png";
+            if ((bytes[0] & 0xff) == 0xd0 && (bytes[1] & 0xff) == 0xcf) return "application/vnd.ms-outlook";
+            if (bytes[0] == 0x50 && bytes[1] == 0x4b) {
+                String byExtension = contentTypeFromFilename(filename);
+                // Any zip-based type we can't name stays octet-stream.
+                return byExtension.startsWith("application/vnd.openxmlformats")
+                        ? byExtension : "application/octet-stream";
+            }
+        }
+        String byExtension = contentTypeFromFilename(filename);
+        return byExtension.equals("application/octet-stream") && looksLikeEmlHeader(bytes != null ? bytes : new byte[0])
+                ? "message/rfc822" : byExtension;
+    }
+
     // ── Store (server-side copy) ───────────────────────────────────────────
 
     /**
@@ -483,7 +614,7 @@ public class EmployeeDocumentService {
      * {@code ..} resurfacing), trim. Danish characters are the norm in
      * this corpus and deliberately preserved.
      */
-    static String sanitizeFilename(String raw) {
+    public static String sanitizeFilename(String raw) {
         if (raw == null) return "";
         String filtered = raw.replaceAll("[^A-Za-z0-9æøåÆØÅ ._()\\-]", "");
         filtered = filtered.replaceAll("\\.{2,}", ".");

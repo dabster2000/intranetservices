@@ -186,6 +186,44 @@ public interface GraphApiClient {
     DriveItemCollectionResponse listRootChildren(@PathParam("driveId") String driveId);
 
     /**
+     * Retrieves a drive item by its ID. Used by the Phase-2a migration
+     * copier to fetch fresh metadata ({@code webUrl},
+     * {@code lastModifiedDateTime}, hashes) right before downloading.
+     * Read-only; deleted with the migration tooling at decommission.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/driveitem-get">Get DriveItem</a>
+     */
+    @GET
+    @Path("/drives/{driveId}/items/{itemId}")
+    @Produces(MediaType.APPLICATION_JSON)
+    DriveItem getItem(
+        @PathParam("driveId") String driveId,
+        @PathParam("itemId") String itemId
+    );
+
+    /**
+     * Lists children of a folder by item ID with explicit paging. Used by
+     * the Phase-2a migration crawler, which must follow
+     * {@code @odata.nextLink} across large folders (the path-based
+     * listing above has no paging support). Read-only; deleted with the
+     * migration tooling at decommission.
+     *
+     * @param top       page size (Graph caps at 200 for driveItem children)
+     * @param skipToken continuation token parsed from {@code @odata.nextLink};
+     *                  null for the first page
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/driveitem-list-children">List Children</a>
+     */
+    @GET
+    @Path("/drives/{driveId}/items/{itemId}/children")
+    @Produces(MediaType.APPLICATION_JSON)
+    DriveItemCollectionResponse listChildrenById(
+        @PathParam("driveId") String driveId,
+        @PathParam("itemId") String itemId,
+        @jakarta.ws.rs.QueryParam("$top") Integer top,
+        @jakarta.ws.rs.QueryParam("$skiptoken") String skipToken
+    );
+
+    /**
      * Updates a DriveItem's metadata. Used to rename a file by sending a
      * PATCH with the new {@code name} field.
      *
