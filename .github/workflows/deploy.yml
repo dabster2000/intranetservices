@@ -106,6 +106,7 @@ jobs:
               {"name":"ENVIRONMENT_ID","value":"staging"},
               {"name":"PERF_METRICS_ENABLED","value":"false"},
               {"name":"INVOICE_S3","value":"invoicefiles-test"},
+              {"name":"EMPLOYEE_DOCS_S3","value":"trustworks-employee-documents-staging"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
               {"name":"CLOUDWATCH_LOG_GROUP_BACKEND","value":"/ecs/tw-quarkus-staging"},

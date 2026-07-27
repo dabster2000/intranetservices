@@ -249,9 +249,11 @@ public class RecruitmentHrSlackNotifier {
                     + " has uploaded all required onboarding identity documents ("
                     + count + " file(s)). " + linkUrl;
         }
-        // User flow.
+        // User flow. Storage-neutral copy: depending on the
+        // employee_documents.writers.onboarding toggle the files land in
+        // SharePoint (legacy) or the employee document store (S3).
         return ":file_folder: " + displayName
-                + " has uploaded all required onboarding identity documents to SharePoint. "
-                + linkUrl;
+                + " has uploaded all required onboarding identity documents ("
+                + count + " file(s)). " + linkUrl;
     }
 }

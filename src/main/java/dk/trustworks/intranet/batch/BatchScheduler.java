@@ -107,6 +107,17 @@ public class BatchScheduler {
     boolean recruitmentDigestEnabled;
 
     /**
+     * Kill switch for the employee-documents retention job (S3-only
+     * employee documents, spec §6.10). Off = the job never even starts.
+     * Independent of this switch, the job is a no-op while the
+     * {@code employee_documents.retention.enabled} app setting is off —
+     * that setting, armed from the Settings → Employee Documents tab, is
+     * the deliberate "automatic deletion starts now" decision (D4/D8).
+     */
+    @ConfigProperty(name = "dk.trustworks.employee-documents.retention-job.enabled", defaultValue = "true")
+    boolean employeeDocumentsRetentionJobEnabled;
+
+    /**
      * Read-side kill switch for finance-load-economics. Staging false.
      */
     @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
@@ -636,6 +647,40 @@ public class BatchScheduler {
             jobOperator.start("recruitment-signature-completion", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-signature-completion: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The employee half of "GDPR runs itself" (employee-documents spec
+     * §6.10): hard-delete every stored document of ex-employees whose
+     * termination is more than the configured retention period (default
+     * 5 years, D4) in the past. Capped per run; per-user + run-summary
+     * audit rows. A cheap no-op while the
+     * {@code employee_documents.retention.enabled} app setting is off —
+     * arming that setting on the Settings → Employee Documents tab is the
+     * deliberate "automatic deletion starts now" decision.
+     * <p>
+     * Schedule: daily at 02:10 UTC — the slot the retired
+     * s3-retention-cleanup reaper used (before the 02:30–05:45
+     * cleanup/refresh cluster).
+     */
+    @Scheduled(cron = "0 10 2 * * ?")
+    void scheduleEmployeeDocumentsRetention() {
+        if (!employeeDocumentsRetentionJobEnabled) {
+            log.debug("employee-documents-retention skipped: dk.trustworks.employee-documents.retention-job.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("employee-documents-retention")) {
+                if (!jobOperator.getRunningExecutions("employee-documents-retention").isEmpty()) {
+                    log.debug("employee-documents-retention already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting employee-documents-retention batch job");
+            jobOperator.start("employee-documents-retention", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule employee-documents-retention: " + e.getMessage());
         }
     }
 

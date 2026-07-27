@@ -3,11 +3,17 @@ package dk.trustworks.intranet.signing.jobs;
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
+import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.PromotionStatus;
+import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
+import dk.trustworks.intranet.signing.services.EmployeeSigningArchivalService;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
 import dk.trustworks.intranet.utils.services.SigningService;
 import jakarta.enterprise.context.Dependent;
@@ -21,6 +27,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Batch job to fetch pending NextSign case statuses asynchronously.
@@ -64,6 +71,21 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
     @Inject
     SlackService slackService;
+
+    @Inject
+    EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
+
+    @Inject
+    EmployeeSigningArchivalService employeeSigningArchivalService;
+
+    @Inject
+    S3EmployeePromotionService s3EmployeePromotionService;
+
+    /** Bound per pass so a stuck case cannot monopolize the sweep. */
+    private static final int ARCHIVAL_SWEEP_LIMIT = 25;
+
+    /** Bound per pass — promotions are multi-file, keep the batch small. */
+    private static final int PROMOTION_SWEEP_LIMIT = 10;
 
     private static final DateTimeFormatter FILENAME_DATE_FORMATTER =
         DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
@@ -145,9 +167,17 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 log.infof("Successfully fetched and updated status for case: %s", caseKey);
                 successful++;
 
-                // Check if signing is complete and needs SharePoint upload
-                if (isSigningComplete(status) && shouldUploadToSharePoint(signingCase)) {
-                    uploadSignedDocumentToSharePoint(signingCase);
+                // Check if signing is complete and needs archival. While the
+                // employee_documents.writers.signing toggle is ON, signed
+                // documents archive to S3 (employee store / candidate
+                // staging — spec §6.5.1-2); while OFF, the legacy SharePoint
+                // upload path runs unchanged (removed at the deletion release).
+                if (isSigningComplete(status)) {
+                    if (employeeDocumentsFeatureFlag.isSigningWriterEnabled()) {
+                        employeeSigningArchivalService.archiveCompletedCase(signingCase);
+                    } else if (shouldUploadToSharePoint(signingCase)) {
+                        uploadSignedDocumentToSharePoint(signingCase);
+                    }
                 }
 
             } catch (Exception e) {
@@ -175,14 +205,86 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             }
         }
 
+        // S3 archival catch-up + promotion re-drive (employee-documents
+        // spec §6.5.1/§6.5.3) — both no-ops while their writer toggles are
+        // OFF. Never fail the status-fetch pass over sweep errors.
+        int archived = 0;
+        int promotionsRedriven = 0;
+        try {
+            archived = runArchivalCatchupSweep();
+            promotionsRedriven = runPromotionRedriveSweep();
+        } catch (Exception e) {
+            log.errorf(e, "employee-documents sweeps failed (status fetch pass unaffected)");
+        }
+
         // Build result summary
         String result = String.format(
-            "COMPLETED: total=%d, successful=%d, failed=%d, skipped=%d",
-            pendingCases.size(), successful, failed, skipped
+            "COMPLETED: total=%d, successful=%d, failed=%d, skipped=%d, archived=%d, promotionsRedriven=%d",
+            pendingCases.size(), successful, failed, skipped, archived, promotionsRedriven
         );
 
         log.info("NextSignStatusSyncBatchlet finished: " + result);
         return result;
+    }
+
+    // ========================================================================
+    // EMPLOYEE-DOCUMENTS SWEEPS (spec §6.5.1 / §6.5.3 — flag-gated)
+    // ========================================================================
+
+    /**
+     * Archive completed-but-unarchived cases to S3. Selects only cases
+     * NOT already durably stored in SharePoint (those are the Phase-2
+     * migration's job) — i.e. the durability-gap catch-up plus any case
+     * whose inline archival failed on a previous pass. Bounded per pass.
+     *
+     * @return cases archived this pass
+     */
+    private int runArchivalCatchupSweep() {
+        if (!employeeDocumentsFeatureFlag.isSigningWriterEnabled()) return 0;
+        List<SigningCase> candidates = signingCaseRepository.find(
+                "archiveStatus = 'PENDING' AND processingStatus = 'COMPLETED' " +
+                "AND status = 'COMPLETED' " +
+                "AND (sharepointUploadStatus IS NULL OR sharepointUploadStatus NOT IN ('UPLOADED', 'PARTIAL_FAILURE')) " +
+                "ORDER BY createdAt ASC")
+                .page(0, ARCHIVAL_SWEEP_LIMIT)
+                .list();
+        int archived = 0;
+        for (SigningCase signingCase : candidates) {
+            if (employeeSigningArchivalService.archiveCompletedCase(signingCase)) {
+                archived++;
+            }
+        }
+        if (!candidates.isEmpty()) {
+            log.infof("Archival catch-up sweep: %d/%d cases archived", archived, candidates.size());
+        }
+        return archived;
+    }
+
+    /**
+     * Re-drive PENDING/FAILED S3→S3 promotions (the thin remnant of the
+     * retired SharePoint move batchlet — spec §6.5.3). Bounded per pass;
+     * idempotent per file via {@code migrated_from} provenance.
+     *
+     * @return candidates re-driven this pass
+     */
+    private int runPromotionRedriveSweep() {
+        if (!employeeDocumentsFeatureFlag.isPromotionWriterEnabled()) return 0;
+        List<RecruitmentCandidate> pending = RecruitmentCandidate.find(
+                "status = ?1 AND (promotionStatus = ?2 OR promotionStatus = ?3)",
+                CandidateStatus.HIRED, PromotionStatus.PENDING, PromotionStatus.FAILED)
+                .page(0, PROMOTION_SWEEP_LIMIT)
+                .list();
+        for (RecruitmentCandidate candidate : pending) {
+            try {
+                s3EmployeePromotionService.runPromotion(UUID.fromString(candidate.getUuid()));
+            } catch (Exception e) {
+                log.errorf(e, "Promotion re-drive failed candidate=%s", candidate.getUuid());
+            }
+        }
+        if (!pending.isEmpty()) {
+            log.infof("Promotion re-drive sweep: %d candidates processed", pending.size());
+        }
+        return pending.size();
     }
 
     /**
