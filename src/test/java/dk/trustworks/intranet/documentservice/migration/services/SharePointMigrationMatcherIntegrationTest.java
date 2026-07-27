@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -179,10 +180,29 @@ class SharePointMigrationMatcherIntegrationTest {
         SharePointFolderMatcherService.MatchSummary summary = matcher.match();
 
         assertEquals(1, summary.errors().size(), "empty AI output must surface as an error");
-        assertTrue(summary.errors().get(0).contains("AI stage failed"));
+        assertTrue(summary.errors().get(0).contains("AI batch failed"));
         SharePointMigrationFolder folder = findFolder(folderId);
         assertEquals(FolderStatus.DISCOVERED, folder.getStatus());
         assertNull(folder.getAiSuggestedUserUuid());
+    }
+
+    @Test
+    void aiStageBatchesLargeQueues() {
+        // 44 folders in one call reasoned past the OpenAI client's read
+        // timeout on the real corpus — the AI stage must chunk the queue.
+        for (int i = 0; i < SharePointFolderMatcherService.AI_BATCH_SIZE + 1; i++) {
+            persistFolder("Ukendt mappe " + i);
+        }
+        setAiFlag(true);
+        when(openAIService.askQuestionWithSchema(
+                anyString(), anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean()))
+                .thenReturn("{\"matches\":[]}");
+
+        SharePointFolderMatcherService.MatchSummary summary = matcher.match();
+
+        assertEquals(0, summary.errors().size());
+        verify(openAIService, times(2)).askQuestionWithSchema(
+                anyString(), anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean());
     }
 
     @Test
