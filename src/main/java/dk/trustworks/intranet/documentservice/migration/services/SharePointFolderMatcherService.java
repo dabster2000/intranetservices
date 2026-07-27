@@ -128,7 +128,11 @@ public class SharePointFolderMatcherService {
         int aiRejected = 0;
         boolean aiUsed = false;
 
-        if (!stillUnmatched.isEmpty() && featureFlag.isMigrationAiEnabled()) {
+        // The job runner executes this on a worker thread with no request
+        // context, so the settings read needs its own transaction like every
+        // other DB access in this run.
+        if (!stillUnmatched.isEmpty()
+                && QuarkusTransaction.requiringNew().call(featureFlag::isMigrationAiEnabled)) {
             aiUsed = true;
             try {
                 AiOutcome outcome = proposeWithAi(directory, stillUnmatched);

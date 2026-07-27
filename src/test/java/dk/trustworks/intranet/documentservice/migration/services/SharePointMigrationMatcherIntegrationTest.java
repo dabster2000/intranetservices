@@ -21,6 +21,9 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -158,6 +161,26 @@ class SharePointMigrationMatcherIntegrationTest {
         SharePointMigrationFolder folder = findFolder(folderId);
         assertNull(folder.getAiSuggestedUserUuid(), "a hallucinated uuid must never be written");
         assertEquals(FolderStatus.DISCOVERED, folder.getStatus());
+    }
+
+    @Test
+    void matchRunsOnABareWorkerThreadLikeTheJobRunner() throws Exception {
+        // The job runner executes match() on a ManagedExecutor thread whose
+        // originating request context is already gone — an unmatched folder
+        // forces the AI-flag read, which crashed there before the fix.
+        long folderId = persistFolder("Arkiv uden ejer");
+
+        ExecutorService bare = Executors.newSingleThreadExecutor();
+        try {
+            bare.submit(() -> matcher.match()).get(60, TimeUnit.SECONDS);
+        } finally {
+            bare.shutdownNow();
+        }
+
+        SharePointMigrationFolder folder = findFolder(folderId);
+        assertEquals(FolderStatus.DISCOVERED, folder.getStatus());
+        verify(openAIService, never()).askQuestionWithSchema(
+                anyString(), anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean());
     }
 
     @Test
