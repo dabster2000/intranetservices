@@ -167,7 +167,7 @@ class OnboardingUploadResourceTest {
                 "driveitem-" + UUID.randomUUID(),
                 "card.jpg", 10L, null, null,
                 "https://sharepoint.example/item",
-                null, new DriveItem.File("image/jpeg", null), null, null);
+                null, new DriveItem.File("image/jpeg", null), null, null, null);
         when(sharePointService.uploadFile(anyString(), anyString(), anyString(), anyString(), any(byte[].class)))
                 .thenReturn(driveItem);
         captureAndPersist();
