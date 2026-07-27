@@ -358,7 +358,7 @@ public class WorkService {
 
     public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {
         if(dateIt(todate).getDayOfMonth()>1) log.debug("Non-month-aligned period end (todate not the 1st): "+todate);
-        return WorkFull.find("registered >= ?1 AND registered < ?2 AND projectuuid LIKE ?3", dateIt(fromdate), dateIt(todate), projectuuid).list();
+        return WorkFull.find("registered >= ?1 AND registered < ?2 AND projectuuid = ?3", dateIt(fromdate), dateIt(todate), projectuuid).list();
     }
 
     public List<WorkFull> findByTasks(List<String> taskuuids) {
@@ -366,7 +366,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findByTask(String taskuuid) {
-        return WorkFull.find("taskuuid LIKE ?1", taskuuid).list();
+        return WorkFull.find("taskuuid = ?1", taskuuid).list();
     }
 
     public List<Work> findByUserAndUnpaidAndTaskuuid(String useruuid, String taskuuid) {
@@ -386,19 +386,19 @@ public class WorkService {
     }
 
     public List<Work> findByUseruuidAndTaskuuidAndPeriod(String useruuid, String taskuuid, LocalDate fromdate, LocalDate todate) {
-        return WorkFull.find("useruuid LIKE ?1 AND taskuuid LIKE ?2 AND registered >= ?3 AND registered < ?4", useruuid, taskuuid, fromdate, todate).list();
+        return WorkFull.find("useruuid = ?1 AND taskuuid = ?2 AND registered >= ?3 AND registered < ?4", useruuid, taskuuid, fromdate, todate).list();
     }
 
     public List<WorkFull> findByContract(String contractuuid) {
-        return WorkFull.find("contractuuid LIKE ?1", contractuuid).list();
+        return WorkFull.find("contractuuid = ?1", contractuuid).list();
     }
 
     public List<WorkFull> findWorkFullByUserAndTasks(String useruuid, String taskuuids) {
-        return WorkFull.find("useruuid LIKE ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
+        return WorkFull.find("useruuid = ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
     }
 
     public List<Work> findWorkByUserAndTasks(String useruuid, String taskuuids) {
-        return Work.find("useruuid LIKE ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
+        return Work.find("useruuid = ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
     }
 
     public List<WorkFull> findVacationByUser(String useruuid) {
@@ -457,14 +457,14 @@ public class WorkService {
     }
 
     public double countByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
-        try (Stream<WorkFull> workStream = WorkFull.stream("useruuid LIKE ?1 AND taskuuid IN (?2)", useruuid, taskuuids)) {
+        try (Stream<WorkFull> workStream = WorkFull.stream("useruuid = ?1 AND taskuuid IN (?2)", useruuid, taskuuids)) {
             return workStream.mapToDouble(WorkFull::getWorkduration).sum();
         }
     }
 
     public List<WorkFull> findByPeriodAndUserAndTasks(LocalDate fromdate, LocalDate todate, String useruuid, String taskuuids) {
         if(todate.getDayOfMonth()>1) log.debug("Non-month-aligned period end (todate not the 1st): "+todate);
-        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
+        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid = ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
     }
 
     public List<WorkFull> findByContractAndUserByPeriod(String contractuuid, String useruuid, LocalDate fromDate, LocalDate toDate) {
@@ -608,7 +608,7 @@ public class WorkService {
      * {@link #persistOrUpdateInTx(Work)} can be unit-tested without a live database.
      */
     List<Work> findExistingWork(LocalDate registered, String useruuid, String taskuuid) {
-        return Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", registered, useruuid, taskuuid).list();
+        return Work.find("registered = ?1 AND useruuid = ?2 AND taskuuid = ?3", registered, useruuid, taskuuid).list();
     }
 
     /**
@@ -617,7 +617,7 @@ public class WorkService {
      */
     void updateExistingWork(Work work) {
         Work.update("workduration = ?1, comments = ?2, paidOut = ?3, contractuuid = ?4, projectuuid = ?5, clientuuid = ?6 " +
-                        "WHERE registered = ?7 AND useruuid LIKE ?8 AND taskuuid LIKE ?9",
+                        "WHERE registered = ?7 AND useruuid = ?8 AND taskuuid = ?9",
                 work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getContractuuid(),
                 work.getProjectuuid(), work.getClientuuid(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
     }
@@ -664,17 +664,17 @@ public class WorkService {
     }
 
     public List<WorkFull> findBillableWorkByUser(String useruuid) {
-        return WorkFull.find("useruuid like ?1", useruuid).list();
+        return WorkFull.find("useruuid = ?1", useruuid).list();
     }
 
     public double sumBillableByUserAndTasks(String useruuid, LocalDate localDate) {
-        return WorkFull.<WorkFull>find("useruuid like ?1 AND rate > 0 AND registered >= ?2 AND registered < ?3", useruuid, localDate, localDate.plusMonths(1)).stream().mapToDouble(WorkFull::getWorkduration).sum();
+        return WorkFull.<WorkFull>find("useruuid = ?1 AND rate > 0 AND registered >= ?2 AND registered < ?3", useruuid, localDate, localDate.plusMonths(1)).stream().mapToDouble(WorkFull::getWorkduration).sum();
     }
 
     @Transactional
     public void setPaidAndUpdate(Work work) {
         work.setPaidOut(LocalDateTime.now());
-        Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
+        Work.update("paidOut = ?1 WHERE uuid = ?2 ", work.getPaidOut(), work.getUuid());
         log.infof("Work marked as paid: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f, paidOut=%s",
                 work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
                 work.getWorkduration(), work.getRate(), work.getPaidOut());
@@ -685,7 +685,7 @@ public class WorkService {
         log.infof("Work paid-out cleared: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, previousPaidOut=%s",
                 work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getPaidOut());
         work.setPaidOut(null);
-        Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
+        Work.update("paidOut = ?1 WHERE uuid = ?2 ", work.getPaidOut(), work.getUuid());
     }
 
     /**

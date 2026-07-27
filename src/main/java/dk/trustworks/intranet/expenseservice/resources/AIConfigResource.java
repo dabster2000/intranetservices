@@ -205,10 +205,13 @@ public class AIConfigResource {
 
     /**
      * Force-revalidate a previously-decided expense under the current rule
-     * catalog / prompt. Clears AI review fields, writes an
+     * catalog / prompt. Clears AI review fields, resets the expense to
+     * status CREATED / state SUBMITTED, writes an
      * {@code ADMIN_FORCE_REVALIDATE} entry to {@code expense_decision_log},
      * and publishes the {@code expense.validate} event so the consumer runs
-     * the full vision + policy pipeline immediately. Returns 204 on success.
+     * the full vision + policy pipeline immediately. Returns 204 on success,
+     * 409 if the expense is past the AI-decided head (already in the
+     * e-conomic pipeline, a technical exception, or terminal).
      */
     @POST
     @Path("/revalidate/{expenseUuid}")
