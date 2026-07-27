@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -161,6 +162,27 @@ class SharePointMigrationMatcherIntegrationTest {
         SharePointMigrationFolder folder = findFolder(folderId);
         assertNull(folder.getAiSuggestedUserUuid(), "a hallucinated uuid must never be written");
         assertEquals(FolderStatus.DISCOVERED, folder.getStatus());
+    }
+
+    @Test
+    void emptyAiResponseSurfacesAsSummaryError() {
+        // "{}" is OpenAIService's no-output fallback (reasoning models can
+        // exhaust the token budget before emitting JSON). That must land in
+        // the summary errors the card shows — a silent zero reads as "AI
+        // found nothing", which is what masked the first prod run.
+        long folderId = persistFolder("Cleo W Brunse - (Marketing Junior)");
+        setAiFlag(true);
+        when(openAIService.askQuestionWithSchema(
+                anyString(), anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean()))
+                .thenReturn("{}");
+
+        SharePointFolderMatcherService.MatchSummary summary = matcher.match();
+
+        assertEquals(1, summary.errors().size(), "empty AI output must surface as an error");
+        assertTrue(summary.errors().get(0).contains("AI stage failed"));
+        SharePointMigrationFolder folder = findFolder(folderId);
+        assertEquals(FolderStatus.DISCOVERED, folder.getStatus());
+        assertNull(folder.getAiSuggestedUserUuid());
     }
 
     @Test

@@ -270,9 +270,13 @@ public class SharePointFolderMatcherService {
                 people — return null instead. confidence reflects how certain you are; reason is one
                 short sentence a human reviewer reads next to the folder name.""";
 
+        // gpt-5-family models spend max_output_tokens on hidden reasoning
+        // before emitting JSON; 8192 was fully consumed by reasoning on the
+        // real corpus (44 folders x full directory), yielding an empty
+        // response. The cap costs nothing unless used.
         String response = openAIService.askQuestionWithSchema(
                 system, userMsg.toString(), matchSchema(), "sharepoint_folder_matches",
-                null, aiModel, 8192, false);
+                null, aiModel, 32768, false);
 
         return applyProposals(response, pending.stream()
                 .collect(Collectors.toMap(PendingFolder::id, PendingFolder::name)),
@@ -284,52 +288,61 @@ public class SharePointFolderMatcherService {
      * unknown folderId ⇒ ignored; unknown userUuid ⇒ rejected (counted,
      * folder stays in the manual queue); proposals never change status.
      * Package-private so the validation is unit-testable without OpenAI.
+     *
+     * @throws IllegalStateException when the response as a whole is unusable
+     *         (not JSON, or no matches array — e.g. the model exhausted its
+     *         token budget on reasoning and emitted nothing). The caller's
+     *         catch turns this into a summary error the admin card shows;
+     *         a silent zero-count here reads as "AI found nothing".
      */
     AiOutcome applyProposals(String responseJson, Map<Long, String> pendingById, Set<String> knownUserUuids) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(responseJson);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "AI match response was not valid JSON — likely truncated model output", e);
+        }
+        JsonNode matches = root.path("matches");
+        if (!matches.isArray()) {
+            throw new IllegalStateException(
+                    "AI match response had no matches array — likely empty model output "
+                            + "(token budget exhausted by reasoning); re-run Match");
+        }
         int proposals = 0;
         int noMatch = 0;
         int rejected = 0;
-        try {
-            JsonNode root = objectMapper.readTree(responseJson);
-            JsonNode matches = root.path("matches");
-            if (!matches.isArray()) {
-                log.warnf("AI match response had no matches array — treating as no proposals");
-                return new AiOutcome(0, 0, 0);
-            }
-            for (JsonNode match : matches) {
-                long folderId = match.path("folderId").asLong(-1);
-                if (!pendingById.containsKey(folderId)) continue;
+        for (JsonNode match : matches) {
+            long folderId = match.path("folderId").asLong(-1);
+            if (!pendingById.containsKey(folderId)) continue;
 
-                JsonNode uuidNode = match.path("userUuid");
-                if (uuidNode.isNull() || uuidNode.asText().isBlank()) {
-                    noMatch++;
-                    continue;
-                }
-                String userUuid = uuidNode.asText();
-                if (!knownUserUuids.contains(userUuid)) {
-                    // Hallucinated uuid — reject, never write it anywhere.
-                    log.warnf("AI proposed unknown userUuid for folder %d — rejected", folderId);
-                    rejected++;
-                    continue;
-                }
-                AiConfidence confidence = parseConfidence(match.path("confidence").asText(null));
-                String reason = match.path("reason").asText("");
-                QuarkusTransaction.requiringNew().run(() -> {
-                    SharePointMigrationFolder folder = SharePointMigrationFolder.findById(folderId);
-                    if (folder == null || folder.getStatus() != FolderStatus.DISCOVERED
-                            || folder.getMatchedUserUuid() != null) {
-                        return;
-                    }
-                    folder.setAiSuggestedUserUuid(userUuid);
-                    folder.setAiConfidence(confidence);
-                    folder.setAiReason(reason.length() > 512 ? reason.substring(0, 512) : reason);
-                    // Status deliberately stays DISCOVERED (decision A2).
-                    folder.persist();
-                });
-                proposals++;
+            JsonNode uuidNode = match.path("userUuid");
+            if (uuidNode.isNull() || uuidNode.asText().isBlank()) {
+                noMatch++;
+                continue;
             }
-        } catch (Exception e) {
-            log.errorf(e, "Could not parse AI match response — no proposals applied");
+            String userUuid = uuidNode.asText();
+            if (!knownUserUuids.contains(userUuid)) {
+                // Hallucinated uuid — reject, never write it anywhere.
+                log.warnf("AI proposed unknown userUuid for folder %d — rejected", folderId);
+                rejected++;
+                continue;
+            }
+            AiConfidence confidence = parseConfidence(match.path("confidence").asText(null));
+            String reason = match.path("reason").asText("");
+            QuarkusTransaction.requiringNew().run(() -> {
+                SharePointMigrationFolder folder = SharePointMigrationFolder.findById(folderId);
+                if (folder == null || folder.getStatus() != FolderStatus.DISCOVERED
+                        || folder.getMatchedUserUuid() != null) {
+                    return;
+                }
+                folder.setAiSuggestedUserUuid(userUuid);
+                folder.setAiConfidence(confidence);
+                folder.setAiReason(reason.length() > 512 ? reason.substring(0, 512) : reason);
+                // Status deliberately stays DISCOVERED (decision A2).
+                folder.persist();
+            });
+            proposals++;
         }
         return new AiOutcome(proposals, noMatch, rejected);
     }
