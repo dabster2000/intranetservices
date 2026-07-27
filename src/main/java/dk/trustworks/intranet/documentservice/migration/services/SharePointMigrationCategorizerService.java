@@ -123,7 +123,9 @@ public class SharePointMigrationCategorizerService {
                         .map(EmployeeDocument::getUuid)
                         .toList());
 
-        boolean aiEnabled = featureFlag.isMigrationAiEnabled();
+        // Job-runner worker thread: no request context — the settings read
+        // needs its own transaction like every other DB access in this run.
+        boolean aiEnabled = QuarkusTransaction.requiringNew().call(featureFlag::isMigrationAiEnabled);
         List<String> errors = new ArrayList<>();
         int aiHigh = 0;
         int fallback = 0;
