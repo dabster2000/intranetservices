@@ -54,6 +54,10 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class SharePointFolderMatcherService {
 
+    /** Folders per AI call — sized so hidden reasoning stays well inside the
+     *  shared OpenAI client's 110 s read-timeout (44 in one call did not). */
+    static final int AI_BATCH_SIZE = 10;
+
     @Inject
     EmployeeDocumentsFeatureFlag featureFlag;
 
@@ -134,15 +138,24 @@ public class SharePointFolderMatcherService {
         if (!stillUnmatched.isEmpty()
                 && QuarkusTransaction.requiringNew().call(featureFlag::isMigrationAiEnabled)) {
             aiUsed = true;
-            try {
-                AiOutcome outcome = proposeWithAi(directory, stillUnmatched);
-                aiProposals = outcome.proposals;
-                aiNoMatch = outcome.noMatch;
-                aiRejected = outcome.rejected;
-            } catch (Exception e) {
-                // Never fail the matcher run on an OpenAI problem (A5).
-                log.errorf(e, "AI match-proposal stage failed — folders stay in the manual queue");
-                errors.add("AI stage failed: " + e.getMessage());
+            // Batched: the gpt-5 family reasons invisibly before emitting
+            // JSON, and one call with all 44 real folders reasoned past both
+            // the token budget and the shared OpenAI client's 110 s
+            // read-timeout. Small batches keep each call fast, and a failed
+            // batch queues only its own folders (A5).
+            for (int start = 0; start < stillUnmatched.size(); start += AI_BATCH_SIZE) {
+                List<Long> batch = stillUnmatched.subList(start,
+                        Math.min(start + AI_BATCH_SIZE, stillUnmatched.size()));
+                try {
+                    AiOutcome outcome = proposeWithAi(directory, batch);
+                    aiProposals += outcome.proposals;
+                    aiNoMatch += outcome.noMatch;
+                    aiRejected += outcome.rejected;
+                } catch (Exception e) {
+                    // Never fail the matcher run on an OpenAI problem (A5).
+                    log.errorf(e, "AI match-proposal batch failed — its folders stay in the manual queue");
+                    errors.add("AI batch failed (" + batch.size() + " folders): " + e.getMessage());
+                }
             }
         }
 
