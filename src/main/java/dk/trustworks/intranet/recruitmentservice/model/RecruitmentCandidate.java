@@ -203,6 +203,17 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     @Column(name = "sharepoint_move_status", length = 20)
     private SharePointMoveStatus sharepointMoveStatus;
 
+    /**
+     * S3→S3 promotion state (employee-documents spec §6.5.3, V454).
+     * Set to PENDING instead of {@code sharepoint_move_status} when the
+     * {@code employee_documents.writers.promotion} toggle is ON at
+     * conversion time; re-driven to COMPLETED/FAILED by the
+     * nextsign-status-sync sweep. NULL = legacy SharePoint pipeline.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "promotion_status", length = 20)
+    private dk.trustworks.intranet.recruitmentservice.model.enums.PromotionStatus promotionStatus;
+
     /** Soft FK to {@code users.uuid}. Recruiter or manager who created the candidate. */
     @Column(name = "created_by_useruuid", length = 36, nullable = false)
     private String createdByUseruuid;

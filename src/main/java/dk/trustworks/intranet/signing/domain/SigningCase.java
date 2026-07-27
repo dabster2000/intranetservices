@@ -201,6 +201,33 @@ public class SigningCase {
     @Column(name = "sharepoint_file_url", columnDefinition = "TEXT")
     private String sharepointFileUrl;
 
+    // --- S3 Archival Fields (employee-documents spec §6.5.1, V454) ---
+
+    /**
+     * S3 archival state, replacing the four-state SharePoint upload
+     * tracking once the {@code employee_documents.writers.signing} toggle
+     * is ON: PENDING (not yet archived / retrying — some documents may
+     * already have rows, idempotent per {@code uq_ed_signing}), ARCHIVED
+     * (every document of the case has an {@code employee_documents} row /
+     * recruitment cases: a {@code signed_pdfs_snapshot}), SKIPPED
+     * (terminal non-uploadable case, mirrors {@code processing_status}).
+     */
+    @Column(name = "archive_status", length = 20)
+    @Builder.Default
+    private String archiveStatus = "PENDING";
+
+    /** Last S3 archival error; cleared on success. */
+    @Column(name = "archive_error", columnDefinition = "TEXT")
+    private String archiveError;
+
+    /**
+     * {@code document_templates.uuid} the case was created from (null for
+     * template-less cases). Set at creation time; drives the archival
+     * category mapping (TemplateCategory → EmployeeDocumentCategory).
+     */
+    @Column(name = "template_uuid", length = 36)
+    private String templateUuid;
+
     /**
      * JPA lifecycle callback to set created_at on first persist.
      */
@@ -223,6 +250,9 @@ public class SigningCase {
         }
         if (retryCount == null) {
             retryCount = 0;
+        }
+        if (archiveStatus == null) {
+            archiveStatus = "PENDING";
         }
     }
 

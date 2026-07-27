@@ -15,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.PromotionStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier;
@@ -112,6 +113,12 @@ public class CandidateConversionUseCase {
 
     @Inject
     RecruitmentOfferBridge offerBridge;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
+
+    @Inject
+    S3EmployeePromotionService s3EmployeePromotionService;
 
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
@@ -256,17 +263,41 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (j) Mark SharePoint move as PENDING. The post-commit copy runs in
-        //     RecruitmentResource via runSharePointCopy(...) on a managed
-        //     executor, so the conversion REST call returns fast and DB locks
-        //     are released promptly. The retry batchlet
-        //     (SharePointEmployeeFolderMoveBatchlet) handles failures.
-        candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
+        // (j) Mark the post-commit document copy as PENDING. While the
+        //     employee_documents.writers.promotion toggle is ON, documents
+        //     promote S3→S3 into the employee store (spec §6.5.3, re-driven
+        //     by the nextsign-status-sync sweep); while OFF, the legacy
+        //     SharePoint copy pipeline runs unchanged (retry batchlet
+        //     SharePointEmployeeFolderMoveBatchlet). Either way the actual
+        //     copy is dispatched post-commit by RecruitmentResource via
+        //     runPostConversionCopy(...) on a managed executor.
+        if (employeeDocumentsFeatureFlag.isPromotionWriterEnabled()) {
+            candidate.setPromotionStatus(PromotionStatus.PENDING);
+        } else {
+            candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
+        }
 
         log.infof("Converted candidate uuid=%s -> user uuid=%s by actor=%s (signing cases transferred=%d)",
                 candidate.getUuid(), user.uuid, actor, caseKeys.size());
 
         return ConvertResponse.hired(user.uuid, candidate.getUuid(), caseKeys.size());
+    }
+
+    /**
+     * Post-commit document copy dispatcher: routes to the S3→S3 promotion
+     * (employee-documents spec §6.5.3) when the candidate was converted
+     * with the promotion writer ON (promotion_status set), otherwise to
+     * the legacy SharePoint copy. Callers dispatch this on a
+     * {@code ManagedExecutor} after {@link #execute} commits.
+     */
+    public void runPostConversionCopy(UUID candidateUuid) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate != null && candidate.getPromotionStatus() != null) {
+            s3EmployeePromotionService.runPromotion(candidateUuid);
+            return;
+        }
+        runSharePointCopy(candidateUuid);
     }
 
     /**

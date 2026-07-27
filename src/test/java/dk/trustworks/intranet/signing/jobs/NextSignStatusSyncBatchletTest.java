@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
@@ -30,6 +31,7 @@ class NextSignStatusSyncBatchletTest {
     private SigningService signingService;
     private SharePointService sharePointService;
     private SlackService slackService;
+    private EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
     private NextSignStatusSyncBatchlet batchlet;
 
     @BeforeEach
@@ -38,12 +40,18 @@ class NextSignStatusSyncBatchletTest {
         signingService = mock(SigningService.class);
         sharePointService = mock(SharePointService.class);
         slackService = mock(SlackService.class);
+        // Employee-documents writer toggles OFF -> legacy SharePoint path
+        // and both post-loop sweeps are no-ops (spec §6.5).
+        employeeDocumentsFeatureFlag = mock(EmployeeDocumentsFeatureFlag.class);
+        when(employeeDocumentsFeatureFlag.isSigningWriterEnabled()).thenReturn(false);
+        when(employeeDocumentsFeatureFlag.isPromotionWriterEnabled()).thenReturn(false);
 
         batchlet = new NextSignStatusSyncBatchlet();
         batchlet.signingCaseRepository = signingCaseRepository;
         batchlet.signingService = signingService;
         batchlet.sharePointService = sharePointService;
         batchlet.slackService = slackService;
+        batchlet.employeeDocumentsFeatureFlag = employeeDocumentsFeatureFlag;
     }
 
     @Test
@@ -58,7 +66,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0", result);
         assertEquals("SKIPPED", signingCase.getProcessingStatus());
         verify(signingService, never()).getStatus(anyString());
         verifyNoInteractions(sharePointService, slackService);
@@ -79,7 +87,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0", result);
         verify(signingService).getStatus(signingCase.getCaseKey());
         verifyNoInteractions(sharePointService, slackService);
     }
@@ -104,7 +112,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
         assertEquals(5, signingCase.getRetryCount());
         verify(signingService).markCaseFetchFailed(signingCase, "Read timed out");
         verifyNoInteractions(sharePointService, slackService);

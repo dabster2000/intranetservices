@@ -223,7 +223,10 @@ public class SigningResource {
                 String sharepointLocationUuid = resolveSharepointLocationUuidForTemplate(
                     request.templateUuid(), targetUserUuid);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
+                // template_uuid persisted for the S3 archival category
+                // mapping (employee-documents spec §6.5.1).
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners,
+                    sharepointLocationUuid, request.templateUuid());
                 log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
                     response.caseKey(), totalSigners, sharepointLocationUuid);
 
