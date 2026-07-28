@@ -108,6 +108,7 @@ jobs:
               {"name":"PERF_DIGEST_ENABLED","value":"true"},
               {"name":"INVOICE_S3","value":"invoicefiles-new"},
               {"name":"EMPLOYEE_DOCS_S3","value":"trustworks-employee-documents-production"},
+              {"name":"DK_TRUSTWORKS_EMPLOYEE_DOCUMENTS_MIGRATION_LEGACY_REHOME_ENABLED","value":"true"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
               {"name":"CLOUDWATCH_LOG_GROUP_BACKEND","value":"/ecs/tw-quarkus-production"},
