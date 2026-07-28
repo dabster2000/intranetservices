@@ -22,6 +22,9 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -48,6 +51,9 @@ class SharePointMigrationCopyLegacyGuardIntegrationTest {
 
     @Inject
     SharePointMigrationCopyService copyService;
+
+    @Inject
+    DocumentMigrationJobRunner jobRunner;
 
     @InjectMock
     S3Client s3Client;
@@ -116,6 +122,34 @@ class SharePointMigrationCopyLegacyGuardIntegrationTest {
         assertTrue(summary.legacyCandidates() >= 1);
         assertEquals(0, summary.legacyCopied());
         assertNotNull(QuarkusTransaction.requiringNew().call(() -> File.findById(fileUuid)));
+    }
+
+    @Test
+    void dryRunCopyRunsThroughTheJobRunnerLikeProduction() throws Exception {
+        // The 2026-07-28 staging rehearsal's very first dry-run died with
+        // "neither a transaction nor a CDI request context is active":
+        // parameters.uploadMaxSizeBytes() (and storeMigrated's reads on the
+        // real-copy path) run bare on the ManagedExecutor thread. Submit from
+        // a bare thread so no request context can propagate — exactly the
+        // production shape (the HTTP request's context is gone by run time).
+        ClientProxy.unwrap(copyService).legacyRehomeEnabled = false;
+
+        ExecutorService bare = Executors.newSingleThreadExecutor();
+        try {
+            bare.submit(() -> jobRunner.start(
+                    DocumentMigrationJobRunner.JobType.COPY_DRY_RUN,
+                    () -> copyService.copy(true))).get(10, TimeUnit.SECONDS);
+        } finally {
+            bare.shutdownNow();
+        }
+
+        for (int i = 0; i < 120 && jobRunner.status().running(); i++) {
+            Thread.sleep(250);
+        }
+        DocumentMigrationJobRunner.JobStatus status = jobRunner.status();
+        assertFalse(status.running(), "dry-run should have finished");
+        assertNull(status.error(), "dry-run must not die on the job-runner thread: " + status.error());
+        assertNotNull(status.summary());
     }
 
     @Test

@@ -133,6 +133,10 @@ public class SharePointMigrationCopyService {
         List<SharePointMigrationFolder> folders =
                 QuarkusTransaction.requiringNew().call(SharePointMigrationFolder::findMapped);
 
+        // One settings read per run, in its own transaction — the runner
+        // thread has no request context of its own (prod Match defect 1).
+        long cap = QuarkusTransaction.requiringNew().call(parameters::uploadMaxSizeBytes);
+
         // Resolve each distinct site once per run.
         Map<String, String> driveIdBySiteUrl = new HashMap<>();
 
@@ -142,7 +146,6 @@ public class SharePointMigrationCopyService {
             if (pending.isEmpty()) continue;
 
             counters.spCandidates += pending.size();
-            long cap = parameters.uploadMaxSizeBytes();
 
             if (dryRun) {
                 for (SharePointMigrationItem item : pending) {
