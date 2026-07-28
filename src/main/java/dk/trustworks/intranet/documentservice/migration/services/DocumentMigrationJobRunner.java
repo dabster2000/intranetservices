@@ -1,13 +1,16 @@
 package dk.trustworks.intranet.documentservice.migration.services;
 
+import io.quarkus.arc.Arc;
+import io.quarkus.arc.ManagedContext;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -35,8 +38,18 @@ public class DocumentMigrationJobRunner {
 
     private final AtomicReference<JobStatus> current = new AtomicReference<>();
 
-    @Inject
-    ManagedExecutor executor;
+    // Deliberately NOT a ManagedExecutor: MicroProfile context propagation
+    // captures the submitting HTTP request's CDI context, which is already
+    // terminated by the time a long job runs — every bare Panache read then
+    // dies with ContextNotActiveException (first hit in anger by the prod
+    // Match run, again by the staging rehearsal's dry-run Copy). A plain
+    // thread carries no stale context, and the job activates its own fresh
+    // request context below.
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "document-migration-job");
+        t.setDaemon(true);
+        return t;
+    });
 
     /** Start a job; 409 when another one is still running. */
     public synchronized JobStatus start(JobType type, Supplier<Object> work) {
@@ -49,6 +62,9 @@ public class DocumentMigrationJobRunner {
         JobStatus started = new JobStatus(type, true, LocalDateTime.now().toString(), null, null, null);
         current.set(started);
         executor.submit(() -> {
+            ManagedContext requestContext = Arc.container().requestContext();
+            boolean activatedHere = !requestContext.isActive();
+            if (activatedHere) requestContext.activate();
             try {
                 Object summary = work.get();
                 current.set(new JobStatus(type, false, started.startedAt(),
@@ -58,9 +74,16 @@ public class DocumentMigrationJobRunner {
                 log.errorf(e, "Migration job %s failed", type);
                 current.set(new JobStatus(type, false, started.startedAt(),
                         LocalDateTime.now().toString(), null, e.getMessage()));
+            } finally {
+                if (activatedHere) requestContext.terminate();
             }
         });
         return started;
+    }
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow();
     }
 
     /** Latest job state (the one running, or the last finished one). */
