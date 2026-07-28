@@ -86,6 +86,16 @@ public class SharePointMigrationCopyService {
     @ConfigProperty(name = "bucket.files")
     String legacyFilesBucket;
 
+    // The legacy files bucket is SHARED between staging and production (bucket.files
+    // has no per-env override), and the re-home DELETES source objects that
+    // production's `files` rows still reference. Default OFF so a staging rehearsal
+    // Copy can never destroy prod data; production arms it via
+    // DK_TRUSTWORKS_EMPLOYEE_DOCUMENTS_MIGRATION_LEGACY_REHOME_ENABLED in
+    // deploy-production.yml.
+    @ConfigProperty(name = "dk.trustworks.employee-documents.migration.legacy-rehome.enabled",
+            defaultValue = "false")
+    boolean legacyRehomeEnabled;
+
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -104,6 +114,7 @@ public class SharePointMigrationCopyService {
             int legacyCopied,
             int legacySkippedProvenance,
             int legacyFailed,
+            boolean legacyRehomeDisabled,
             List<String> errors) { }
 
     public CopySummary copy(boolean dryRun) {
@@ -316,6 +327,16 @@ public class SharePointMigrationCopyService {
                         .toList());
 
         counters.legacyCandidates = rows.size();
+        if (!legacyRehomeEnabled) {
+            counters.legacyRehomeDisabled = true;
+            if (!dryRun) {
+                log.warnf("Legacy re-home DISABLED in this environment "
+                        + "(dk.trustworks.employee-documents.migration.legacy-rehome.enabled=false) — "
+                        + "%d candidate files rows left untouched in bucket %s",
+                        rows.size(), legacyFilesBucket);
+            }
+            return;
+        }
         if (dryRun) return;
 
         for (LegacyRow row : rows) {
@@ -378,6 +399,7 @@ public class SharePointMigrationCopyService {
         int legacyCopied;
         int legacySkippedProvenance;
         int legacyFailed;
+        boolean legacyRehomeDisabled;
         final List<String> errors = new ArrayList<>();
 
         Counters(boolean dryRun) {
@@ -391,7 +413,7 @@ public class SharePointMigrationCopyService {
         CopySummary toSummary() {
             return new CopySummary(dryRun, spCandidates, spCopied, spSkippedProvenance, spFailed,
                     spOversize, spTypeSniffed, spBytes, legacyCandidates, legacyCopied,
-                    legacySkippedProvenance, legacyFailed, errors);
+                    legacySkippedProvenance, legacyFailed, legacyRehomeDisabled, errors);
         }
     }
 }
