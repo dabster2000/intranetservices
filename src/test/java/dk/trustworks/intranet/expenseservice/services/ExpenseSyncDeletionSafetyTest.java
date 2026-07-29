@@ -199,6 +199,37 @@ class ExpenseSyncDeletionSafetyTest {
         verify(expenseService, never()).updateStatus(any(Expense.class), eq(ExpenseService.STATUS_DELETED));
     }
 
+    @Test
+    void already_deleted_row_skips_sweep_counter_and_deletion_queue() {
+        Expense expense = expense();
+        expense.setStatus(ExpenseService.STATUS_DELETED);
+        when(economicsService.getApiForExpense(expense)).thenReturn(api);
+        when(api.getJournalEntries(eq(16), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(EMPTY));
+        when(api.getYearEntries(eq("2025_6_2026"), eq("voucherNumber$eq:12345"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(EMPTY));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        assertTrue(deletionCandidates.isEmpty());
+        verify(api, never()).getJournals(anyInt());
+        verify(expenseService, never()).updateSyncMissCount(any(Expense.class), anyInt());
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+    }
+
+    @Test
+    void already_deleted_row_is_resurrected_when_voucher_reappears_in_stored_journal() {
+        Expense expense = expense();
+        expense.setStatus(ExpenseService.STATUS_DELETED);
+        when(economicsService.getApiForExpense(expense)).thenReturn(api);
+        when(api.getJournalEntries(eq(16), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(SWEEP_HIT));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        verify(expenseService).updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+    }
+
     // ---- #3: mass-deletion circuit breaker ---------------------------------------
 
     @Test
