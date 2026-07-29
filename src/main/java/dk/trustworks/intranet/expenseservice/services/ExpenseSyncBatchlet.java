@@ -217,6 +217,17 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 return SyncOutcome.SUCCESS;
             }
 
+            // Rows already DELETED are only re-checked for resurrection (steps 1–2
+            // above can flip them back when the voucher reappears). A still-missing
+            // voucher is their EXPECTED state: no journal sweep (28 extra API calls
+            // per row per night — prod carries ~220 recently-modified DELETED rows
+            // in the selection window), no miss counter, and no deletion candidate
+            // (queueing them would false-trip the circuit breaker every night).
+            if (ExpenseService.STATUS_DELETED.equals(expense.getStatus())) {
+                log.debug("Expense " + expense.getUuid() + ": already DELETED and voucher still absent; skipping sweep and deletion phase");
+                return SyncOutcome.SUCCESS;
+            }
+
             // 2.5) Not in the stored journal and not booked. The accountant moves
             // unbooked postings into NEW temporary journals around fiscal-year start
             // (so voucher numbering can restart) and moves them back once the old
