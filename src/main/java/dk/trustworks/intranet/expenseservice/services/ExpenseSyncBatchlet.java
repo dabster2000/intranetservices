@@ -43,6 +43,27 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     @ConfigProperty(name = "dk.trustworks.expense.economics-sync.pacing-ms", defaultValue = "0")
     long syncPacingMs;
 
+    /**
+     * Deletion grace period: consecutive "voucher not found anywhere" runs required
+     * before an expense is marked DELETED. The accountant moves unbooked vouchers
+     * into temporary journals around fiscal-year start and back after booking, so a
+     * transiently missing voucher reappears and the counter resets — it is never
+     * wrongly deleted (2026-07-28 incident: 224 false DELETEs on the first miss).
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.delete-miss-threshold", defaultValue = "3")
+    int syncDeleteMissThreshold;
+
+    /** Deletion circuit breaker: max expenses one run may mark DELETED (absolute). */
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.delete-abort-threshold", defaultValue = "20")
+    int syncDeleteAbortThreshold;
+
+    /** Deletion circuit breaker: max DELETEs as a percentage of the selected set (0 disables). */
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.delete-abort-percent", defaultValue = "5.0")
+    double syncDeleteAbortPercent;
+
+    /** One page comfortably covers every journal a tenant realistically has. */
+    static final int JOURNALS_PAGESIZE = 100;
+
     /** Per-item result fed to the run-level circuit breaker. */
     enum SyncOutcome { SUCCESS, THROTTLED, ERROR }
 
@@ -70,15 +91,21 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                     new EconomicsRetryExecutor(syncMaxRetries, EconomicsRetryExecutor.Sleeper.REAL);
             ThrottleCircuitBreaker breaker = new ThrottleCircuitBreaker(syncAbortThreshold);
 
+            // Deletion is DEFERRED: syncExpense only queues candidates, and the whole
+            // batch of DELETEs is applied (or refused) at the end of the run by
+            // applyDeletionPhase — so a bad night is "0 deleted + 1 alert", never
+            // "N deleted before the breaker noticed".
+            List<Expense> deletionCandidates = new java.util.ArrayList<>();
+
             for (Expense expense : expenses) {
-                SyncOutcome outcome = syncExpense(expense, retry);
+                SyncOutcome outcome = syncExpense(expense, retry, deletionCandidates);
                 if (outcome == SyncOutcome.THROTTLED) {
                     breaker.recordThrottled();
                     if (breaker.isTripped()) {
                         log.warn("e-conomic sustained throttling; aborting expense-sync, will resume next run "
                                 + "(consecutive throttled=" + breaker.getConsecutiveThrottled()
                                 + ", threshold=" + syncAbortThreshold + ")");
-                        return "COMPLETED";
+                        break;
                     }
                 } else {
                     breaker.reset();
@@ -93,6 +120,8 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                     }
                 }
             }
+
+            applyDeletionPhase(deletionCandidates, expenses.size());
             return "COMPLETED";
         } catch (Exception e) {
             log.error("ExpenseSyncBatchlet failed", e);
@@ -121,7 +150,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 ExpenseService.STATUS_VERIFIED_UNBOOKED, cutoff).list();
     }
 
-    SyncOutcome syncExpense(Expense expense, EconomicsRetryExecutor retry) {
+    SyncOutcome syncExpense(Expense expense, EconomicsRetryExecutor retry, List<Expense> deletionCandidates) {
         try (EconomicsAPI api = economicsService.getApiForExpense(expense)) {
             int jn = expense.getJournalnumber();
             String year = expense.getAccountingyear();
@@ -141,33 +170,21 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
             log.info("Expense " + expense.getUuid() + ": journal query jn=" + jn + ", filter='" + journalFilter + "', status=" + jrStatus);
             log.debug("Journal response body (truncated): " + truncate(jrBody, 800));
-            if (!isSuccessStatus(jrStatus)) {
+            if (jrStatus == 404) {
+                // The stored journal itself may be gone (the accountant deletes emptied
+                // temporary journals). Not fatal: the booked lookup and the all-journals
+                // sweep below still decide the outcome.
+                log.warn("Expense " + expense.getUuid() + ": stored journal " + jn + " not found (404); continuing with booked lookup and journal sweep");
+            } else if (!isSuccessStatus(jrStatus)) {
                 log.warn("Expense " + expense.getUuid() + ": journal query failed with status=" + jrStatus + "; leaving status unchanged");
                 return SyncOutcome.ERROR;
             }
 
-            boolean inJournal = hasAnyEntries(jrBody);
+            boolean inJournal = isSuccessStatus(jrStatus) && hasAnyEntries(jrBody);
             if (inJournal) {
-                // Unbooked; reflect current account if changed
-                String accountFromEntries = extractFirstAccount(jrBody);
-                if (accountFromEntries != null && !accountFromEntries.equals(expense.getAccount())) {
-                    log.info("Expense " + expense.getUuid() + ": account differs (journal); updating " + expense.getAccount() + " -> " + accountFromEntries);
-                    expense.setAccount(accountFromEntries);
-                } else {
-                    log.debug("Expense " + expense.getUuid() + ": account unchanged based on journal");
-                }
-
-                // Extract and update accountant text/notes from e-conomic
-                String textFromEntries = extractFirstText(jrBody);
-                if (textFromEntries != null && !textFromEntries.isEmpty()) {
-                    String currentNotes = expense.getAccountantNotes();
-                    if (currentNotes == null || !currentNotes.equals(textFromEntries)) {
-                        log.info("Expense " + expense.getUuid() + ": updating accountant notes (journal): " + truncate(textFromEntries, 80));
-                        expense.setAccountantNotes(textFromEntries);
-                    }
-                }
-
+                applyAccountAndNotes(expense, jrBody, "journal");
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+                resetSyncMissCountIfNeeded(expense);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_UNBOOKED (unbooked in journal)");
                 return SyncOutcome.SUCCESS;
             }
@@ -193,31 +210,51 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             boolean booked = hasAnyEntries(yrBody);
             if (booked) {
-                // Booked; update account and mark verified booked to ledger
-                String accountFromEntries = extractFirstAccount(yrBody);
-                if (accountFromEntries != null && !accountFromEntries.equals(expense.getAccount())) {
-                    log.info("Expense " + expense.getUuid() + ": account differs (booked); updating " + expense.getAccount() + " -> " + accountFromEntries);
-                    expense.setAccount(accountFromEntries);
-                }
-
-                // Extract and update accountant text/notes from e-conomic
-                String textFromEntries = extractFirstText(yrBody);
-                if (textFromEntries != null && !textFromEntries.isEmpty()) {
-                    String currentNotes = expense.getAccountantNotes();
-                    if (currentNotes == null || !currentNotes.equals(textFromEntries)) {
-                        log.info("Expense " + expense.getUuid() + ": updating accountant notes (booked): " + truncate(textFromEntries, 80));
-                        expense.setAccountantNotes(textFromEntries);
-                    }
-                }
-
+                applyAccountAndNotes(expense, yrBody, "booked");
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
+                resetSyncMissCountIfNeeded(expense);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_BOOKED (booked to ledger under accounting-years)");
                 return SyncOutcome.SUCCESS;
             }
 
-            // 3) Not found anywhere -> consider deleted
-            log.warn("Expense " + expense.getUuid() + ": voucher not found in journal or accounting-years; marking DELETED");
-            expenseService.updateStatus(expense, ExpenseService.STATUS_DELETED);
+            // 2.5) Not in the stored journal and not booked. The accountant moves
+            // unbooked postings into NEW temporary journals around fiscal-year start
+            // (so voucher numbering can restart) and moves them back once the old
+            // period is booked — a legitimate, recurring workflow. A lookup pinned to
+            // the stored journal number sees "not found" for every moved voucher
+            // (2026-07-28 incident: 224 false DELETEs). So search EVERY journal
+            // before even considering deletion; a hit self-heals the stored triple.
+            SweepResult sweep = findVoucherInAnyJournal(api, retry, expense, jn, journalFilter);
+            if (sweep == null) {
+                return SyncOutcome.ERROR; // a sweep lookup failed — absence not proven, leave unchanged
+            }
+            if (sweep.journalNumber != null) {
+                log.warn("Expense " + expense.getUuid() + ": voucher " + vn + " found in journal " + sweep.journalNumber
+                        + " (stored journal was " + jn + "); self-healing journalnumber and marking VERIFIED_UNBOOKED");
+                expense.setJournalnumber(sweep.journalNumber);
+                applyAccountAndNotes(expense, sweep.body, "journal-sweep");
+                // updateStatus persists journalnumber from the entity, so the heal lands with the status
+                expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+                resetSyncMissCountIfNeeded(expense);
+                return SyncOutcome.SUCCESS;
+            }
+
+            // 3) Absent from EVERY journal and not booked. Grace period: only consider
+            // deletion after N consecutive missing runs — a voucher mid-move between
+            // journals reappears and the counter resets, so it is never wrongly deleted.
+            int missCount = expense.getSafeSyncMissCount() + 1;
+            if (missCount < syncDeleteMissThreshold) {
+                expenseService.updateSyncMissCount(expense, missCount);
+                log.warn("Expense " + expense.getUuid() + ": voucher not found in any journal or accounting-years; "
+                        + "miss " + missCount + "/" + syncDeleteMissThreshold + " — grace period, NOT deleting yet");
+                return SyncOutcome.SUCCESS;
+            }
+            // Threshold reached — queue for the end-of-run deletion phase. The counter is
+            // deliberately NOT persisted here: if the circuit breaker refuses the batch,
+            // the row keeps its pre-run state and the alert repeats nightly until a human acts.
+            log.warn("Expense " + expense.getUuid() + ": voucher not found in any journal or accounting-years "
+                    + "(miss " + missCount + "/" + syncDeleteMissThreshold + "); queueing for deletion pending circuit-breaker check");
+            deletionCandidates.add(expense);
             return SyncOutcome.SUCCESS;
         } catch (EconomicsRateLimitException rle) {
             // Retries already exhausted inside executeWithRetry — count as throttled
@@ -228,6 +265,166 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             log.error("Sync failed for expense " + expense.getUuid() + ": " + ex.getMessage(), ex);
             return SyncOutcome.ERROR;
         }
+    }
+
+    /**
+     * End-of-run deletion phase (#3, mass-deletion circuit breaker). Applies the
+     * queued DELETEs only when the batch stays within the configured caps;
+     * otherwise applies NONE of them and raises an alert — any bad night becomes
+     * "0 deleted + 1 alert" instead of mass data damage.
+     */
+    void applyDeletionPhase(List<Expense> deletionCandidates, int totalSelected) {
+        if (deletionCandidates.isEmpty()) {
+            return;
+        }
+        DeletionCircuitBreaker deleteBreaker = new DeletionCircuitBreaker(
+                syncDeleteAbortThreshold, syncDeleteAbortPercent, totalSelected);
+        if (deleteBreaker.exceedsCap(deletionCandidates.size())) {
+            // ERROR on purpose: the log-based production monitoring alerts on it (no
+            // Slack path exists in this module). A tripped breaker means a human must
+            // check e-conomic before any deletion happens; the rows keep their state
+            // and the alert repeats every night until someone acts.
+            String sampleUuids = deletionCandidates.stream()
+                    .limit(10)
+                    .map(Expense::getUuid)
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+            log.error("EXPENSE-SYNC DELETION CIRCUIT BREAKER TRIPPED: " + deletionCandidates.size()
+                    + " of " + totalSelected + " selected expenses would be marked DELETED"
+                    + " (absolute-threshold=" + syncDeleteAbortThreshold
+                    + ", percent-threshold=" + syncDeleteAbortPercent + "%)."
+                    + " NO expenses were deleted; all rows left unchanged. Manual review required —"
+                    + " likely an e-conomic journal reshuffle (see 2026-07-28 incident)."
+                    + " First candidate uuids: " + sampleUuids);
+            return;
+        }
+        for (Expense expense : deletionCandidates) {
+            log.warn("Expense " + expense.getUuid() + ": voucher not found in any journal or accounting-years for "
+                    + syncDeleteMissThreshold + "+ consecutive runs; marking DELETED");
+            // Counter reset FIRST (separate tx): if this row is ever manually restored,
+            // it gets a full grace period again instead of being re-deleted on the next miss.
+            expenseService.updateSyncMissCount(expense, 0);
+            expenseService.updateStatus(expense, ExpenseService.STATUS_DELETED);
+        }
+    }
+
+    /** Outcome of the all-journals sweep: which journal (if any) holds the voucher, and its entries body. */
+    static final class SweepResult {
+        final Integer journalNumber; // null = confirmed absent from every journal
+        final String body;
+
+        SweepResult(Integer journalNumber, String body) {
+            this.journalNumber = journalNumber;
+            this.body = body;
+        }
+    }
+
+    /**
+     * Searches every journal of the expense's tenant (except the already-checked
+     * stored one) for the voucher number. Returns a {@link SweepResult} with the
+     * journal number on a hit, a SweepResult with {@code journalNumber == null}
+     * when the voucher is confirmed absent from EVERY journal, or {@code null}
+     * when any lookup failed — in which case absence is NOT proven and the caller
+     * must leave the expense unchanged. Throttling propagates as
+     * {@link EconomicsRateLimitException} exactly like the other lookups.
+     */
+    private SweepResult findVoucherInAnyJournal(EconomicsAPI api, EconomicsRetryExecutor retry,
+                                                Expense expense, int storedJournal, String journalFilter) {
+        Response js = retry.executeWithRetry(() -> failOnThrottle(api.getJournals(JOURNALS_PAGESIZE)));
+        int jsStatus = js != null ? js.getStatus() : -1;
+        String jsBody = null;
+        try {
+            if (js != null) jsBody = js.readEntity(String.class);
+        } finally {
+            if (js != null) js.close();
+        }
+        if (!isSuccessStatus(jsStatus)) {
+            log.warn("Expense " + expense.getUuid() + ": journals listing failed with status=" + jsStatus
+                    + "; cannot conclude deletion, leaving status unchanged");
+            return null;
+        }
+
+        List<Integer> journalNumbers = extractJournalNumbers(jsBody);
+        log.debug("Expense " + expense.getUuid() + ": sweeping " + journalNumbers.size() + " journals for voucher");
+        for (Integer candidate : journalNumbers) {
+            if (candidate == null || candidate == storedJournal) continue;
+            Response cr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(candidate, journalFilter, 1000)));
+            int crStatus = cr != null ? cr.getStatus() : -1;
+            String crBody = null;
+            try {
+                if (cr != null) crBody = cr.readEntity(String.class);
+            } finally {
+                if (cr != null) cr.close();
+            }
+            if (crStatus == 404) {
+                continue; // journal disappeared between listing and lookup — nothing in it
+            }
+            if (!isSuccessStatus(crStatus)) {
+                log.warn("Expense " + expense.getUuid() + ": journal sweep query failed for journal " + candidate
+                        + " with status=" + crStatus + "; cannot conclude deletion, leaving status unchanged");
+                return null;
+            }
+            if (hasAnyEntries(crBody)) {
+                return new SweepResult(candidate, crBody);
+            }
+        }
+        return new SweepResult(null, null);
+    }
+
+    /** Mirrors e-conomic's current account and accountant text onto the entity (persisted by updateStatus). */
+    private void applyAccountAndNotes(Expense expense, String body, String source) {
+        String accountFromEntries = extractFirstAccount(body);
+        if (accountFromEntries != null && !accountFromEntries.equals(expense.getAccount())) {
+            log.info("Expense " + expense.getUuid() + ": account differs (" + source + "); updating "
+                    + expense.getAccount() + " -> " + accountFromEntries);
+            expense.setAccount(accountFromEntries);
+        }
+        String textFromEntries = extractFirstText(body);
+        if (textFromEntries != null && !textFromEntries.isEmpty()) {
+            String currentNotes = expense.getAccountantNotes();
+            if (currentNotes == null || !currentNotes.equals(textFromEntries)) {
+                log.info("Expense " + expense.getUuid() + ": updating accountant notes (" + source + "): "
+                        + truncate(textFromEntries, 80));
+                expense.setAccountantNotes(textFromEntries);
+            }
+        }
+    }
+
+    /** The voucher was found again — clear any accumulated grace-period misses. */
+    private void resetSyncMissCountIfNeeded(Expense expense) {
+        if (expense.getSafeSyncMissCount() != 0) {
+            log.info("Expense " + expense.getUuid() + ": voucher found again; resetting sync miss count from "
+                    + expense.getSafeSyncMissCount());
+            expenseService.updateSyncMissCount(expense, 0);
+        }
+    }
+
+    /** Journal numbers from a GET /journals body (same array/collection/items shapes as hasAnyEntries). */
+    static List<Integer> extractJournalNumbers(String body) {
+        List<Integer> result = new java.util.ArrayList<>();
+        if (body == null || body.isEmpty()) return result;
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode arr = null;
+            if (root.isArray()) {
+                arr = root;
+            } else if (root.has("collection") && root.get("collection").isArray()) {
+                arr = root.get("collection");
+            } else if (root.has("items") && root.get("items").isArray()) {
+                arr = root.get("items");
+            }
+            if (arr == null) return result;
+            for (JsonNode item : arr) {
+                JsonNode n = item.get("journalNumber");
+                if (n != null && n.canConvertToInt()) {
+                    result.add(n.asInt());
+                }
+            }
+        } catch (Exception e) {
+            // Unparseable listing → empty list; the caller then falls through to the
+            // grace-period counter, which still prevents any first-miss deletion.
+        }
+        return result;
     }
 
     static Response failOnThrottle(Response response) {
