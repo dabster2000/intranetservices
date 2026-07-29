@@ -102,6 +102,19 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "is_orphaned")
     private Boolean isOrphaned = false;
 
+    /**
+     * Consecutive nightly-sync runs (ExpenseSyncBatchlet) in which the voucher was
+     * found neither in ANY e-conomic journal nor booked under the accounting year.
+     * Grace-period guard: the sync only marks DELETED once this reaches the
+     * configured threshold, so a voucher temporarily moved between journals (the
+     * accountant's year-end kassekladde shuffle) is never deleted on a single
+     * missing night. Reset to 0 whenever the voucher is found again.
+     * Server-managed — never accepted from clients.
+     */
+    @JsonIgnore
+    @Column(name = "sync_miss_count")
+    private Integer syncMissCount = 0;
+
     @Column(name = "ai_rule_id")
     private String aiRuleId;
 
@@ -320,6 +333,13 @@ public class Expense extends PanacheEntityBase {
      */
     public int getSafeRetryCount() {
         return retryCount != null ? retryCount : 0;
+    }
+
+    /**
+     * Get safe sync miss count (never null — pre-V458 rows load as null).
+     */
+    public int getSafeSyncMissCount() {
+        return syncMissCount != null ? syncMissCount : 0;
     }
 
     /**

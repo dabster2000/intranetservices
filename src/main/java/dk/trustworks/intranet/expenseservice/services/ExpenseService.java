@@ -442,6 +442,23 @@ public class ExpenseService {
         });
     }
 
+    /**
+     * Persists the consecutive voucher-miss counter for the nightly e-conomic sync
+     * (ExpenseSyncBatchlet's deletion grace period) WITHOUT touching status or the
+     * derived state mirror. Deliberately NOT part of {@link #updateStatus}'s column
+     * list: neither bulk update writes the other's columns, so the two can never
+     * clobber each other. The entity field is synced for the same reason as in
+     * updateStatus — if the entity is managed in an outer persistence context, the
+     * flush at commit must write back the same value, not a stale one.
+     */
+    public void updateSyncMissCount(Expense expense, int missCount) {
+        QuarkusTransaction.requiringNew().run(() -> {
+            expense.setSyncMissCount(missCount);
+            Expense.update("syncMissCount = ?1 WHERE uuid like ?2", missCount, expense.getUuid());
+            log.infof("Updated expense uuid=%s -> syncMissCount=%d", expense.getUuid(), missCount);
+        });
+    }
+
     @Transactional
     public void setPaidAndUpdate(Expense expense) {
         expense.setPaidOut(LocalDateTime.now());

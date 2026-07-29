@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,7 +46,7 @@ class ExpenseSyncResponseHandlingTest {
 
         EconomicsRetryExecutor retry = new EconomicsRetryExecutor(1, millis -> {});
 
-        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry);
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, new ArrayList<>());
 
         assertEquals(ExpenseSyncBatchlet.SyncOutcome.THROTTLED, outcome);
         verify(api, times(2)).getJournalEntries(16, "voucher.voucherNumber$eq:12345", 1000);
@@ -61,7 +62,7 @@ class ExpenseSyncResponseHandlingTest {
 
         EconomicsRetryExecutor retry = new EconomicsRetryExecutor(0, millis -> {});
 
-        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry);
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, new ArrayList<>());
 
         assertEquals(ExpenseSyncBatchlet.SyncOutcome.ERROR, outcome);
         verify(api, never()).getYearEntries(any(), any(), eq(1000), eq(0));

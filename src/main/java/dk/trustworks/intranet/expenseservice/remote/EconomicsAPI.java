@@ -53,6 +53,19 @@ public interface EconomicsAPI extends AutoCloseable {
                                    @QueryParam("filter") String filter,
                                    @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
 
+        /**
+         * Lists the tenant's journals (kassekladder). Used by
+         * {@code ExpenseSyncBatchlet} to search ALL journals for a voucher before
+         * concluding it was deleted — the accountant legitimately moves unbooked
+         * vouchers into new temporary journals around fiscal-year start and back
+         * again once the old period is booked (2026-07-28 incident: 224 expenses
+         * falsely marked DELETED because the lookup was pinned to the stored
+         * journal number).
+         */
+        @GET
+        @Path("/journals")
+        Response getJournals(@QueryParam("pagesize") @DefaultValue("100") int pagesize);
+
         @GET
         @Path("/accounting-years/{accountingYear}/entries")
         Response getYearEntries(@PathParam("accountingYear") String accountingYear,
