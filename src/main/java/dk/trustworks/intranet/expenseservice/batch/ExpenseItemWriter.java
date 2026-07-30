@@ -36,10 +36,11 @@ public class ExpenseItemWriter implements ItemWriter {
     String throttleMsStr;
 
     private long throttleMs;
-    private int processedCount;
-    private int successCount;
-    private int skippedCount;
-    private int failedCount;
+    // Package-private so the unit test can assert how items were classified.
+    int processedCount;
+    int successCount;
+    int skippedCount;
+    int failedCount;
     private long startNs;
 
     @Override
@@ -103,12 +104,15 @@ public class ExpenseItemWriter implements ItemWriter {
             log.info("Successfully processed expense: " + expense.getUuid());
 
         } catch (UndecodableReceiptException e) {
-            // The receipt exists, but cannot be converted to the JPEG required by e-conomic.
-            // Park only this item for Accounting attention and keep the rest of the chunk running.
+            // The receipt exists but cannot be turned into an attachment e-conomic accepts
+            // (HEIC or corrupt — PDFs pass through in ImageProcessor). Park only this item for
+            // Accounting attention and keep the rest of the chunk running; count it as a FAILURE
+            // so the run cannot read as successful while receipts never reached accounting.
             // If persisting the status fails, let that exception escape as a real batch failure.
             expenseService.updateStatus(expense, ExpenseService.STATUS_UP_FAILED, e.getMessage());
-            skippedCount++;
-            log.warnf("Skipping expense %s: %s", expense.getUuid(), e.getMessage());
+            failedCount++;
+            log.errorf("Expense %s cannot reach e-conomic and was parked as UP_FAILED: %s",
+                    expense.getUuid(), e.getMessage());
 
         } catch (Exception e) {
             failedCount++;
@@ -141,12 +145,24 @@ public class ExpenseItemWriter implements ItemWriter {
         long elapsedMs = (System.nanoTime() - startNs) / 1_000_000;
         long elapsedSec = elapsedMs / 1000;
 
-        log.info("ExpenseItemWriter completed: " +
-                 "processed=" + processedCount +
-                 ", success=" + successCount +
-                 ", skipped=" + skippedCount +
-                 ", failed=" + failedCount +
-                 ", elapsedMs=" + elapsedMs +
-                 " (" + elapsedSec + "s)");
+        String summary = "processed=" + processedCount +
+                ", success=" + successCount +
+                ", skipped=" + skippedCount +
+                ", failed=" + failedCount +
+                ", elapsedMs=" + elapsedMs +
+                " (" + elapsedSec + "s)";
+
+        int notUploaded = skippedCount + failedCount;
+        if (notUploaded == 0) {
+            log.info("ExpenseItemWriter completed: " + summary);
+        } else if (notUploaded * 2 >= processedCount) {
+            log.error("ExpenseItemWriter completed with MAJORITY FAILURES: " + summary +
+                    " — " + notUploaded + " of " + processedCount +
+                    " expenses did not reach e-conomic (see UP_FAILED expenses)");
+        } else {
+            log.warn("ExpenseItemWriter completed with failures: " + summary +
+                    " — " + notUploaded + " of " + processedCount +
+                    " expenses did not reach e-conomic (see UP_FAILED expenses)");
+        }
     }
 }

@@ -13,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 
@@ -49,6 +50,26 @@ class ExpenseItemWriterTest {
                 ExpenseService.STATUS_UP_FAILED,
                 UndecodableReceiptException.DEFAULT_MESSAGE);
         inOrder.verify(expenseService).processExpenseItem(valid);
+    }
+
+    /**
+     * An undecodable receipt is a FAILURE the job must surface, not a skip: before 2026-07-30
+     * a prod run that parked 11 of 20 expenses this way still logged as a successful completion.
+     */
+    @Test
+    void undecodableReceiptCountsAsFailedNotSkipped() throws Exception {
+        Expense undecodable = expense("undecodable-expense");
+        Expense valid = expense("valid-expense");
+
+        doThrow(new UndecodableReceiptException(UndecodableReceiptException.HEIC_MESSAGE))
+                .when(expenseService).processExpenseItem(undecodable);
+
+        writer.writeItems(List.<Object>of(undecodable, valid));
+
+        assertEquals(2, writer.processedCount);
+        assertEquals(1, writer.successCount);
+        assertEquals(1, writer.failedCount);
+        assertEquals(0, writer.skippedCount);
     }
 
     private Expense expense(String uuid) {
