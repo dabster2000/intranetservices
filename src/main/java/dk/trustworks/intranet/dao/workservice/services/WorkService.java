@@ -385,6 +385,11 @@ public class WorkService {
                 useruuid, taskuuid, month).list();
     }
 
+    public List<Work> findByUserAndTaskuuidAndRegisteredBetween(String useruuid, String taskuuid, LocalDate fromInclusive, LocalDate toExclusive) {
+        return Work.find("useruuid = ?1 AND taskuuid = ?2 AND registered >= ?3 AND registered < ?4",
+                useruuid, taskuuid, fromInclusive, toExclusive).list();
+    }
+
     public List<Work> findByUseruuidAndTaskuuidAndPeriod(String useruuid, String taskuuid, LocalDate fromdate, LocalDate todate) {
         return WorkFull.find("useruuid = ?1 AND taskuuid = ?2 AND registered >= ?3 AND registered < ?4", useruuid, taskuuid, fromdate, todate).list();
     }
