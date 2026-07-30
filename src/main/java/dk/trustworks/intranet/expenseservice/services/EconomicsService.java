@@ -223,16 +223,18 @@ public class  EconomicsService {
         log.debugf("File upload for expense %s: originalYear=%s -> urlYear=%s, voucher=%d",
             expense.getUuid(), originalYear, urlYear, expense.getVouchernumber());
 
-        byte[] bytes = ImageProcessor.convertBase64ToImageAndCompress(expensefile.getExpensefile());
+        ImageProcessor.ReceiptAttachment attachment = ImageProcessor.prepareReceiptForUpload(expensefile.getExpensefile());
+        byte[] bytes = attachment.bytes();
         if (bytes == null || bytes.length == 0) {
-            throw new ExpenseUploadException("Empty attachment after image processing", null, 400, "Compressed image is empty");
+            throw new ExpenseUploadException("Empty attachment after receipt preparation", null, 400, "Prepared attachment is empty");
         }
         if (bytes.length > 9 * 1024 * 1024) {
             throw new ExpenseUploadException("Attachment too large", null, 413, "File size: " + bytes.length + " bytes (max 9MB)");
         }
+        log.infof("Attaching receipt for expense %s as %s (%d bytes)", expense.getUuid(), attachment.mediaType(), bytes.length);
 
         MultipartFormDataOutput form = new MultipartFormDataOutput();
-        form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.valueOf("image/jpeg"), "receipt.jpg");
+        form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.valueOf(attachment.mediaType()), attachment.filename());
 
         try (EconomicsAPI api = getApiForExpense(expense)) {
             // 1) Check om der allerede er en vedhæftning
