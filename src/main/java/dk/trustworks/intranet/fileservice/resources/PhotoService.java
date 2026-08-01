@@ -12,6 +12,7 @@ import lombok.extern.jbosslog.JBossLog;
 import net.coobird.thumbnailator.Thumbnails;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -21,6 +22,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
@@ -32,6 +34,8 @@ import java.util.*;
 @ApplicationScoped
 @JBossLog
 public class PhotoService {
+
+    private static final String NO_SUCH_KEY_ERROR_CODE = "NoSuchKey";
 
     private static final Map<String, String> MIME_TO_EXTENSION = new HashMap<>();
 
@@ -64,13 +68,21 @@ public class PhotoService {
     private final S3Client s3;
 
     public PhotoService() {
+        this(createS3Client());
+    }
+
+    PhotoService(S3Client s3) {
+        this.s3 = s3;
+    }
+
+    private static S3Client createS3Client() {
         // Initialize S3Client once as singleton (thread-safe)
         Region regionNew = Region.EU_WEST_1;
         ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
         ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder()
                 .proxyConfiguration(proxyConfig.build());
 
-        this.s3 = S3Client.builder()
+        return S3Client.builder()
                 .region(regionNew)
                 .httpClientBuilder(httpClientBuilder)
                 .build();
@@ -84,9 +96,42 @@ public class PhotoService {
             s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
             return baos.toByteArray();
         } catch (S3Exception e) {
-            log.error("Error loading " + uuid + " from S3: " + e.awsErrorDetails().errorMessage(), e);
+            if (isMissingObject(e)) {
+                // Expected, benign: this user simply has no photo uploaded. Callers already
+                // handle the empty payload, so this must not pollute the ERROR stream.
+                log.debugf("No photo stored in S3 for %s", uuid);
+                return new byte[0];
+            }
+            log.error("Error loading " + uuid + " from S3: " + errorMessageOf(e), e);
             return new byte[0];
         }
+    }
+
+    /**
+     * Distinguishes "this key does not exist" — an expected condition for users without a
+     * photo — from a genuine S3 failure (permissions, throttling, network, missing bucket),
+     * which must keep logging at ERROR.
+     * <p>
+     * Deliberately narrower than {@code ExpenseFileService.isMissingObject}: that one also
+     * treats 403/AccessDenied as "missing" because the expenses bucket does not grant
+     * {@code s3:ListBucket} and therefore masks 404 as 403. The files bucket does grant it and
+     * answers a true {@link NoSuchKeyException}, so a 403 here is a real permission problem.
+     */
+    private static boolean isMissingObject(S3Exception e) {
+        if (e instanceof NoSuchKeyException) {
+            return true;
+        }
+        if (e.statusCode() != 404) {
+            return false;
+        }
+        AwsErrorDetails details = e.awsErrorDetails();
+        return details != null && NO_SUCH_KEY_ERROR_CODE.equals(details.errorCode());
+    }
+
+    /** Null-safe: {@code awsErrorDetails()} is absent for responses without an error body (e.g. HEAD). */
+    private static String errorMessageOf(S3Exception e) {
+        AwsErrorDetails details = e.awsErrorDetails();
+        return details != null && details.errorMessage() != null ? details.errorMessage() : e.getMessage();
     }
 
     public File findPhotoByType(String type) {
@@ -192,8 +237,11 @@ public class PhotoService {
             log.debug("S3 hit for " + key);
             return true;
         } catch (S3Exception e) {
-            if (e.statusCode() == 404) return false;
-            log.error("Error checking " + key + " on S3: " + e.awsErrorDetails().errorMessage(), e);
+            // HEAD responses carry no error body, so the error code is usually absent — the
+            // status alone is the only reliable "not there" signal here. No thumbnail yet is
+            // the normal case on first request, so it stays out of the ERROR stream.
+            if (e.statusCode() == 404 || isMissingObject(e)) return false;
+            log.error("Error checking " + key + " on S3: " + errorMessageOf(e), e);
             return false;
         }
     }
