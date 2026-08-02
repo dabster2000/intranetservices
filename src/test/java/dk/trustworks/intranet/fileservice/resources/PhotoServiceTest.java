@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.fileservice.resources;
 
+import io.quarkus.cache.CompositeCacheKey;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,12 +19,14 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,6 +44,7 @@ class PhotoServiceTest {
 
     private static final String BUCKET = "trustworksfiles";
     private static final String UUID = "c4b38e78-1c88-4d95-b43b-5909bdd930ad";
+    private static final String RELATED_UUID = "a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5a6b";
 
     @Mock
     S3Client s3;
@@ -151,6 +155,71 @@ class PhotoServiceTest {
 
         assertEquals(0, result.length);
         assertEquals(1, errorMessages().size());
+    }
+
+    // --- cache invalidation scope -------------------------------------------------------------
+    // Updating one photo used to call invalidateAll(), flushing every cached photo and thumbnail
+    // in the JVM. These pin the narrowed predicate: everything belonging to the updated photo is
+    // evicted, and nothing else is. Key shapes mirror what Quarkus builds — one @CacheKey
+    // parameter is used verbatim, two are wrapped in a CompositeCacheKey.
+
+    private static final String OTHER_UUID = "99999999-8888-7777-6666-555555555555";
+    private static final Set<String> SUPERSEDED = Set.of(UUID, "00000000-1111-2222-3333-444444444444");
+
+    @Test
+    void evictsThePhotoObjectAndEveryUuidItSupersedes() {
+        for (String superseded : SUPERSEDED) {
+            assertTrue(PhotoService.isAffectedCacheKey(superseded, RELATED_UUID, SUPERSEDED),
+                    "a re-upload gets a fresh uuid, so replaced keys must be evicted too: " + superseded);
+        }
+    }
+
+    @Test
+    void evictsResizedEntriesAtEveryWidthIncludingAdHocOnes() {
+        // 64 is in COMMON_THUMBNAIL_WIDTHS; 200 is not, but the frontend can request it via ?width=.
+        for (int width : new int[]{32, 64, 200, 512, 1337}) {
+            assertTrue(PhotoService.isAffectedCacheKey("resized/" + width + "/" + RELATED_UUID,
+                            RELATED_UUID, SUPERSEDED),
+                    "photo-cache resized entry at width " + width + " must be evicted");
+            assertTrue(PhotoService.isAffectedCacheKey(new CompositeCacheKey(RELATED_UUID, width),
+                            RELATED_UUID, SUPERSEDED),
+                    "photo-resize-cache entry at width " + width + " must be evicted");
+        }
+    }
+
+    @Test
+    void leavesOtherPeoplesPhotosAlone() {
+        assertFalse(PhotoService.isAffectedCacheKey(OTHER_UUID, RELATED_UUID, SUPERSEDED),
+                "an unrelated photo must survive someone else's upload");
+        assertFalse(PhotoService.isAffectedCacheKey("resized/64/" + OTHER_UUID, RELATED_UUID, SUPERSEDED),
+                "an unrelated thumbnail must survive");
+        assertFalse(PhotoService.isAffectedCacheKey(new CompositeCacheKey(OTHER_UUID, 512),
+                        RELATED_UUID, SUPERSEDED),
+                "a matching width is not a match — the uuid decides");
+    }
+
+    @Test
+    void leavesTheSharedDefaultPlaceholderAlone() {
+        // findPhotoByType / findPhotoByRelatedUUID fall back to this key for everyone; evicting it
+        // on every upload would refetch it from S3 for the whole instance.
+        assertFalse(PhotoService.isAffectedCacheKey("c297e216-e5cf-437d-9a1f-de840c7557e9",
+                RELATED_UUID, SUPERSEDED));
+    }
+
+    @Test
+    void toleratesKeyShapesItDoesNotRecognise() {
+        assertFalse(PhotoService.isAffectedCacheKey(42, RELATED_UUID, SUPERSEDED));
+        assertFalse(PhotoService.isAffectedCacheKey(null, RELATED_UUID, SUPERSEDED));
+        assertFalse(PhotoService.isAffectedCacheKey(new CompositeCacheKey(42, 64), RELATED_UUID, SUPERSEDED));
+        assertFalse(PhotoService.isAffectedCacheKey("resized/", RELATED_UUID, SUPERSEDED));
+        assertFalse(PhotoService.isAffectedCacheKey("", RELATED_UUID, SUPERSEDED));
+    }
+
+    @Test
+    void doesNotMatchOnASharedUuidSuffix() {
+        // endsWith-style matching would wrongly evict a uuid that merely ends with the target.
+        assertFalse(PhotoService.isAffectedCacheKey("resized/64/prefix-" + RELATED_UUID,
+                RELATED_UUID, SUPERSEDED));
     }
 
     private void throwOnGetObject(S3Exception exception) {
