@@ -24,6 +24,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCop
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailCopyResolver;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
@@ -114,6 +115,9 @@ public class RecruitmentEmailResource {
 
     @Inject
     RecruitmentEmailCopyResolver copyResolver;
+
+    @Inject
+    RecruitmentAiVoiceCard voiceCard;
 
     // ---- Templates -------------------------------------------------------------
 
@@ -247,7 +251,7 @@ public class RecruitmentEmailResource {
                 emailService.replyToFor(actor.toString()));
     }
 
-    // ---- Sender & reply settings --------------------------------------------------
+    // ---- Sender, reply and tone-of-voice settings ----------------------------------
 
     @GET
     @Path("/email-settings")
@@ -257,9 +261,18 @@ public class RecruitmentEmailResource {
         return new EmailSettingsResponse(
                 emailService.replyToFallback() == null ? "" : emailService.replyToFallback(),
                 emailService.fromName(),
-                emailService.fromAddress());
+                emailService.fromAddress(),
+                voiceCard.editableCard(),
+                RecruitmentAiVoiceCard.defaultCard(),
+                voiceCard.isDefault());
     }
 
+    /**
+     * Partial update: a {@code null} field is left alone, an empty field is
+     * cleared. The page posts sender/replies and the tone-of-voice card from
+     * two independent forms, so a whole-object PUT would let one form blank
+     * the other's value.
+     */
     @PUT
     @Path("/email-settings")
     @RolesAllowed({"recruitment:write"})
@@ -268,7 +281,16 @@ public class RecruitmentEmailResource {
         UUID actor = currentActor();
         requireRecruiterTier(actor);
         Objects.requireNonNull(request, "request body must not be null");
-        emailService.updateReplyToFallback(request.replyToFallback(), actor.toString());
+        if (request.replyToFallback() != null) {
+            emailService.updateReplyToFallback(request.replyToFallback(), actor.toString());
+        }
+        if (request.aiVoiceCard() != null) {
+            if (request.aiVoiceCard().length() > RecruitmentAiVoiceCard.MAX_LENGTH) {
+                throw badRequest("aiVoiceCard exceeds " + RecruitmentAiVoiceCard.MAX_LENGTH
+                        + " characters");
+            }
+            voiceCard.update(request.aiVoiceCard(), actor.toString());
+        }
         return emailSettings();
     }
 
