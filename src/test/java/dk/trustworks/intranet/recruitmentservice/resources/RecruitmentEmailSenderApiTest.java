@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.security.TestSecurity;
@@ -49,6 +50,7 @@ class RecruitmentEmailSenderApiTest {
 
     private static final String INTERVIEWS_FLAG = "recruitment.interviews.enabled";
     private static final String REPLY_TO_KEY = "recruitment.email.reply-to-fallback";
+    private static final String VOICE_CARD_KEY = RecruitmentAiVoiceCard.SETTING_KEY;
 
     @Inject
     EntityManager em;
@@ -68,6 +70,7 @@ class RecruitmentEmailSenderApiTest {
 
     private String previousFlag;
     private String previousReplyTo;
+    private String previousVoiceCard;
 
     @BeforeEach
     void seed() {
@@ -109,6 +112,11 @@ class RecruitmentEmailSenderApiTest {
 
             previousFlag = P8ProfileFixtures.setFlag(em, INTERVIEWS_FLAG, "true");
             previousReplyTo = P8ProfileFixtures.setFlag(em, REPLY_TO_KEY, "hr@trustworks.dk");
+            // Start every test from "voice card never configured" — the state
+            // a fresh environment is in, and the one where the built-in card
+            // must be what the composer writes by.
+            previousVoiceCard = P8ProfileFixtures.setFlag(em, VOICE_CARD_KEY, "");
+            P8ProfileFixtures.restoreFlag(em, VOICE_CARD_KEY, null);
         });
     }
 
@@ -126,6 +134,13 @@ class RecruitmentEmailSenderApiTest {
                     List.of(recruiterUser, ownerUser, outsiderUser), practiceUuid);
             P8ProfileFixtures.restoreFlag(em, INTERVIEWS_FLAG, previousFlag);
             P8ProfileFixtures.restoreFlag(em, REPLY_TO_KEY, previousReplyTo);
+            if (previousVoiceCard == null) {
+                P8ProfileFixtures.restoreFlag(em, VOICE_CARD_KEY, null);
+            } else {
+                // setFlag, not restoreFlag: seed() deleted the row, and
+                // restoreFlag's UPDATE would silently do nothing.
+                P8ProfileFixtures.setFlag(em, VOICE_CARD_KEY, previousVoiceCard);
+            }
         });
     }
 
@@ -242,6 +257,68 @@ class RecruitmentEmailSenderApiTest {
                 .body(Map.of("replyToFallback", "not-an-address"))
                 .when().put("/recruitment/email-settings")
                 .then().statusCode(409);
+    }
+
+    // ---- Tone-of-voice card ------------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void voiceCard_defaultsToTheBuiltInCard_andRoundTrips() {
+        // Never configured: the page shows the built-in card and says so.
+        given().header("X-Requested-By", recruiterUser)
+                .when().get("/recruitment/email-settings")
+                .then().statusCode(200)
+                .body("aiVoiceCardIsDefault", equalTo(true))
+                .body("aiVoiceCard", equalTo(RecruitmentAiVoiceCard.defaultCard()))
+                .body("aiVoiceCardDefault", equalTo(RecruitmentAiVoiceCard.defaultCard()));
+
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("aiVoiceCard", "Skriv kort, konkret og på dansk."))
+                .when().put("/recruitment/email-settings")
+                .then().statusCode(200)
+                .body("aiVoiceCard", equalTo("Skriv kort, konkret og på dansk."))
+                .body("aiVoiceCardIsDefault", equalTo(false));
+
+        // Empty is a legal, deliberate "compose with no voice guidance".
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("aiVoiceCard", ""))
+                .when().put("/recruitment/email-settings")
+                .then().statusCode(200)
+                .body("aiVoiceCard", equalTo(""));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void savingOneSetting_leavesTheOtherAlone() {
+        // The settings page posts its two forms independently. A whole-object
+        // PUT would let the voice-card form blank the reply address, which is
+        // exactly the kind of silent config loss nobody notices until a
+        // candidate's reply reaches nobody.
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("aiVoiceCard", "Skriv kort."))
+                .when().put("/recruitment/email-settings")
+                .then().statusCode(200)
+                .body("replyToFallback", equalTo("hr@trustworks.dk"));
+
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("replyToFallback", "rekruttering@trustworks.dk"))
+                .when().put("/recruitment/email-settings")
+                .then().statusCode(200)
+                .body("aiVoiceCard", equalTo("Skriv kort."));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void voiceCard_rejectsAnOversizedCard() {
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("aiVoiceCard", "æ".repeat(RecruitmentAiVoiceCard.MAX_LENGTH + 1)))
+                .when().put("/recruitment/email-settings")
+                .then().statusCode(400);
     }
 
     // ---- Copies ------------------------------------------------------------------

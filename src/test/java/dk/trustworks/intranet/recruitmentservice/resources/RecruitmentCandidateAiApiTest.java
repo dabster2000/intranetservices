@@ -381,7 +381,7 @@ class RecruitmentCandidateAiApiTest {
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
     void regenerate_runsPipelineSynchronously_originRegenerate_noSourceSeq() throws Exception {
         when(openAIService.askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean())).thenReturn("""
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn("""
                 {"suggestions":{
                   "educationLevel":"MASTER","educationLevelEvidence":"cand.merc.",
                   "experienceLevel":null,"experienceLevelEvidence":null,

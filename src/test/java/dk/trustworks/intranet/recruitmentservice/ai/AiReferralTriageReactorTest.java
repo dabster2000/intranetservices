@@ -14,12 +14,14 @@ import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.UUID;
 
 import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions.PII_SENTINEL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,6 +43,15 @@ import static org.mockito.Mockito.when;
  */
 @QuarkusTest
 class AiReferralTriageReactorTest {
+
+    /** The same config the reactor reads — assertions compare against these, not literals. */
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "dk.trustworks.recruitment.ai.extraction-model")
+    String configuredExtractionModel;
+
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "dk.trustworks.recruitment.ai.extraction-reasoning-effort")
+    String configuredExtractionEffort;
 
     private static final String TRIAGE_FLAG = "recruitment.ai.referral-triage.enabled";
 
@@ -134,7 +145,7 @@ class AiReferralTriageReactorTest {
 
     private void stubOpenAi(String json) {
         when(openAIService.askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean())).thenReturn(json);
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn(json);
     }
 
     private List<RecruitmentEvent> referralAiEvents(String referral) {
@@ -168,6 +179,22 @@ class AiReferralTriageReactorTest {
 
         reactor.catchUp();
 
+        // The referral path shares the intake path's extraction wiring — assert the
+        // configured model, the raised budget and the pinned reasoning effort all reach
+        // OpenAIService. Before this was pinned, the shared gpt-5-nano default burned its
+        // 800-token budget on reasoning and answered with no output text (staging 07-24).
+        ArgumentCaptor<String> modelArg = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Integer> budgetArg = ArgumentCaptor.forClass(Integer.class);
+        ArgumentCaptor<String> effortArg = ArgumentCaptor.forClass(String.class);
+        verify(openAIService).askQuestionWithSchema(anyString(), anyString(), any(), any(),
+                any(), modelArg.capture(), budgetArg.capture(), anyBoolean(), effortArg.capture());
+        assertEquals(configuredExtractionModel, modelArg.getValue());
+        assertNotEquals("test-model", modelArg.getValue(),
+                "must not fall back to the global openai.model");
+        assertEquals(4096, budgetArg.getValue().intValue(),
+                "referral triage must pass the raised budget (800 caused empty output)");
+        assertEquals(configuredExtractionEffort, effortArg.getValue());
+
         List<RecruitmentEvent> events = referralAiEvents(referralUuid);
         assertEquals(1, events.size());
         RecruitmentEvent event = events.get(0);
@@ -181,7 +208,8 @@ class AiReferralTriageReactorTest {
         JsonNode payload = MAPPER.readTree(event.getPayload());
         assertEquals(referralUuid, payload.path("referral_uuid").asText());
         assertEquals("referral-triage-v1", payload.path("prompt_version").asText());
-        assertEquals("test-model", payload.path("model").asText());
+        // The model that actually answered — the extraction override, not the global default.
+        assertEquals(configuredExtractionModel, payload.path("model").asText());
         assertEquals(seq, payload.path("source_event_seq").asLong());
         assertEquals(3, payload.path("fields").size());
 
@@ -221,7 +249,7 @@ class AiReferralTriageReactorTest {
         reactor.catchUp();
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, referralAiEvents(referralUuid).size());
         assertTrue(reactor.watermark() >= seq);
     }
@@ -236,7 +264,7 @@ class AiReferralTriageReactorTest {
         reactor.catchUp();
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, referralAiEvents(ghost).size());
         assertTrue(reactor.watermark() >= seq);
     }
@@ -252,7 +280,7 @@ class AiReferralTriageReactorTest {
             reactor.catchUp();
 
             verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                    any(), any(), anyInt(), anyBoolean());
+                    any(), any(), anyInt(), anyBoolean(), any());
             assertEquals(0, referralAiEvents(triaged).size());
         } finally {
             QuarkusTransaction.requiringNew().run(() -> {
@@ -275,7 +303,7 @@ class AiReferralTriageReactorTest {
         reactor.deliverLive(seq);
 
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(1, referralAiEvents(referralUuid).size());
     }
 }

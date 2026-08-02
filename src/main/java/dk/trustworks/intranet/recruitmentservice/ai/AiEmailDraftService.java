@@ -8,6 +8,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -31,7 +32,11 @@ import java.util.Set;
  * Model inputs are deliberately limited to the rendered template, the
  * candidate's first name, the position title, the current stage and the
  * instruction — never scorecards or notes (rejection texts must not leak
- * assessment material).
+ * assessment material). The system prompt additionally carries the
+ * Trustworks tone-of-voice card when one is configured
+ * ({@link RecruitmentAiVoiceCard}) — operator-authored style guidance, read
+ * with the other inputs in phase 1 so the untransacted OpenAI leg makes no
+ * DB call.
  * <p>
  * Transaction posture mirrors {@link AiIntakeGenerationService}'s
  * M1-safe variant: inputs are gathered in a short completed transaction,
@@ -76,6 +81,9 @@ public class AiEmailDraftService {
     @Inject
     RecruitmentEmailService emailService;
 
+    @Inject
+    RecruitmentAiVoiceCard voiceCard;
+
     /** The draft the endpoint answers with — same shape as a template render. */
     public record Draft(String subject, String body, Set<String> unresolvedFields) {
     }
@@ -85,7 +93,8 @@ public class AiEmailDraftService {
                                  String templateUuid, String templateKey,
                                  String applicationUuid, String positionUuid,
                                  String positionTitle, String stage,
-                                 String renderedSubject, String renderedBody) {
+                                 String renderedSubject, String renderedBody,
+                                 String voiceCard) {
     }
 
     /**
@@ -135,13 +144,16 @@ public class AiEmailDraftService {
                 position == null ? null : position.getTitle(),
                 application == null || application.getStage() == null
                         ? null : application.getStage().name(),
-                rendered.subject(), rendered.body());
+                rendered.subject(), rendered.body(),
+                // Read inside phase 1: the settings lookup is a DB read and
+                // must not happen on the untransacted OpenAI leg.
+                voiceCard.effectiveCard());
     }
 
     /** Phase 2: the plain-text round-trip — network only, no DB access. */
     private String callModel(PreparedDraft prepared, String instruction) {
         String raw = openAIService.generatePlainText(
-                AiEmailComposerPrompts.systemPrompt(),
+                AiEmailComposerPrompts.systemPrompt(prepared.voiceCard()),
                 AiEmailComposerPrompts.userPrompt(prepared.candidateFirstName(),
                         prepared.positionTitle(), prepared.stage(),
                         prepared.renderedBody(), instruction),
@@ -175,6 +187,11 @@ public class AiEmailDraftService {
                 .payload("template_key", prepared.templateKey())
                 .payload("model", draftModel)
                 .payload("prompt_version", AiEmailComposerPrompts.PROMPT_VERSION)
+                // Structural, not personal: says whether the tone-of-voice
+                // card was in force, so the spec's Danish spot review can
+                // tell voice-guided drafts from opted-out ones.
+                .payload("voice_card_applied", prepared.voiceCard() != null
+                        && !prepared.voiceCard().isBlank())
                 .pii("subject", prepared.renderedSubject())
                 .pii("body", body);
         if (instruction != null && !instruction.isBlank()) {

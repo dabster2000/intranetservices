@@ -21,6 +21,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -74,8 +76,17 @@ public class AiIntakeGenerationService {
     public static final String FIELD_LANGUAGES = "LANGUAGES";
     public static final String FIELD_CURRENT_EMPLOYER = "CURRENT_EMPLOYER";
 
-    /** Combined intake+brief output budget (contract §5) — keeps the in-tx call bounded. */
-    static final int MAX_OUTPUT_TOKENS = 2000;
+    /**
+     * Combined intake+brief output budget (contract §5) — keeps the in-tx call bounded.
+     * <p>
+     * On a reasoning-class model this budget covers hidden reasoning tokens FIRST and the
+     * visible answer second: at 2 000 the model regularly spent the whole budget thinking and
+     * answered 2xx with no output text, which surfaces as {@code "{}"} and a 500 ("no usable
+     * output") — the 2026-08-01 staging incident, and the same defect the employee-documents
+     * feature hit and fixed by raising its budgets. 8 192 matches that precedent. The budget is
+     * a spend ceiling, not a target: a successful call still bills only the tokens it uses.
+     */
+    static final int MAX_OUTPUT_TOKENS = 8192;
     static final int MAX_EVIDENCE_CHARS = 200;
     static final int MAX_BULLET_CHARS = 400;
     /** Contract §4.3: the brief is 3–5 bullets — fewer than 3 valid ⇒ no brief. */
@@ -86,6 +97,37 @@ public class AiIntakeGenerationService {
     static final int MAX_EMPLOYER_CHARS = 200;
 
     private static final String SCHEMA_NAME = "RecruitmentAiIntake";
+
+    /**
+     * The extraction model for the TEXT path (shared with
+     * {@link AiReferralTriageReactor}, mirroring how {@code draft-model} is shared by the
+     * composer and the digests). Kept off the global {@code openai.model} deliberately:
+     * that default is {@code gpt-5-nano}, whose reasoning spend caused the 2026-08-01
+     * empty-output failures, and it retires 2026-12-11. Override per env with
+     * {@code DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_MODEL}.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.ai.extraction-model", defaultValue = "gpt-5.6-terra")
+    String extractionModel;
+
+    /**
+     * {@code reasoning.effort} for the extraction call. Reading facts out of a CV is
+     * mechanical work, so a low effort keeps the output budget for the actual answer.
+     * <p>
+     * Declared {@code Optional<String>} deliberately: an EMPTY value must mean "omit the
+     * reasoning node" (required if {@link #extractionModel} is ever pointed at a
+     * non-reasoning gpt-4o-family model, which rejects the node). A plain {@code String}
+     * cannot express that — SmallRye converts an empty-but-present value to null, and
+     * because the raw value is non-null the {@code defaultValue} never rescues it, so the
+     * whole application fails to boot with SRCFG00040. That is the same trap this repo
+     * already has with {@code cvtool.username}/{@code cvtool.password}.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.ai.extraction-reasoning-effort", defaultValue = "low")
+    Optional<String> extractionReasoningEffort;
+
+    /** The effort to send, or null to omit the reasoning node entirely. */
+    private String reasoningEffortOrNull() {
+        return extractionReasoningEffort.filter(e -> !e.isBlank()).orElse(null);
+    }
 
     @Inject
     ObjectMapper objectMapper;
@@ -242,13 +284,17 @@ public class AiIntakeGenerationService {
                     prepared.schema(), SCHEMA_NAME,
                     null, model, MAX_OUTPUT_TOKENS, false);
         } else {
-            model = openAIService.getDefaultModel();
+            // Text path — pinned to the extraction model with an explicit reasoning effort.
+            // The vision branch above deliberately keeps its own (non-reasoning) vision model
+            // and passes NO effort: gpt-4o-family models reject the reasoning node.
+            model = extractionModel;
             json = openAIService.askQuestionWithSchema(prepared.systemPrompt(),
                     AiIntakePrompts.userPrompt(prepared.candidateName(),
                             prepared.position().getTitle(),
                             prepared.position().getPracticeName(), prepared.answersText(),
                             prepared.cv().text()),
-                    prepared.schema(), SCHEMA_NAME, null, null, MAX_OUTPUT_TOKENS, false);
+                    prepared.schema(), SCHEMA_NAME, null, extractionModel, MAX_OUTPUT_TOKENS, false,
+                    reasoningEffortOrNull());
         }
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             // Never log the prompt or output body — just the fact.
