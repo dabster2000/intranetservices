@@ -462,6 +462,32 @@ dk:
         # capable) model. Override per env with
         # DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL.
         draft-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_DRAFT_MODEL:gpt-4o-mini}
+        # Model for the strict-schema EXTRACTION calls — P9 candidate intake
+        # (AiIntakeGenerationService, text path) and referral triage
+        # (AiReferralTriageReactor). Deliberately NOT the global openai.model:
+        # that default is gpt-5-nano, which spent its whole output budget on
+        # hidden reasoning and answered 2xx with no output text (staging
+        # 2026-08-01 — "AI intake generation returned no usable output" 500s),
+        # and gpt-5-nano-2025-08-07 retires 2026-12-11 with gpt-5.6-luna named
+        # by OpenAI as its replacement. Terra is the mid tier of that family;
+        # this workload is tens of CVs/month, so the tier is a quality choice,
+        # not a cost one. Both models support strict structured outputs
+        # (including minItems/maxItems, which the brief schema uses). Neither
+        # path sets temperature, so the gpt-5-family temperature restriction
+        # does not apply here. Override per env with
+        # DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_MODEL.
+        extraction-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_MODEL:gpt-5.6-terra}
+        # reasoning.effort for those extraction calls: none, minimal, low,
+        # medium, high, xhigh, max. Pulling facts out of a CV is mechanical, so
+        # a low effort leaves the output budget for the actual answer. An EMPTY
+        # value omits the reasoning node entirely — REQUIRED if extraction-model
+        # is ever pointed at a non-reasoning (gpt-4o-family) model, which
+        # rejects the node. That is why the injection point is Optional<String>:
+        # with a plain String an empty-but-present value converts to null and
+        # Quarkus aborts startup with SRCFG00040 (the trap cvtool.username and
+        # cvtool.password already demonstrate in this file) — the defaultValue
+        # does NOT rescue it, because the raw value is present.
+        extraction-reasoning-effort: ${DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_REASONING_EFFORT:low}
       # P17 SLA sweep (recruitment-sla-sweep, daily 07:00 UTC): kill switch
       # for the nudge DMs. The sweep is additionally a no-op while the
       # recruitment.interviews.enabled app setting is off; the three

@@ -185,7 +185,7 @@ public class OpenAIService {
     public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName,
                                         String refusalFallbackJson, String modelOverride, int maxOutputTokensOverride) {
         return askQuestionWithSchemaInternal(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
-                modelOverride, maxOutputTokensOverride, null);
+                modelOverride, maxOutputTokensOverride, null, null);
     }
 
     /**
@@ -197,17 +197,35 @@ public class OpenAIService {
                                         String refusalFallbackJson, String modelOverride,
                                         int maxOutputTokensOverride, boolean store) {
         return askQuestionWithSchemaInternal(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
-                modelOverride, maxOutputTokensOverride, store);
+                modelOverride, maxOutputTokensOverride, store, null);
+    }
+
+    /**
+     * Structured-output overload that also pins {@code reasoning.effort}. Reasoning-class models
+     * (the gpt-5 / gpt-5.6 families) otherwise run at their DEFAULT effort and can spend the whole
+     * {@code max_output_tokens} budget on hidden reasoning, answering 2xx with no output text —
+     * which this class reports as the literal {@code "{}"}. Pin a low effort for mechanical
+     * extraction work.
+     *
+     * @param reasoningEffort {@code none}, {@code minimal}, {@code low}, {@code medium}, {@code high},
+     *                        {@code xhigh} or {@code max}; null/blank keeps the previous request shape.
+     *                        MUST be null for non-reasoning models (the gpt-4o family rejects the node).
+     */
+    public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName,
+                                        String refusalFallbackJson, String modelOverride,
+                                        int maxOutputTokensOverride, boolean store, String reasoningEffort) {
+        return askQuestionWithSchemaInternal(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
+                modelOverride, maxOutputTokensOverride, store, reasoningEffort);
     }
 
     private String askQuestionWithSchemaInternal(String system, String userMsg, ObjectNode jsonSchema,
                                                  String schemaName, String refusalFallbackJson,
                                                  String modelOverride, int maxOutputTokensOverride,
-                                                 Boolean store) {
+                                                 Boolean store, String reasoningEffort) {
         String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
             ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
-                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096, reasoningEffort);
             if (store != null) {
                 req.put("store", store);
             }
@@ -250,7 +268,12 @@ public class OpenAIService {
                 }
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
-            return extractOutputTextOrEmpty(root);
+            String out = extractOutputTextOrEmpty(root);
+            if ("{}".equals(out)) {
+                logEmptyOutputDiagnostics(root, chosenModel,
+                        maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+            }
+            return out;
 
         } catch (jakarta.ws.rs.WebApplicationException e) {
             // The REST client throws for 4xx/5xx before the status branch above runs; the
@@ -854,7 +877,12 @@ public class OpenAIService {
                 }
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
-            return extractOutputTextOrEmpty(root);
+            String out = extractOutputTextOrEmpty(root);
+            if ("{}".equals(out)) {
+                logEmptyOutputDiagnostics(root, chosenModel,
+                        maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+            }
+            return out;
 
         } catch (Exception e) {
             if (Boolean.FALSE.equals(store)) {
@@ -1094,14 +1122,57 @@ public class OpenAIService {
 
     /* ----------------- helpers ----------------- */
 
+    /**
+     * Diagnose a 2xx Responses answer that carried no output text — the ONLY silent failure
+     * path in the strict-schema methods (every other branch logs at ERROR/WARN). A strict
+     * schema with required properties can never legitimately answer {@code {}}, so an empty
+     * extraction always means the model produced nothing; reasoning-class models reach this
+     * state by spending {@code max_output_tokens} on hidden reasoning.
+     * <p>
+     * Logs ONLY structural fields the API reports about itself — response status,
+     * {@code incomplete_details.reason} and token counts. Never prompt or output content, so
+     * this is safe on the {@code store=false} privacy-sensitive paths (candidate CVs, HR data).
+     */
+    private void logEmptyOutputDiagnostics(JsonNode root, String chosenModel, int maxOutputTokens) {
+        JsonNode usage = root.path("usage");
+        log.warnf("[OpenAIService] 2xx response carried NO output text — model=%s status=%s "
+                        + "incomplete_reason=%s max_output_tokens=%d output_tokens=%d reasoning_tokens=%d. "
+                        + "Usually the output budget was consumed by reasoning: raise the budget, "
+                        + "lower reasoning effort, or use a non-reasoning model.",
+                chosenModel,
+                root.path("status").asText("?"),
+                root.path("incomplete_details").path("reason").asText("?"),
+                maxOutputTokens,
+                usage.path("output_tokens").asInt(-1),
+                usage.path("output_tokens_details").path("reasoning_tokens").asInt(-1));
+    }
+
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
         return baseSchemaRequest(jsonSchema, schemaName, model, 4096);
     }
 
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName, String modelOverride, int maxOutputTokens) {
+        return baseSchemaRequest(jsonSchema, schemaName, modelOverride, maxOutputTokens, null);
+    }
+
+    /**
+     * @param reasoningEffort optional {@code reasoning.effort} for reasoning-class models
+     *                        ({@code none}, {@code minimal}, {@code low}, {@code medium},
+     *                        {@code high}, {@code xhigh}, {@code max}). Null/blank omits the
+     *                        node entirely — required for non-reasoning models (the gpt-4o
+     *                        family), which reject an unexpected {@code reasoning} node.
+     *                        Config-driven callers must inject this as {@code Optional<String>}:
+     *                        a plain {@code String} config property cannot carry an empty value
+     *                        without failing startup (SRCFG00040).
+     */
+    private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName, String modelOverride,
+                                         int maxOutputTokens, String reasoningEffort) {
         ObjectNode req = objectMapper.createObjectNode();
         req.put("model", modelOverride != null && !modelOverride.isBlank() ? modelOverride : model);
         req.put("max_output_tokens", maxOutputTokens > 0 ? maxOutputTokens : 4096);
+        if (reasoningEffort != null && !reasoningEffort.isBlank()) {
+            req.putObject("reasoning").put("effort", reasoningEffort.trim());
+        }
 
         // Responses API structured outputs:
         // text: {

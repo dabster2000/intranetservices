@@ -25,6 +25,7 @@ import java.util.UUID;
 import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions.PII_SENTINEL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -50,6 +51,15 @@ class AiIntakeReactorTest {
 
     private static final String INTAKE_FLAG = "recruitment.ai.intake.enabled";
     private static final String BRIEF_FLAG = "recruitment.ai.brief.enabled";
+
+    /** The same config the service reads — assertions compare against these, not literals. */
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "dk.trustworks.recruitment.ai.extraction-model")
+    String configuredExtractionModel;
+
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "dk.trustworks.recruitment.ai.extraction-reasoning-effort")
+    String configuredExtractionEffort;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -168,7 +178,7 @@ class AiIntakeReactorTest {
 
     private void stubOpenAi(String json) {
         when(openAIService.askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean())).thenReturn(json);
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn(json);
     }
 
     private JsonNode json(String raw) throws Exception {
@@ -186,12 +196,35 @@ class AiIntakeReactorTest {
         reactor.catchUp();
 
         ArgumentCaptor<ObjectNode> schema = ArgumentCaptor.forClass(ObjectNode.class);
+        ArgumentCaptor<String> modelArg = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Integer> budgetArg = ArgumentCaptor.forClass(Integer.class);
+        ArgumentCaptor<String> effortArg = ArgumentCaptor.forClass(String.class);
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), anyString(),
-                schema.capture(), any(), any(), any(), anyInt(), anyBoolean());
+                schema.capture(), any(), any(), modelArg.capture(), budgetArg.capture(),
+                anyBoolean(), effortArg.capture());
         assertTrue(schema.getValue().path("properties").has("suggestions"),
                 "combined schema must carry the suggestions section");
         assertTrue(schema.getValue().path("properties").has("brief"),
                 "combined schema must carry the brief section");
+        // The 2026-08-01 staging incident: the global openai.model (gpt-5-nano) spent the
+        // whole budget on hidden reasoning and answered with no output text. The text path
+        // must therefore pin its own model, an explicit reasoning effort, and the raised
+        // budget — assert all three actually reach OpenAIService.
+        // Compared against the injected config values, not literals: the assertion is
+        // "the configured model/effort is what reaches OpenAIService", which stays true
+        // if the production default is ever retuned. getDefaultModel() is stubbed to
+        // "test-model", so this still proves the global default is NOT being used.
+        assertEquals(configuredExtractionModel, modelArg.getValue(),
+                "text path must pass the configured extraction model, not the global default");
+        assertNotEquals("test-model", modelArg.getValue(),
+                "text path must not fall back to the global openai.model");
+        assertEquals(configuredExtractionEffort, effortArg.getValue(),
+                "text path must pin reasoning effort so reasoning cannot eat the output budget");
+        // Literal, NOT the constant: comparing the constant to itself is a tautology that
+        // would still pass if the budget were reverted to the 2000 that caused the
+        // 2026-08-01 empty-output 500s. The literal is the actual regression guard.
+        assertEquals(8192, budgetArg.getValue().intValue(),
+                "text path must pass the raised output budget (2000 caused the staging 500s)");
         verify(openAIService, never()).askWithSchemaAndImage(anyString(), anyString(), anyString(),
                 anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean());
 
@@ -215,7 +248,9 @@ class AiIntakeReactorTest {
         JsonNode payload = json(suggestionEvent.getPayload());
         assertEquals("reactor", payload.path("origin").asText());
         assertEquals("intake-v1", payload.path("prompt_version").asText());
-        assertEquals("test-model", payload.path("model").asText());
+        // The TEXT path records the configured extraction model, not the global
+        // openai.model default (stubbed to "test-model" above).
+        assertEquals(configuredExtractionModel, payload.path("model").asText());
         assertEquals(seq, payload.path("source_event_seq").asLong());
         assertFalse(payload.path("generation_id").asText().isBlank());
         assertEquals(5, payload.path("fields").size(), "all five valid suggestions recorded");
@@ -245,7 +280,7 @@ class AiIntakeReactorTest {
 
         ArgumentCaptor<ObjectNode> schema = ArgumentCaptor.forClass(ObjectNode.class);
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), anyString(),
-                schema.capture(), any(), any(), any(), anyInt(), anyBoolean());
+                schema.capture(), any(), any(), any(), anyInt(), anyBoolean(), any());
         assertTrue(schema.getValue().path("properties").has("suggestions"));
         assertFalse(schema.getValue().path("properties").has("brief"));
 
@@ -263,7 +298,7 @@ class AiIntakeReactorTest {
 
         ArgumentCaptor<ObjectNode> schema = ArgumentCaptor.forClass(ObjectNode.class);
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), anyString(),
-                schema.capture(), any(), any(), any(), anyInt(), anyBoolean());
+                schema.capture(), any(), any(), any(), anyInt(), anyBoolean(), any());
         assertFalse(schema.getValue().path("properties").has("suggestions"));
         JsonNode briefSchema = schema.getValue().path("properties").path("brief");
         assertFalse(briefSchema.isMissingNode(), "schema must carry the brief section");
@@ -310,7 +345,7 @@ class AiIntakeReactorTest {
         reactor.catchUp();
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
         assertTrue(reactor.watermark() >= seq, "flag-off events are marked processed, not blocked");
     }
@@ -326,7 +361,7 @@ class AiIntakeReactorTest {
         reactor.catchUp(); // nothing pending anymore
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
     }
 
@@ -341,7 +376,7 @@ class AiIntakeReactorTest {
         reactor.deliverLive(seq); // watermark filters the duplicate
 
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(1, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
         assertEquals(1, aiEvents(candidateUuid, RecruitmentEventType.AI_BRIEF_GENERATED).size());
     }
@@ -361,7 +396,7 @@ class AiIntakeReactorTest {
         assertTrue(reactor.watermark() >= seq, "poison skip advances the watermark");
 
         verify(openAIService, times(2)).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
         assertEquals(0, aiEvents(candidateUuid, RecruitmentEventType.AI_BRIEF_GENERATED).size());
     }
@@ -398,7 +433,7 @@ class AiIntakeReactorTest {
         reactor.catchUp();
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(1, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size(),
                 "only the pre-existing generation remains");
     }
@@ -416,7 +451,7 @@ class AiIntakeReactorTest {
             reactor.catchUp();
 
             verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                    any(), any(), anyInt(), anyBoolean());
+                    any(), any(), anyInt(), anyBoolean(), any());
             assertEquals(0, aiEvents(orphanCandidate,
                     RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
         } finally {
@@ -440,7 +475,7 @@ class AiIntakeReactorTest {
 
         ArgumentCaptor<String> userPrompt = ArgumentCaptor.forClass(String.class);
         verify(openAIService, times(1)).askQuestionWithSchema(anyString(), userPrompt.capture(),
-                any(), any(), any(), any(), anyInt(), anyBoolean());
+                any(), any(), any(), any(), anyInt(), anyBoolean(), any());
         assertTrue(userPrompt.getValue().contains(answer),
                 "candidate-scoped answers must reach the prompt when the application leg is empty");
         assertTrue(userPrompt.getValue().contains("<<<KANDIDATMATERIALE"),
@@ -601,7 +636,7 @@ class AiIntakeReactorTest {
         reactor.catchUp();
 
         verify(openAIService, never()).askQuestionWithSchema(anyString(), anyString(), any(), any(),
-                any(), any(), anyInt(), anyBoolean());
+                any(), any(), anyInt(), anyBoolean(), any());
         assertEquals(0, aiEvents(candidateUuid, RecruitmentEventType.AI_SUGGESTIONS_GENERATED).size());
     }
 

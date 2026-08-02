@@ -16,6 +16,7 @@ import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFl
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,8 +57,13 @@ public class AiReferralTriageReactor extends RecruitmentReactor {
     public static final String FIELD_EXPERIENCE_LEVEL = "EXPERIENCE_LEVEL";
     public static final String FIELD_RELEVANT_TEAMLEAD = "RELEVANT_TEAMLEAD";
 
-    /** Small structured output — a triple of picks with one-line rationales. */
-    static final int MAX_OUTPUT_TOKENS = 800;
+    /**
+     * Small structured output — a triple of picks with one-line rationales. The budget is
+     * nonetheless generous because a reasoning-class model spends it on hidden reasoning
+     * first: at 800 this call hit the same empty-output 2xx as the intake path
+     * (2026-07-24 staging). It is a spend ceiling, not a target.
+     */
+    static final int MAX_OUTPUT_TOKENS = 4096;
     static final int MAX_RATIONALE_CHARS = 200;
 
     private static final String SCHEMA_NAME = "RecruitmentAiReferralTriage";
@@ -65,6 +71,23 @@ public class AiReferralTriageReactor extends RecruitmentReactor {
     private static final com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>> JSON_OBJECT =
             new com.fasterxml.jackson.core.type.TypeReference<>() {
             };
+
+    /** Shared with {@link AiIntakeGenerationService} — see its field docs. */
+    @ConfigProperty(name = "dk.trustworks.recruitment.ai.extraction-model", defaultValue = "gpt-5.6-terra")
+    String extractionModel;
+
+    /**
+     * Shared with {@link AiIntakeGenerationService} — see its field docs for why this is
+     * {@code Optional<String>} rather than a plain String (an empty value must omit the
+     * reasoning node, not crash startup).
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.ai.extraction-reasoning-effort", defaultValue = "low")
+    java.util.Optional<String> extractionReasoningEffort;
+
+    /** The effort to send, or null to omit the reasoning node entirely. */
+    private String reasoningEffortOrNull() {
+        return extractionReasoningEffort.filter(e -> !e.isBlank()).orElse(null);
+    }
 
     @Inject
     ObjectMapper objectMapper;
@@ -120,7 +143,8 @@ public class AiReferralTriageReactor extends RecruitmentReactor {
                 referral.getCandidateName(), referral.getWhyText(), referral.getLinkedinUrl());
 
         String json = openAIService.askQuestionWithSchema(system, user,
-                AiReferralTriagePrompts.schema(), SCHEMA_NAME, null, null, MAX_OUTPUT_TOKENS, false);
+                AiReferralTriagePrompts.schema(), SCHEMA_NAME, null, extractionModel, MAX_OUTPUT_TOKENS, false,
+                reasoningEffortOrNull());
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             throw new IllegalStateException(
                     "AI referral triage returned no usable output for referral " + referralUuid);
@@ -148,7 +172,9 @@ public class AiReferralTriageReactor extends RecruitmentReactor {
                 .payload("generation_id", generationId)
                 .payload("referral_uuid", referralUuid)
                 .payload("fields", suggestions.stream().map(s -> s.get("field")).toList())
-                .payload("model", openAIService.getDefaultModel())
+                // The model that ACTUALLY answered — this path passes extractionModel as an
+                // override, so the global openai.model default would misattribute the event.
+                .payload("model", extractionModel)
                 .payload("prompt_version", AiReferralTriagePrompts.PROMPT_VERSION)
                 .payload("source_event_seq", event.getSeq())
                 .pii("suggestions", suggestions);
