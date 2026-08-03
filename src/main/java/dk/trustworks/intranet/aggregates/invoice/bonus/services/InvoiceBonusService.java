@@ -630,19 +630,72 @@ public class InvoiceBonusService {
         ib.setComputedAmount(round2(computed));
     }
 
-    /** Recalc all bonuses for an invoice (honors line selections). */
+    /**
+     * Recalc all bonuses for an invoice, resolving the {@link Invoice} by uuid.
+     *
+     * <p><b>Prefer {@link #recalcForInvoice(Invoice)} whenever the caller already holds the
+     * entity.</b> Re-reading by uuid is not hazard-free: a caller whose transaction opened
+     * <em>before</em> the invoice row was committed by a nested {@code REQUIRES_NEW}
+     * transaction cannot see that row at all, because MariaDB's default REPEATABLE READ pins
+     * the transaction's consistent-read snapshot at its first read. That is exactly what
+     * happened on the draft-creation path — {@code InvoiceGenerator.createDraftInvoiceFromProject}
+     * (tx T1) → {@code InvoiceService.createDraftInvoice} ({@code REQUIRES_NEW}, tx T2, commits)
+     * → {@code InvoiceService.updateDraftInvoice} (joins T1) — where this lookup returned null
+     * on every single draft creation and the recalculation was skipped in silence.
+     *
+     * <p>The bulk {@code Invoice.update(...)} in {@code updateDraftInvoice} is unaffected by the
+     * same snapshot because DML performs a current read, which is why the skip stayed invisible:
+     * the save itself worked, only the bonus recomputation was dropped.
+     */
     @Transactional
     public void recalcForInvoice(String invoiceuuid) {
         log.debugf("recalcForInvoice: invoiceUuid=%s", invoiceuuid);
-        Invoice inv = Invoice.findById(invoiceuuid);
+        Invoice inv = findInvoiceById(invoiceuuid);
         if (inv == null) {
-            log.warnf("recalcForInvoice skipped: invoiceUuid=%s not found", invoiceuuid);
+            // invoice_bonuses.invoiceuuid is FK-constrained to invoices.uuid (fk_invbonus_invoice),
+            // so an invoice that is genuinely absent provably has no bonus rows and there is nothing
+            // to recompute. If rows DO come back, the invoice is invisible rather than absent and
+            // skipping would strand real money on a stale computedAmount — fail loudly instead.
+            List<InvoiceBonus> stranded = findByInvoice(invoiceuuid);
+            if (!stranded.isEmpty()) {
+                throw new IllegalStateException(
+                        "recalcForInvoice: invoice " + invoiceuuid + " is not resolvable but "
+                        + stranded.size() + " bonus row(s) reference it; refusing to silently skip "
+                        + "recalculation of computedAmount. The caller must pass the already-loaded "
+                        + "Invoice via recalcForInvoice(Invoice) from its own transaction.");
+            }
+            // Still ERROR, not WARN: a money recalculation that did not happen must be visible in
+            // the logs even when it is provably a no-op, because it always means a caller reached
+            // this method with a uuid its own transaction cannot resolve.
+            log.errorf("recalcForInvoice skipped: invoiceUuid=%s not resolvable in this transaction; "
+                    + "0 bonus rows reference it, so no computedAmount is stale. Caller should pass "
+                    + "the loaded Invoice entity instead of re-reading by uuid.", invoiceuuid);
             return;
         }
+        recalcForInvoice(inv);
+    }
+
+    /**
+     * Recalc all bonuses for an already-loaded invoice (honors line selections).
+     *
+     * <p>This is the preferred entry point. Beyond side-stepping the snapshot hazard described on
+     * {@link #recalcForInvoice(String)}, it computes from a strictly better basis: callers invoke
+     * this immediately after {@code InvoiceItemRecalculator.recalculateInvoiceItems(invoice)},
+     * which rebuilds {@code invoice.invoiceitems} and populates the {@code @Transient}
+     * {@code sumBeforeDiscounts}/{@code sumAfterDiscounts}/{@code grandTotal} fields in place.
+     * Those fields are never loaded by {@code Invoice.findById}, so the re-read path always fell
+     * back to {@link Invoice#getSumNoTax()}. The two agree by construction — every pricing delta
+     * is emitted as a synthetic invoice line — but only the passed entity carries the values the
+     * pricing engine actually computed.
+     */
+    @Transactional
+    public void recalcForInvoice(Invoice inv) {
+        Objects.requireNonNull(inv, "recalcForInvoice requires a non-null Invoice");
+        String invoiceuuid = inv.getUuid();
         List<InvoiceBonus> list = findByInvoice(invoiceuuid);
         log.debugf("recalcForInvoice: invoiceUuid=%s, bonusCount=%d", invoiceuuid, list.size());
         for (InvoiceBonus ib : list) {
-            List<InvoiceBonusLine> lines = InvoiceBonusLine.list("bonusuuid = ?1", ib.getUuid());
+            List<InvoiceBonusLine> lines = findLinesByBonus(ib.getUuid());
             if (!lines.isEmpty()) {
                 double amount = computeAmountFromLines(inv, lines);
                 ib.setShareType(InvoiceBonus.ShareType.AMOUNT);
@@ -653,6 +706,16 @@ public class InvoiceBonusService {
             }
             ib.persist();
         }
+    }
+
+    /** Hook for tests: resolves an invoice via Panache. */
+    protected Invoice findInvoiceById(String invoiceuuid) {
+        return Invoice.findById(invoiceuuid);
+    }
+
+    /** Hook for tests: loads a bonus's line selections via Panache. */
+    protected List<InvoiceBonusLine> findLinesByBonus(String bonusuuid) {
+        return InvoiceBonusLine.list("bonusuuid = ?1", bonusuuid);
     }
 
     private static int fiscalYearOf(LocalDate date) {

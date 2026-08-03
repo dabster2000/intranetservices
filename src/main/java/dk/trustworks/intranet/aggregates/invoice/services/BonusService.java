@@ -28,11 +28,14 @@ public class BonusService {
 
     /**
      * Recalculates bonus lines for the given invoice.
-     * Delegates to InvoiceBonusService.recalcForInvoice(uuid).
+     * Delegates to InvoiceBonusService.recalcForInvoice(Invoice) — the caller's already-loaded
+     * entity is forwarded as-is rather than re-read by uuid, which would discard the freshly
+     * priced state and, in a transaction whose snapshot predates the invoice's insert, resolve
+     * to null and skip the recalculation entirely.
      */
     @Transactional
     public void recalcForInvoice(Invoice invoice) {
-        invoiceBonusService.recalcForInvoice(invoice.getUuid());
+        invoiceBonusService.recalcForInvoice(invoice);
     }
 
     /**
