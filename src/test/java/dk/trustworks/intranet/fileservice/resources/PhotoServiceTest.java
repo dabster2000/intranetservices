@@ -316,6 +316,57 @@ class PhotoServiceTest {
                 .toList();
     }
 
+    // --- superseding an upload must not delete the user's documents -----------------------------
+    // The files table is shared across domains keyed on the same relateduuid. The upload path used
+    // to supersede on "relateduuid = ?1" alone, so replacing an employee's portrait deleted every
+    // DOCUMENT row that employee owned — on EVERY upload, because the callers always send a fresh
+    // uuid and therefore always take the delete-and-insert branch. In production 632 of 802 document
+    // rows are keyed on a user uuid, so the blast radius was most of the table.
+    //
+    // update() cannot be exercised here: it drives Panache statics and persist(), which need a
+    // session, and the local DB is read-only. What IS pinned is the invariant that made the bug
+    // possible — the supersede predicate must be type-scoped, and the lookup and the delete must
+    // use the same one.
+
+    @Test
+    void supersedeQueryIsScopedByTypeSoItCannotDeleteDocuments() {
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("type"),
+                "without a type predicate this deletes the user's DOCUMENT rows too, got: "
+                        + PhotoService.SUPERSEDED_ROWS_QUERY);
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("relateduuid"),
+                "must still be scoped to the one photo owner");
+        // Two positional parameters — relateduuid and type. A query carrying only ?1 has lost the
+        // type binding regardless of whether the word "type" survived in a comment or alias.
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("?1")
+                        && PhotoService.SUPERSEDED_ROWS_QUERY.contains("?2"),
+                "type must be a bound parameter, got: " + PhotoService.SUPERSEDED_ROWS_QUERY);
+    }
+
+    // --- stale thumbnail cleanup ----------------------------------------------------------------
+    // getResizedPhoto short-circuits on s3ObjectExists, so any thumbnail left behind by an upload
+    // serves the PREVIOUS photo forever. Deleting only COMMON_THUMBNAIL_WIDTHS missed the ad-hoc
+    // sizes the UI actually asks for (28, 36, 44, 56, 1), so those kept the old avatar permanently.
+
+    @Test
+    void everyResizedWidthIsRecognisedAsStaleNotJustTheCommonOnes() {
+        // isResizedKeyFor is what selects keys out of the bucket listing, so it must match the
+        // ad-hoc widths too — these are real values requested by the frontend today.
+        for (int width : new int[]{1, 28, 36, 44, 56, 200, 1337}) {
+            assertTrue(PhotoService.isResizedKeyFor("resized/" + width + "/" + RELATED_UUID, RELATED_UUID),
+                    "width " + width + " is requested via ?width= and must be cleaned up");
+        }
+    }
+
+    @Test
+    void thumbnailCleanupIgnoresOtherPeoplesThumbnails() {
+        assertFalse(PhotoService.isResizedKeyFor("resized/64/" + OTHER_UUID, RELATED_UUID),
+                "an unrelated user's thumbnail must survive this upload");
+        assertFalse(PhotoService.isResizedKeyFor("resized/64/prefix-" + RELATED_UUID, RELATED_UUID),
+                "suffix matching would delete a uuid that merely ends with the target");
+        assertFalse(PhotoService.isResizedKeyFor(RELATED_UUID, RELATED_UUID),
+                "the original photo object is not a thumbnail and must not be deleted");
+    }
+
     private void throwOnGetObject(S3Exception exception) {
         doThrow(exception).when(s3).getObject(any(GetObjectRequest.class), any(ResponseTransformer.class));
     }

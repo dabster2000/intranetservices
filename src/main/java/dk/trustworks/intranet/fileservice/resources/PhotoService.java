@@ -24,9 +24,12 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -44,6 +47,19 @@ public class PhotoService {
     private static final String PHOTO_CACHE = "photo-cache";
     private static final String PHOTO_RESIZE_CACHE = "photo-resize-cache";
     private static final String RESIZED_KEY_PREFIX = "resized/";
+
+    /**
+     * Selects the rows a new upload replaces. Used for BOTH the lookup of superseded uuids and the
+     * delete, so the two cannot drift apart.
+     * <p>
+     * The {@code type} predicate is load-bearing, not decoration. The {@code files} table is shared
+     * across domains keyed on the same {@code relateduuid}: employee documents
+     * ({@code UserDocumentResource}: {@code "relateduuid like ?1 AND type like 'DOCUMENT'"}) and
+     * recruitment attachments live there too. Without it, replacing an employee's portrait deleted
+     * every document that employee owned — on every upload, because callers always send a fresh
+     * uuid and so always take the delete-and-insert branch.
+     */
+    static final String SUPERSEDED_ROWS_QUERY = "relateduuid = ?1 AND type = ?2";
 
     private static final Map<String, String> MIME_TO_EXTENSION = new HashMap<>();
 
@@ -315,19 +331,57 @@ public class PhotoService {
 
         // Delete stale S3 thumbnails asynchronously
         CompletableFuture.runAsync(() -> {
-            for (int width : COMMON_THUMBNAIL_WIDTHS) {
-                String key = resizedKey(relateduuid, width);
+            for (String key : staleThumbnailKeys(relateduuid)) {
                 try {
                     s3.deleteObject(DeleteObjectRequest.builder()
                             .bucket(bucketName)
                             .key(key)
                             .build());
                     log.debug("Deleted stale S3 thumbnail: " + key);
-                } catch (S3Exception e) {
-                    log.debug("No S3 thumbnail to delete: " + key);
+                } catch (Exception e) {
+                    // Widened from S3Exception: an SdkClientException (connection reset, DNS) used
+                    // to escape this lambda, and CompletableFuture.runAsync swallows it silently —
+                    // the remaining widths were then never attempted.
+                    log.debugf("Could not delete S3 thumbnail %s: %s", key, e.toString());
                 }
             }
         });
+    }
+
+    /**
+     * Every thumbnail key a new upload for {@code relateduuid} has made stale.
+     * <p>
+     * The frontend requests ad-hoc sizes via {@code ?width=} — 28, 36, 44, 56 and 1 all appear in
+     * the UI — so deleting only {@link #COMMON_THUMBNAIL_WIDTHS} left those objects behind, and
+     * because {@link #getResizedPhoto} short-circuits on {@link #s3ObjectExists} they kept serving
+     * the <em>previous</em> photo forever. Listing the prefix is what makes the set complete.
+     * <p>
+     * The listing is best-effort: the hardcoded widths are always returned, so losing
+     * {@code s3:ListBucket} degrades this back to the old behaviour instead of skipping cleanup
+     * entirely. Uploads are rare (single digits per month), so scanning the prefix is cheap.
+     */
+    private Set<String> staleThumbnailKeys(String relateduuid) {
+        Set<String> keys = new LinkedHashSet<>();
+        for (int width : COMMON_THUMBNAIL_WIDTHS) {
+            keys.add(resizedKey(relateduuid, width));
+        }
+        try {
+            ListObjectsV2Request.Builder request = ListObjectsV2Request.builder()
+                    .bucket(bucketName)
+                    .prefix(RESIZED_KEY_PREFIX);
+            for (ListObjectsV2Response page : s3.listObjectsV2Paginator(request.build())) {
+                for (S3Object object : page.contents()) {
+                    if (isResizedKeyFor(object.key(), relateduuid)) {
+                        keys.add(object.key());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warnf("Could not list %s to find every stale thumbnail for %s (%s) — "
+                            + "falling back to the common widths only",
+                    RESIZED_KEY_PREFIX, relateduuid, e.toString());
+        }
+        return keys;
     }
 
     /**
@@ -365,8 +419,11 @@ public class PhotoService {
                 || isResizedKeyFor(key, relateduuid);
     }
 
-    /** Matches {@code resized/{width}/{relateduuid}} for this relateduuid at any width. */
-    private static boolean isResizedKeyFor(String key, String relateduuid) {
+    /**
+     * Matches {@code resized/{width}/{relateduuid}} for this relateduuid at any width — which is
+     * what lets the cleanup cover the ad-hoc {@code ?width=} sizes, not just the common ones.
+     */
+    static boolean isResizedKeyFor(String key, String relateduuid) {
         if (!key.startsWith(RESIZED_KEY_PREFIX)) {
             return false;
         }
@@ -439,12 +496,20 @@ public class PhotoService {
             existingPhoto.setType(photo.getType());
             existingPhoto.setUploaddate(photo.getUploaddate());
         } else {
-            // Delete old photos with same relateduuid (File.file is @Transient, so this reads
-            // metadata rows only — no blobs are pulled just to learn the superseded uuids).
-            File.<File>find("relateduuid = ?1", photo.getRelateduuid())
+            // Supersede only rows of the SAME type. The files table is shared: employee documents
+            // live in it keyed on the same relateduuid (UserDocumentResource queries
+            // "relateduuid like ?1 AND type like 'DOCUMENT'"), as do recruitment attachments.
+            // Matching on relateduuid alone therefore deleted every document belonging to the user
+            // whose portrait was being replaced — and because the callers always send a fresh uuid,
+            // existingPhoto is always null and this branch runs on every single upload.
+            // The reader is type-scoped too (findPhotoByRelatedUUID filters type = 'PHOTO'), so
+            // scoping the delete the same way supersedes exactly what the reader could return.
+            // (File.file is @Transient, so this reads metadata rows only — no blobs are pulled
+            // just to learn the superseded uuids.)
+            File.<File>find(SUPERSEDED_ROWS_QUERY, photo.getRelateduuid(), photo.getType())
                     .list()
                     .forEach(superseded -> supersededUuids.add(superseded.getUuid()));
-            File.delete("relateduuid = ?1", photo.getRelateduuid());
+            File.delete(SUPERSEDED_ROWS_QUERY, photo.getRelateduuid(), photo.getType());
             // Insert new photo using Panache persist
             photo.persist();
         }
