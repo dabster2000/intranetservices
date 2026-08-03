@@ -155,7 +155,11 @@ public class ContractService {
     }
 
     public Optional<Contract> findActiveContractByClientAndUserAndDate(String clientUuid, String userUuid, LocalDate date) {
-        String sql = "SELECT c.* FROM contracts c " +
+        return findActiveContractsByClientAndUserAndDate(clientUuid, userUuid, date).stream().findFirst();
+    }
+
+    public List<Contract> findActiveContractsByClientAndUserAndDate(String clientUuid, String userUuid, LocalDate date) {
+        String sql = "SELECT DISTINCT c.* FROM contracts c " +
                 "JOIN contract_consultants cc ON c.uuid = cc.contractuuid " +
                 "WHERE c.clientuuid = :clientUuid " +
                 "AND cc.useruuid = :userUuid " +
@@ -170,10 +174,34 @@ public class ContractService {
         try {
             @SuppressWarnings("unchecked")
             List<Contract> results = query.getResultList();
-            return results.stream().findFirst();
+            return results;
         } catch (Exception e) {
             log.warnf("Failed to find contract for client=%s user=%s date=%s: %s", clientUuid, userUuid, date, e.getMessage());
-            return Optional.empty();
+            return List.of();
+        }
+    }
+
+    public List<Contract> findActiveContractsByProjectAndUserAndDate(String projectUuid, String userUuid, LocalDate date) {
+        String sql = "SELECT DISTINCT c.* FROM contracts c " +
+                "JOIN contract_project cp ON cp.contractuuid = c.uuid " +
+                "JOIN contract_consultants cc ON c.uuid = cc.contractuuid " +
+                "WHERE cp.projectuuid = :projectUuid " +
+                "AND cc.useruuid = :userUuid " +
+                "AND cc.activefrom <= :date " +
+                "AND (cc.activeto IS NULL OR cc.activeto >= :date) " +
+                "AND c.status IN ('TIME','SIGNED','CLOSED') " +
+                "AND cc.hours > 0";
+        Query query = em.createNativeQuery(sql, Contract.class);
+        query.setParameter("projectUuid", projectUuid);
+        query.setParameter("userUuid", userUuid);
+        query.setParameter("date", date);
+        try {
+            @SuppressWarnings("unchecked")
+            List<Contract> results = query.getResultList();
+            return results;
+        } catch (Exception e) {
+            log.warnf("Failed to find contract for project=%s user=%s date=%s: %s", projectUuid, userUuid, date, e.getMessage());
+            return List.of();
         }
     }
 

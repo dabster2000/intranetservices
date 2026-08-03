@@ -132,11 +132,26 @@ public class ContractResource {
     public Response lookupContract(
             @QueryParam("clientUuid") String clientUuid,
             @QueryParam("userUuid") String userUuid,
+            @QueryParam("projectUuid") String projectUuid,
             @QueryParam("date") String date) {
-        return contractService.findActiveContractByClientAndUserAndDate(
-                clientUuid, userUuid, dateIt(date))
-                .map(c -> Response.ok(new KeyValueDTO("contractUuid", c.getUuid())).build())
-                .orElse(Response.status(Response.Status.NOT_FOUND).build());
+        LocalDate lookupDate = dateIt(date);
+        List<Contract> matches;
+        if (projectUuid != null && !projectUuid.isBlank()) {
+            matches = contractService.findActiveContractsByProjectAndUserAndDate(projectUuid, userUuid, lookupDate);
+            if (matches.isEmpty()) {
+                // No contract_project link covers the task's project — fall back to
+                // client-level resolution so clients without project links keep working.
+                matches = contractService.findActiveContractsByClientAndUserAndDate(clientUuid, userUuid, lookupDate);
+            }
+        } else {
+            matches = contractService.findActiveContractsByClientAndUserAndDate(clientUuid, userUuid, lookupDate);
+        }
+        // More than one match is ambiguous: 404 instead of an arbitrary pick, so hours
+        // are never silently attributed to the wrong contract.
+        if (matches.size() == 1) {
+            return Response.ok(new KeyValueDTO("contractUuid", matches.get(0).getUuid())).build();
+        }
+        return Response.status(Response.Status.NOT_FOUND).build();
     }
 
     @GET
