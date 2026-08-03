@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.fileservice.resources;
 
+import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.cache.CompositeCacheKey;
+import jakarta.ws.rs.WebApplicationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,9 +27,12 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
@@ -220,6 +225,277 @@ class PhotoServiceTest {
         // endsWith-style matching would wrongly evict a uuid that merely ends with the target.
         assertFalse(PhotoService.isAffectedCacheKey("resized/64/prefix-" + RELATED_UUID,
                 RELATED_UUID, SUPERSEDED));
+    }
+
+    // --- resize failure levels ----------------------------------------------------------------
+    // A photo this JVM cannot decode is not a system fault: resizeImage hands the original bytes
+    // back and the caller serves them, so the request still succeeds. It was nevertheless logged at
+    // ERROR with a stack trace and no mention of which photo or width. These pin the split — an
+    // unreadable format is a quiet WARN carrying enough context to identify the object, everything
+    // else stays ERROR.
+
+    private static final String RESIZE_KEY = "resized/64/" + RELATED_UUID;
+
+    /** WebP header. Stock JDK ImageIO has no reader for it, so Thumbnailator cannot decode it. */
+    private static byte[] webpBytes() {
+        byte[] data = new byte[64];
+        System.arraycopy("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 0, 4);
+        System.arraycopy("WEBPVP8 ".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 8, 8);
+        return data;
+    }
+
+    private static byte[] realJpegBytes() throws Exception {
+        java.awt.image.BufferedImage image =
+                new java.awt.image.BufferedImage(8, 8, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        assertTrue(javax.imageio.ImageIO.write(image, "jpg", baos), "test fixture must be a real JPEG");
+        return baos.toByteArray();
+    }
+
+    @Test
+    void undecodableFormatFallsBackToTheOriginalBytesWithoutAnError() {
+        byte[] webp = webpBytes();
+
+        byte[] result = service.resizeImage(webp, 64, RESIZE_KEY);
+
+        assertArrayEquals(webp, result, "the caller serves this, so the original must come back intact");
+        assertEquals(List.of(), errorMessages(),
+                "an avatar in a format ImageIO cannot read is a data condition, not a system fault");
+    }
+
+    @Test
+    void undecodableFormatIsReportedAtWarnWithEnoughContextToFindThePhoto() {
+        service.resizeImage(webpBytes(), 64, RESIZE_KEY);
+
+        List<String> warnings = messagesAt(Level.WARNING);
+        assertEquals(1, warnings.size(), "expected exactly one WARN, got: " + allMessages());
+        // Without these the message is unactionable — the one production occurrence named neither
+        // the photo nor the width, which is why the offending object could not be identified.
+        assertTrue(warnings.get(0).contains(RESIZE_KEY), "must name the S3 key: " + warnings.get(0));
+        assertTrue(warnings.get(0).contains("64"), "must name the width: " + warnings.get(0));
+        assertTrue(warnings.get(0).contains("image/webp"), "must name the detected type: " + warnings.get(0));
+    }
+
+    @Test
+    void missingPhotoBytesAreNotReportedAsAResizeFailure() {
+        // loadFromS3 answers byte[0] for an absent object, and an empty array raises the very same
+        // UnsupportedFormatException as an exotic format. Decoding it would flood the WARN stream
+        // with every user who has no photo — the exact regression that moved the S3 miss to DEBUG.
+        byte[] result = service.resizeImage(new byte[0], 64, RESIZE_KEY);
+
+        assertEquals(0, result.length);
+        assertEquals(List.of(), errorMessages());
+        assertEquals(List.of(), messagesAt(Level.WARNING),
+                "a user without a photo must not produce a resize warning");
+    }
+
+    @Test
+    void aGenuineResizeFailureIsStillLoggedAsError() throws Exception {
+        // A decodable JPEG with a rejected width: Thumbnailator raises IllegalArgumentException,
+        // which is a real fault and must not be swept into the new WARN branch.
+        byte[] result = service.resizeImage(realJpegBytes(), 0, RESIZE_KEY);
+
+        assertNotNull(result, "the fallback still applies");
+        assertEquals(1, errorMessages().size(),
+                "only unreadable formats were downgraded, got: " + allMessages());
+        assertTrue(errorMessages().get(0).contains(RESIZE_KEY),
+                "the error must identify the photo too: " + errorMessages().get(0));
+        assertEquals(List.of(), messagesAt(Level.WARNING));
+    }
+
+    @Test
+    void aDecodableImageIsActuallyResizedAndLogsNothing() throws Exception {
+        byte[] result = service.resizeImage(realJpegBytes(), 4, RESIZE_KEY);
+
+        assertNotNull(result);
+        assertTrue(result.length > 0);
+        assertEquals(List.of(), errorMessages());
+        assertEquals(List.of(), messagesAt(Level.WARNING), "the happy path must stay silent");
+    }
+
+    private List<String> messagesAt(Level level) {
+        return logHandler.snapshot().stream()
+                .filter(r -> r.getLevel().intValue() == level.intValue())
+                .map(PhotoServiceTest::render)
+                .toList();
+    }
+
+    // --- superseding an upload must not delete the user's documents -----------------------------
+    // The files table is shared across domains keyed on the same relateduuid. The upload path used
+    // to supersede on "relateduuid = ?1" alone, so replacing an employee's portrait deleted every
+    // DOCUMENT row that employee owned — on EVERY upload, because the callers always send a fresh
+    // uuid and therefore always take the delete-and-insert branch. In production 632 of 802 document
+    // rows are keyed on a user uuid, so the blast radius was most of the table.
+    //
+    // update() cannot be exercised here: it drives Panache statics and persist(), which need a
+    // session, and the local DB is read-only. What IS pinned is the invariant that made the bug
+    // possible — the supersede predicate must be type-scoped, and the lookup and the delete must
+    // use the same one.
+
+    @Test
+    void supersedeQueryIsScopedByTypeSoItCannotDeleteDocuments() {
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("type"),
+                "without a type predicate this deletes the user's DOCUMENT rows too, got: "
+                        + PhotoService.SUPERSEDED_ROWS_QUERY);
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("relateduuid"),
+                "must still be scoped to the one photo owner");
+        // Two positional parameters — relateduuid and type. A query carrying only ?1 has lost the
+        // type binding regardless of whether the word "type" survived in a comment or alias.
+        assertTrue(PhotoService.SUPERSEDED_ROWS_QUERY.contains("?1")
+                        && PhotoService.SUPERSEDED_ROWS_QUERY.contains("?2"),
+                "type must be a bound parameter, got: " + PhotoService.SUPERSEDED_ROWS_QUERY);
+    }
+
+    // --- stale thumbnail cleanup ----------------------------------------------------------------
+    // getResizedPhoto short-circuits on s3ObjectExists, so any thumbnail left behind by an upload
+    // serves the PREVIOUS photo forever. Deleting only COMMON_THUMBNAIL_WIDTHS missed the ad-hoc
+    // sizes the UI actually asks for (28, 36, 44, 56, 1), so those kept the old avatar permanently.
+
+    @Test
+    void everyResizedWidthIsRecognisedAsStaleNotJustTheCommonOnes() {
+        // isResizedKeyFor is what selects keys out of the bucket listing, so it must match the
+        // ad-hoc widths too — these are real values requested by the frontend today.
+        for (int width : new int[]{1, 28, 36, 44, 56, 200, 1337}) {
+            assertTrue(PhotoService.isResizedKeyFor("resized/" + width + "/" + RELATED_UUID, RELATED_UUID),
+                    "width " + width + " is requested via ?width= and must be cleaned up");
+        }
+    }
+
+    @Test
+    void thumbnailCleanupIgnoresOtherPeoplesThumbnails() {
+        assertFalse(PhotoService.isResizedKeyFor("resized/64/" + OTHER_UUID, RELATED_UUID),
+                "an unrelated user's thumbnail must survive this upload");
+        assertFalse(PhotoService.isResizedKeyFor("resized/64/prefix-" + RELATED_UUID, RELATED_UUID),
+                "suffix matching would delete a uuid that merely ends with the target");
+        assertFalse(PhotoService.isResizedKeyFor(RELATED_UUID, RELATED_UUID),
+                "the original photo object is not a thumbnail and must not be deleted");
+    }
+
+    // --- upload format allowlist ----------------------------------------------------------------
+    // The read path derives the response Content-Type from the stored bytes, so whatever gets
+    // stored is what a browser is later told it is receiving. A stored SVG therefore came back as
+    // image/svg+xml and executed script on the intranet origin when the URL was opened directly.
+    // Nothing rejected it: the four REST entry points ran Tika only to pick a filename extension,
+    // and resizeToUploadDimensions logs a decode failure at WARN and stores the original bytes.
+    // These pin the allowlist and, just as importantly, pin that webp is still accepted — the
+    // stricter "must be ImageIO-decodable" alternative would have rejected every webp and heic.
+
+    /** A minimal SVG carrying script — the payload the allowlist exists to stop. */
+    private static byte[] svgBytes() {
+        return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">"
+                + "<script>alert(document.cookie)</script>"
+                + "<circle cx=\"50\" cy=\"50\" r=\"40\"/></svg>")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static File photoOf(byte[] data) {
+        File photo = new File(UUID, RELATED_UUID, "PHOTO");
+        photo.setFile(data);
+        return photo;
+    }
+
+    @Test
+    void rasterFormatsAreStorable() {
+        for (String mimeType : new String[]{"image/jpeg", "image/jpg", "image/png", "image/gif",
+                "image/bmp", "image/tiff", "image/webp", "image/x-icon"}) {
+            assertTrue(PhotoService.isStorableImageType(mimeType), mimeType + " must stay accepted");
+        }
+    }
+
+    @Test
+    void webpStaysStorableEvenThoughImageIoCannotDecodeIt() {
+        // Load-bearing: gating on "Thumbnailator can decode it" instead of on the type would reject
+        // every webp and heic upload, which succeed today and are simply stored unresized.
+        assertTrue(PhotoService.isStorableImageType("image/webp"));
+        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(webpBytes())));
+    }
+
+    @Test
+    void svgIsNotStorable() {
+        assertFalse(PhotoService.isStorableImageType("image/svg+xml"),
+                "SVG executes script when served under its own type — it must never be stored");
+    }
+
+    @Test
+    void nonImageTypesAreNotStorable() {
+        for (String mimeType : new String[]{"text/html", "application/xml", "application/pdf",
+                "application/octet-stream", "text/plain", "application/xhtml+xml", ""}) {
+            assertFalse(PhotoService.isStorableImageType(mimeType), mimeType + " must be rejected");
+        }
+        assertFalse(PhotoService.isStorableImageType(null));
+    }
+
+    @Test
+    void allowlistMatchingIgnoresParametersAndCasing() {
+        // Tika answers a bare type today, but an equality test against the raw header would break
+        // silently the day it does not.
+        assertTrue(PhotoService.isStorableImageType("image/jpeg; charset=ISO-8859-1"));
+        assertTrue(PhotoService.isStorableImageType("IMAGE/PNG"));
+        assertTrue(PhotoService.isStorableImageType("  image/png  "));
+        assertFalse(PhotoService.isStorableImageType("image/svg+xml; charset=utf-8"),
+                "parameters must not be a way past the allowlist either");
+    }
+
+    @Test
+    void anSvgUploadIsRejectedBeforeAnythingIsStored() {
+        WebApplicationException rejected = assertThrows(WebApplicationException.class,
+                () -> service.requireStorableImage(photoOf(svgBytes())));
+
+        assertEquals(400, rejected.getResponse().getStatus(),
+                "a bad upload is the caller's fault, not a 500");
+        // The guard runs before update() touches S3 or the files table.
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void anHtmlUploadIsRejected() {
+        byte[] html = "<html><body><script>alert(1)</script></body></html>"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        assertEquals(400, assertThrows(WebApplicationException.class,
+                () -> service.requireStorableImage(photoOf(html))).getResponse().getStatus());
+    }
+
+    @Test
+    void anEmptyUploadIsRejectedAsABadRequestRatherThanFailingInS3() {
+        for (byte[] nothing : new byte[][]{new byte[0], null}) {
+            assertEquals(400, assertThrows(WebApplicationException.class,
+                    () -> service.requireStorableImage(photoOf(nothing))).getResponse().getStatus());
+        }
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void aRealJpegUploadIsAccepted() throws Exception {
+        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(realJpegBytes())));
+    }
+
+    @Test
+    void everyPublicEntryPointRejectsAnSvgBeforeReachingStorage() {
+        // update() is where the guard lives, and it cannot be exercised directly here — it drives
+        // Panache statics that need a session. These three call the real entry points instead and
+        // pin that the guard is genuinely on that path: each must fail with a 400 rather than
+        // reaching Panache (which, without a session, would fail with something else entirely).
+        // Without this, deleting requireStorableImage() from update() would leave every other test
+        // in this section green.
+        for (java.util.function.Consumer<File> entryPoint : List.<java.util.function.Consumer<File>>of(
+                service::updatePhoto, service::updateLogo, service::updatePortrait)) {
+            WebApplicationException rejected = assertThrows(WebApplicationException.class,
+                    () -> entryPoint.accept(photoOf(svgBytes())));
+            assertEquals(400, rejected.getResponse().getStatus());
+        }
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void svgNoLongerHasAFilenameExtensionMapping() {
+        // PublicResource builds the stored filename from this map. Leaving the mapping in place
+        // would keep the upload path reading as though storing an SVG were anticipated.
+        assertEquals(".bin", service.extensionFromMimeType("image/svg+xml"));
+        assertEquals(".jpg", service.extensionFromMimeType("image/jpeg"),
+                "the raster mappings must be untouched");
+        assertEquals(".webp", service.extensionFromMimeType("image/webp"));
     }
 
     private void throwOnGetObject(S3Exception exception) {

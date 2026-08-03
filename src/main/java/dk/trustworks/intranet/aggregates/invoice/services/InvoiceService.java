@@ -523,9 +523,14 @@ public class InvoiceService {
                 invoice.getUuid());
 
         recalculateInvoiceItems(invoice);
-        // Bonus calculation only for non-internal invoices
+        // Bonus calculation only for non-internal invoices.
+        // Pass the entity, never the uuid: on the draft-creation path this method runs inside the
+        // generator's transaction, which was opened BEFORE createDraftInvoice (REQUIRES_NEW)
+        // committed the row. Under REPEATABLE READ that transaction's snapshot predates the insert,
+        // so a re-read by uuid returns null and the recalculation is skipped — silently, on every
+        // single draft creation. `invoice` is also the object recalculateInvoiceItems just refreshed.
         if (invoice.getType() != InvoiceType.INTERNAL) {
-            bonusService.recalcForInvoice(invoice.getUuid());
+            bonusService.recalcForInvoice(invoice);
         }
         // Attribution computation (including the cross-company cascade to linked
         // internal invoices) is expensive and was the main contributor to slow
@@ -670,7 +675,8 @@ public class InvoiceService {
     public Invoice createPhantomInvoice(Invoice draftInvoice) {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         recalculateInvoiceItems(draftInvoice);
-        bonusService.recalcForInvoice(draftInvoice.getUuid());
+        // Entity, not uuid — same rationale as updateDraftInvoice above.
+        bonusService.recalcForInvoice(draftInvoice);
         draftInvoice.setStatus(CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);
