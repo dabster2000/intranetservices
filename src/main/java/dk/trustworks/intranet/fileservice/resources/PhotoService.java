@@ -11,6 +11,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import net.coobird.thumbnailator.Thumbnails;
+import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
@@ -199,8 +200,38 @@ public class PhotoService {
         return fileData.length / 1024; // Convert bytes to kilobytes
     }
 
-    private byte[] resizeImage(byte[] data, int width) {
+    /**
+     * Scales {@code data} down to {@code width}, falling back to the untouched bytes when it cannot.
+     * <p>
+     * The fallback is deliberate and load-bearing: callers serve whatever comes back, so an image
+     * this JVM cannot decode is still delivered to the browser rather than turning into an error.
+     * What the level split below decides is only how loudly that gets reported.
+     * <p>
+     * {@link UnsupportedFormatException} means no {@code ImageReader} SPI recognised the leading
+     * bytes. Stock JDK 21 ImageIO reads JPEG/PNG/GIF/BMP/TIFF only — no plugin is on the classpath —
+     * so every webp, heic, avif or svg avatar lands here. That is a property of the uploaded data,
+     * not a fault of this service, and it matches how the upload path already reports the identical
+     * condition ({@link #resizeToUploadDimensions} logs at WARN).
+     * <p>
+     * It is <em>not</em> a clean proxy for "unsupported format", which is why the context below is
+     * not optional: the same exception is thrown for severely truncated data of a supported format
+     * (a JPEG cut to 1 byte, a PNG cut to under 8) and for an empty array. Recording the byte length
+     * and the detected type is what keeps a genuine corrupt-blob case distinguishable from a webp
+     * avatar now that the two no longer share a log level.
+     *
+     * @param key S3 key being resized, for diagnostics — the previous message named neither the
+     *            photo nor the width, which left the one production occurrence untraceable.
+     */
+    byte[] resizeImage(byte[] data, int width, String key) {
         log.debug("Resizing image locally to width=" + width);
+        // An absent S3 object arrives here as an empty array (loadFromS3 returns byte[0] for both a
+        // missing key and a hard S3 failure). Decoding that is guaranteed to raise the same
+        // UnsupportedFormatException as a genuinely exotic format, so short-circuit it instead:
+        // there is nothing to resize, and the attempt would otherwise dominate the new WARN stream.
+        if (data == null || data.length == 0) {
+            log.debugf("Nothing to resize for %s width=%d — no bytes stored", key, width);
+            return data;
+        }
         try {
             ByteArrayInputStream bais = new ByteArrayInputStream(data);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -212,8 +243,14 @@ public class PhotoService {
             byte[] resized = baos.toByteArray();
             log.debug("Local resize complete, size=" + getFileSize(resized) + "KB");
             return resized;
+        } catch (UnsupportedFormatException e) {
+            log.warnf("No ImageReader for %s width=%d (detected %s, %d bytes) — serving original unresized",
+                    key, width, detectMimeType(data), data.length);
+            return data;
         } catch (Exception e) {
-            log.error("Local resize failed", e);
+            // Anything else — a decode error on a recognised format, an I/O fault, a rejected
+            // width — is a real failure and keeps its stack trace.
+            log.error("Local resize failed for " + key + " width=" + width, e);
             return data;
         }
     }
@@ -360,8 +397,14 @@ public class PhotoService {
 
         File photo = findPhotoByRelatedUUID(relateduuid);
         try {
-            byte[] resized = resizeImage(photo.getFile(), width);
-            saveToS3Async(key, resized);
+            byte[] resized = resizeImage(photo.getFile(), width, key);
+            // Never publish an empty thumbnail. resizeImage hands back what it was given when it
+            // cannot scale, so a photo whose S3 object is missing would otherwise persist a 0-byte
+            // object under this key — and s3ObjectExists would then serve those 0 bytes for this
+            // width forever, outliving the repair of the underlying photo.
+            if (resized != null && resized.length > 0) {
+                saveToS3Async(key, resized);
+            }
             return resized;
         } catch (Exception e) {
             log.error("Error resizing photo", e);

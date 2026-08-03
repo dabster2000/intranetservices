@@ -25,6 +25,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -220,6 +221,99 @@ class PhotoServiceTest {
         // endsWith-style matching would wrongly evict a uuid that merely ends with the target.
         assertFalse(PhotoService.isAffectedCacheKey("resized/64/prefix-" + RELATED_UUID,
                 RELATED_UUID, SUPERSEDED));
+    }
+
+    // --- resize failure levels ----------------------------------------------------------------
+    // A photo this JVM cannot decode is not a system fault: resizeImage hands the original bytes
+    // back and the caller serves them, so the request still succeeds. It was nevertheless logged at
+    // ERROR with a stack trace and no mention of which photo or width. These pin the split — an
+    // unreadable format is a quiet WARN carrying enough context to identify the object, everything
+    // else stays ERROR.
+
+    private static final String RESIZE_KEY = "resized/64/" + RELATED_UUID;
+
+    /** WebP header. Stock JDK ImageIO has no reader for it, so Thumbnailator cannot decode it. */
+    private static byte[] webpBytes() {
+        byte[] data = new byte[64];
+        System.arraycopy("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 0, 4);
+        System.arraycopy("WEBPVP8 ".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 8, 8);
+        return data;
+    }
+
+    private static byte[] realJpegBytes() throws Exception {
+        java.awt.image.BufferedImage image =
+                new java.awt.image.BufferedImage(8, 8, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        assertTrue(javax.imageio.ImageIO.write(image, "jpg", baos), "test fixture must be a real JPEG");
+        return baos.toByteArray();
+    }
+
+    @Test
+    void undecodableFormatFallsBackToTheOriginalBytesWithoutAnError() {
+        byte[] webp = webpBytes();
+
+        byte[] result = service.resizeImage(webp, 64, RESIZE_KEY);
+
+        assertArrayEquals(webp, result, "the caller serves this, so the original must come back intact");
+        assertEquals(List.of(), errorMessages(),
+                "an avatar in a format ImageIO cannot read is a data condition, not a system fault");
+    }
+
+    @Test
+    void undecodableFormatIsReportedAtWarnWithEnoughContextToFindThePhoto() {
+        service.resizeImage(webpBytes(), 64, RESIZE_KEY);
+
+        List<String> warnings = messagesAt(Level.WARNING);
+        assertEquals(1, warnings.size(), "expected exactly one WARN, got: " + allMessages());
+        // Without these the message is unactionable — the one production occurrence named neither
+        // the photo nor the width, which is why the offending object could not be identified.
+        assertTrue(warnings.get(0).contains(RESIZE_KEY), "must name the S3 key: " + warnings.get(0));
+        assertTrue(warnings.get(0).contains("64"), "must name the width: " + warnings.get(0));
+        assertTrue(warnings.get(0).contains("image/webp"), "must name the detected type: " + warnings.get(0));
+    }
+
+    @Test
+    void missingPhotoBytesAreNotReportedAsAResizeFailure() {
+        // loadFromS3 answers byte[0] for an absent object, and an empty array raises the very same
+        // UnsupportedFormatException as an exotic format. Decoding it would flood the WARN stream
+        // with every user who has no photo — the exact regression that moved the S3 miss to DEBUG.
+        byte[] result = service.resizeImage(new byte[0], 64, RESIZE_KEY);
+
+        assertEquals(0, result.length);
+        assertEquals(List.of(), errorMessages());
+        assertEquals(List.of(), messagesAt(Level.WARNING),
+                "a user without a photo must not produce a resize warning");
+    }
+
+    @Test
+    void aGenuineResizeFailureIsStillLoggedAsError() throws Exception {
+        // A decodable JPEG with a rejected width: Thumbnailator raises IllegalArgumentException,
+        // which is a real fault and must not be swept into the new WARN branch.
+        byte[] result = service.resizeImage(realJpegBytes(), 0, RESIZE_KEY);
+
+        assertNotNull(result, "the fallback still applies");
+        assertEquals(1, errorMessages().size(),
+                "only unreadable formats were downgraded, got: " + allMessages());
+        assertTrue(errorMessages().get(0).contains(RESIZE_KEY),
+                "the error must identify the photo too: " + errorMessages().get(0));
+        assertEquals(List.of(), messagesAt(Level.WARNING));
+    }
+
+    @Test
+    void aDecodableImageIsActuallyResizedAndLogsNothing() throws Exception {
+        byte[] result = service.resizeImage(realJpegBytes(), 4, RESIZE_KEY);
+
+        assertNotNull(result);
+        assertTrue(result.length > 0);
+        assertEquals(List.of(), errorMessages());
+        assertEquals(List.of(), messagesAt(Level.WARNING), "the happy path must stay silent");
+    }
+
+    private List<String> messagesAt(Level level) {
+        return logHandler.snapshot().stream()
+                .filter(r -> r.getLevel().intValue() == level.intValue())
+                .map(PhotoServiceTest::render)
+                .toList();
     }
 
     private void throwOnGetObject(S3Exception exception) {
