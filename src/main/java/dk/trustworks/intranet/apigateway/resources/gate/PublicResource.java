@@ -236,27 +236,7 @@ public class PublicResource {
             throw new WebApplicationException("client is not external", Response.Status.FORBIDDEN);
         }
 
-        byte[] decoded;
-        try {
-            decoded = Base64.getDecoder().decode(request.getFile());
-        } catch (IllegalArgumentException e) {
-            throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
-        }
-
-        String mimeType = photoAPI.detectMimeType(decoded);
-        String extension = photoAPI.extensionFromMimeType(mimeType);
-        String sanitizedName = sanitizeFilename(client.getName());
-
-        File logo = new File();
-        logo.setUuid("");
-        logo.setRelateduuid(clientuuid);
-        logo.setType("PHOTO");
-        logo.setName(client.getName());
-        logo.setFilename(sanitizedName + extension);
-        logo.setUploaddate(LocalDate.now());
-        logo.setFile(decoded);
-
-        photoAPI.updateLogo(logo);
+        storeLogo(client, decodeLogo(request.getFile()));
 
         return Response.noContent().build();
     }
@@ -269,6 +249,15 @@ public class PublicResource {
         if (request == null || request.getName() == null || request.getName().isBlank()) {
             throw new WebApplicationException("name is required", Response.Status.BAD_REQUEST);
         }
+
+        // Decode and vet the logo before anything is persisted. clientAPI.save() commits in its own
+        // transaction (this method has no @Transactional of its own), so rejecting the logo after
+        // it would leave a client behind — and the dedup lookup below then returns that client
+        // early on the corrected retry, without ever reaching the upload. The caller would be left
+        // unable to attach a logo through this endpoint at all.
+        byte[] decodedLogo = (request.getFile() != null && !request.getFile().isBlank())
+                ? decodeLogo(request.getFile())
+                : null;
 
         // Dedup: return existing client if name matches (exact or fuzzy)
         Optional<Client> existingMatch = clientAPI.findFuzzyMatch(request.getName());
@@ -290,31 +279,50 @@ public class PublicResource {
 
         clientAPI.save(client);
 
-        if (request.getFile() != null && !request.getFile().isBlank()) {
-            byte[] decoded;
-            try {
-                decoded = Base64.getDecoder().decode(request.getFile());
-            } catch (IllegalArgumentException e) {
-                throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
-            }
-
-            String mimeType = photoAPI.detectMimeType(decoded);
-            String extension = photoAPI.extensionFromMimeType(mimeType);
-            String sanitizedName = sanitizeFilename(client.getName());
-
-            File logo = new File();
-            logo.setUuid("");
-            logo.setRelateduuid(client.getUuid());
-            logo.setType("PHOTO");
-            logo.setName(client.getName());
-            logo.setFilename(sanitizedName + extension);
-            logo.setUploaddate(LocalDate.now());
-            logo.setFile(decoded);
-
-            photoAPI.updateLogo(logo);
+        if (decodedLogo != null) {
+            storeLogo(client, decodedLogo);
         }
 
         return client;
+    }
+
+    /**
+     * Decodes a base64 logo and rejects anything that is not a storable raster image.
+     * <p>
+     * {@code PhotoService.update} enforces the same allowlist — it is the chokepoint that actually
+     * guarantees it — but doing it here as well keeps the rejection ahead of the client insert in
+     * {@link #createClient}, and returns the caller a 400 that names the offending format rather
+     * than one raised from inside the photo service.
+     */
+    private byte[] decodeLogo(String base64) {
+        byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(base64);
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
+        }
+
+        String mimeType = photoAPI.detectMimeType(decoded);
+        if (!PhotoService.isStorableImageType(mimeType)) {
+            throw new WebApplicationException("Unsupported image format: " + mimeType,
+                    Response.Status.BAD_REQUEST);
+        }
+        return decoded;
+    }
+
+    private void storeLogo(Client client, byte[] decoded) {
+        String extension = photoAPI.extensionFromMimeType(photoAPI.detectMimeType(decoded));
+
+        File logo = new File();
+        logo.setUuid("");
+        logo.setRelateduuid(client.getUuid());
+        logo.setType("PHOTO");
+        logo.setName(client.getName());
+        logo.setFilename(sanitizeFilename(client.getName()) + extension);
+        logo.setUploaddate(LocalDate.now());
+        logo.setFile(decoded);
+
+        photoAPI.updateLogo(logo);
     }
 
     static String sanitizeFilename(String name) {

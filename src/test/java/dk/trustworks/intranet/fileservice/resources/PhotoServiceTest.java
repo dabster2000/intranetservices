@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.fileservice.resources;
 
+import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.cache.CompositeCacheKey;
+import jakarta.ws.rs.WebApplicationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,9 +28,11 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
@@ -365,6 +369,133 @@ class PhotoServiceTest {
                 "suffix matching would delete a uuid that merely ends with the target");
         assertFalse(PhotoService.isResizedKeyFor(RELATED_UUID, RELATED_UUID),
                 "the original photo object is not a thumbnail and must not be deleted");
+    }
+
+    // --- upload format allowlist ----------------------------------------------------------------
+    // The read path derives the response Content-Type from the stored bytes, so whatever gets
+    // stored is what a browser is later told it is receiving. A stored SVG therefore came back as
+    // image/svg+xml and executed script on the intranet origin when the URL was opened directly.
+    // Nothing rejected it: the four REST entry points ran Tika only to pick a filename extension,
+    // and resizeToUploadDimensions logs a decode failure at WARN and stores the original bytes.
+    // These pin the allowlist and, just as importantly, pin that webp is still accepted — the
+    // stricter "must be ImageIO-decodable" alternative would have rejected every webp and heic.
+
+    /** A minimal SVG carrying script — the payload the allowlist exists to stop. */
+    private static byte[] svgBytes() {
+        return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">"
+                + "<script>alert(document.cookie)</script>"
+                + "<circle cx=\"50\" cy=\"50\" r=\"40\"/></svg>")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static File photoOf(byte[] data) {
+        File photo = new File(UUID, RELATED_UUID, "PHOTO");
+        photo.setFile(data);
+        return photo;
+    }
+
+    @Test
+    void rasterFormatsAreStorable() {
+        for (String mimeType : new String[]{"image/jpeg", "image/jpg", "image/png", "image/gif",
+                "image/bmp", "image/tiff", "image/webp", "image/x-icon"}) {
+            assertTrue(PhotoService.isStorableImageType(mimeType), mimeType + " must stay accepted");
+        }
+    }
+
+    @Test
+    void webpStaysStorableEvenThoughImageIoCannotDecodeIt() {
+        // Load-bearing: gating on "Thumbnailator can decode it" instead of on the type would reject
+        // every webp and heic upload, which succeed today and are simply stored unresized.
+        assertTrue(PhotoService.isStorableImageType("image/webp"));
+        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(webpBytes())));
+    }
+
+    @Test
+    void svgIsNotStorable() {
+        assertFalse(PhotoService.isStorableImageType("image/svg+xml"),
+                "SVG executes script when served under its own type — it must never be stored");
+    }
+
+    @Test
+    void nonImageTypesAreNotStorable() {
+        for (String mimeType : new String[]{"text/html", "application/xml", "application/pdf",
+                "application/octet-stream", "text/plain", "application/xhtml+xml", ""}) {
+            assertFalse(PhotoService.isStorableImageType(mimeType), mimeType + " must be rejected");
+        }
+        assertFalse(PhotoService.isStorableImageType(null));
+    }
+
+    @Test
+    void allowlistMatchingIgnoresParametersAndCasing() {
+        // Tika answers a bare type today, but an equality test against the raw header would break
+        // silently the day it does not.
+        assertTrue(PhotoService.isStorableImageType("image/jpeg; charset=ISO-8859-1"));
+        assertTrue(PhotoService.isStorableImageType("IMAGE/PNG"));
+        assertTrue(PhotoService.isStorableImageType("  image/png  "));
+        assertFalse(PhotoService.isStorableImageType("image/svg+xml; charset=utf-8"),
+                "parameters must not be a way past the allowlist either");
+    }
+
+    @Test
+    void anSvgUploadIsRejectedBeforeAnythingIsStored() {
+        WebApplicationException rejected = assertThrows(WebApplicationException.class,
+                () -> service.requireStorableImage(photoOf(svgBytes())));
+
+        assertEquals(400, rejected.getResponse().getStatus(),
+                "a bad upload is the caller's fault, not a 500");
+        // The guard runs before update() touches S3 or the files table.
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void anHtmlUploadIsRejected() {
+        byte[] html = "<html><body><script>alert(1)</script></body></html>"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        assertEquals(400, assertThrows(WebApplicationException.class,
+                () -> service.requireStorableImage(photoOf(html))).getResponse().getStatus());
+    }
+
+    @Test
+    void anEmptyUploadIsRejectedAsABadRequestRatherThanFailingInS3() {
+        for (byte[] nothing : new byte[][]{new byte[0], null}) {
+            assertEquals(400, assertThrows(WebApplicationException.class,
+                    () -> service.requireStorableImage(photoOf(nothing))).getResponse().getStatus());
+        }
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void aRealJpegUploadIsAccepted() throws Exception {
+        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(realJpegBytes())));
+    }
+
+    @Test
+    void everyPublicEntryPointRejectsAnSvgBeforeReachingStorage() {
+        // update() is where the guard lives, and it cannot be exercised directly here — it drives
+        // Panache statics that need a session. These three call the real entry points instead and
+        // pin that the guard is genuinely on that path: each must fail with a 400 rather than
+        // reaching Panache (which, without a session, would fail with something else entirely).
+        // Without this, deleting requireStorableImage() from update() would leave every other test
+        // in this section green.
+        for (java.util.function.Consumer<File> entryPoint : List.<java.util.function.Consumer<File>>of(
+                service::updatePhoto, service::updateLogo, service::updatePortrait)) {
+            WebApplicationException rejected = assertThrows(WebApplicationException.class,
+                    () -> entryPoint.accept(photoOf(svgBytes())));
+            assertEquals(400, rejected.getResponse().getStatus());
+        }
+        org.mockito.Mockito.verifyNoInteractions(s3);
+    }
+
+    @Test
+    void svgNoLongerHasAFilenameExtensionMapping() {
+        // PublicResource builds the stored filename from this map. Leaving the mapping in place
+        // would keep the upload path reading as though storing an SVG were anticipated.
+        assertEquals(".bin", service.extensionFromMimeType("image/svg+xml"));
+        assertEquals(".jpg", service.extensionFromMimeType("image/jpeg"),
+                "the raster mappings must be untouched");
+        assertEquals(".webp", service.extensionFromMimeType("image/webp"));
     }
 
     private void throwOnGetObject(S3Exception exception) {

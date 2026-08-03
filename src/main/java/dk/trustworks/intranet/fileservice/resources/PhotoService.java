@@ -9,6 +9,8 @@ import jakarta.inject.Inject;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import net.coobird.thumbnailator.Thumbnails;
 import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
@@ -72,12 +74,45 @@ public class PhotoService {
         MIME_TO_EXTENSION.put("image/bmp", ".bmp");
         MIME_TO_EXTENSION.put("image/tiff", ".tiff");
         MIME_TO_EXTENSION.put("image/webp", ".webp");
-        MIME_TO_EXTENSION.put("image/svg+xml", ".svg");
+        // Deliberately no image/svg+xml entry. SVG is a script-bearing document rather than a
+        // raster image, {@link #update} now rejects it, and an extension mapping here would make
+        // the upload path read as though storing one were still anticipated.
         MIME_TO_EXTENSION.put("image/x-icon", ".ico");
 
         // Default binary
         MIME_TO_EXTENSION.put("application/octet-stream", ".bin");
     }
+
+    /**
+     * The only MIME types {@link #update} will store, and the only ones {@code FileResource} will
+     * serve back under their own content type.
+     * <p>
+     * An allowlist rather than an SVG denylist, because the read path derives the response
+     * {@code Content-Type} from the stored bytes: whatever gets past here is what a browser is
+     * later told it is receiving. SVG is the concrete danger — it is a script-bearing XML document,
+     * so a stored one comes back as {@code image/svg+xml} and executes on the intranet origin when
+     * navigated to directly. {@code X-Content-Type-Options: nosniff} does not mitigate that,
+     * because the declared type is honest.
+     * <p>
+     * Nothing upstream stopped it before: all four REST entry points that reach this service
+     * ({@code PUT /files/photos}, {@code /logo}, {@code /portrait} and {@code /public/client}) ran
+     * Tika purely to pick a filename extension, and {@link #resizeToUploadDimensions} reports a
+     * decode failure at WARN and then stores the original bytes verbatim.
+     * <p>
+     * webp and ico stay on the list even though stock JDK 21 ImageIO cannot decode either — they
+     * are inert raster formats that browsers render, they arrive from real clients today, and they
+     * are already stored unresized. Dropping them would reject working uploads for no security
+     * gain, since neither can carry script.
+     */
+    private static final Set<String> STORABLE_IMAGE_MIME_TYPES = Set.of(
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/gif",
+            "image/bmp",
+            "image/tiff",
+            "image/webp",
+            "image/x-icon");
 
     @ConfigProperty(name = "bucket.files")
     String bucketName;
@@ -210,6 +245,53 @@ public class PhotoService {
 
     public String extensionFromMimeType(String mimeType) {
         return MIME_TO_EXTENSION.getOrDefault(mimeType, ".bin");
+    }
+
+    /**
+     * Whether bytes detected as {@code mimeType} may be stored, and served back under that type.
+     * <p>
+     * Shared with the read path ({@code FileResource#getImage}) on purpose: the set of things safe
+     * to keep and the set safe to declare to a browser are the same set, and rows predating this
+     * guard still have to pass the reader's check.
+     * <p>
+     * Tika answers a bare type today, but a parameterised one ({@code image/jpeg; charset=...})
+     * would slip past a plain equality test, so parameters and casing are normalised away first.
+     *
+     * @see #STORABLE_IMAGE_MIME_TYPES
+     */
+    public static boolean isStorableImageType(String mimeType) {
+        if (mimeType == null) {
+            return false;
+        }
+        int parameterStart = mimeType.indexOf(';');
+        String bareType = (parameterStart >= 0 ? mimeType.substring(0, parameterStart) : mimeType).trim();
+        return STORABLE_IMAGE_MIME_TYPES.contains(bareType.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Rejects anything {@link #update} must not store, before a byte of it reaches S3 or the
+     * {@code files} table.
+     * <p>
+     * Runs on the post-resize bytes rather than on the request body, so what it clears is exactly
+     * what gets persisted: {@link #resizeToUploadDimensions} re-encodes anything ImageIO can read
+     * as JPEG, which also collapses a polyglot upload into a plain raster image.
+     *
+     * @throws WebApplicationException 400, mapped to a JSON error body by
+     *                                 {@code WebApplicationExceptionMapper}
+     */
+    void requireStorableImage(File photo) {
+        byte[] data = photo.getFile();
+        if (data == null || data.length == 0) {
+            // Previously this reached s3.putObject and failed there as a 500.
+            throw new WebApplicationException("photo file is required", Response.Status.BAD_REQUEST);
+        }
+        String mimeType = detectMimeType(data);
+        if (!isStorableImageType(mimeType)) {
+            log.warnf("Rejected upload for relateduuid=%s type=%s: %s is not a storable image format (%d bytes)",
+                    photo.getRelateduuid(), photo.getType(), mimeType, data.length);
+            throw new WebApplicationException("Unsupported image format: " + mimeType,
+                    Response.Status.BAD_REQUEST);
+        }
     }
 
     private long getFileSize(byte[] fileData) {
@@ -470,6 +552,12 @@ public class PhotoService {
     }
 
     private void update(File photo) {
+        // The one chokepoint every upload passes through — updatePhoto, updateLogo and
+        // updatePortrait all land here, and those three are the whole of the write surface exposed
+        // by FileResource and PublicResource. Validating here rather than per-resource is what
+        // stops a fifth entry point from being added without the check.
+        requireStorableImage(photo);
+
         if(photo.getUuid().isEmpty()) {
             photo.setUuid(UUID.randomUUID().toString());
         }

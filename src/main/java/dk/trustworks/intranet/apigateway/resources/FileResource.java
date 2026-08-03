@@ -9,6 +9,7 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.tika.Tika;
@@ -51,7 +52,7 @@ public class FileResource {
 
     @GET
     @Path("/photos/{relateduuid}/jpg")
-    @Produces({"image/*"})
+    @Produces({"image/*", MediaType.APPLICATION_OCTET_STREAM})
     public Response getImage(@PathParam("relateduuid") String relateduuid, @QueryParam("width") Integer width) {
         log.debug("Fetching photo " + relateduuid + (width != null ? " width=" + width : ""));
         byte[] imageBytes;
@@ -65,11 +66,33 @@ public class FileResource {
             mimeType = new Tika().detect(imageBytes);
         } catch (Exception e) {
             log.warn("Failed to detect mime type, defaulting to application/octet-stream", e);
-            mimeType = "application/octet-stream";
+            mimeType = MediaType.APPLICATION_OCTET_STREAM;
         }
-        return Response.ok(imageBytes)
+
+        Response.ResponseBuilder response = Response.ok(imageBytes)
                 .header("Cache-Control", "public, max-age=600")
-                .type(mimeType)
+                .header("X-Content-Type-Options", "nosniff");
+
+        if (PhotoService.isStorableImageType(mimeType)) {
+            return response.type(mimeType).build();
+        }
+
+        // Never declare a content type a browser will execute. Uploads are allowlisted now
+        // (PhotoService.requireStorableImage), but this endpoint still serves rows stored before
+        // that guard existed — an SVG among them would otherwise come back as image/svg+xml and
+        // run script against the caller's intranet session when the URL is opened directly.
+        // Downgrading the type and marking it a download keeps those bytes retrievable without
+        // making them executable, and costs nothing for <img> rendering: browsers ignore
+        // Content-Disposition on subresource loads.
+        if (imageBytes != null && imageBytes.length > 0) {
+            // An absent photo arrives as an empty array, which Tika reports as
+            // application/octet-stream. That is the common case and must stay silent — missing
+            // avatars scale with page views, and once dominated this backend's log volume.
+            log.warnf("Photo %s is %s, not a storable image type — serving it as an attachment",
+                    relateduuid, mimeType);
+        }
+        return response.type(MediaType.APPLICATION_OCTET_STREAM)
+                .header("Content-Disposition", "attachment")
                 .build();
     }
 
