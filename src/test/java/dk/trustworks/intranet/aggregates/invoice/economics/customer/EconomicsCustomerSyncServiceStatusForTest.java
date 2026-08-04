@@ -24,6 +24,18 @@ import static org.mockito.Mockito.when;
  * returns null outside the Quarkus container; the service falls back to
  * {@code companyUuid} for the name, which is what these tests assert.
  *
+ * <p><b>Never index into the returned list.</b> {@code statusFor} emits one row
+ * per entry in {@link AgreementDefaultsRegistry#TEMPLATES}, which is a
+ * {@code Map.of(...)}. With more than one entry that is an
+ * {@code ImmutableCollections.MapN}, whose iteration order is randomised per JVM
+ * from a salt seeded at class-init time — so {@code rows.get(0)} is a different
+ * company on different runs of the same code. These tests stub the repositories
+ * for {@link #COMPANY} only, so on the runs where another agreement sorted first
+ * they read an unstubbed row and saw UNPAIRED. That is the whole of the
+ * "non-deterministic economics test" this class was known for: it failed 4 tests
+ * when A/S did not sort first and 1 when it did, on identical code. Select the
+ * row by {@code companyUuid} instead — see {@link #rowFor(List)}.
+ *
  * SPEC-INV-001 §7.1 Phase G2, §8.6.
  */
 class EconomicsCustomerSyncServiceStatusForTest {
@@ -34,6 +46,15 @@ class EconomicsCustomerSyncServiceStatusForTest {
     private ClientEconomicsCustomerRepository repo;
     private ClientEconomicsSyncFailureRepository failures;
     private EconomicsCustomerSyncService service;
+
+    /** The row for {@link #COMPANY}, regardless of where the map iteration put it. */
+    private static ClientSyncStatusDto rowFor(List<ClientSyncStatusDto> rows) {
+        return rows.stream()
+                .filter(r -> COMPANY.equals(r.companyUuid()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "statusFor returned no row for the configured agreement " + COMPANY));
+    }
 
     @BeforeEach
     void setUp() {
@@ -56,8 +77,12 @@ class EconomicsCustomerSyncServiceStatusForTest {
 
         List<ClientSyncStatusDto> rows = service.statusFor("c-uuid");
 
-        assertEquals(1, rows.size(), "One row per configured agreement");
-        ClientSyncStatusDto row = rows.get(0);
+        // Derived from the registry rather than hardcoded: this assertion read
+        // `1` from when the registry held a single agreement, and silently
+        // became wrong when Technology and Cyber Security were added.
+        assertEquals(AgreementDefaultsRegistry.TEMPLATES.size(), rows.size(),
+                "One row per configured agreement");
+        ClientSyncStatusDto row = rowFor(rows);
         assertEquals(ClientSyncStatusDto.STATUS_UNPAIRED, row.status());
         assertEquals(0, row.attemptCount());
         assertNull(row.lastError());
@@ -83,9 +108,10 @@ class EconomicsCustomerSyncServiceStatusForTest {
 
         List<ClientSyncStatusDto> rows = service.statusFor("c-uuid");
 
-        assertEquals(ClientSyncStatusDto.STATUS_OK, rows.get(0).status());
-        assertEquals(0, rows.get(0).attemptCount());
-        assertNull(rows.get(0).nextRetryAt());
+        ClientSyncStatusDto row = rowFor(rows);
+        assertEquals(ClientSyncStatusDto.STATUS_OK, row.status());
+        assertEquals(0, row.attemptCount());
+        assertNull(row.nextRetryAt());
     }
 
     @Test
@@ -104,7 +130,7 @@ class EconomicsCustomerSyncServiceStatusForTest {
 
         List<ClientSyncStatusDto> rows = service.statusFor("c-uuid");
 
-        ClientSyncStatusDto row = rows.get(0);
+        ClientSyncStatusDto row = rowFor(rows);
         assertEquals(ClientSyncStatusDto.STATUS_PENDING, row.status());
         assertEquals(2, row.attemptCount());
         assertEquals("HTTP 500: Internal Server Error", row.lastError());
@@ -138,7 +164,7 @@ class EconomicsCustomerSyncServiceStatusForTest {
 
         List<ClientSyncStatusDto> rows = service.statusFor("c-uuid");
 
-        ClientSyncStatusDto row = rows.get(0);
+        ClientSyncStatusDto row = rowFor(rows);
         assertEquals(ClientSyncStatusDto.STATUS_ABANDONED, row.status(),
                 "ABANDONED failure must override prior OK pairing");
         assertEquals(6, row.attemptCount());

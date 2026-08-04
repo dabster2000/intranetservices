@@ -7,6 +7,8 @@ import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingR
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingRowDto;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -285,12 +287,25 @@ class EconomicsCustomerPairingServiceTest {
         createResult.setCustomerNumber(12345678);
         when(api.createCustomer(any(EconomicsCustomerDto.class))).thenReturn(createResult);
 
-        // After POST, service does GET to get full DTO for the access PUT.
         EconomicsCustomerDto created = new EconomicsCustomerDto();
         created.setCustomerNumber(12345678);
         created.setName("Acme A/S");
         created.setCvrNo("12345678");
-        when(api.getCustomer(12345678)).thenReturn(created);
+
+        // createAndPair GETs the target number FIRST, and only POSTs when that
+        // 404s — the idempotency guard for the case where an earlier POST
+        // succeeded server-side but its access=true PUT threw. It then GETs
+        // again after the POST to obtain the objectVersion the PUT needs.
+        //
+        // So getCustomer is called twice with different meanings, and this stub
+        // must distinguish them. It previously answered `created` to BOTH,
+        // which told the service the customer already existed: POST was skipped
+        // and this test's `verify(api).createCustomer(...)` failed with
+        // "Wanted but not invoked". The test was not updated when the
+        // idempotency guard landed — production is correct.
+        when(api.getCustomer(12345678))
+                .thenThrow(new WebApplicationException(Response.status(Response.Status.NOT_FOUND).build()))
+                .thenReturn(created);
 
         // updateCustomer is void — Mockito default does nothing. No stub needed.
 

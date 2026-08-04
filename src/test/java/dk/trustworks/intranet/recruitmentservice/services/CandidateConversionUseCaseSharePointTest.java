@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       collaborator (now used from {@link CandidateConversionUseCase#runSharePointCopy(UUID)}
  *       instead of {@code execute}).</li>
  *   <li>The new {@code runSharePointCopy(UUID)} and
- *       {@code applySharePointResult(UUID, SharePointMoveStatus)} methods are
+ *       {@code applySharePointResult(UUID, CopyResult, UUID)} methods are
  *       present with the expected signatures so the resource layer (which
  *       dispatches the copy on a {@code ManagedExecutor} after the
  *       conversion tx commits) keeps compiling.</li>
@@ -69,9 +69,18 @@ class CandidateConversionUseCaseSharePointTest {
     void useCase_exposes_applySharePointResult_method() throws Exception {
         // The short follow-up tx that writes status + (on COMPLETED) the
         // retention stamp.
+        //
+        // The signature is (UUID, CopyResult, UUID), not the (UUID,
+        // SharePointMoveStatus) this test originally asserted: the copy now
+        // returns a CopyResult carrying the status *and* the signed-PDF
+        // filenames, and the recruiter UUID was added so the Slack notifier
+        // can resolve a display name. Reflection asserts the current shape so
+        // the resource layer — which dispatches this on a ManagedExecutor
+        // after the conversion tx commits — keeps compiling.
         Method m = CandidateConversionUseCase.class.getMethod(
-                "applySharePointResult", UUID.class, SharePointMoveStatus.class);
-        assertNotNull(m, "applySharePointResult(UUID, SharePointMoveStatus) must be public");
+                "applySharePointResult", UUID.class,
+                SharePointEmployeeFolderService.CopyResult.class, UUID.class);
+        assertNotNull(m, "applySharePointResult(UUID, CopyResult, UUID) must be public");
         assertEquals(void.class, m.getReturnType());
         // MUST be @Transactional so the status update + retention stamp share
         // a short, single tx — the slow Graph upload itself is already done.

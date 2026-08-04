@@ -39,6 +39,14 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # ----------------------------------------------------------------------
+      # Test gate (authorization-model-unification, phase 2). Identical to the
+      # staging workflow — see the comment there for what the fast tier covers
+      # and why it runs before the package step.
+      # ----------------------------------------------------------------------
+      - name: Unit tests (fast tier)
+        run: ./mvnw -B test -DexcludedGroups=io.quarkus.test.junit.QuarkusTest
+
       - name: Build with Maven
         run: ./mvnw clean package -DskipTests -B -T 1C
 
