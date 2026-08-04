@@ -159,16 +159,43 @@ class PhaseSlackNotifierTest {
     private static final int TRUNCATION_LEN = "… (truncated)".length();
 
     @Test
-    void oversizedMessageStillProducesSendableBlocks() {
+    void everyBlockSentToSlackRespectsItsTextLimit() {
+        // Asserts on the blocks actually handed to Slack. Slack rejects the WHOLE message
+        // with invalid_blocks if any one text object overflows, and PhaseSlackNotifier
+        // swallows send failures -- so an overflow means the notification silently vanishes.
         SlackService slack = mock(SlackService.class);
         PhaseSlackNotifier n = notifier(slack);
-        ConferenceParticipant p = participant("August", "a@x.dk");
-        p.setAndet("y".repeat(8000)); // the boundary maximum accepted by ParticipantFieldLimits
-
-        List<LayoutBlock> blocks = n.buildEntryBlocks("Entry", "WEBSITE", p);
+        ConferenceParticipant p = participant("N".repeat(255), "a@x.dk"); // max name allowed
+        p.setAndet("y".repeat(8000));                                     // max message allowed
+        Map<String, Object> bag = new LinkedHashMap<>();
+        bag.put("phone", "z".repeat(4000));
+        p.setFields(bag);
 
         n.notifyEntrySync("C1", "Entry", "WEBSITE", p);
-        verify(slack, times(1)).sendMessage(eq("C1"), anyString(), anyList());
-        assertFalse(blocks.isEmpty());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LayoutBlock>> sent = ArgumentCaptor.forClass(List.class);
+        verify(slack, times(1)).sendMessage(eq("C1"), anyString(), sent.capture());
+
+        List<LayoutBlock> blocks = sent.getValue();
+        assertFalse(blocks.isEmpty(), "something must be sent");
+        for (LayoutBlock block : blocks) {
+            if (block instanceof com.slack.api.model.block.HeaderBlock h) {
+                assertTrue(h.getText().getText().length() <= 150,
+                        () -> "header exceeds Slack's 150-char limit: " + h.getText().getText().length());
+            } else if (block instanceof com.slack.api.model.block.SectionBlock s && s.getText() != null) {
+                assertTrue(s.getText().getText().length() <= 3000,
+                        () -> "section exceeds Slack's 3000-char limit: " + s.getText().getText().length());
+            }
+        }
+    }
+
+    @Test
+    void longName_isClampedToSlackHeaderLimit() {
+        // ParticipantFieldLimits allows a 255-char name, but a Slack header caps at 150.
+        assertEquals("short", PhaseSlackNotifier.clampToSlackHeader("short"));
+        String clamped = PhaseSlackNotifier.clampToSlackHeader("x".repeat(200));
+        assertEquals(150, clamped.length());
+        assertTrue(clamped.endsWith("(truncated)"));
     }
 }

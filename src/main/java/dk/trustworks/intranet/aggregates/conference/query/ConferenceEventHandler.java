@@ -77,6 +77,13 @@ public class ConferenceEventHandler {
             log.error("CONFERENCE PROJECTION FAILED: unreadable event envelope — submission lost, nothing to replay", e);
             return;
         }
+        if (env == null) {
+            // Jackson maps the literal "null" to null rather than throwing. Guard it here:
+            // dereferencing env inside the catch below would throw from within the handler
+            // that exists to contain throwables, and escape to Vert.x after all.
+            log.error("CONFERENCE PROJECTION FAILED: null event envelope — submission lost, nothing to replay");
+            return;
+        }
         try {
             projection.accept(env);
         } catch (Exception e) {

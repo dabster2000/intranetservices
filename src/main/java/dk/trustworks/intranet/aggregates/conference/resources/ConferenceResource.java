@@ -501,6 +501,12 @@ public class ConferenceResource {
     void rejectOversizedFields(ConferenceParticipant conferenceParticipant) {
         String violation = ParticipantFieldLimits.firstViolation(conferenceParticipant);
         if (violation == null) return;
+        // Name the participant: changeParticipantPhase validates a whole batch, and a
+        // violation aborts all of it — an admin needs to know which row to fix.
+        String who = conferenceParticipant.getParticipantuuid() != null
+                ? conferenceParticipant.getParticipantuuid()
+                : conferenceParticipant.getEmail();
+        if (who != null) violation = violation + " (participant " + who + ")";
         log.warnf("Rejecting oversized conference participant submission: %s", violation);
         // The message must be the exception's own message, not a response entity:
         // WebApplicationExceptionMapper discards the entity and rebuilds the body from

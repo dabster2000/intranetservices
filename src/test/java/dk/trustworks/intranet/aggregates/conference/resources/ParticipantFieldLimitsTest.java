@@ -29,7 +29,11 @@ class ParticipantFieldLimitsTest {
         return "x".repeat(length);
     }
 
-    /** The exact message that was lost in production, reproduced at its real length. */
+    /**
+     * A reconstruction of the message lost in production on 2026-08-03. The real payload
+     * was 417 characters; this stands in at a representative length — what matters is that
+     * it sits above the old varchar(255) bound and below the new one.
+     */
     private static final String LOST_MESSAGE = ("Hej Lars\n\nJeg er nyuddannet fra Digital Innovation & Management "
             + "på ITU og er meget interesseret i muligheden for at arbejde hos jer som IT-arkitekt.\n"
             + "Jeg er nysgerrig på at høre mere om stillingen og om, hvordan det er at starte ude hos jer. "
@@ -83,11 +87,80 @@ class ParticipantFieldLimitsTest {
     }
 
     @Test
-    void unboundedFieldsBagIsNotRejected() {
-        // The bag is persisted to a longtext column, so it has no width to overflow.
-        ConferenceParticipant p = ContactFormMapper.fromForm(
-                form("phone", text(5_000), "name", "August"));
-        assertNull(ParticipantFieldLimits.firstViolation(p));
+    void fieldsBagIsBounded() {
+        // The bag takes every unrecognised form key and lands in a longtext column, so
+        // nothing in the database bounds it. On a @PermitAll endpoint that is a bulk-write
+        // hole, and a big enough bag reproduces the original 204-then-lost failure.
+        ConferenceParticipant ok = ContactFormMapper.fromForm(form("phone", "+4529654515"));
+        assertNull(ParticipantFieldLimits.firstViolation(ok));
+
+        ConferenceParticipant huge = ContactFormMapper.fromForm(
+                form("name", "August", "junk", text(ParticipantFieldLimits.MAX_FIELDS_TOTAL + 1)));
+        String violation = ParticipantFieldLimits.firstViolation(huge);
+        assertNotNull(violation, "an oversized fields bag must be rejected");
+        assertTrue(violation.contains("form fields"), () -> "must say what was too large: " + violation);
+    }
+
+    @Test
+    void lengthIsCountedInCharactersNotUtf16Units() {
+        // MariaDB bounds varchar by character. An emoji is 2 UTF-16 units but 1 character,
+        // so counting units would reject a name the column would happily store.
+        ConferenceParticipant p = new ConferenceParticipant();
+        p.setName("🎉".repeat(200)); // 200 characters, 400 UTF-16 units
+        assertEquals(400, p.getName().length(), "fixture must actually use surrogate pairs");
+        assertNull(ParticipantFieldLimits.firstViolation(p),
+                "200 characters fits varchar(255) and must not be rejected");
+
+        ConferenceParticipant tooMany = new ConferenceParticipant();
+        tooMany.setName("🎉".repeat(ParticipantFieldLimits.MAX_SHORT_FIELD + 1));
+        assertNotNull(ParticipantFieldLimits.firstViolation(tooMany));
+    }
+
+    // ---- the guard must be wired into the paths the public form actually takes ----
+
+    @Test
+    void publicContactFormPathRejectsOversizedMessage() {
+        // Drives the exact production entry point: receiveContactForm -> createParticipant
+        // (2-arg) -> createParticipant (3-arg) -> rejectOversizedFields. The guard is the
+        // first statement, so no injected collaborator is dereferenced. Without the call
+        // on that path the submission would be published as an event and answered 204 --
+        // the 2026-08-03 defect.
+        ConferenceResource resource = new ConferenceResource();
+
+        WebApplicationException e = assertThrows(WebApplicationException.class,
+                () -> resource.receiveContactForm("229fd5a2-9e6d-42eb-9afc-e3926286aebb",
+                        form("name", "August", "email", "a@b.dk",
+                                "message", text(ParticipantFieldLimits.MAX_MESSAGE + 1))));
+
+        assertEquals(400, e.getResponse().getStatus());
+    }
+
+    @Test
+    void updateParticipantPathRejectsOversizedMessage() {
+        ConferenceResource resource = new ConferenceResource();
+        ConferenceParticipant p = new ConferenceParticipant();
+        p.setAndet(text(ParticipantFieldLimits.MAX_MESSAGE + 1));
+
+        WebApplicationException e = assertThrows(WebApplicationException.class,
+                () -> resource.updateParticipantData("conf-uuid", p));
+        assertEquals(400, e.getResponse().getStatus());
+    }
+
+    @Test
+    void batchPhaseChangePathRejectsOversizedMessageAndNamesTheParticipant() {
+        ConferenceResource resource = new ConferenceResource();
+        ConferenceParticipant good = new ConferenceParticipant();
+        good.setAndet("fine");
+        ConferenceParticipant bad = new ConferenceParticipant();
+        bad.setParticipantuuid("a57ad22e-f676-4c54-837e-bc8cd563586a");
+        bad.setAndet(text(ParticipantFieldLimits.MAX_MESSAGE + 1));
+
+        WebApplicationException e = assertThrows(WebApplicationException.class,
+                () -> resource.changeParticipantPhase("conf-uuid", 1, java.util.List.of(good, bad)));
+
+        assertEquals(400, e.getResponse().getStatus());
+        assertTrue(e.getMessage().contains("a57ad22e-f676-4c54-837e-bc8cd563586a"),
+                () -> "an aborted batch must name the offending participant: " + e.getMessage());
     }
 
     @Test
