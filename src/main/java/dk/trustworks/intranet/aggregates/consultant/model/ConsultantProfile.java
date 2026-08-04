@@ -23,6 +23,11 @@ import java.util.Objects;
  *   <li>It was generated more than 7 days ago</li>
  *   <li>The CV data has changed since generation ({@code cvUpdatedAt} differs)</li>
  * </ul>
+ *
+ * <p>Staleness alone is not enough to decide whether to call OpenAI again. A failed generation
+ * deliberately leaves {@code generatedAt} NULL — a broken profile must never be served as fresh —
+ * which makes {@link #isStale(LocalDateTime)} permanently true. {@link #shouldAttempt(int)} is
+ * the second gate that turns that into a bounded retry instead of a request-rate model storm.
  */
 @Getter
 @Setter
@@ -33,6 +38,13 @@ import java.util.Objects;
 public class ConsultantProfile extends PanacheEntityBase {
 
     private static final long STALENESS_DAYS = 7;
+
+    /** A usable pitch is cached. */
+    public static final String STATUS_READY = "READY";
+    /** Not generated yet, or a retry is due. */
+    public static final String STATUS_PENDING = "PENDING";
+    /** No CV row, or parked after max-attempts consecutive failures. */
+    public static final String STATUS_UNAVAILABLE = "UNAVAILABLE";
 
     @Id
     @EqualsAndHashCode.Include
@@ -53,6 +65,30 @@ public class ConsultantProfile extends PanacheEntityBase {
 
     @Column(name = "cv_updated_at")
     private LocalDateTime cvUpdatedAt;
+
+    /**
+     * {@code PENDING} | {@code READY} | {@code UNAVAILABLE} (V461).
+     *
+     * <p>Initialised here, not left to the column DEFAULT: a column default does not apply to an
+     * explicit NULL, so persisting a fresh entity through Panache would emit
+     * {@code INSERT … status = NULL} and MariaDB in strict mode would raise error 1048 against the
+     * {@code NOT NULL} column. Every production write currently goes through the native upsert in
+     * {@code ConsultantProfileGenerationService}, so this is a guard for the next caller.
+     */
+    @Column(name = "status", nullable = false, length = 16)
+    private String status = STATUS_PENDING;
+
+    /** Consecutive failed generation attempts; reset to 0 on success. */
+    @Column(name = "generation_attempts", nullable = false)
+    private int generationAttempts;
+
+    /** Last attempt (success OR failure) — drives the retry backoff and the pre-warm claim. */
+    @Column(name = "last_attempt_at")
+    private LocalDateTime lastAttemptAt;
+
+    /** Short diagnostic failure code. Never rendered to users. */
+    @Column(name = "last_error", length = 255)
+    private String lastError;
 
     public ConsultantProfile(String useruuid) {
         this.useruuid = Objects.requireNonNull(useruuid, "useruuid must not be null");
@@ -91,5 +127,29 @@ public class ConsultantProfile extends PanacheEntityBase {
         this.topSkillsJson = topSkillsJson;
         this.cvUpdatedAt = cvUpdatedAt;
         this.generatedAt = LocalDateTime.now();
+        this.status = STATUS_READY;
+        this.generationAttempts = 0;
+        this.lastError = null;
+    }
+
+    /**
+     * True when a (re)generation attempt is allowed right now: never attempted, or the backoff
+     * has elapsed — and the profile is not parked as {@link #STATUS_UNAVAILABLE}.
+     *
+     * <p>Required because a failed generation deliberately leaves {@code generatedAt} NULL, which
+     * makes {@link #isStale(LocalDateTime)} permanently true. Without this gate every dashboard
+     * load would re-fire OpenAI for a consultant that cannot succeed.
+     *
+     * @param backoffMinutes minimum wait before a new attempt (see
+     *                       {@code consultant-profile.generation.retry-backoff-minutes})
+     */
+    public boolean shouldAttempt(int backoffMinutes) {
+        if (STATUS_UNAVAILABLE.equals(status)) {
+            return false;
+        }
+        if (lastAttemptAt == null) {
+            return true;
+        }
+        return lastAttemptAt.isBefore(LocalDateTime.now().minusMinutes(backoffMinutes));
     }
 }

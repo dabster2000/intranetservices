@@ -23,10 +23,21 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * REST resource for AI-generated consultant profiles.
+ * REST resource for consultant sales profiles (the dashboard "Available Now" card).
  *
- * <p>Accepts a comma-separated list of user UUIDs and returns cached
- * (or freshly generated) sales profiles for each consultant.
+ * <p>Accepts a comma-separated list of user UUIDs and returns <b>cached</b> AI content plus
+ * deterministic facts derived from the consultant's CV on every read (role title, top Trustworks
+ * clients, project/client counts, first project year, industries from the client register).
+ *
+ * <p>This endpoint <b>never blocks on generation</b>. Anything stale is handed to a background
+ * worker and the response carries {@code status: "PENDING"} for that consultant; the client can
+ * poll until it flips to {@code READY}. The response always holds exactly one entry per requested
+ * uuid, in request order, and its three list fields are never JSON null.
+ *
+ * <p>Known gap, tracked separately and deliberately unchanged here: the BFF route in front of this
+ * endpoint gates on session only, so any authenticated employee can read any colleague's client
+ * roster. The CV preview modal already exposes the same names behind the same gate, so this
+ * endpoint adds no incremental exposure — but the gate needs business sign-off.
  */
 @Tag(name = "Consultant Profiles")
 @Path("/api/consultants/profiles")
