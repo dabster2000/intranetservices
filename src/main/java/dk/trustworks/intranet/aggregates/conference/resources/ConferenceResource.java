@@ -497,8 +497,15 @@ public class ConferenceResource {
      * worker thread, so anything that fails there fails after this method has already
      * returned 204 to the caller — silently. Checking synchronously is what makes an
      * over-length submission a visible 400 instead of a lost registration.
+     * <p>
+     * MUST stay {@code private}. This class carries a class-level
+     * {@code @RolesAllowed({"conference:read"})}, which Arc applies to every non-private
+     * business method — and because Arc intercepts via a bean subclass, even a self-call
+     * re-enters the interceptor. A package-private version of this method made every
+     * anonymous submission to the {@code @PermitAll} public forms fail with 401 instead of
+     * being accepted. {@link #validateAttachments} is private for the same reason.
      */
-    void rejectOversizedFields(ConferenceParticipant conferenceParticipant) {
+    private void rejectOversizedFields(ConferenceParticipant conferenceParticipant) {
         String violation = ParticipantFieldLimits.firstViolation(conferenceParticipant);
         if (violation == null) return;
         // Name the participant: changeParticipantPhase validates a whole batch, and a

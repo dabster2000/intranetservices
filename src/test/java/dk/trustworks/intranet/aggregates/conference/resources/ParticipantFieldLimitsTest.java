@@ -116,6 +116,21 @@ class ParticipantFieldLimitsTest {
         assertNotNull(ParticipantFieldLimits.firstViolation(tooMany));
     }
 
+    @Test
+    void guardMustStayPrivateOrItBreaksTheAnonymousForms() throws Exception {
+        // ConferenceResource carries a class-level @RolesAllowed({"conference:read"}).
+        // Arc applies that to every non-private business method and intercepts via a bean
+        // subclass, so even a self-call re-enters the security check. When this helper was
+        // package-private, every anonymous POST to the @PermitAll public forms came back
+        // 401 (verified against staging) instead of being accepted — a worse outage than
+        // the silent data loss it was added to fix.
+        var method = ConferenceResource.class.getDeclaredMethod(
+                "rejectOversizedFields", ConferenceParticipant.class);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(method.getModifiers()),
+                "rejectOversizedFields must be private: a non-private helper on this class "
+                        + "inherits @RolesAllowed and turns anonymous submissions into 401s");
+    }
+
     // ---- the guard must be wired into the paths the public form actually takes ----
 
     @Test
@@ -172,7 +187,7 @@ class ParticipantFieldLimitsTest {
         p.setAndet(text(ParticipantFieldLimits.MAX_MESSAGE + 1));
 
         WebApplicationException e = assertThrows(WebApplicationException.class,
-                () -> resource.rejectOversizedFields(p));
+                () -> resource.createParticipant("conf-uuid", 0, p));
 
         assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), e.getResponse().getStatus(),
                 "an over-length submission must be a visible 400, not a silent 204");
@@ -194,6 +209,11 @@ class ParticipantFieldLimitsTest {
         ConferenceParticipant p = ContactFormMapper.fromForm(
                 form("name", "August", "email", "ahogsted@hotmail.com", "message", LOST_MESSAGE));
 
-        assertDoesNotThrow(() -> resource.rejectOversizedFields(p));
+        // Validation passes, so execution runs past the guard and fails on the collaborator
+        // this bare instance has no CDI to inject. Any WebApplicationException here would
+        // mean a real submission was turned away.
+        Throwable t = assertThrows(Throwable.class, () -> resource.createParticipant("conf-uuid", 0, p));
+        assertFalse(t instanceof WebApplicationException,
+                () -> "a within-limits submission must not be rejected, got: " + t);
     }
 }
