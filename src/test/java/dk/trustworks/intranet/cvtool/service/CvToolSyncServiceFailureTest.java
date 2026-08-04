@@ -145,6 +145,45 @@ class CvToolSyncServiceFailureTest {
         assertTrue(result.contains("3 skipped"), "was: " + result);
     }
 
+    /**
+     * An employee with no CV is a skip, not an "unchanged" — and a run made
+     * entirely of skips still succeeds. This is the bucket an unresolvable
+     * Employee_UUID lands in: employee 118 (Thomas Mountford) points at a UUID
+     * absent from the intra user table, which is bad data upstream rather than
+     * a sync fault, so it must not take the whole nightly job down with it.
+     */
+    @Test
+    void employeesWithNothingToSyncAreSkippedNotCountedAsUnchanged() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(employee(1), employee(2)));
+        when(client.getEmployee(anyInt())).thenReturn(employeeWithoutCv(1));
+
+        String result = service(Optional.of("key"), client).syncAllBaseCvs();
+
+        assertTrue(result.startsWith("COMPLETED:"), "skips must not fail the job, was: " + result);
+        assertTrue(result.contains("2 skipped"), "was: " + result);
+        assertTrue(result.contains("0 unchanged"), "a skip is not an unchanged, was: " + result);
+        assertTrue(result.contains("0 failed"), "was: " + result);
+    }
+
+    /**
+     * The mixed case that matters in production: some employees sync, one is
+     * unsyncable data. The job must stay green and still report the skip.
+     */
+    @Test
+    void oneUnsyncableEmployeeDoesNotFailAnOtherwiseHealthyRun() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(
+                employee(1), employee(2), new CvToolEmployeeSkinny(3, "Deleted", true, "uuid-3")));
+        when(client.getEmployee(anyInt())).thenReturn(employeeWithoutCv(1));
+
+        String result = service(Optional.of("key"), client).syncAllBaseCvs();
+
+        assertTrue(result.startsWith("COMPLETED:"), "was: " + result);
+        assertTrue(result.contains("3 skipped"), "deleted + unsyncable both skip, was: " + result);
+        assertTrue(result.contains("0 failed"), "was: " + result);
+    }
+
     @Test
     void emptyEmployeeListIsNotTreatedAsFailure() {
         CvToolClient client = mock(CvToolClient.class);
