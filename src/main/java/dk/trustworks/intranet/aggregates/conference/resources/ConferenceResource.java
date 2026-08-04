@@ -502,10 +502,12 @@ public class ConferenceResource {
         String violation = ParticipantFieldLimits.firstViolation(conferenceParticipant);
         if (violation == null) return;
         log.warnf("Rejecting oversized conference participant submission: %s", violation);
-        throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
-                .entity(violation)
-                .type(MediaType.TEXT_PLAIN)
-                .build());
+        // The message must be the exception's own message, not a response entity:
+        // WebApplicationExceptionMapper discards the entity and rebuilds the body from
+        // getMessage(), so an entity-only 400 would reach the caller as a bare
+        // "HTTP 400 Bad Request" with no indication of which field to shorten.
+        throw new WebApplicationException(violation,
+                Response.status(Response.Status.BAD_REQUEST).build());
     }
 
     /**

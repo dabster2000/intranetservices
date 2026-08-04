@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.conference.resources;
 
+import dk.trustworks.intranet.exceptions.WebApplicationExceptionMapper;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -102,8 +103,16 @@ class ParticipantFieldLimitsTest {
 
         assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), e.getResponse().getStatus(),
                 "an over-length submission must be a visible 400, not a silent 204");
-        assertTrue(String.valueOf(e.getResponse().getEntity()).contains("message"),
-                "the 400 body must tell the caller which field to shorten");
+
+        // WebApplicationExceptionMapper drops the response entity and rebuilds the body
+        // from getMessage(), so that is what the caller actually receives.
+        Response mapped = new WebApplicationExceptionMapper().toResponse(e);
+        assertEquals(400, mapped.getStatus());
+        String body = String.valueOf(mapped.getEntity());
+        assertTrue(body.contains("message"),
+                () -> "the 400 body must name the offending field, got: " + body);
+        assertTrue(body.contains(String.valueOf(ParticipantFieldLimits.MAX_MESSAGE)),
+                () -> "the 400 body must state the limit, got: " + body);
     }
 
     @Test
