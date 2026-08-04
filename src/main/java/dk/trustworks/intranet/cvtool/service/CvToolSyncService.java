@@ -161,8 +161,18 @@ public class CvToolSyncService {
         // duplicates: whichever record carries the newer Last_Updated_At is
         // written, and the older one is skipped as unchanged — independent of
         // the order CV Tool returns them in.
-        long existingCount = CvToolEmployeeCv.count("useruuid = ?1 AND cvLastUpdatedAt >= ?2",
-                employee.employeeUuid(), cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN);
+        //
+        // Wrapped in its own transaction, like the upsert below. A JBeret
+        // batchlet's @ActivateRequestContext is racy — the job intermittently
+        // runs with no CDI request context, and an unwrapped Panache read then
+        // dies with ContextNotActiveException ("neither a transaction nor a CDI
+        // request context is active"). Observed here: the same code synced 127
+        // employees on one run and failed all 136 on the next. Owning the
+        // transaction makes it deterministic.
+        final String useruuid = employee.employeeUuid();
+        final LocalDateTime staleThreshold = cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN;
+        long existingCount = QuarkusTransaction.requiringNew().call(() ->
+                CvToolEmployeeCv.count("useruuid = ?1 AND cvLastUpdatedAt >= ?2", useruuid, staleThreshold));
         if (cvLastUpdated != null && existingCount > 0) {
             log.debugf("Employee %d (%s) CV unchanged since last sync, skipping", employee.id(), employee.name());
             return false;
