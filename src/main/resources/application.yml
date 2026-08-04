@@ -417,6 +417,24 @@ openai:
   # variation, which the gpt-5 family rejects with HTTP 400 — so this defaults to a gpt-4o-family
   # model the project can access. Override per env with OPENAI_DAILY_BRIEF_MODEL.
   daily-brief-model: ${OPENAI_DAILY_BRIEF_MODEL:gpt-4o-mini}
+  # Model for the consultant sales-profile generator (ConsultantProfileGenerationService — the
+  # dashboard "Available Now" card). Deliberately NOT the global openai.model: that default is
+  # gpt-5-nano, which spent its whole output budget on hidden reasoning and answered 2xx with no
+  # output text (staging 2026-08-01), and gpt-5-nano-2025-08-07 retires 2026-12-11. This call
+  # composes customer-facing ENGLISH sales copy from ~13 KB of Danish CV JSON — synthesis, ranking
+  # and translation in one, so the mid tier is a quality choice, not a cost one (~145 consultants,
+  # weekly cadence). The call never sets temperature, so the gpt-5-family temperature restriction
+  # does not apply. Override per env with OPENAI_CONSULTANT_PROFILE_MODEL.
+  consultant-profile-model: ${OPENAI_CONSULTANT_PROFILE_MODEL:gpt-5.6-terra}
+  # reasoning.effort for that call: none, minimal, low, medium, high, xhigh, max. Condensing a CV
+  # into two sentences and a handful of labels is light work, so a low effort leaves the output
+  # budget for the actual answer. An EMPTY value omits the reasoning node entirely — REQUIRED if
+  # consultant-profile-model is ever pointed at a non-reasoning (gpt-4o-family) model, which
+  # rejects the node. That is why the injection point is Optional<String>: with a plain String an
+  # empty-but-present value converts to null and Quarkus aborts startup with SRCFG00040 (the trap
+  # cvtool.username and cvtool.password already demonstrate in this file) — the defaultValue does
+  # NOT rescue it, because the raw value is present.
+  consultant-profile-reasoning-effort: ${OPENAI_CONSULTANT_PROFILE_REASONING_EFFORT:low}
 # Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false, INVOICE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
 # so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
 # does, cannot reuse production's idempotency keys.
@@ -568,6 +586,38 @@ cvtool:
   # Replaced the old cvtool.username/password pair — the CV Tool backend removed
   # POST /auth/login, which broke the nightly sync silently.
   subscription-key: ${CVTOOL_SUBSCRIPTION_KEY:}
+
+# Generation and pre-warm controls for the AI consultant sales profiles that back the dashboard
+# "Available Now" card. Generation NEVER runs on the request thread (see
+# ConsultantProfileService): the GET serves cache + deterministic CV facts and enqueues.
+consultant-profile:
+  generation:
+    # Master kill switch for all OpenAI calls in this feature (on-demand and pre-warm).
+    # With this off the card still renders: deterministic CV facts are computed on read.
+    enabled: ${CONSULTANT_PROFILE_GENERATION_ENABLED:true}
+    # Minimum wait before a failed generation is retried. Failures deliberately leave
+    # generated_at NULL (so the row is never served as fresh), which makes isStale() permanently
+    # true — this backoff is what stops a failing consultant from firing OpenAI on every load.
+    retry-backoff-minutes: ${CONSULTANT_PROFILE_RETRY_BACKOFF_MINUTES:30}
+    # Consecutive failures after which the row is parked as UNAVAILABLE and stops being retried.
+    max-attempts: ${CONSULTANT_PROFILE_MAX_ATTEMPTS:3}
+  prewarm:
+    # Ships OFF. The nightly job proactively sends every active consultant's full CV (real name,
+    # employment history, education, certifications, client engagements) to a US processor —
+    # processing that no employee triggered. Two gates must clear before it is switched on with
+    # CONSULTANT_PROFILE_PREWARM_ENABLED=true, in this order:
+    #   1. privacy sign-off that bulk, unattended CV transmission is inside the documented ROPA
+    #      purpose (store=false only disables Responses-API state, not the transfer itself);
+    #   2. the quality gate this feature's contract already requires — generate ~10 profiles in
+    #      staging and read the English output by hand, since gpt-5.6-terra is unbenchmarked on
+    #      Danish CV JSON.
+    # With this off the card still fills itself: the read path enqueues generation on demand.
+    enabled: ${CONSULTANT_PROFILE_PREWARM_ENABLED:false}
+    # Consultants generated per nightly run. Caps one night's OpenAI spend; the ~106 consultants
+    # with no profile drain over a few nights.
+    batch-size: ${CONSULTANT_PROFILE_PREWARM_BATCH_SIZE:40}
+    # Pause between consultants inside a run — the sequential loop is the rate limiter.
+    pause-ms: ${CONSULTANT_PROFILE_PREWARM_PAUSE_MS:1000}
 
 nextsign:
   company: ${NEXTSIGN_COMPANY:69313a4a3abed8e75359da3f}
