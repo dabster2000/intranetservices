@@ -44,7 +44,7 @@ jobs:
       # The fast tier: every test that does NOT need a database. @QuarkusTest is
       # meta-annotated @Tag("io.quarkus.test.junit.QuarkusTest"), so excluding
       # that tag selects the DB-free tier — 2618 tests, ~3 min on this hardware.
-      # The ~244 @QuarkusTest classes need a MariaDB service container and are
+      # The 223 @QuarkusTest classes need a MariaDB service container and are
       # deferred to a later phase; the 16 *IT.java classes run nowhere at all,
       # because no failsafe plugin is configured, and this phase does not change
       # that.

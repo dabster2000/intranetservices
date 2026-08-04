@@ -45,7 +45,7 @@ jobs:
 
       # Every test that does not need a database. @QuarkusTest is meta-annotated
       # @Tag("io.quarkus.test.junit.QuarkusTest"), so excluding that tag selects
-      # the DB-free tier. The ~244 @QuarkusTest classes need a MariaDB service
+      # the DB-free tier. The 223 @QuarkusTest classes need a MariaDB service
       # container and are deferred to a later phase.
       - name: Unit tests (fast tier)
         run: ./mvnw -B test -DexcludedGroups=io.quarkus.test.junit.QuarkusTest
