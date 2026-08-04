@@ -136,7 +136,15 @@ public final class PublicSurfaceSnapshotter {
     static List<Class<?>> applicationClasses() {
         URL location = PublicSurfaceSnapshotter.class.getProtectionDomain().getCodeSource().getLocation();
         // The test class lives in target/test-classes; the application lives next door.
-        File testClasses = new File(location.getPath());
+        // Via toURI(), not getPath(): the checkout directory contains spaces on the owner's
+        // machine ("Trustworks Intranet Parent"), and a URL path percent-encodes them, so
+        // `new File(url.getPath())` points at a directory that does not exist.
+        File testClasses;
+        try {
+            testClasses = new File(location.toURI());
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not resolve the compiled-class location " + location, e);
+        }
         File classes = new File(testClasses.getParentFile(), "classes");
         if (!classes.isDirectory()) {
             throw new IllegalStateException(
