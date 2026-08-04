@@ -129,4 +129,73 @@ class PhaseSlackNotifierTest {
         n.notifyBatchSync("C1", "Confirmed", "Forefront 2025", participants(3)); // 3 > 2 -> summary
         verify(slack, times(1)).sendMessage(eq("C1"), anyString(), anyList());
     }
+
+    @Test
+    void longMessage_isClampedToSlackSectionLimit() {
+        // Since V459 widened `andet` to TEXT, a message can exceed Slack's 3000-char
+        // section limit. Slack rejects the whole post with invalid_blocks and this class
+        // swallows send failures, so without clamping the notification would vanish.
+        assertNull(PhaseSlackNotifier.clampToSlackSection(null));
+        assertEquals("short", PhaseSlackNotifier.clampToSlackSection("short"));
+
+        String atLimit = "x".repeat(3000);
+        assertEquals(atLimit, PhaseSlackNotifier.clampToSlackSection(atLimit), "3000 is allowed");
+
+        String clamped = PhaseSlackNotifier.clampToSlackSection("x".repeat(3001));
+        assertEquals(3000, clamped.length(), "must not exceed Slack's section limit");
+        assertTrue(clamped.endsWith("(truncated)"), "truncation must be visible to the reader");
+
+        // An emoji straddling the cut must not be split into a lone surrogate.
+        String withEmoji = "x".repeat(2986) + "🎉".repeat(20);
+        String clampedEmoji = PhaseSlackNotifier.clampToSlackSection(withEmoji);
+        assertTrue(clampedEmoji.length() <= 3000, "still within the limit");
+        assertFalse(Character.isHighSurrogate(clampedEmoji.charAt(clampedEmoji.length() - TRUNCATION_LEN - 1)),
+                "must not end the kept text on a dangling high surrogate");
+        assertEquals(clampedEmoji, new String(clampedEmoji.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.charset.StandardCharsets.UTF_8),
+                "clamped text must survive a UTF-8 round trip");
+    }
+
+    private static final int TRUNCATION_LEN = "… (truncated)".length();
+
+    @Test
+    void everyBlockSentToSlackRespectsItsTextLimit() {
+        // Asserts on the blocks actually handed to Slack. Slack rejects the WHOLE message
+        // with invalid_blocks if any one text object overflows, and PhaseSlackNotifier
+        // swallows send failures -- so an overflow means the notification silently vanishes.
+        SlackService slack = mock(SlackService.class);
+        PhaseSlackNotifier n = notifier(slack);
+        ConferenceParticipant p = participant("N".repeat(255), "a@x.dk"); // max name allowed
+        p.setAndet("y".repeat(8000));                                     // max message allowed
+        Map<String, Object> bag = new LinkedHashMap<>();
+        bag.put("phone", "z".repeat(4000));
+        p.setFields(bag);
+
+        n.notifyEntrySync("C1", "Entry", "WEBSITE", p);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LayoutBlock>> sent = ArgumentCaptor.forClass(List.class);
+        verify(slack, times(1)).sendMessage(eq("C1"), anyString(), sent.capture());
+
+        List<LayoutBlock> blocks = sent.getValue();
+        assertFalse(blocks.isEmpty(), "something must be sent");
+        for (LayoutBlock block : blocks) {
+            if (block instanceof com.slack.api.model.block.HeaderBlock h) {
+                assertTrue(h.getText().getText().length() <= 150,
+                        () -> "header exceeds Slack's 150-char limit: " + h.getText().getText().length());
+            } else if (block instanceof com.slack.api.model.block.SectionBlock s && s.getText() != null) {
+                assertTrue(s.getText().getText().length() <= 3000,
+                        () -> "section exceeds Slack's 3000-char limit: " + s.getText().getText().length());
+            }
+        }
+    }
+
+    @Test
+    void longName_isClampedToSlackHeaderLimit() {
+        // ParticipantFieldLimits allows a 255-char name, but a Slack header caps at 150.
+        assertEquals("short", PhaseSlackNotifier.clampToSlackHeader("short"));
+        String clamped = PhaseSlackNotifier.clampToSlackHeader("x".repeat(200));
+        assertEquals(150, clamped.length());
+        assertTrue(clamped.endsWith("(truncated)"));
+    }
 }

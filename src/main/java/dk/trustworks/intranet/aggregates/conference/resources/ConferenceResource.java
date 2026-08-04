@@ -237,6 +237,7 @@ public class ConferenceResource {
     @PermitAll
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants")
     public void createParticipant(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, ConferenceParticipant conferenceParticipant) {
+        rejectOversizedFields(conferenceParticipant);
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
@@ -254,6 +255,7 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/participants")
     @RolesAllowed({"conference:write"})
     public void updateParticipantData(@PathParam("conferenceuuid") String conferenceUUID, ConferenceParticipant conferenceParticipant) {
+        rejectOversizedFields(conferenceParticipant);
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
@@ -276,6 +278,11 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants/list")
     @RolesAllowed({"conference:write"})
     public void changeParticipantPhase(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, List<ConferenceParticipant> conferenceParticipantList) {
+        // Validate the whole batch up front: each participant is written by a separate
+        // async event, so a single oversized row would otherwise vanish on its own while
+        // the other N-1 succeed and the caller still sees 204.
+        conferenceParticipantList.forEach(this::rejectOversizedFields);
+
         // Fetch the target phase to check for email and attachments
         ConferencePhase targetPhase = conferenceService.findConferencePhase(conferenceUUID, phaseNumber);
 
@@ -480,6 +487,40 @@ public class ConferenceResource {
                     .entity(error)
                     .build();
         }
+    }
+
+    /**
+     * Reject a submission whose fields cannot fit their columns, before the domain event
+     * is published.
+     * <p>
+     * The participant row is inserted asynchronously by {@code ConferenceEventHandler} on a
+     * worker thread, so anything that fails there fails after this method has already
+     * returned 204 to the caller — silently. Checking synchronously is what makes an
+     * over-length submission a visible 400 instead of a lost registration.
+     * <p>
+     * MUST stay {@code private}. This class carries a class-level
+     * {@code @RolesAllowed({"conference:read"})}, which Arc applies to every non-private
+     * business method — and because Arc intercepts via a bean subclass, even a self-call
+     * re-enters the interceptor. A package-private version of this method made every
+     * anonymous submission to the {@code @PermitAll} public forms fail with 401 instead of
+     * being accepted. {@link #validateAttachments} is private for the same reason.
+     */
+    private void rejectOversizedFields(ConferenceParticipant conferenceParticipant) {
+        String violation = ParticipantFieldLimits.firstViolation(conferenceParticipant);
+        if (violation == null) return;
+        // Name the participant: changeParticipantPhase validates a whole batch, and a
+        // violation aborts all of it — an admin needs to know which row to fix.
+        String who = conferenceParticipant.getParticipantuuid() != null
+                ? conferenceParticipant.getParticipantuuid()
+                : conferenceParticipant.getEmail();
+        if (who != null) violation = violation + " (participant " + who + ")";
+        log.warnf("Rejecting oversized conference participant submission: %s", violation);
+        // The message must be the exception's own message, not a response entity:
+        // WebApplicationExceptionMapper discards the entity and rebuilds the body from
+        // getMessage(), so an entity-only 400 would reach the caller as a bare
+        // "HTTP 400 Bad Request" with no indication of which field to shorten.
+        throw new WebApplicationException(violation,
+                Response.status(Response.Status.BAD_REQUEST).build());
     }
 
     /**

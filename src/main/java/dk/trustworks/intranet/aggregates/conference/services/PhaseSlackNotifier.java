@@ -33,6 +33,15 @@ public class PhaseSlackNotifier {
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("MMM dd, yyyy 'at' HH:mm");
 
+    /** Slack's hard limit on the text of a {@code section} block. */
+    private static final int SLACK_SECTION_TEXT_MAX = 3000;
+    /**
+     * Slack's hard limit on a {@code header} block's plain_text — 150, not 3000.
+     * The header carries the participant name, which is allowed up to 255 characters.
+     */
+    private static final int SLACK_HEADER_TEXT_MAX = 150;
+    private static final String TRUNCATION_SUFFIX = "… (truncated)";
+
     private final SlackService slackService;
     private final ManagedExecutor managedExecutor;
     private final int perSubjectMax;
@@ -112,7 +121,7 @@ public class PhaseSlackNotifier {
 
     private List<LayoutBlock> buildSummaryBlocks(String phaseName, String conferenceName, List<ConferenceParticipant> participants) {
         List<LayoutBlock> blocks = new ArrayList<>();
-        blocks.add(header(h -> h.text(plainText("➡️ " + participants.size() + " participants moved into " + phaseName))));
+        blocks.add(header(h -> h.text(plainText(clampToSlackHeader("➡️ " + participants.size() + " participants moved into " + phaseName)))));
         blocks.add(section(s -> s.text(markdownText(buildSummaryText(phaseName, conferenceName, participants)))));
         blocks.add(context(c -> c.elements(asContextElements(
                 markdownText("Conference: " + conferenceName + " | Phase: " + phaseName)))));
@@ -174,13 +183,41 @@ public class PhaseSlackNotifier {
         if (value != null && !value.isBlank()) lines.add("*" + label + ":* " + value);
     }
 
+    /**
+     * Keep a section's text inside Slack's 3000-character limit.
+     * <p>
+     * Slack rejects the whole message with {@code invalid_blocks} if any section exceeds
+     * it, and posting failures here are swallowed by design — so an over-long message
+     * would make the notification vanish rather than arrive truncated. That mattered
+     * little while {@code andet} was {@code varchar(255)}; since V459 widened it to TEXT
+     * (bounded at 8000 characters at the REST boundary) it is reachable, and the free-form
+     * {@code fields} bag was always unbounded.
+     */
+    static String clampToSlackSection(String text) {
+        return clamp(text, SLACK_SECTION_TEXT_MAX);
+    }
+
+    /** Same, for a {@code header} block — a much tighter 150-character limit. */
+    static String clampToSlackHeader(String text) {
+        return clamp(text, SLACK_HEADER_TEXT_MAX);
+    }
+
+    private static String clamp(String text, int max) {
+        if (text == null || text.length() <= max) return text;
+        int cut = max - TRUNCATION_SUFFIX.length();
+        // Never cut between the halves of a surrogate pair: a lone surrogate is not valid
+        // UTF-8 and an emoji in the message would make Slack reject the payload again.
+        if (Character.isHighSurrogate(text.charAt(cut - 1))) cut--;
+        return text.substring(0, cut) + TRUNCATION_SUFFIX;
+    }
+
     List<LayoutBlock> buildEntryBlocks(String phaseName, String conferenceName, ConferenceParticipant p) {
         String name = (p.getName() != null && !p.getName().isBlank()) ? p.getName() : "New participant";
         List<LayoutBlock> blocks = new ArrayList<>();
-        blocks.add(header(h -> h.text(plainText("📥 " + name + " entered " + phaseName))));
-        blocks.add(section(s -> s.text(markdownText(String.join("\n", participantDetailLines(p))))));
+        blocks.add(header(h -> h.text(plainText(clampToSlackHeader("📥 " + name + " entered " + phaseName)))));
+        blocks.add(section(s -> s.text(markdownText(clampToSlackSection(String.join("\n", participantDetailLines(p)))))));
         if (p.getAndet() != null && !p.getAndet().isBlank()) {
-            blocks.add(section(s -> s.text(markdownText("*Message:*\n" + p.getAndet()))));
+            blocks.add(section(s -> s.text(markdownText(clampToSlackSection("*Message:*\n" + p.getAndet())))));
         }
         blocks.add(context(c -> c.elements(asContextElements(
                 markdownText("Conference: " + conferenceName + " | Phase: " + phaseName)))));
