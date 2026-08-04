@@ -5,6 +5,7 @@ import dk.trustworks.intranet.cvtool.client.CvToolClient;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeResponse;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeSkinny;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -95,11 +96,10 @@ public class CvToolSyncService {
             }
 
             try {
-                boolean updated = syncEmployee(employee);
-                if (updated) {
-                    synced++;
-                } else {
-                    unchanged++;
+                switch (syncEmployee(employee)) {
+                    case SYNCED -> synced++;
+                    case UNCHANGED -> unchanged++;
+                    case SKIPPED -> skipped++;
                 }
             } catch (Exception e) {
                 log.errorf(e, "Failed to sync employee %d (%s)", employee.id(), employee.name());
@@ -127,24 +127,53 @@ public class CvToolSyncService {
         return "COMPLETED: " + summary;
     }
 
+    /** What a single employee's sync accomplished. Failures throw instead. */
+    private enum SyncOutcome {
+        /** The CV was inserted or updated. */
+        SYNCED,
+        /** We already hold this CV at this version — nothing to write. */
+        UNCHANGED,
+        /** Nothing to sync, for a reason the sync itself cannot resolve. */
+        SKIPPED
+    }
+
     /**
      * Syncs a single employee's base CV.
      *
-     * @return true if data was inserted/updated, false if unchanged
+     * @return what the sync accomplished; throws {@link CvToolSyncException} on failure
      */
-    private boolean syncEmployee(CvToolEmployeeSkinny employee) {
+    private SyncOutcome syncEmployee(CvToolEmployeeSkinny employee) {
         // Fetch full employee + CV data
         CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id());
 
         if (fullEmployee.cv() == null || fullEmployee.cv().isNull()) {
             log.debugf("Employee %d (%s) has no CV data, skipping", employee.id(), employee.name());
-            return false;
+            return SyncOutcome.SKIPPED;
         }
 
         int cvId = fullEmployee.cvId();
         if (cvId < 0) {
             log.warnf("Employee %d (%s) has CV but no valid CV ID, skipping", employee.id(), employee.name());
-            return false;
+            return SyncOutcome.SKIPPED;
+        }
+
+        // An Employee_UUID that matches no intra user is bad data upstream, not
+        // a sync fault, so it is a skip rather than a failure — otherwise one
+        // stale link in the CV Tool turns the whole nightly job red until
+        // someone else fixes it, and a permanently red job is how alerts stop
+        // being read. Checked up front: letting it reach the INSERT instead
+        // yields an opaque fk_cv_tool_employee_cv_user violation.
+        //
+        // Logged at WARN and counted as skipped, so the condition stays visible
+        // without masking genuine failures.
+        final String employeeUuidToCheck = employee.employeeUuid();
+        boolean userExists = QuarkusTransaction.requiringNew().call(() ->
+                User.count("uuid", employeeUuidToCheck) > 0);
+        if (!userExists) {
+            log.warnf("Skipping employee %d (%s): Employee_UUID %s matches no intra user — "
+                            + "the CV Tool record points at a user that does not exist here",
+                    employee.id(), employee.name(), employee.employeeUuid());
+            return SyncOutcome.SKIPPED;
         }
 
         // Check if we already have this CV and if it's unchanged
@@ -175,7 +204,7 @@ public class CvToolSyncService {
                 CvToolEmployeeCv.count("useruuid = ?1 AND cvLastUpdatedAt >= ?2", useruuid, staleThreshold));
         if (cvLastUpdated != null && existingCount > 0) {
             log.debugf("Employee %d (%s) CV unchanged since last sync, skipping", employee.id(), employee.name());
-            return false;
+            return SyncOutcome.UNCHANGED;
         }
 
         // Serialize the full CV JSON
@@ -232,7 +261,7 @@ public class CvToolSyncService {
         }
 
         log.debugf("Synced CV for employee %d (%s)", employee.id(), fullEmployee.name());
-        return true;
+        return SyncOutcome.SYNCED;
     }
 
     /**
