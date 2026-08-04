@@ -112,10 +112,15 @@ public class CvToolSyncService {
             synced, unchanged, skipped, failed, employees.size()
         );
 
-        // Every candidate failed — the run accomplished nothing. Never report
-        // that as a success.
-        if (failed > 0 && synced == 0 && unchanged == 0) {
-            throw new CvToolSyncException("All " + failed + " CV Tool employees failed to sync");
+        // Any failure fails the job. A partial failure is exactly the shape of
+        // problem that hid here for a month: 8 people silently stopped syncing
+        // while the run still reported success. Per-employee upserts commit in
+        // their own transactions, so throwing does not discard the work that
+        // did succeed — it just makes the run visible in job monitoring, and it
+        // keeps being visible every night until someone fixes the cause.
+        if (failed > 0) {
+            log.error(summary);
+            throw new CvToolSyncException(summary);
         }
 
         log.info(summary);
@@ -145,9 +150,19 @@ public class CvToolSyncService {
         // Check if we already have this CV and if it's unchanged
         LocalDateTime cvLastUpdated = parseCvToolDateTime(fullEmployee.lastUpdatedAt());
 
-        // Check staleness outside the transaction (read-only, no entity managed state needed)
-        long existingCount = CvToolEmployeeCv.count("cvtoolEmployeeId = ?1 AND cvLastUpdatedAt >= ?2",
-                employee.id(), cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN);
+        // Keyed on useruuid, NOT cvtoolEmployeeId. cv_tool_employee_cv has
+        // UNIQUE KEY uk_useruuid — one row per person — but CV Tool can hold
+        // several employee records for the same Employee_UUID (8 people do,
+        // typically an old record plus a re-created one). Looking up by
+        // cvtoolEmployeeId misses the existing row for the second record,
+        // falls through to INSERT, and dies on the unique constraint.
+        //
+        // Comparing cvLastUpdatedAt then gives newest-CV-wins across those
+        // duplicates: whichever record carries the newer Last_Updated_At is
+        // written, and the older one is skipped as unchanged — independent of
+        // the order CV Tool returns them in.
+        long existingCount = CvToolEmployeeCv.count("useruuid = ?1 AND cvLastUpdatedAt >= ?2",
+                employee.employeeUuid(), cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN);
         if (cvLastUpdated != null && existingCount > 0) {
             log.debugf("Employee %d (%s) CV unchanged since last sync, skipping", employee.id(), employee.name());
             return false;
@@ -158,8 +173,8 @@ public class CvToolSyncService {
         try {
             cvJson = OBJECT_MAPPER.writeValueAsString(fullEmployee.cv());
         } catch (Exception e) {
-            log.errorf(e, "Failed to serialize CV JSON for employee %d", employee.id());
-            return false;
+            throw new CvToolSyncException(
+                "Failed to serialize CV JSON for employee " + employee.id() + " (" + employee.name() + ")", e);
         }
 
         // Upsert in a new transaction (so one failure doesn't roll back others)
@@ -168,8 +183,11 @@ public class CvToolSyncService {
         String employeeUuid = employee.employeeUuid();
         try {
             QuarkusTransaction.requiringNew().run(() -> {
-                CvToolEmployeeCv existing = CvToolEmployeeCv.find("cvtoolEmployeeId", employeeId).firstResult();
+                CvToolEmployeeCv existing = CvToolEmployeeCv.find("useruuid", employeeUuid).firstResult();
                 if (existing != null) {
+                    // Re-point the row at whichever CV Tool record won, so the
+                    // stored id matches the CV actually held.
+                    existing.setCvtoolEmployeeId(employeeId);
                     existing.setCvtoolCvId(cvId);
                     existing.setEmployeeName(fullEmployee.name());
                     existing.setEmployeeTitle(fullEmployee.employeeTitle());
@@ -196,8 +214,11 @@ public class CvToolSyncService {
                 }
             });
         } catch (Exception e) {
-            log.errorf(e, "Failed to persist CV for employee %d (%s)", employee.id(), employee.name());
-            return false;
+            // Must throw, not return false: false means "unchanged", so a
+            // persist failure used to be counted as a success. That is how a
+            // run reported "0 failed" while 9 employees had in fact failed.
+            throw new CvToolSyncException(
+                "Failed to persist CV for employee " + employee.id() + " (" + employee.name() + ")", e);
         }
 
         log.debugf("Synced CV for employee %d (%s)", employee.id(), fullEmployee.name());

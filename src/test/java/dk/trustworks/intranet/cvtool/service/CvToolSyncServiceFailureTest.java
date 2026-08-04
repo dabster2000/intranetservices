@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.cvtool.service;
 
 import dk.trustworks.intranet.cvtool.client.CvToolClient;
+import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeResponse;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeSkinny;
 import dk.trustworks.intranet.cvtool.service.CvToolSyncService.CvToolSyncException;
 import jakarta.ws.rs.WebApplicationException;
@@ -37,6 +38,12 @@ class CvToolSyncServiceFailureTest {
 
     private static CvToolEmployeeSkinny employee(int id) {
         return new CvToolEmployeeSkinny(id, "Employee " + id, false, "uuid-" + id);
+    }
+
+    /** An employee CV Tool knows about but holds no CV for — counted as unchanged, never a failure. */
+    private static CvToolEmployeeResponse employeeWithoutCv(int id) {
+        return new CvToolEmployeeResponse(id, "Employee " + id, null, null,
+                "uuid-" + id, false, null, null, null);
     }
 
     @Test
@@ -78,8 +85,46 @@ class CvToolSyncServiceFailureTest {
         CvToolSyncException ex = assertThrows(CvToolSyncException.class,
                 () -> service(Optional.of("key"), client).syncAllBaseCvs());
 
-        assertTrue(ex.getMessage().contains("2"),
+        assertTrue(ex.getMessage().contains("2 failed"),
                 "message should report how many failed, was: " + ex.getMessage());
+    }
+
+    /**
+     * A partial failure must fail the job too. The real run that exposed this
+     * synced 127 employees, failed 9 on a uk_useruuid constraint violation, and
+     * still reported COMPLETED with "0 failed" — because a persist failure
+     * returned false, which the loop counted as "unchanged".
+     */
+    @Test
+    void throwsWhenOnlySomeEmployeesFail() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(employee(1), employee(2)));
+        when(client.getEmployee(1)).thenReturn(employeeWithoutCv(1));
+        when(client.getEmployee(2)).thenThrow(new WebApplicationException(500));
+
+        CvToolSyncException ex = assertThrows(CvToolSyncException.class,
+                () -> service(Optional.of("key"), client).syncAllBaseCvs());
+
+        assertTrue(ex.getMessage().contains("1 failed"),
+                "a partial failure must still surface the count, was: " + ex.getMessage());
+    }
+
+    /**
+     * A failure must never be bucketed as "unchanged" — that mis-count is what
+     * made "0 failed" possible alongside 9 genuine failures.
+     */
+    @Test
+    void failuresAreNotCountedAsUnchanged() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(employee(1)));
+        when(client.getEmployee(1)).thenThrow(new WebApplicationException(500));
+
+        CvToolSyncException ex = assertThrows(CvToolSyncException.class,
+                () -> service(Optional.of("key"), client).syncAllBaseCvs());
+
+        assertTrue(ex.getMessage().contains("0 unchanged"),
+                "the failure must not inflate the unchanged count, was: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("1 failed"), ex.getMessage());
     }
 
     /**
