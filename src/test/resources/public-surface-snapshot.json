@@ -1,0 +1,923 @@
+{
+  "generatedFrom": "src/test/java/dk/trustworks/intranet/security/surface/PublicSurfaceSnapshotter.java",
+  "totals": {
+    "endpoints": 37,
+    "permitAllEndpoints": 20,
+    "entityReturningEndpoints": 11,
+    "entityRequestBodies": 3,
+    "unresolved": 8,
+    "truncated": 0,
+    "sensitiveFields": 3
+  },
+  "endpoints": {
+    "GET /apply/unsolicited": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicApplyResource#unsolicitedForm",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicUnsolicitedFormResponse",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicUnsolicitedFormResponse": {
+          "practices": "java.util.List<dk.trustworks.intranet.recruitmentservice.dto.PublicUnsolicitedFormResponse$PracticeOption>",
+          "questions": "java.util.List<dk.trustworks.intranet.recruitmentservice.services.PublicApplyQuestions$Question>"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicUnsolicitedFormResponse$PracticeOption": {
+          "name": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.recruitmentservice.services.PublicApplyQuestions$Question": {
+          "helpText": "java.lang.String",
+          "key": "java.lang.String",
+          "label": "java.lang.String",
+          "required": "boolean"
+        }
+      }
+    },
+    "GET /apply/{slug}": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicApplyResource#positionForm",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicApplyFormResponse",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicApplyFormResponse": {
+          "practiceName": "java.lang.String",
+          "questions": "java.util.List<dk.trustworks.intranet.recruitmentservice.services.PublicApplyQuestions$Question>",
+          "title": "java.lang.String"
+        },
+        "dk.trustworks.intranet.recruitmentservice.services.PublicApplyQuestions$Question": {
+          "helpText": "java.lang.String",
+          "key": "java.lang.String",
+          "label": "java.lang.String",
+          "required": "boolean"
+        }
+      }
+    },
+    "GET /consent/{token}": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicConsentResource#state",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicConsentResponse",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicConsentResponse": {
+          "expiresAt": "java.time.LocalDateTime",
+          "firstName": "java.lang.String",
+          "grantedAt": "java.time.LocalDateTime",
+          "kind": "java.lang.String",
+          "retentionDeadline": "java.time.LocalDateTime",
+          "status": "java.lang.String"
+        }
+      }
+    },
+    "GET /login": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.LoginResource#login",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.userservice.dto.LoginTokenResult",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.domain.user.entity.Role": {
+          "role": "java.lang.String",
+          "useruuid": "java.lang.String @JsonIgnore",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.userservice.dto.LoginTokenResult": {
+          "failureReason": "java.lang.String",
+          "roles": "java.util.List<dk.trustworks.intranet.domain.user.entity.Role>",
+          "success": "boolean",
+          "token": "java.lang.String",
+          "useruuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /login/validate": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.LoginResource#validateToken",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.userservice.dto.LoginTokenResult",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.domain.user.entity.Role": {
+          "role": "java.lang.String",
+          "useruuid": "java.lang.String @JsonIgnore",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.userservice.dto.LoginTokenResult": {
+          "failureReason": "java.lang.String",
+          "roles": "java.util.List<dk.trustworks.intranet.domain.user.entity.Role>",
+          "success": "boolean",
+          "token": "java.lang.String",
+          "useruuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /onboarding/tokens/{tokenUuid}/validate": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.OnboardingResource#validate",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse": {
+          "expired": "boolean",
+          "fields": "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$FieldFlags",
+          "submitted": "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$Submitted",
+          "valid": "boolean"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$FieldFlags": {
+          "criminalRecord": "boolean",
+          "driversLicense": "boolean",
+          "healthInsurance": "boolean"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$Submitted": {
+          "criminalRecord": "boolean",
+          "driversLicense": "boolean",
+          "healthInsurance": "boolean"
+        }
+      }
+    },
+    "GET /public/clients": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findAllClients",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.dao.crm.model.Client>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dao.crm.model.Client": {
+          "accountmanager": "java.lang.String",
+          "active": "boolean",
+          "billingAddress": "java.lang.String",
+          "billingCity": "java.lang.String",
+          "billingCountry": "java.lang.String",
+          "billingEmail": "java.lang.String",
+          "billingZipcode": "java.lang.String",
+          "companyCode": "java.lang.Integer",
+          "companyDesc": "java.lang.String",
+          "contactname": "java.lang.String",
+          "created": "java.time.LocalDateTime",
+          "crmid": "java.lang.String",
+          "currency": "java.lang.String",
+          "cvr": "java.lang.String",
+          "defaultBillingAttention": "java.lang.String",
+          "defaultBillingEmail": "java.lang.String",
+          "ean": "java.lang.String",
+          "industryCode": "java.lang.Integer",
+          "industryDesc": "java.lang.String",
+          "managed": "java.lang.String",
+          "name": "java.lang.String",
+          "phone": "java.lang.String",
+          "projects": "java.util.List<dk.trustworks.intranet.dao.crm.model.Project>",
+          "segment": "dk.trustworks.intranet.dao.crm.model.enums.ClientSegment",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.ClientType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Project": {
+          "active": "boolean",
+          "budget": "java.lang.Double",
+          "clientuuid": "java.lang.String",
+          "customerreference": "java.lang.String",
+          "locked": "boolean",
+          "name": "java.lang.String",
+          "tasks": "java.util.List<dk.trustworks.intranet.dao.crm.model.Task>",
+          "userowneruuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/coffeedates": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#getCoffeeDates",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.sales.model.SalesCoffeeDate>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.apigateway.dto.PublicUser": {
+          "active": "boolean",
+          "birthday": "java.time.LocalDate",
+          "email": "java.lang.String",
+          "firstName": "java.lang.String",
+          "hireDate": "java.time.LocalDate",
+          "lastName": "java.lang.String",
+          "phone": "java.lang.String",
+          "type": "dk.trustworks.intranet.userservice.model.enums.ConsultantType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.sales.model.SalesCoffeeDate": {
+          "bubbleuuid": "java.lang.String",
+          "coffeeDates": "int",
+          "publicUser": "dk.trustworks.intranet.apigateway.dto.PublicUser",
+          "useruuid": "java.lang.String @JsonIgnore",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/files/photos/{relateduuid}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findPhotoByRelatedUUID",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.fileservice.model.File",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.fileservice.model.File": {
+          "file": "[B",
+          "filename": "java.lang.String",
+          "name": "java.lang.String",
+          "relateduuid": "java.lang.String",
+          "type": "java.lang.String",
+          "uploaddate": "java.time.LocalDate",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/knowledge/projects": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicProjectDescriptionResource#findAll",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.knowledgeservice.model.ProjectDescription>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.knowledgeservice.model.ProjectDescription": {
+          "clientuuid": "java.lang.String",
+          "createdAt": "java.time.LocalDateTime @JsonProperty",
+          "createdBy": "java.lang.String @JsonProperty",
+          "fromDate": "java.time.LocalDate",
+          "learnings": "java.lang.String",
+          "methods": "java.lang.String",
+          "methodsList": "java.util.Set<java.lang.String> @JsonProperty @getter",
+          "modifiedBy": "java.lang.String @JsonProperty",
+          "name": "java.lang.String",
+          "projectDescriptionUserList": "java.util.List<dk.trustworks.intranet.knowledgeservice.model.ProjectDescriptionUser>",
+          "purpose": "java.lang.String",
+          "role": "java.lang.String",
+          "roles": "java.lang.String",
+          "rolesList": "java.util.Set<java.lang.String> @JsonProperty @getter",
+          "toDate": "java.time.LocalDate",
+          "updatedAt": "java.time.LocalDateTime @JsonProperty",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ProjectDescriptionUser": {
+          "id": "int",
+          "projectDescription": "dk.trustworks.intranet.knowledgeservice.model.ProjectDescription @JsonIgnore",
+          "useruuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/news/{category}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findAllNews",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.newsservice.model.News>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.newsservice.model.News": {
+          "createdBy": "java.lang.String",
+          "description": "java.lang.String",
+          "endDate": "java.time.LocalDateTime",
+          "eventDate": "java.time.LocalDateTime",
+          "image": "java.lang.String",
+          "newsType": "dk.trustworks.intranet.newsservice.model.enums.NewsType",
+          "relatedResources": "java.util.List<dk.trustworks.intranet.newsservice.model.RelatedResource>",
+          "startDate": "java.time.LocalDateTime",
+          "text": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.newsservice.model.RelatedResource": {
+          "news": "dk.trustworks.intranet.newsservice.model.News @JsonIgnore",
+          "relatedResourceUuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/projects/{uuid}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findByProjectuuid",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.dao.crm.model.Project",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dao.crm.model.Project": {
+          "active": "boolean",
+          "budget": "java.lang.Double",
+          "clientuuid": "java.lang.String",
+          "customerreference": "java.lang.String",
+          "locked": "boolean",
+          "name": "java.lang.String",
+          "tasks": "java.util.List<dk.trustworks.intranet.dao.crm.model.Task>",
+          "userowneruuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/stats/employees/headcount/{date}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicStatisticsResource#countEmployees",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.dto.KeyValueDTO",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dto.KeyValueDTO": {
+          "key": "java.lang.String",
+          "value": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/tasks/{uuid}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findByTaskuuid",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.dao.crm.model.Task",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/users": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findAllUsers",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.apigateway.dto.PublicUser>",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.apigateway.dto.PublicUser": {
+          "active": "boolean",
+          "birthday": "java.time.LocalDate",
+          "email": "java.lang.String",
+          "firstName": "java.lang.String",
+          "hireDate": "java.time.LocalDate",
+          "lastName": "java.lang.String",
+          "phone": "java.lang.String",
+          "type": "dk.trustworks.intranet.userservice.model.enums.ConsultantType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/users/{useruuid}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findByUseruuid",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.apigateway.dto.PublicUser",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.apigateway.dto.PublicUser": {
+          "active": "boolean",
+          "birthday": "java.time.LocalDate",
+          "email": "java.lang.String",
+          "firstName": "java.lang.String",
+          "hireDate": "java.time.LocalDate",
+          "lastName": "java.lang.String",
+          "phone": "java.lang.String",
+          "type": "dk.trustworks.intranet.userservice.model.enums.ConsultantType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/users/{useruuid}/photo": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findPhotoByUserUUID",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.fileservice.model.File",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.fileservice.model.File": {
+          "file": "[B",
+          "filename": "java.lang.String",
+          "name": "java.lang.String",
+          "relateduuid": "java.lang.String",
+          "type": "java.lang.String",
+          "uploaddate": "java.time.LocalDate",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/users/{useruuid}/weeks/{year}/{weeknumber}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#findByWeeknumberAndYearAndUseruuidOrderBySortingAsc",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.dao.workservice.model.Week>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dao.workservice.model.Week": {
+          "commentable": "boolean @getter",
+          "isCommentable": "boolean",
+          "sorting": "int",
+          "taskuuid": "java.lang.String",
+          "useruuid": "java.lang.String",
+          "uuid": "java.lang.String",
+          "weeknumber": "int",
+          "workas": "java.lang.String",
+          "year": "int"
+        }
+      }
+    },
+    "GET /public/users/{uuid}/work": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#getUserWorkByPeriod",
+      "access": "public:read",
+      "returns": "java.util.List<dk.trustworks.intranet.dao.workservice.model.WorkFull>",
+      "returnsEntity": true,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dao.workservice.model.WorkFull": {
+          "billable": "boolean @JsonIgnore",
+          "clientuuid": "java.lang.String",
+          "comments": "java.lang.String",
+          "consultant_company_uuid": "java.lang.String",
+          "contract_company_uuid": "java.lang.String",
+          "contractuuid": "java.lang.String",
+          "discount": "int",
+          "name": "java.lang.String",
+          "paidOut": "java.time.LocalDateTime",
+          "projectuuid": "java.lang.String",
+          "rate": "double",
+          "registered": "java.time.LocalDate",
+          "taskuuid": "java.lang.String",
+          "useruuid": "java.lang.String",
+          "uuid": "java.lang.String",
+          "workas": "java.lang.String",
+          "workduration": "double"
+        }
+      }
+    },
+    "POST /apply/unsolicited": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicApplyResource#submitUnsolicited",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "java.lang.String",
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /apply/{slug}": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicApplyResource#submitForPosition",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "java.lang.String",
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /auth/token": {
+      "resource": "dk.trustworks.intranet.security.apiclient.TokenResource#issueToken",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.security.apiclient.dto.TokenRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.security.apiclient.dto.TokenRequest": {
+          "clientId": "java.lang.String @JsonProperty",
+          "clientSecret": "java.lang.String @JsonProperty"
+        }
+      }
+    },
+    "POST /consent/{token}": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicConsentResource#decide",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicConsentResponse",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.recruitmentservice.dto.ConsentActionRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.ConsentActionRequest": {
+          "action": "java.lang.String"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicConsentResponse": {
+          "expiresAt": "java.time.LocalDateTime",
+          "firstName": "java.lang.String",
+          "grantedAt": "java.time.LocalDateTime",
+          "kind": "java.lang.String",
+          "retentionDeadline": "java.time.LocalDateTime",
+          "status": "java.lang.String"
+        }
+      }
+    },
+    "POST /cvtool/sync": {
+      "resource": "dk.trustworks.intranet.cvtool.resources.CvToolResource#triggerSync",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/apply/forefront2024": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#receiveForm2",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/apply/forefront2025/{phaseNumber}": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#receiveForm3",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/apply/{conferenceSlug}/{phaseNumber}": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#receiveFormBySlug",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/{conferenceuuid}/apply": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#receiveForm",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/{conferenceuuid}/contact": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#receiveContactForm",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": "jakarta.ws.rs.core.MultivaluedMap<java.lang.String,java.lang.String>",
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /knowledge/conferences/{conferenceuuid}/participants": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#createParticipant",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
+      "requestBodyIsEntity": true,
+      "fields": {
+        "dk.trustworks.intranet.dao.crm.model.Client": {
+          "accountmanager": "java.lang.String",
+          "active": "boolean",
+          "billingAddress": "java.lang.String",
+          "billingCity": "java.lang.String",
+          "billingCountry": "java.lang.String",
+          "billingEmail": "java.lang.String",
+          "billingZipcode": "java.lang.String",
+          "companyCode": "java.lang.Integer",
+          "companyDesc": "java.lang.String",
+          "contactname": "java.lang.String",
+          "created": "java.time.LocalDateTime",
+          "crmid": "java.lang.String",
+          "currency": "java.lang.String",
+          "cvr": "java.lang.String",
+          "defaultBillingAttention": "java.lang.String",
+          "defaultBillingEmail": "java.lang.String",
+          "ean": "java.lang.String",
+          "industryCode": "java.lang.Integer",
+          "industryDesc": "java.lang.String",
+          "managed": "java.lang.String",
+          "name": "java.lang.String",
+          "phone": "java.lang.String",
+          "projects": "java.util.List<dk.trustworks.intranet.dao.crm.model.Project>",
+          "segment": "dk.trustworks.intranet.dao.crm.model.enums.ClientSegment",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.ClientType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Project": {
+          "active": "boolean",
+          "budget": "java.lang.Double",
+          "clientuuid": "java.lang.String",
+          "customerreference": "java.lang.String",
+          "locked": "boolean",
+          "name": "java.lang.String",
+          "tasks": "java.util.List<dk.trustworks.intranet.dao.crm.model.Task>",
+          "userowneruuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant": {
+          "andet": "java.lang.String",
+          "client": "dk.trustworks.intranet.dao.crm.model.Client",
+          "company": "java.lang.String",
+          "conferencePhase": "dk.trustworks.intranet.knowledgeservice.model.ConferencePhase",
+          "conferenceuuid": "java.lang.String",
+          "email": "java.lang.String",
+          "fields": "java.util.Map<java.lang.String,java.lang.Object>",
+          "marketingConsent": "boolean",
+          "name": "java.lang.String",
+          "participantuuid": "java.lang.String",
+          "registered": "java.time.LocalDateTime",
+          "samtykke": "boolean",
+          "titel": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferencePhase": {
+          "attachments": "java.util.List<dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment> @JsonIgnore",
+          "conferenceuuid": "java.lang.String",
+          "mail": "java.lang.String",
+          "name": "java.lang.String",
+          "slackChannel": "java.lang.String",
+          "step": "int",
+          "subject": "java.lang.String",
+          "useMail": "boolean",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment": {
+          "content": "[B",
+          "contentType": "java.lang.String",
+          "createdAt": "java.time.LocalDateTime",
+          "fileSize": "long",
+          "filename": "java.lang.String",
+          "id": "java.lang.Long",
+          "phaseuuid": "java.lang.String"
+        }
+      }
+    },
+    "POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#createParticipant",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
+      "requestBodyIsEntity": true,
+      "fields": {
+        "dk.trustworks.intranet.dao.crm.model.Client": {
+          "accountmanager": "java.lang.String",
+          "active": "boolean",
+          "billingAddress": "java.lang.String",
+          "billingCity": "java.lang.String",
+          "billingCountry": "java.lang.String",
+          "billingEmail": "java.lang.String",
+          "billingZipcode": "java.lang.String",
+          "companyCode": "java.lang.Integer",
+          "companyDesc": "java.lang.String",
+          "contactname": "java.lang.String",
+          "created": "java.time.LocalDateTime",
+          "crmid": "java.lang.String",
+          "currency": "java.lang.String",
+          "cvr": "java.lang.String",
+          "defaultBillingAttention": "java.lang.String",
+          "defaultBillingEmail": "java.lang.String",
+          "ean": "java.lang.String",
+          "industryCode": "java.lang.Integer",
+          "industryDesc": "java.lang.String",
+          "managed": "java.lang.String",
+          "name": "java.lang.String",
+          "phone": "java.lang.String",
+          "projects": "java.util.List<dk.trustworks.intranet.dao.crm.model.Project>",
+          "segment": "dk.trustworks.intranet.dao.crm.model.enums.ClientSegment",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.ClientType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Project": {
+          "active": "boolean",
+          "budget": "java.lang.Double",
+          "clientuuid": "java.lang.String",
+          "customerreference": "java.lang.String",
+          "locked": "boolean",
+          "name": "java.lang.String",
+          "tasks": "java.util.List<dk.trustworks.intranet.dao.crm.model.Task>",
+          "userowneruuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant": {
+          "andet": "java.lang.String",
+          "client": "dk.trustworks.intranet.dao.crm.model.Client",
+          "company": "java.lang.String",
+          "conferencePhase": "dk.trustworks.intranet.knowledgeservice.model.ConferencePhase",
+          "conferenceuuid": "java.lang.String",
+          "email": "java.lang.String",
+          "fields": "java.util.Map<java.lang.String,java.lang.Object>",
+          "marketingConsent": "boolean",
+          "name": "java.lang.String",
+          "participantuuid": "java.lang.String",
+          "registered": "java.time.LocalDateTime",
+          "samtykke": "boolean",
+          "titel": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferencePhase": {
+          "attachments": "java.util.List<dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment> @JsonIgnore",
+          "conferenceuuid": "java.lang.String",
+          "mail": "java.lang.String",
+          "name": "java.lang.String",
+          "slackChannel": "java.lang.String",
+          "step": "int",
+          "subject": "java.lang.String",
+          "useMail": "boolean",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment": {
+          "content": "[B",
+          "contentType": "java.lang.String",
+          "createdAt": "java.time.LocalDateTime",
+          "fileSize": "long",
+          "filename": "java.lang.String",
+          "id": "java.lang.Long",
+          "phaseuuid": "java.lang.String"
+        }
+      }
+    },
+    "POST /onboarding/tokens/{tokenUuid}/upload": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.OnboardingResource#upload",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "java.lang.String",
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "POST /public/client": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#createClient",
+      "access": "public:read",
+      "returns": "dk.trustworks.intranet.dao.crm.model.Client",
+      "returnsEntity": true,
+      "requestBody": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource$CreateClientRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.apigateway.resources.gate.PublicResource$CreateClientRequest": {
+          "file": "java.lang.String",
+          "name": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Client": {
+          "accountmanager": "java.lang.String",
+          "active": "boolean",
+          "billingAddress": "java.lang.String",
+          "billingCity": "java.lang.String",
+          "billingCountry": "java.lang.String",
+          "billingEmail": "java.lang.String",
+          "billingZipcode": "java.lang.String",
+          "companyCode": "java.lang.Integer",
+          "companyDesc": "java.lang.String",
+          "contactname": "java.lang.String",
+          "created": "java.time.LocalDateTime",
+          "crmid": "java.lang.String",
+          "currency": "java.lang.String",
+          "cvr": "java.lang.String",
+          "defaultBillingAttention": "java.lang.String",
+          "defaultBillingEmail": "java.lang.String",
+          "ean": "java.lang.String",
+          "industryCode": "java.lang.Integer",
+          "industryDesc": "java.lang.String",
+          "managed": "java.lang.String",
+          "name": "java.lang.String",
+          "phone": "java.lang.String",
+          "projects": "java.util.List<dk.trustworks.intranet.dao.crm.model.Project>",
+          "segment": "dk.trustworks.intranet.dao.crm.model.enums.ClientSegment",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.ClientType",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Project": {
+          "active": "boolean",
+          "budget": "java.lang.Double",
+          "clientuuid": "java.lang.String",
+          "customerreference": "java.lang.String",
+          "locked": "boolean",
+          "name": "java.lang.String",
+          "tasks": "java.util.List<dk.trustworks.intranet.dao.crm.model.Task>",
+          "userowneruuid": "java.lang.String",
+          "uuid": "java.lang.String"
+        },
+        "dk.trustworks.intranet.dao.crm.model.Task": {
+          "name": "java.lang.String",
+          "projectuuid": "java.lang.String",
+          "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
+          "uuid": "java.lang.String"
+        }
+      }
+    },
+    "POST /public/messaging/slack/message": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#sendSlackMessage",
+      "access": "public:read",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.dto.KeyValueDTO",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.dto.KeyValueDTO": {
+          "key": "java.lang.String",
+          "value": "java.lang.String"
+        }
+      }
+    },
+    "POST /public/work": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#save",
+      "access": "public:read",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.dao.workservice.model.Work",
+      "requestBodyIsEntity": true,
+      "fields": {
+        "dk.trustworks.intranet.dao.workservice.model.Work": {
+          "billable": "boolean @JsonIgnore",
+          "clientuuid": "java.lang.String",
+          "comments": "java.lang.String",
+          "contractuuid": "java.lang.String",
+          "createdAt": "java.time.LocalDateTime",
+          "paidOut": "java.time.LocalDateTime",
+          "projectuuid": "java.lang.String",
+          "rate": "double",
+          "registered": "java.time.LocalDate",
+          "taskuuid": "java.lang.String",
+          "useruuid": "java.lang.String",
+          "uuid": "java.lang.String",
+          "workas": "java.lang.String",
+          "workduration": "double"
+        }
+      }
+    },
+    "POST /users/command/confirmpasswordchange/{key}": {
+      "resource": "dk.trustworks.intranet.aggregates.users.resources.UserResource#confirmPasswordChange",
+      "access": "permit-all",
+      "returns": "void",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
+    "PUT /public/client/{clientuuid}": {
+      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#updateClientLogo",
+      "access": "public:read",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource$UpdateClientLogoRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.apigateway.resources.gate.PublicResource$UpdateClientLogoRequest": {
+          "file": "java.lang.String"
+        }
+      }
+    }
+  },
+  "unresolved": [
+    "POST /apply/unsolicited — returns Response, shape not statically known",
+    "POST /apply/{slug} — returns Response, shape not statically known",
+    "POST /auth/token — returns Response, shape not statically known",
+    "POST /cvtool/sync — returns Response, shape not statically known",
+    "POST /knowledge/conferences/{conferenceuuid}/participants — returns Object, shape not statically known",
+    "POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants — returns Object, shape not statically known",
+    "POST /onboarding/tokens/{tokenUuid}/upload — returns Response, shape not statically known",
+    "PUT /public/client/{clientuuid} — returns Response, shape not statically known"
+  ],
+  "truncated": [],
+  "sensitiveFields": [
+    "GET /public/coffeedates · dk.trustworks.intranet.apigateway.dto.PublicUser#birthday",
+    "GET /public/users · dk.trustworks.intranet.apigateway.dto.PublicUser#birthday",
+    "GET /public/users/{useruuid} · dk.trustworks.intranet.apigateway.dto.PublicUser#birthday"
+  ]
+}
