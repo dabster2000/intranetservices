@@ -40,21 +40,34 @@ public class ApiClientRepository implements PanacheRepositoryBase<ApiClient, Str
 
     /**
      * Fetches a client with its scopes eagerly loaded in a single query.
+     *
+     * <p>Terminates with {@code list()} rather than {@code firstResultOptional()}:
+     * Panache implements {@code firstResult()} as {@code setMaxResults(1)}, and a
+     * limit combined with a collection {@code JOIN FETCH} makes Hibernate discard
+     * the SQL limit and paginate in memory, logging HHH90003004 on every call.
+     * {@code clientId} is unique, so the query matches at most one root entity and
+     * the limit was never load-bearing. {@code SELECT DISTINCT} keeps Hibernate's
+     * root de-duplication, so the fetched scope collection stays intact.
      */
     public Optional<ApiClient> findByClientIdWithScopes(String clientId) {
         return find("""
                 SELECT DISTINCT c FROM ApiClient c
                 LEFT JOIN FETCH c.scopes
                 WHERE c.clientId = ?1
-                """, clientId).firstResultOptional();
+                """, clientId).<ApiClient>list().stream().findFirst();
     }
 
+    /**
+     * Fetches a client by primary key with its scopes eagerly loaded.
+     * Terminates with {@code list()} for the same reason as
+     * {@link #findByClientIdWithScopes(String)}.
+     */
     public Optional<ApiClient> findByUuidWithScopes(String uuid) {
         return find("""
                 SELECT DISTINCT c FROM ApiClient c
                 LEFT JOIN FETCH c.scopes
                 WHERE c.uuid = ?1
-                """, uuid).firstResultOptional();
+                """, uuid).<ApiClient>list().stream().findFirst();
     }
 
     /**

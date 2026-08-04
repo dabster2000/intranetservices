@@ -168,18 +168,26 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     /**
      * Find a template by UUID with placeholders, defaultSigners and signingSchemas eagerly loaded.
      *
+     * <p>Every query here terminates with {@code list()} rather than {@code firstResult()}:
+     * Panache implements {@code firstResult()} as {@code setMaxResults(1)}, and a limit
+     * combined with a collection {@code JOIN FETCH} makes Hibernate discard the SQL limit
+     * and paginate in memory, logging HHH90003004 on every call. {@code uuid} is the
+     * primary key, so each query matches at most one root entity and the limit was never
+     * load-bearing. {@code SELECT DISTINCT} keeps Hibernate's root de-duplication, so the
+     * fetched collections stay intact.
+     *
      * @param uuid The template UUID
      * @return The template with placeholders, defaultSigners and signingSchemas, or null if not found
      */
     public static DocumentTemplateEntity findByUuidWithPlaceholders(String uuid) {
         // First fetch with placeholders
-        DocumentTemplateEntity template = find(
+        List<DocumentTemplateEntity> templates = find(
             "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
             "LEFT JOIN FETCH t.placeholders " +
-            "WHERE t.uuid = ?1 " +
-            "ORDER BY t.uuid",
+            "WHERE t.uuid = ?1",
             uuid
-        ).firstResult();
+        ).list();
+        DocumentTemplateEntity template = templates.isEmpty() ? null : templates.get(0);
         // Then fetch defaultSigners in a separate query to avoid cartesian product
         if (template != null) {
             find(
@@ -187,14 +195,14 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
                 "LEFT JOIN FETCH t.defaultSigners " +
                 "WHERE t.uuid = ?1",
                 uuid
-            ).firstResult();
+            ).list();
             // Then fetch signingSchemas in a separate query to avoid cartesian product
             find(
                 "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
                 "LEFT JOIN FETCH t.signingSchemas " +
                 "WHERE t.uuid = ?1",
                 uuid
-            ).firstResult();
+            ).list();
         }
         return template;
     }
