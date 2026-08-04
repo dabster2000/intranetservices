@@ -129,4 +129,46 @@ class PhaseSlackNotifierTest {
         n.notifyBatchSync("C1", "Confirmed", "Forefront 2025", participants(3)); // 3 > 2 -> summary
         verify(slack, times(1)).sendMessage(eq("C1"), anyString(), anyList());
     }
+
+    @Test
+    void longMessage_isClampedToSlackSectionLimit() {
+        // Since V459 widened `andet` to TEXT, a message can exceed Slack's 3000-char
+        // section limit. Slack rejects the whole post with invalid_blocks and this class
+        // swallows send failures, so without clamping the notification would vanish.
+        assertNull(PhaseSlackNotifier.clampToSlackSection(null));
+        assertEquals("short", PhaseSlackNotifier.clampToSlackSection("short"));
+
+        String atLimit = "x".repeat(3000);
+        assertEquals(atLimit, PhaseSlackNotifier.clampToSlackSection(atLimit), "3000 is allowed");
+
+        String clamped = PhaseSlackNotifier.clampToSlackSection("x".repeat(3001));
+        assertEquals(3000, clamped.length(), "must not exceed Slack's section limit");
+        assertTrue(clamped.endsWith("(truncated)"), "truncation must be visible to the reader");
+
+        // An emoji straddling the cut must not be split into a lone surrogate.
+        String withEmoji = "x".repeat(2986) + "🎉".repeat(20);
+        String clampedEmoji = PhaseSlackNotifier.clampToSlackSection(withEmoji);
+        assertTrue(clampedEmoji.length() <= 3000, "still within the limit");
+        assertFalse(Character.isHighSurrogate(clampedEmoji.charAt(clampedEmoji.length() - TRUNCATION_LEN - 1)),
+                "must not end the kept text on a dangling high surrogate");
+        assertEquals(clampedEmoji, new String(clampedEmoji.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.charset.StandardCharsets.UTF_8),
+                "clamped text must survive a UTF-8 round trip");
+    }
+
+    private static final int TRUNCATION_LEN = "… (truncated)".length();
+
+    @Test
+    void oversizedMessageStillProducesSendableBlocks() {
+        SlackService slack = mock(SlackService.class);
+        PhaseSlackNotifier n = notifier(slack);
+        ConferenceParticipant p = participant("August", "a@x.dk");
+        p.setAndet("y".repeat(8000)); // the boundary maximum accepted by ParticipantFieldLimits
+
+        List<LayoutBlock> blocks = n.buildEntryBlocks("Entry", "WEBSITE", p);
+
+        n.notifyEntrySync("C1", "Entry", "WEBSITE", p);
+        verify(slack, times(1)).sendMessage(eq("C1"), anyString(), anyList());
+        assertFalse(blocks.isEmpty());
+    }
 }
