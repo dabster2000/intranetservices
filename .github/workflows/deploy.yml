@@ -38,6 +38,24 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # ----------------------------------------------------------------------
+      # Test gate (authorization-model-unification, phase 2).
+      #
+      # The fast tier: every test that does NOT need a database. @QuarkusTest is
+      # meta-annotated @Tag("io.quarkus.test.junit.QuarkusTest"), so excluding
+      # that tag selects the DB-free tier — 2618 tests, ~3 min on this hardware.
+      # The 223 @QuarkusTest classes need a MariaDB service container and are
+      # deferred to a later phase; the 16 *IT.java classes run nowhere at all,
+      # because no failsafe plugin is configured, and this phase does not change
+      # that.
+      #
+      # Runs BEFORE the package step, so a red test costs one runner minute and
+      # never reaches ECR or ECS. The package step keeps -DskipTests: the tests
+      # have already run, and re-running them there would double the cost.
+      # ----------------------------------------------------------------------
+      - name: Unit tests (fast tier)
+        run: ./mvnw -B test -DexcludedGroups=io.quarkus.test.junit.QuarkusTest
+
       - name: Build with Maven
         run: ./mvnw clean package -DskipTests -B -T 1C
 
