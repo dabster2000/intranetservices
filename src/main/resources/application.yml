@@ -162,8 +162,12 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 10000
       read-timeout: 30000
+    # CV Tool is reached through Azure API Management, not the App Service host
+    # directly (tw-cvtool-backend.azurewebsites.net rejects everything with 401
+    # since it moved to AzureAD-only auth). Auth is the Ocp-Apim-Subscription-Key
+    # header — see CvToolHeadersFactory.
     cvtool:
-      url: https://tw-cvtool-backend.azurewebsites.net
+      url: https://tw-ai-platform-apim.azure-api.net
       scope: jakarta.inject.Singleton
       connect-timeout: 10000
       read-timeout: 30000
@@ -558,8 +562,12 @@ finance:
 pricingEngine:
   enabled: true
 cvtool:
-  username: ${CVTOOL_USERNAME:}
-  password: ${CVTOOL_PASSWORD:}
+  # Azure API Management subscription key, sent as Ocp-Apim-Subscription-Key on
+  # every CV Tool call. Sourced from the Secrets Manager entry
+  # tw-quarkus-secrets-{env}:CVTOOL_SUBSCRIPTION_KEY in deployed environments.
+  # Replaced the old cvtool.username/password pair — the CV Tool backend removed
+  # POST /auth/login, which broke the nightly sync silently.
+  subscription-key: ${CVTOOL_SUBSCRIPTION_KEY:}
 
 nextsign:
   company: ${NEXTSIGN_COMPANY:69313a4a3abed8e75359da3f}
