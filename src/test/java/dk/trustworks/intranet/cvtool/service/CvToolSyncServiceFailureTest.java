@@ -1,0 +1,113 @@
+package dk.trustworks.intranet.cvtool.service;
+
+import dk.trustworks.intranet.cvtool.client.CvToolClient;
+import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeSkinny;
+import dk.trustworks.intranet.cvtool.service.CvToolSyncService.CvToolSyncException;
+import jakarta.ws.rs.WebApplicationException;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * The CV Tool sync silently "succeeded" while doing nothing for over a month:
+ * {@code syncAllBaseCvs()} returned a {@code "FAILED: ..."} string, so JBeret
+ * recorded exitStatus COMPLETED and the batch metric recorded outcome "success".
+ * These tests pin the fail-loudly contract that replaced it.
+ *
+ * <p>Plain JUnit — a @QuarkusTest that aborts at boot is reported as a green
+ * SKIP, which would make these assertions vacuous.
+ */
+class CvToolSyncServiceFailureTest {
+
+    private static CvToolSyncService service(Optional<String> key, CvToolClient client) {
+        CvToolSyncService service = new CvToolSyncService();
+        service.subscriptionKey = key;
+        service.cvToolClient = client;
+        return service;
+    }
+
+    private static CvToolEmployeeSkinny employee(int id) {
+        return new CvToolEmployeeSkinny(id, "Employee " + id, false, "uuid-" + id);
+    }
+
+    @Test
+    void throwsWhenSubscriptionKeyIsMissing() {
+        CvToolSyncException ex = assertThrows(CvToolSyncException.class,
+                () -> service(Optional.empty(), mock(CvToolClient.class)).syncAllBaseCvs());
+
+        assertTrue(ex.getMessage().contains("CVTOOL_SUBSCRIPTION_KEY"),
+                "message should name the env var to set, was: " + ex.getMessage());
+    }
+
+    @Test
+    void throwsWhenSubscriptionKeyIsBlank() {
+        assertThrows(CvToolSyncException.class,
+                () -> service(Optional.of("   "), mock(CvToolClient.class)).syncAllBaseCvs());
+    }
+
+    /**
+     * The exact production failure mode: the remote rejects us with 401. It must
+     * propagate, not become a returned string.
+     */
+    @Test
+    void throwsWhenEmployeeListCallIsRejected() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenThrow(new WebApplicationException(401));
+
+        CvToolSyncException ex = assertThrows(CvToolSyncException.class,
+                () -> service(Optional.of("key"), client).syncAllBaseCvs());
+
+        assertNotNull(ex.getCause(), "the underlying transport failure must be preserved");
+    }
+
+    @Test
+    void throwsWhenEveryEmployeeFails() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(employee(1), employee(2)));
+        when(client.getEmployee(anyInt())).thenThrow(new WebApplicationException(500));
+
+        CvToolSyncException ex = assertThrows(CvToolSyncException.class,
+                () -> service(Optional.of("key"), client).syncAllBaseCvs());
+
+        assertTrue(ex.getMessage().contains("2"),
+                "message should report how many failed, was: " + ex.getMessage());
+    }
+
+    /**
+     * A run with nothing to do is a legitimate success — deleted employees and
+     * employees with no intra UUID are skipped, not failures.
+     */
+    @Test
+    void returnsCompletedWhenEveryEmployeeIsSkipped() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of(
+                new CvToolEmployeeSkinny(1, "Deleted Person", true, "uuid-1"),
+                new CvToolEmployeeSkinny(2, "Unlinked Person", false, null),
+                new CvToolEmployeeSkinny(3, "Blank UUID Person", false, "  ")));
+
+        String result = service(Optional.of("key"), client).syncAllBaseCvs();
+
+        assertTrue(result.startsWith("COMPLETED:"), "was: " + result);
+        assertTrue(result.contains("3 skipped"), "was: " + result);
+    }
+
+    @Test
+    void emptyEmployeeListIsNotTreatedAsFailure() {
+        CvToolClient client = mock(CvToolClient.class);
+        when(client.getAllEmployees()).thenReturn(List.of());
+
+        String result = service(Optional.of("key"), client).syncAllBaseCvs();
+
+        assertEquals("COMPLETED: CV Tool sync completed: 0 synced, 0 unchanged, 0 skipped, 0 failed (out of 0 total)",
+                result);
+    }
+}

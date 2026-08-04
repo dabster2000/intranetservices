@@ -1,11 +1,9 @@
 package dk.trustworks.intranet.cvtool.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.cvtool.client.CvToolAuthClient;
 import dk.trustworks.intranet.cvtool.client.CvToolClient;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeResponse;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeSkinny;
-import dk.trustworks.intranet.cvtool.dto.CvToolTokenResponse;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -19,13 +17,22 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Service for syncing base CVs from the external CV Tool API into local storage.
  * <p>
- * Authentication: Uses cookie-based JWT auth (programmatic login).
- * When header-based auth becomes available, swap the auth logic here.
+ * Authentication is the {@code Ocp-Apim-Subscription-Key} header applied by
+ * {@link dk.trustworks.intranet.cvtool.client.CvToolHeadersFactory} — there is
+ * no login round-trip.
+ * <p>
+ * <b>Failures throw.</b> This job used to <em>return</em> a {@code "FAILED: ..."}
+ * string on error, which JBeret recorded as {@code exitStatus: COMPLETED} and the
+ * batch metrics recorded as {@code outcome: "success"} — so the sync stayed dead
+ * for over a month without raising a single alert. Anything that means "no CVs
+ * were synced" must propagate out of {@link #syncAllBaseCvs()} so the job is
+ * marked FAILED and surfaces in nightly job monitoring.
  */
 @JBossLog
 @ApplicationScoped
@@ -40,43 +47,35 @@ public class CvToolSyncService {
 
     @Inject
     @RestClient
-    CvToolAuthClient authClient;
-
-    @Inject
-    @RestClient
     CvToolClient cvToolClient;
 
-    @ConfigProperty(name = "cvtool.username")
-    String username;
-
-    @ConfigProperty(name = "cvtool.password")
-    String password;
+    @ConfigProperty(name = "cvtool.subscription-key")
+    Optional<String> subscriptionKey;
 
     /**
      * Main sync method. Called by the nightly batchlet.
      *
      * @return Summary string for batch job logging
+     * @throws CvToolSyncException if the sync could not fetch or store any CV
      */
     public String syncAllBaseCvs() {
         log.info("Starting CV Tool sync...");
 
-        // Step 1: Authenticate
-        String cookieHeader = authenticate();
-        if (cookieHeader == null) {
-            return "FAILED: Authentication failed";
+        if (subscriptionKey.map(String::trim).orElse("").isEmpty()) {
+            throw new CvToolSyncException(
+                "CV Tool subscription key is not configured — set CVTOOL_SUBSCRIPTION_KEY");
         }
 
-        // Step 2: Fetch employee list
+        // Step 1: Fetch employee list
         List<CvToolEmployeeSkinny> employees;
         try {
-            employees = cvToolClient.getAllEmployees(cookieHeader);
+            employees = cvToolClient.getAllEmployees();
             log.infof("Fetched %d employees from CV Tool", employees.size());
         } catch (Exception e) {
-            log.errorf(e, "Failed to fetch employee list from CV Tool");
-            return "FAILED: Could not fetch employee list - " + e.getMessage();
+            throw new CvToolSyncException("Could not fetch employee list from CV Tool", e);
         }
 
-        // Step 3: Filter and sync each employee
+        // Step 2: Filter and sync each employee
         int synced = 0;
         int skipped = 0;
         int failed = 0;
@@ -96,7 +95,7 @@ public class CvToolSyncService {
             }
 
             try {
-                boolean updated = syncEmployee(employee, cookieHeader);
+                boolean updated = syncEmployee(employee);
                 if (updated) {
                     synced++;
                 } else {
@@ -112,29 +111,15 @@ public class CvToolSyncService {
             "CV Tool sync completed: %d synced, %d unchanged, %d skipped, %d failed (out of %d total)",
             synced, unchanged, skipped, failed, employees.size()
         );
+
+        // Every candidate failed — the run accomplished nothing. Never report
+        // that as a success.
+        if (failed > 0 && synced == 0 && unchanged == 0) {
+            throw new CvToolSyncException("All " + failed + " CV Tool employees failed to sync");
+        }
+
         log.info(summary);
         return "COMPLETED: " + summary;
-    }
-
-    /**
-     * Authenticates with the CV Tool API and returns the Cookie header string.
-     */
-    private String authenticate() {
-        try {
-            log.info("Authenticating with CV Tool API...");
-            CvToolTokenResponse tokenResponse = authClient.login(username, password);
-
-            if (!tokenResponse.success() || tokenResponse.token() == null) {
-                log.errorf("CV Tool authentication failed: %s", tokenResponse.failureReason());
-                return null;
-            }
-
-            log.info("CV Tool authentication successful");
-            return "jwt_authorization=" + tokenResponse.token();
-        } catch (Exception e) {
-            log.errorf(e, "CV Tool authentication error");
-            return null;
-        }
     }
 
     /**
@@ -142,9 +127,9 @@ public class CvToolSyncService {
      *
      * @return true if data was inserted/updated, false if unchanged
      */
-    private boolean syncEmployee(CvToolEmployeeSkinny employee, String cookieHeader) {
+    private boolean syncEmployee(CvToolEmployeeSkinny employee) {
         // Fetch full employee + CV data
-        CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id(), cookieHeader);
+        CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id());
 
         if (fullEmployee.cv() == null || fullEmployee.cv().isNull()) {
             log.debugf("Employee %d (%s) has no CV data, skipping", employee.id(), employee.name());
@@ -229,6 +214,17 @@ public class CvToolSyncService {
         } catch (Exception e) {
             log.debugf("Could not parse CV Tool datetime '%s': %s", dateTimeStr, e.getMessage());
             return null;
+        }
+    }
+
+    /** Signals that the CV Tool sync could not complete — fails the batch job. */
+    public static class CvToolSyncException extends RuntimeException {
+        public CvToolSyncException(String message) {
+            super(message);
+        }
+
+        public CvToolSyncException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

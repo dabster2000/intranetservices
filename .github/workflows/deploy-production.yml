@@ -135,8 +135,7 @@ jobs:
               {"name":"AZURE_CLIENT_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_CLIENT_ID::"},
               {"name":"AZURE_CLIENT_SECRET","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_CLIENT_SECRET::"},
               {"name":"AZURE_TENANT_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_TENANT_ID::"},
-              {"name":"CVTOOL_USERNAME","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_USERNAME::"},
-              {"name":"CVTOOL_PASSWORD","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_PASSWORD::"},
+              {"name":"CVTOOL_SUBSCRIPTION_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_SUBSCRIPTION_KEY::"},
               {"name":"GH_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:GH_TOKEN::"},
               {"name":"VIRKDATA_API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:VIRKDATA_API_KEY::"}
             ]
