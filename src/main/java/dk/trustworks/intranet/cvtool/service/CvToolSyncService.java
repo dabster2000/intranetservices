@@ -1,11 +1,9 @@
 package dk.trustworks.intranet.cvtool.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.cvtool.client.CvToolAuthClient;
 import dk.trustworks.intranet.cvtool.client.CvToolClient;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeResponse;
 import dk.trustworks.intranet.cvtool.dto.CvToolEmployeeSkinny;
-import dk.trustworks.intranet.cvtool.dto.CvToolTokenResponse;
 import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -19,13 +17,22 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Service for syncing base CVs from the external CV Tool API into local storage.
  * <p>
- * Authentication: Uses cookie-based JWT auth (programmatic login).
- * When header-based auth becomes available, swap the auth logic here.
+ * Authentication is the {@code Ocp-Apim-Subscription-Key} header applied by
+ * {@link dk.trustworks.intranet.cvtool.client.CvToolHeadersFactory} — there is
+ * no login round-trip.
+ * <p>
+ * <b>Failures throw.</b> This job used to <em>return</em> a {@code "FAILED: ..."}
+ * string on error, which JBeret recorded as {@code exitStatus: COMPLETED} and the
+ * batch metrics recorded as {@code outcome: "success"} — so the sync stayed dead
+ * for over a month without raising a single alert. Anything that means "no CVs
+ * were synced" must propagate out of {@link #syncAllBaseCvs()} so the job is
+ * marked FAILED and surfaces in nightly job monitoring.
  */
 @JBossLog
 @ApplicationScoped
@@ -40,43 +47,35 @@ public class CvToolSyncService {
 
     @Inject
     @RestClient
-    CvToolAuthClient authClient;
-
-    @Inject
-    @RestClient
     CvToolClient cvToolClient;
 
-    @ConfigProperty(name = "cvtool.username")
-    String username;
-
-    @ConfigProperty(name = "cvtool.password")
-    String password;
+    @ConfigProperty(name = "cvtool.subscription-key")
+    Optional<String> subscriptionKey;
 
     /**
      * Main sync method. Called by the nightly batchlet.
      *
      * @return Summary string for batch job logging
+     * @throws CvToolSyncException if the sync could not fetch or store any CV
      */
     public String syncAllBaseCvs() {
         log.info("Starting CV Tool sync...");
 
-        // Step 1: Authenticate
-        String cookieHeader = authenticate();
-        if (cookieHeader == null) {
-            return "FAILED: Authentication failed";
+        if (subscriptionKey.map(String::trim).orElse("").isEmpty()) {
+            throw new CvToolSyncException(
+                "CV Tool subscription key is not configured — set CVTOOL_SUBSCRIPTION_KEY");
         }
 
-        // Step 2: Fetch employee list
+        // Step 1: Fetch employee list
         List<CvToolEmployeeSkinny> employees;
         try {
-            employees = cvToolClient.getAllEmployees(cookieHeader);
+            employees = cvToolClient.getAllEmployees();
             log.infof("Fetched %d employees from CV Tool", employees.size());
         } catch (Exception e) {
-            log.errorf(e, "Failed to fetch employee list from CV Tool");
-            return "FAILED: Could not fetch employee list - " + e.getMessage();
+            throw new CvToolSyncException("Could not fetch employee list from CV Tool", e);
         }
 
-        // Step 3: Filter and sync each employee
+        // Step 2: Filter and sync each employee
         int synced = 0;
         int skipped = 0;
         int failed = 0;
@@ -96,7 +95,7 @@ public class CvToolSyncService {
             }
 
             try {
-                boolean updated = syncEmployee(employee, cookieHeader);
+                boolean updated = syncEmployee(employee);
                 if (updated) {
                     synced++;
                 } else {
@@ -112,29 +111,20 @@ public class CvToolSyncService {
             "CV Tool sync completed: %d synced, %d unchanged, %d skipped, %d failed (out of %d total)",
             synced, unchanged, skipped, failed, employees.size()
         );
+
+        // Any failure fails the job. A partial failure is exactly the shape of
+        // problem that hid here for a month: 8 people silently stopped syncing
+        // while the run still reported success. Per-employee upserts commit in
+        // their own transactions, so throwing does not discard the work that
+        // did succeed — it just makes the run visible in job monitoring, and it
+        // keeps being visible every night until someone fixes the cause.
+        if (failed > 0) {
+            log.error(summary);
+            throw new CvToolSyncException(summary);
+        }
+
         log.info(summary);
         return "COMPLETED: " + summary;
-    }
-
-    /**
-     * Authenticates with the CV Tool API and returns the Cookie header string.
-     */
-    private String authenticate() {
-        try {
-            log.info("Authenticating with CV Tool API...");
-            CvToolTokenResponse tokenResponse = authClient.login(username, password);
-
-            if (!tokenResponse.success() || tokenResponse.token() == null) {
-                log.errorf("CV Tool authentication failed: %s", tokenResponse.failureReason());
-                return null;
-            }
-
-            log.info("CV Tool authentication successful");
-            return "jwt_authorization=" + tokenResponse.token();
-        } catch (Exception e) {
-            log.errorf(e, "CV Tool authentication error");
-            return null;
-        }
     }
 
     /**
@@ -142,9 +132,9 @@ public class CvToolSyncService {
      *
      * @return true if data was inserted/updated, false if unchanged
      */
-    private boolean syncEmployee(CvToolEmployeeSkinny employee, String cookieHeader) {
+    private boolean syncEmployee(CvToolEmployeeSkinny employee) {
         // Fetch full employee + CV data
-        CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id(), cookieHeader);
+        CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id());
 
         if (fullEmployee.cv() == null || fullEmployee.cv().isNull()) {
             log.debugf("Employee %d (%s) has no CV data, skipping", employee.id(), employee.name());
@@ -160,9 +150,29 @@ public class CvToolSyncService {
         // Check if we already have this CV and if it's unchanged
         LocalDateTime cvLastUpdated = parseCvToolDateTime(fullEmployee.lastUpdatedAt());
 
-        // Check staleness outside the transaction (read-only, no entity managed state needed)
-        long existingCount = CvToolEmployeeCv.count("cvtoolEmployeeId = ?1 AND cvLastUpdatedAt >= ?2",
-                employee.id(), cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN);
+        // Keyed on useruuid, NOT cvtoolEmployeeId. cv_tool_employee_cv has
+        // UNIQUE KEY uk_useruuid — one row per person — but CV Tool can hold
+        // several employee records for the same Employee_UUID (8 people do,
+        // typically an old record plus a re-created one). Looking up by
+        // cvtoolEmployeeId misses the existing row for the second record,
+        // falls through to INSERT, and dies on the unique constraint.
+        //
+        // Comparing cvLastUpdatedAt then gives newest-CV-wins across those
+        // duplicates: whichever record carries the newer Last_Updated_At is
+        // written, and the older one is skipped as unchanged — independent of
+        // the order CV Tool returns them in.
+        //
+        // Wrapped in its own transaction, like the upsert below. A JBeret
+        // batchlet's @ActivateRequestContext is racy — the job intermittently
+        // runs with no CDI request context, and an unwrapped Panache read then
+        // dies with ContextNotActiveException ("neither a transaction nor a CDI
+        // request context is active"). Observed here: the same code synced 127
+        // employees on one run and failed all 136 on the next. Owning the
+        // transaction makes it deterministic.
+        final String useruuid = employee.employeeUuid();
+        final LocalDateTime staleThreshold = cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN;
+        long existingCount = QuarkusTransaction.requiringNew().call(() ->
+                CvToolEmployeeCv.count("useruuid = ?1 AND cvLastUpdatedAt >= ?2", useruuid, staleThreshold));
         if (cvLastUpdated != null && existingCount > 0) {
             log.debugf("Employee %d (%s) CV unchanged since last sync, skipping", employee.id(), employee.name());
             return false;
@@ -173,8 +183,8 @@ public class CvToolSyncService {
         try {
             cvJson = OBJECT_MAPPER.writeValueAsString(fullEmployee.cv());
         } catch (Exception e) {
-            log.errorf(e, "Failed to serialize CV JSON for employee %d", employee.id());
-            return false;
+            throw new CvToolSyncException(
+                "Failed to serialize CV JSON for employee " + employee.id() + " (" + employee.name() + ")", e);
         }
 
         // Upsert in a new transaction (so one failure doesn't roll back others)
@@ -183,8 +193,11 @@ public class CvToolSyncService {
         String employeeUuid = employee.employeeUuid();
         try {
             QuarkusTransaction.requiringNew().run(() -> {
-                CvToolEmployeeCv existing = CvToolEmployeeCv.find("cvtoolEmployeeId", employeeId).firstResult();
+                CvToolEmployeeCv existing = CvToolEmployeeCv.find("useruuid", employeeUuid).firstResult();
                 if (existing != null) {
+                    // Re-point the row at whichever CV Tool record won, so the
+                    // stored id matches the CV actually held.
+                    existing.setCvtoolEmployeeId(employeeId);
                     existing.setCvtoolCvId(cvId);
                     existing.setEmployeeName(fullEmployee.name());
                     existing.setEmployeeTitle(fullEmployee.employeeTitle());
@@ -211,8 +224,11 @@ public class CvToolSyncService {
                 }
             });
         } catch (Exception e) {
-            log.errorf(e, "Failed to persist CV for employee %d (%s)", employee.id(), employee.name());
-            return false;
+            // Must throw, not return false: false means "unchanged", so a
+            // persist failure used to be counted as a success. That is how a
+            // run reported "0 failed" while 9 employees had in fact failed.
+            throw new CvToolSyncException(
+                "Failed to persist CV for employee " + employee.id() + " (" + employee.name() + ")", e);
         }
 
         log.debugf("Synced CV for employee %d (%s)", employee.id(), fullEmployee.name());
@@ -229,6 +245,17 @@ public class CvToolSyncService {
         } catch (Exception e) {
             log.debugf("Could not parse CV Tool datetime '%s': %s", dateTimeStr, e.getMessage());
             return null;
+        }
+    }
+
+    /** Signals that the CV Tool sync could not complete — fails the batch job. */
+    public static class CvToolSyncException extends RuntimeException {
+        public CvToolSyncException(String message) {
+            super(message);
+        }
+
+        public CvToolSyncException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

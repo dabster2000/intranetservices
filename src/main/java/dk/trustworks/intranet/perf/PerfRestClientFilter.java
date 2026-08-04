@@ -67,7 +67,9 @@ public class PerfRestClientFilter implements ClientRequestFilter, ClientResponse
         if (host.contains("openai")) return "openai";
         if (host.contains("nextsign")) return "nextsign";
         if (host.contains("virkdata")) return "cvr";
-        if (host.contains("cvtool")) return "cvtool";
+        // CV Tool moved behind the AI-platform APIM gateway; keep the metric
+        // dimension stable so existing dashboards/alarms keep matching.
+        if (host.contains("cvtool") || host.contains("tw-ai-platform-apim")) return "cvtool";
         return host;
     }
 

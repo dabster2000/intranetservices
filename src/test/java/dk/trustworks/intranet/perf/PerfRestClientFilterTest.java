@@ -18,6 +18,21 @@ class PerfRestClientFilterTest {
         assertEquals("cvr", PerfRestClientFilter.apiLabel(URI.create("https://virkdata.dk/cvr/123")));
     }
 
+    /**
+     * CV Tool moved from tw-cvtool-backend.azurewebsites.net to the AI-platform
+     * APIM gateway, whose host no longer contains "cvtool". Both must keep
+     * emitting api="cvtool" or the existing dashboards and alarms stop matching.
+     */
+    @Test
+    void apiLabel_mapsBothCvToolHostsToCvtool() {
+        assertEquals("cvtool", PerfRestClientFilter.apiLabel(
+                URI.create("https://tw-cvtool-backend.azurewebsites.net/cv/employees")));
+        assertEquals("cvtool", PerfRestClientFilter.apiLabel(
+                URI.create("https://tw-ai-platform-apim.azure-api.net/cv/employees")));
+        assertEquals("cvtool", PerfRestClientFilter.apiLabel(
+                URI.create("https://tw-ai-platform-apim.azure-api.net/cv/employee/10")));
+    }
+
     @Test
     void operationLabel_collapsesNumericIdsToBoundIt() {
         assertEquals("GET invoices drafts {id}",
