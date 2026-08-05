@@ -50,15 +50,18 @@ public interface EconomicsContactApiClient {
     CreatedResult createContact(EconomicsContactDto body);
 
     /**
-     * PUT returns HTTP 200 with an EMPTY body (same pattern as
-     * {@code EconomicsCustomerApiClient.updateCustomer}). Declaring a
-     * non-void return triggers RESTEasy deserialisation 500s. Callers
-     * needing the fresh objectVersion must re-GET after the PUT.
+     * Updates a contact via {@code PUT /Contacts} (collection URL, operation
+     * {@code UpdateContactById}). Unlike {@code /Customers/{number}}, the
+     * item URL {@code /Contacts/{number}} accepts only GET and DELETE — a PUT
+     * there is answered with 405 Method Not Allowed (observed in production
+     * 2026-08-04). The contact identity travels in the body's {@code number}
+     * field ({@link EconomicsContactDto#setCustomerContactNumber}).
+     *
+     * <p>PUT returns 204 with an EMPTY body. Declaring a non-void return
+     * triggers RESTEasy deserialisation 500s. Callers needing the fresh
+     * objectVersion must re-GET after the PUT.
      */
     @PUT
-    @Path("/Contacts/{number}")
-    void updateContact(
-            @PathParam("number") int customerContactNumber,
-            EconomicsContactDto body
-    );
+    @Path("/Contacts")
+    void updateContact(EconomicsContactDto body);
 }
