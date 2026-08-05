@@ -298,6 +298,90 @@ class ExpenseSyncDeletionSafetyTest {
         verify(expenseService, never()).updateSyncMissCount(any(Expense.class), anyInt());
     }
 
+    // ---- booked-ledger marker search (moved, renumbered AND booked) ---------------
+
+    private static final String YEARS_LISTING =
+            "{\"collection\":[{\"year\":\"2025/2026\",\"closed\":false},{\"year\":\"2024/2025\",\"closed\":true}]}";
+
+    @Test
+    void voucher_booked_under_new_number_is_relinked_via_ledger_marker() {
+        Expense expense = expense();
+        expense.setAmount(40.5);
+        expense.setSyncMissCount(2);
+        stubNotFoundAnywhere(expense);
+        when(api.getAccountingYears(50)).thenAnswer(inv -> ok(YEARS_LISTING));
+        when(api.getYearEntries(eq("2025_6_2026"), eq("amount$eq:40.5"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(bookedEntry(expense, 6038697, 40.5)));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        assertEquals(6038697, expense.getVouchernumber(), "voucher number must be re-keyed to the booked number");
+        assertEquals("2025_6_2026", expense.getAccountingyear(), "year must follow where the entry was actually booked");
+        assertTrue(deletionCandidates.isEmpty());
+        verify(expenseService).updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
+        verify(expenseService).updateSyncMissCount(expense, 0);
+        verify(api, never()).getYearEntries(eq("2024_6_2025"), any(), eq(1000), eq(0)); // closed year skipped
+    }
+
+    @Test
+    void ambiguous_booked_marker_hits_leave_expense_unchanged() {
+        Expense expense = expense();
+        expense.setAmount(40.5);
+        stubNotFoundAnywhere(expense);
+        when(api.getAccountingYears(50)).thenAnswer(inv -> ok(YEARS_LISTING));
+        String twoHits = "{\"collection\":["
+                + "{\"voucherNumber\":111,\"amount\":40.5,\"text\":\"Udlæg | A | x " + VoucherText.markerFor(expense.getUuid()) + "\"},"
+                + "{\"voucherNumber\":222,\"amount\":40.5,\"text\":\"Udlæg | B | y " + VoucherText.markerFor(expense.getUuid()) + "\"}]}";
+        when(api.getYearEntries(eq("2025_6_2026"), eq("amount$eq:40.5"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(twoHits));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.ERROR, outcome);
+        assertTrue(deletionCandidates.isEmpty());
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+        verify(expenseService, never()).updateSyncMissCount(any(Expense.class), anyInt());
+    }
+
+    @Test
+    void failed_years_listing_leaves_expense_unchanged() {
+        Expense expense = expense();
+        expense.setAmount(40.5);
+        stubNotFoundAnywhere(expense);
+        when(api.getAccountingYears(50)).thenAnswer(inv -> Response.status(500).entity("boom").build());
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.ERROR, outcome);
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+        verify(expenseService, never()).updateSyncMissCount(any(Expense.class), anyInt());
+    }
+
+    @Test
+    void no_marker_in_ledger_either_falls_through_to_grace() {
+        Expense expense = expense();
+        expense.setAmount(40.5);
+        stubNotFoundAnywhere(expense);
+        when(api.getAccountingYears(50)).thenAnswer(inv -> ok(YEARS_LISTING));
+        when(api.getYearEntries(eq("2025_6_2026"), eq("amount$eq:40.5"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(EMPTY));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        verify(expenseService).updateSyncMissCount(expense, 1);
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+    }
+
+    @Test
+    void open_year_extraction_and_amount_formatting() {
+        assertEquals(java.util.List.of("2025/2026"), ExpenseSyncBatchlet.extractOpenYears(YEARS_LISTING));
+        assertEquals("40.5", ExpenseSyncBatchlet.formatAmount(40.5));
+        assertEquals("570", ExpenseSyncBatchlet.formatAmount(570.0));
+        assertEquals("1017", ExpenseSyncBatchlet.formatAmount(1017.0));
+    }
+
     // ---- #3: mass-deletion circuit breaker ---------------------------------------
 
     @Test
@@ -357,6 +441,14 @@ class ExpenseSyncDeletionSafetyTest {
         // marker sweep pages (no marker anywhere)
         when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
         when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
+    }
+
+    /** A BOOKED year entry (voucherNumber top-level) carrying the expense's own text marker. */
+    private static String bookedEntry(Expense expense, int voucherNumber, double amount) {
+        return "{\"collection\":[{\"voucherNumber\":" + voucherNumber + ","
+                + "\"amount\":" + amount + ","
+                + "\"account\":{\"accountNumber\":\"5820\"},"
+                + "\"text\":\"Udlæg | Alberte Bang | Frokost " + VoucherText.markerFor(expense.getUuid()) + "\"}]}";
     }
 
     /** A journal entry carrying the expense's own text marker. */
