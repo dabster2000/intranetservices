@@ -107,7 +107,9 @@ public class  EconomicsService {
         log.info("Voucher target = " + result);
 
         Journal journal = new Journal(result.expenseJournalNumber());
-        String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
+        // Name capped at 15 chars and a "#<uuid8>" marker appended — the marker is the
+        // sync's durable identity for the voucher (numbers change on journal moves).
+        String text = VoucherText.build(userAccount.getUsername(), expense.getAccountname(), expense.getUuid());
         Company company = getCompanyFromExpense(expense);
 
         if("44232855".equals(company.getCvr())) {

@@ -66,6 +66,19 @@ public interface EconomicsAPI extends AutoCloseable {
         @Path("/journals")
         Response getJournals(@QueryParam("pagesize") @DefaultValue("100") int pagesize);
 
+        /**
+         * Paginated journal-entries listing (no voucher filter). Used by
+         * {@code ExpenseSyncBatchlet}'s marker sweep, which scans entry TEXT for
+         * the app's "#&lt;uuid8&gt;" marker to re-link vouchers the accountant has
+         * moved between journals — moves reassign voucher numbers, so the
+         * number-based lookups can never find them.
+         */
+        @GET
+        @Path("/journals/{journalNumber}/entries")
+        Response getJournalEntriesPage(@PathParam("journalNumber") int journalNumber,
+                                       @QueryParam("pagesize") @DefaultValue("1000") int pagesize,
+                                       @QueryParam("skippages") @DefaultValue("0") int skippages);
+
         @GET
         @Path("/accounting-years/{accountingYear}/entries")
         Response getYearEntries(@PathParam("accountingYear") String accountingYear,

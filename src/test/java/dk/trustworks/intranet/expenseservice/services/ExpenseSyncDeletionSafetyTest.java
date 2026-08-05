@@ -230,6 +230,74 @@ class ExpenseSyncDeletionSafetyTest {
         verify(expenseService).updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
     }
 
+    // ---- marker re-link (renumbered by a journal move) ---------------------------
+
+    @Test
+    void renumbered_voucher_is_relinked_by_text_marker() {
+        Expense expense = expense();
+        expense.setAmount(345.0);
+        expense.setSyncMissCount(2);
+        when(economicsService.getApiForExpense(expense)).thenReturn(api);
+        when(api.getJournalEntries(eq(16), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(EMPTY));
+        when(api.getYearEntries(eq("2025_6_2026"), eq("voucherNumber$eq:12345"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(EMPTY));
+        when(api.getJournals(ExpenseSyncBatchlet.JOURNALS_PAGESIZE)).thenAnswer(inv -> ok(JOURNALS_LISTING));
+        when(api.getJournalEntries(eq(42), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(EMPTY));
+        when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
+        when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(markerEntry(expense, 777, 345.0)));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        assertEquals(42, expense.getJournalnumber(), "journal must be re-keyed to where the marker was found");
+        assertEquals(777, expense.getVouchernumber(), "voucher number must be re-keyed to the entry's new number");
+        assertEquals("Udlæg | Thea Bech | Taxa", expense.getAccountantNotes(), "marker must be stripped from notes");
+        assertTrue(deletionCandidates.isEmpty());
+        verify(expenseService).updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+        verify(expenseService).updateSyncMissCount(expense, 0);
+        verify(expenseService, never()).updateStatus(any(Expense.class), eq(ExpenseService.STATUS_DELETED));
+    }
+
+    @Test
+    void marker_hit_with_wrong_amount_is_not_relinked_and_falls_back_to_grace() {
+        Expense expense = expense();
+        expense.setAmount(345.0);
+        stubNumberLookupsNotFound(expense);
+        when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
+        // journal 42's marker page: marker present but amount differs
+        when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(markerEntry(expense, 777, 999.0)));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
+        assertEquals(16, expense.getJournalnumber(), "must NOT re-key on an amount mismatch");
+        assertEquals(12345, expense.getVouchernumber());
+        assertTrue(deletionCandidates.isEmpty());
+        verify(expenseService).updateSyncMissCount(expense, 1);
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+    }
+
+    @Test
+    void ambiguous_marker_hits_leave_expense_unchanged_for_manual_review() {
+        Expense expense = expense();
+        expense.setAmount(345.0);
+        stubNumberLookupsNotFound(expense);
+        // the marker appears in BOTH journals — cannot re-link safely
+        when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(markerEntry(expense, 555, 345.0)));
+        when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(markerEntry(expense, 777, 345.0)));
+
+        ExpenseSyncBatchlet.SyncOutcome outcome = batchlet.syncExpense(expense, retry, deletionCandidates);
+
+        assertEquals(ExpenseSyncBatchlet.SyncOutcome.ERROR, outcome);
+        assertTrue(deletionCandidates.isEmpty());
+        verify(expenseService, never()).updateStatus(any(Expense.class), any());
+        verify(expenseService, never()).updateSyncMissCount(any(Expense.class), anyInt());
+    }
+
     // ---- #3: mass-deletion circuit breaker ---------------------------------------
 
     @Test
@@ -273,14 +341,30 @@ class ExpenseSyncDeletionSafetyTest {
 
     // ---- helpers -----------------------------------------------------------------
 
-    /** Voucher absent from the stored journal, the accounting year, and every swept journal. */
-    private void stubNotFoundAnywhere(Expense expense) {
+    /** Number-based lookups all miss: stored journal, accounting year, and the number sweep. */
+    private void stubNumberLookupsNotFound(Expense expense) {
         when(economicsService.getApiForExpense(expense)).thenReturn(api);
         when(api.getJournalEntries(eq(16), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(EMPTY));
         when(api.getYearEntries(eq("2025_6_2026"), eq("voucherNumber$eq:12345"), eq(1000), eq(0)))
                 .thenAnswer(inv -> ok(EMPTY));
         when(api.getJournals(ExpenseSyncBatchlet.JOURNALS_PAGESIZE)).thenAnswer(inv -> ok(JOURNALS_LISTING));
         when(api.getJournalEntries(eq(42), eq(JOURNAL_FILTER), eq(1000))).thenAnswer(inv -> ok(EMPTY));
+    }
+
+    /** Voucher absent from the stored journal, the accounting year, and every swept journal. */
+    private void stubNotFoundAnywhere(Expense expense) {
+        stubNumberLookupsNotFound(expense);
+        // marker sweep pages (no marker anywhere)
+        when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
+        when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
+    }
+
+    /** A journal entry carrying the expense's own text marker. */
+    private static String markerEntry(Expense expense, int voucherNumber, double amount) {
+        return "{\"collection\":[{\"voucher\":{\"voucherNumber\":" + voucherNumber + "},"
+                + "\"amount\":" + amount + ","
+                + "\"account\":{\"accountNumber\":\"5820\"},"
+                + "\"text\":\"Udlæg | Thea Bech | Taxa " + VoucherText.markerFor(expense.getUuid()) + "\"}]}";
     }
 
     private static Response ok(String body) {
