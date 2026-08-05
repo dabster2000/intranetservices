@@ -286,6 +286,36 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                         + ", entry=" + hit.amount + "); NOT re-linking");
             }
 
+            // 2.7) Not in any kassekladde either — the voucher may have been moved,
+            // renumbered AND booked before any nightly run saw the new draft. Booked
+            // ledger entries keep their text (and the marker), so search the OPEN
+            // accounting years for it — filtered by amount, because the ledger is
+            // far too big to scan wholesale. Only runs when the draft marker sweep
+            // found nothing at all.
+            if (markerSweep.hits.isEmpty() && expense.getAmount() != null) {
+                BookedMarkerResult bookedSearch = findBookedByMarker(api, retry, expense);
+                if (bookedSearch == null) {
+                    return SyncOutcome.ERROR; // a ledger lookup failed — absence not proven
+                }
+                if (bookedSearch.hits.size() > 1) {
+                    log.error("Expense " + expense.getUuid() + ": text marker " + VoucherText.markerFor(expense.getUuid())
+                            + " found in " + bookedSearch.hits.size() + " booked entries — cannot re-link safely, leaving unchanged for manual review");
+                    return SyncOutcome.ERROR;
+                }
+                if (bookedSearch.hits.size() == 1) {
+                    BookedHit hit = bookedSearch.hits.get(0);
+                    log.warn("Expense " + expense.getUuid() + ": re-linked by text marker in the BOOKED ledger — "
+                            + jn + "/" + year + "-" + vn + " -> year " + hit.accountingYear + " voucher " + hit.voucherNumber);
+                    expense.setVouchernumber(hit.voucherNumber);
+                    expense.setAccountingyear(hit.accountingYear);
+                    applyAccountAndNotes(expense, hit.entryBody, "booked-marker");
+                    // updateStatus persists vouchernumber + accountingyear from the entity
+                    expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
+                    resetSyncMissCountIfNeeded(expense);
+                    return SyncOutcome.SUCCESS;
+                }
+            }
+
             // 3) Absent from EVERY journal and not booked. Grace period: only consider
             // deletion after N consecutive missing runs — a voucher mid-move between
             // journals reappears and the counter resets, so it is never wrongly deleted.
@@ -514,6 +544,121 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
         }
         return new MarkerSweepResult(hits);
+    }
+
+    /** One BOOKED ledger entry carrying the expense's text marker. */
+    static final class BookedHit {
+        final String accountingYear; // canonical underscore form, e.g. 2025_6_2026
+        final int voucherNumber;
+        final String entryBody;
+
+        BookedHit(String accountingYear, int voucherNumber, String entryBody) {
+            this.accountingYear = accountingYear;
+            this.voucherNumber = voucherNumber;
+            this.entryBody = entryBody;
+        }
+    }
+
+    /** Outcome of the booked-marker search across the open accounting years. */
+    static final class BookedMarkerResult {
+        final List<BookedHit> hits;
+
+        BookedMarkerResult(List<BookedHit> hits) {
+            this.hits = hits;
+        }
+    }
+
+    /**
+     * Searches the OPEN accounting years' booked entries for the expense's text
+     * marker, filtered by {@code amount$eq} so the ledger is never scanned
+     * wholesale. Distinct (year, voucherNumber) pairs are deduplicated (a voucher
+     * books multiple lines). Returns {@code null} when the years listing or any
+     * page fetch failed — absence is then NOT proven and the caller must leave the
+     * expense unchanged. Closed years are skipped: nothing new can book into them.
+     */
+    private BookedMarkerResult findBookedByMarker(EconomicsAPI api, EconomicsRetryExecutor retry, Expense expense) {
+        Response yr = retry.executeWithRetry(() -> failOnThrottle(api.getAccountingYears(50)));
+        int yrStatus = yr != null ? yr.getStatus() : -1;
+        String yrBody = null;
+        try {
+            if (yr != null) yrBody = yr.readEntity(String.class);
+        } finally {
+            if (yr != null) yr.close();
+        }
+        if (!isSuccessStatus(yrStatus)) {
+            log.warn("Expense " + expense.getUuid() + ": accounting-years listing failed with status=" + yrStatus
+                    + "; cannot conclude, leaving status unchanged");
+            return null;
+        }
+
+        String amountFilter = "amount$eq:" + formatAmount(expense.getAmount());
+        List<BookedHit> hits = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String openYear : extractOpenYears(yrBody)) {
+            final String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(openYear);
+            for (int page = 0; page < MARKER_SCAN_MAX_PAGES; page++) {
+                final int skippages = page;
+                Response pr = retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, amountFilter, 1000, skippages)));
+                int prStatus = pr != null ? pr.getStatus() : -1;
+                String prBody = null;
+                try {
+                    if (pr != null) prBody = pr.readEntity(String.class);
+                } finally {
+                    if (pr != null) pr.close();
+                }
+                if (prStatus == 404) {
+                    break; // year not addressable — nothing booked there for us
+                }
+                if (!isSuccessStatus(prStatus)) {
+                    log.warn("Expense " + expense.getUuid() + ": booked-marker scan failed for year " + yearId
+                            + " page " + page + " with status=" + prStatus + "; cannot conclude, leaving status unchanged");
+                    return null;
+                }
+                JsonNode entries = entriesArray(prBody);
+                if (entries == null || entries.size() == 0) {
+                    break;
+                }
+                for (JsonNode entry : entries) {
+                    JsonNode textNode = entry.get("text");
+                    if (textNode == null || !VoucherText.containsMarker(textNode.asText(), expense.getUuid())) {
+                        continue;
+                    }
+                    // year entries carry voucherNumber top-level (unlike journal entries)
+                    JsonNode vnNode = entry.get("voucherNumber");
+                    if (vnNode == null || !vnNode.canConvertToInt()) {
+                        continue;
+                    }
+                    if (seen.add(yearId + "-" + vnNode.asInt())) {
+                        hits.add(new BookedHit(yearId, vnNode.asInt(),
+                                "{\"collection\":[" + entry.toString() + "]}"));
+                    }
+                }
+                if (entries.size() < 1000) {
+                    break; // last page
+                }
+            }
+        }
+        return new BookedMarkerResult(hits);
+    }
+
+    /** Open (not closed) accounting-year labels from a GET /accounting-years body. */
+    static List<String> extractOpenYears(String body) {
+        List<String> result = new java.util.ArrayList<>();
+        JsonNode arr = entriesArray(body);
+        if (arr == null) return result;
+        for (JsonNode item : arr) {
+            JsonNode yearNode = item.get("year");
+            if (yearNode == null || yearNode.asText().isEmpty()) continue;
+            JsonNode closedNode = item.get("closed");
+            if (closedNode != null && closedNode.asBoolean(false)) continue;
+            result.add(yearNode.asText());
+        }
+        return result;
+    }
+
+    /** Amount as a plain filter literal: 40.5 -> "40.5", 570.0 -> "570". */
+    static String formatAmount(Double amount) {
+        return java.math.BigDecimal.valueOf(amount).stripTrailingZeros().toPlainString();
     }
 
     /** Belt-and-braces check on a marker hit: entry amount must equal the expense amount (sign-agnostic). */
