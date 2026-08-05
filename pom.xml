@@ -556,6 +556,16 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
         <configuration>
+          <!-- One forked JVM per available core, reused across test classes.
+               The DB-free fast tier (the deploy gate) is ~2600 tests that ran
+               serially in a single fork, which was the second-largest cost in
+               every deploy after the ECS bake. Process-level forking is used
+               rather than JUnit's thread-level parallelism because these tests
+               were written assuming a private static world per class; separate
+               JVMs preserve that assumption exactly, so no test needed changing.
+               reuseForks keeps JVM startup off the per-class path. -->
+          <forkCount>1C</forkCount>
+          <reuseForks>true</reuseForks>
           <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
             <maven.home>${maven.home}</maven.home>

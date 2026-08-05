@@ -168,7 +168,10 @@ jobs:
           SERVICE="tw-quarkus-staging"
           EXPECTED_TAG="${{ github.sha }}"
           echo "Expecting PRIMARY task to run image tag: $EXPECTED_TAG"
-          for i in $(seq 1 24); do
+          # 5s poll (was 15s): now that the CANARY bakes are 0, a rollout settles
+          # in ~1 min, so a 15s interval spent most of its time overshooting the
+          # finish. 72 attempts keeps the same ~6 min ceiling.
+          for i in $(seq 1 72); do
             PRIMARY_TD=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
               --query 'services[0].deployments[?status==`PRIMARY`]|[0].taskDefinition' --output text)
             ROLLOUT=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
