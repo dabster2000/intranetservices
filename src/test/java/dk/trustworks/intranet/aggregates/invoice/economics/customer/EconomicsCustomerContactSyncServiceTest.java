@@ -133,7 +133,7 @@ class EconomicsCustomerContactSyncServiceTest {
 
         verify(api, times(2)).getContact(777);
         ArgumentCaptor<EconomicsContactDto> body = ArgumentCaptor.forClass(EconomicsContactDto.class);
-        verify(api).updateContact(eq(777), body.capture());
+        verify(api).updateContact(body.capture());
         assertEquals("v-fresh", body.getValue().getObjectVersion());
         assertEquals(777, body.getValue().getCustomerContactNumber());
 
@@ -179,12 +179,12 @@ class EconomicsCustomerContactSyncServiceTest {
                 .thenReturn(afterPut);
         doThrow(new WebApplicationException(Response.status(409).build()))
                 .doNothing()
-                .when(api).updateContact(eq(777), any());
+                .when(api).updateContact(any());
 
         service.syncContactToCompany(ct, billing, COMPANY);
 
         verify(api, times(3)).getContact(777);
-        verify(api, times(2)).updateContact(eq(777), any());
+        verify(api, times(2)).updateContact(any());
     }
 
     // ----------------------- skip paths -----------------------
@@ -198,7 +198,7 @@ class EconomicsCustomerContactSyncServiceTest {
         service.syncContactToCompany(ct, billing, COMPANY);
 
         verify(api, never()).createContact(any());
-        verify(api, never()).updateContact(eq(0), any());
+        verify(api, never()).updateContact(any());
         verify(contactRepo, never()).persist(any(ClientEconomicsContact.class));
     }
 
@@ -256,10 +256,11 @@ class EconomicsCustomerContactSyncServiceTest {
     }
 
     @Test
-    void on_405_method_not_allowed_skips_without_recording_or_throwing() {
-        // e-conomic rejects the contact-update PUT with 405 for this agreement (observed in prod).
-        // 405 is permanent: the sync must skip gracefully — not throw, not record a failure (which
-        // would churn the shared customer/contact retry row), and not persist a mapping update.
+    void on_405_method_not_allowed_records_failure_and_throws() {
+        // A 405 means our HTTP verb/URL no longer matches e-conomic's contact API
+        // (prod 2026-08-04: PUT /Contacts/{number}, which only accepts GET/DELETE).
+        // It must fail loudly — recorded for retry and rethrown — never silently
+        // dropped, or contact updates stop applying without anyone noticing.
         Contract ct = makeContract("Thomas", "thomas@x.dk");
         Client billing = makeClient("c-uuid");
         when(customerRepo.findByClientAndCompany("c-uuid", COMPANY))
@@ -279,11 +280,14 @@ class EconomicsCustomerContactSyncServiceTest {
         fresh.setObjectVersion("v1");
         when(api.getContact(777)).thenReturn(fresh);
         doThrow(new WebApplicationException(Response.status(405).build()))
-                .when(api).updateContact(eq(777), any());
+                .when(api).updateContact(any());
 
-        service.syncContactToCompany(ct, billing, COMPANY);
+        assertThrows(SyncFailedException.class,
+                () -> service.syncContactToCompany(ct, billing, COMPANY));
 
-        verify(failureRecorder, never()).record(any(), any(), any());
+        ArgumentCaptor<String> errorCap = ArgumentCaptor.forClass(String.class);
+        verify(failureRecorder).record(eq("c-uuid"), eq(COMPANY), errorCap.capture());
+        assertTrue(errorCap.getValue().contains("405"));
         verify(contactRepo, never()).persist(any(ClientEconomicsContact.class));
     }
 
