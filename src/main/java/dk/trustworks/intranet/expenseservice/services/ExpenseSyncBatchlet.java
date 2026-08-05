@@ -235,7 +235,11 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             // the stored journal number sees "not found" for every moved voucher
             // (2026-07-28 incident: 224 false DELETEs). So search EVERY journal
             // before even considering deletion; a hit self-heals the stored triple.
-            SweepResult sweep = findVoucherInAnyJournal(api, retry, expense, jn, journalFilter);
+            List<Integer> journalNumbers = fetchJournalNumbers(api, retry, expense);
+            if (journalNumbers == null) {
+                return SyncOutcome.ERROR; // journals listing failed — absence not proven, leave unchanged
+            }
+            SweepResult sweep = findVoucherInAnyJournal(api, retry, expense, jn, journalFilter, journalNumbers);
             if (sweep == null) {
                 return SyncOutcome.ERROR; // a sweep lookup failed — absence not proven, leave unchanged
             }
@@ -248,6 +252,38 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
                 resetSyncMissCountIfNeeded(expense);
                 return SyncOutcome.SUCCESS;
+            }
+
+            // 2.6) Number-based identity failed entirely — the voucher may have been
+            // RENUMBERED by a journal move (e-conomic reassigns voucher numbers on
+            // every move, verified live 2026-07-30 in both directions). Vouchers
+            // uploaded since then carry a durable "#<uuid8>" marker in their entry
+            // text (see VoucherText); scan every journal for it and re-link.
+            MarkerSweepResult markerSweep = findVoucherByMarker(api, retry, expense, journalNumbers);
+            if (markerSweep == null) {
+                return SyncOutcome.ERROR; // a marker-scan lookup failed — absence not proven
+            }
+            if (markerSweep.hits.size() > 1) {
+                log.error("Expense " + expense.getUuid() + ": text marker " + VoucherText.markerFor(expense.getUuid())
+                        + " found in " + markerSweep.hits.size() + " entries — cannot re-link safely, leaving unchanged for manual review");
+                return SyncOutcome.ERROR;
+            }
+            if (markerSweep.hits.size() == 1) {
+                MarkerHit hit = markerSweep.hits.get(0);
+                if (amountsMatch(expense.getAmount(), hit.amount)) {
+                    log.warn("Expense " + expense.getUuid() + ": re-linked by text marker — voucher moved/renumbered "
+                            + jn + "/" + vn + " -> " + hit.journalNumber + "/" + hit.voucherNumber);
+                    expense.setJournalnumber(hit.journalNumber);
+                    expense.setVouchernumber(hit.voucherNumber);
+                    applyAccountAndNotes(expense, hit.entryBody, "marker");
+                    // updateStatus persists journalnumber + vouchernumber from the entity
+                    expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+                    resetSyncMissCountIfNeeded(expense);
+                    return SyncOutcome.SUCCESS;
+                }
+                log.warn("Expense " + expense.getUuid() + ": text marker found in journal " + hit.journalNumber
+                        + " voucher " + hit.voucherNumber + " but amount differs (expense=" + expense.getAmount()
+                        + ", entry=" + hit.amount + "); NOT re-linking");
             }
 
             // 3) Absent from EVERY journal and not booked. Grace period: only consider
@@ -331,16 +367,11 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     }
 
     /**
-     * Searches every journal of the expense's tenant (except the already-checked
-     * stored one) for the voucher number. Returns a {@link SweepResult} with the
-     * journal number on a hit, a SweepResult with {@code journalNumber == null}
-     * when the voucher is confirmed absent from EVERY journal, or {@code null}
-     * when any lookup failed — in which case absence is NOT proven and the caller
-     * must leave the expense unchanged. Throttling propagates as
-     * {@link EconomicsRateLimitException} exactly like the other lookups.
+     * Fetches the tenant's journal numbers for the sweeps. Returns {@code null}
+     * when the listing call failed — absence is then NOT provable and the caller
+     * must leave the expense unchanged.
      */
-    private SweepResult findVoucherInAnyJournal(EconomicsAPI api, EconomicsRetryExecutor retry,
-                                                Expense expense, int storedJournal, String journalFilter) {
+    private List<Integer> fetchJournalNumbers(EconomicsAPI api, EconomicsRetryExecutor retry, Expense expense) {
         Response js = retry.executeWithRetry(() -> failOnThrottle(api.getJournals(JOURNALS_PAGESIZE)));
         int jsStatus = js != null ? js.getStatus() : -1;
         String jsBody = null;
@@ -354,8 +385,21 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                     + "; cannot conclude deletion, leaving status unchanged");
             return null;
         }
+        return extractJournalNumbers(jsBody);
+    }
 
-        List<Integer> journalNumbers = extractJournalNumbers(jsBody);
+    /**
+     * Searches every journal of the expense's tenant (except the already-checked
+     * stored one) for the voucher number. Returns a {@link SweepResult} with the
+     * journal number on a hit, a SweepResult with {@code journalNumber == null}
+     * when the voucher is confirmed absent from EVERY journal, or {@code null}
+     * when any lookup failed — in which case absence is NOT proven and the caller
+     * must leave the expense unchanged. Throttling propagates as
+     * {@link EconomicsRateLimitException} exactly like the other lookups.
+     */
+    private SweepResult findVoucherInAnyJournal(EconomicsAPI api, EconomicsRetryExecutor retry,
+                                                Expense expense, int storedJournal, String journalFilter,
+                                                List<Integer> journalNumbers) {
         log.debug("Expense " + expense.getUuid() + ": sweeping " + journalNumbers.size() + " journals for voucher");
         for (Integer candidate : journalNumbers) {
             if (candidate == null || candidate == storedJournal) continue;
@@ -380,6 +424,117 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
         }
         return new SweepResult(null, null);
+    }
+
+    /** One entry carrying the expense's text marker: its location, amount and a single-entry body. */
+    static final class MarkerHit {
+        final int journalNumber;
+        final int voucherNumber;
+        final Double amount;
+        final String entryBody; // synthetic {"collection":[entry]} for applyAccountAndNotes
+
+        MarkerHit(int journalNumber, int voucherNumber, Double amount, String entryBody) {
+            this.journalNumber = journalNumber;
+            this.voucherNumber = voucherNumber;
+            this.amount = amount;
+            this.entryBody = entryBody;
+        }
+    }
+
+    /** Outcome of the marker sweep: all entries whose text carries the expense's marker. */
+    static final class MarkerSweepResult {
+        final List<MarkerHit> hits;
+
+        MarkerSweepResult(List<MarkerHit> hits) {
+            this.hits = hits;
+        }
+    }
+
+    /** Safety cap: at most 10 pages (10k entries) scanned per journal. */
+    static final int MARKER_SCAN_MAX_PAGES = 10;
+
+    /**
+     * Scans every journal's entries for the expense's "#&lt;uuid8&gt;" text marker
+     * (see {@link VoucherText}) — the identity that survives the accountant's
+     * journal moves, which reassign voucher numbers. Returns all hits (the caller
+     * only re-links on an unambiguous single hit), or {@code null} when any page
+     * fetch failed — absence is then NOT proven and the caller must leave the
+     * expense unchanged. Vouchers uploaded before the marker existed simply never
+     * match and fall through to the grace-period path.
+     */
+    private MarkerSweepResult findVoucherByMarker(EconomicsAPI api, EconomicsRetryExecutor retry,
+                                                  Expense expense, List<Integer> journalNumbers) {
+        String marker = VoucherText.markerFor(expense.getUuid());
+        if (marker.isEmpty()) {
+            return new MarkerSweepResult(new java.util.ArrayList<>());
+        }
+        List<MarkerHit> hits = new java.util.ArrayList<>();
+        for (Integer candidate : journalNumbers) {
+            if (candidate == null) continue;
+            for (int page = 0; page < MARKER_SCAN_MAX_PAGES; page++) {
+                final int skippages = page;
+                Response pr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntriesPage(candidate, 1000, skippages)));
+                int prStatus = pr != null ? pr.getStatus() : -1;
+                String prBody = null;
+                try {
+                    if (pr != null) prBody = pr.readEntity(String.class);
+                } finally {
+                    if (pr != null) pr.close();
+                }
+                if (prStatus == 404) {
+                    break; // journal disappeared between listing and scan — nothing in it
+                }
+                if (!isSuccessStatus(prStatus)) {
+                    log.warn("Expense " + expense.getUuid() + ": marker scan failed for journal " + candidate
+                            + " page " + page + " with status=" + prStatus + "; cannot conclude, leaving status unchanged");
+                    return null;
+                }
+                JsonNode entries = entriesArray(prBody);
+                if (entries == null || entries.size() == 0) {
+                    break;
+                }
+                for (JsonNode entry : entries) {
+                    JsonNode textNode = entry.get("text");
+                    if (textNode == null || !VoucherText.containsMarker(textNode.asText(), expense.getUuid())) {
+                        continue;
+                    }
+                    JsonNode voucherNode = entry.get("voucher");
+                    JsonNode vnNode = voucherNode != null ? voucherNode.get("voucherNumber") : null;
+                    if (vnNode == null || !vnNode.canConvertToInt()) {
+                        continue;
+                    }
+                    JsonNode amountNode = entry.get("amount");
+                    Double amount = amountNode != null && amountNode.isNumber() ? amountNode.asDouble() : null;
+                    hits.add(new MarkerHit(candidate, vnNode.asInt(), amount,
+                            "{\"collection\":[" + entry.toString() + "]}"));
+                }
+                if (entries.size() < 1000) {
+                    break; // last page
+                }
+            }
+        }
+        return new MarkerSweepResult(hits);
+    }
+
+    /** Belt-and-braces check on a marker hit: entry amount must equal the expense amount (sign-agnostic). */
+    static boolean amountsMatch(Double expenseAmount, Double entryAmount) {
+        if (expenseAmount == null || entryAmount == null) return false;
+        return Math.abs(Math.abs(expenseAmount) - Math.abs(entryAmount)) < 0.005;
+    }
+
+    /** The entries array of a journal/year entries body (array, collection or items shape). */
+    private static JsonNode entriesArray(String body) {
+        if (body == null || body.isEmpty()) return null;
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            if (root == null) return null;
+            if (root.isArray()) return root;
+            if (root.has("collection") && root.get("collection").isArray()) return root.get("collection");
+            if (root.has("items") && root.get("items").isArray()) return root.get("items");
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** Mirrors e-conomic's current account and accountant text onto the entity (persisted by updateStatus). */
@@ -518,17 +673,18 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
             if (first == null) return null;
 
-            // Extract text field from entry
+            // Extract text field from entry. The app's "#<uuid8>" identity marker is
+            // stripped so it never reaches accountantNotes / the intranet UI.
             JsonNode textNode = first.get("text");
             if (textNode != null && !textNode.isNull() && !textNode.asText().isEmpty()) {
-                return textNode.asText();
+                return VoucherText.stripMarker(textNode.asText());
             }
 
             // Alternative nested structure: entry.text
             if (first.has("entry") && first.get("entry").has("text")) {
                 JsonNode entryText = first.get("entry").get("text");
                 if (entryText != null && !entryText.isNull() && !entryText.asText().isEmpty()) {
-                    return entryText.asText();
+                    return VoucherText.stripMarker(entryText.asText());
                 }
             }
 
