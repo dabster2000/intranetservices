@@ -49,19 +49,6 @@ public class LoginService {
         return TokenUtils.generateTokenString(user, timeClaims);
     }
 
-    public LoginTokenResult createSystemToken(String role) throws Exception {
-        HashMap<String, Long> timeClaims = new HashMap<>();
-        long duration = TimeUnit.DAYS.toMillis(365);
-        long exp = TokenUtils.currentTimeInSecs() + duration;
-        timeClaims.put(Claims.exp.name(), exp);
-
-        User user = new User();
-        user.getRoleList().add(new Role(UUID.randomUUID().toString(), role, user.uuid));
-        user.setUsername("system.intra");
-
-        return new LoginTokenResult(TokenUtils.generateSystemUserTokenString(user, timeClaims, user.getRoleList()), user.getUuid(), true, "", user.getRoleList());
-    }
-
     /**
      * Validates a token and returns validation result
      *

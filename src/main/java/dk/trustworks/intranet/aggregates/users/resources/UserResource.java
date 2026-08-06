@@ -21,6 +21,7 @@ import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
+import dk.trustworks.intranet.security.EffectivePermissionService;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.services.TeamSettingService;
 import dk.trustworks.intranet.fileservice.model.File;
@@ -78,6 +79,9 @@ public class UserResource {
 
     @Inject
     UserService userAPI;
+
+    @Inject
+    EffectivePermissionService effectivePermissionService;
 
     @Inject
     AggregateEventSender aggregateEventSender;
@@ -194,6 +198,18 @@ public class UserResource {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
         User user = userAPI.findById(uuid, shallowFlag);
         return user;
+    }
+
+    /**
+     * Effective permissions for a user, resolved through the Phase 4 catalogue:
+     * user → roles → role_permission → permission ({@code revoked_at IS NULL}).
+     * Consumed by the BFF from Phase 5 (`GET /api/me/permissions`); dormant until then.
+     */
+    @GET
+    @Path("/{uuid}/permissions")
+    @RolesAllowed({"users:read"})
+    public List<String> effectivePermissions(@PathParam("uuid") String uuid) {
+        return effectivePermissionService.effectivePermissions(uuid).stream().sorted().toList();
     }
 
     /** DTO for CPR value transport */

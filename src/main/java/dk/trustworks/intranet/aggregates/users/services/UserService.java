@@ -383,10 +383,6 @@ public class UserService {
         return loginService.login(username, password);
     }
 
-    public LoginTokenResult createSystemToken(String role) throws Exception {
-        return loginService.createSystemToken(role);
-    }
-
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {

@@ -3,7 +3,6 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import jakarta.annotation.security.PermitAll;
-import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
@@ -14,14 +13,11 @@ import jakarta.ws.rs.core.MediaType;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
-import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.ArrayList;
@@ -58,15 +54,6 @@ public class LoginResource {
         log.info("LoginResource.login");
         log.info("username = " + username + ", password = " + password);
         return userAPI.login(username, password);
-    }
-
-    @GET
-    @Path("/createsystemtoken")
-    @RolesAllowed({"ADMIN"})
-    @SecurityRequirement(name = "jwt")
-    @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
-    public LoginTokenResult createSystemToken(@QueryParam("role") String role) throws Exception {
-        return userAPI.createSystemToken(role);
     }
 
     @GET

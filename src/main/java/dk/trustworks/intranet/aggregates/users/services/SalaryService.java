@@ -7,18 +7,23 @@ import dk.trustworks.intranet.aggregates.users.events.UpdateSalaryEvent;
 import dk.trustworks.intranet.domain.user.entity.Salary;
 import dk.trustworks.intranet.domain.user.entity.UserDanlonHistory;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.CDI;
 import jakarta.inject.Inject;
+import jakarta.persistence.PersistenceException;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
+import org.hibernate.exception.ConstraintViolationException;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,6 +31,15 @@ import java.util.UUID;
 @JBossLog
 @ApplicationScoped
 public class SalaryService {
+
+    /**
+     * Self-proxy. Lets {@link #create(Salary)} re-enter the transactional unit of work
+     * {@link #createInTx(Salary)} through the CDI/interceptor stack so the duplicate-key
+     * retry runs in a <b>fresh</b> transaction (a plain {@code this.} call would bypass
+     * {@code @Transactional} via self-invocation and reuse the rolled-back session).
+     */
+    @Inject
+    SalaryService self;
 
     @Inject
     AggregateEventSender aggregateEventSender;
@@ -49,15 +63,55 @@ public class SalaryService {
         return Salary.<Salary>find("activefrom = ?1 and useruuid = ?2", month, useruuid).firstResultOptional().isPresent();
     }
 
-    @Transactional
-    @CacheInvalidateAll(cacheName = "user-cache")
+    /**
+     * Idempotent save for POST /users/{useruuid}/salaries. The stored row is unique on
+     * {@code uq_salary_user_date} = (useruuid, activefrom); the BFF only forwards the row's uuid
+     * on the edit flow, so an "add" for a month that already has a row arrives with no/fresh uuid
+     * while the (user, month) row already exists — the save must converge on "one salary per user
+     * per effective month" rather than 409.
+     *
+     * <p>The natural-key lookup in {@link #createInTx(Salary)} turns the common (serialized)
+     * re-save into an in-place update. Two genuinely concurrent requests can both pass that
+     * lookup — each JTA transaction has its own MariaDB REPEATABLE READ snapshot — and the
+     * loser's {@code persistAndFlush()} then trips the unique key. We swallow only that specific
+     * duplicate-key {@link PersistenceException} and retry the unit of work <b>once</b> in a
+     * fresh transaction (via {@link #self}); its new snapshot sees the winning row and takes the
+     * update path. A second consecutive failure is left to propagate — the flushed violation is
+     * an unchecked {@link PersistenceException}, mapped to a clean 409 by
+     * {@code DatabaseConstraintViolationExceptionMapper}, never a 500.
+     */
     public void create(@Valid Salary salary) {
         if (salary.getUuid() == null || salary.getUuid().isBlank()) {
             String generatedUuid = UUID.randomUUID().toString();
             log.infof("No salary UUID provided for user %s, generating new one: %s", salary.getUseruuid(), generatedUuid);
             salary.setUuid(generatedUuid);
         }
-        Optional<Salary> existingSalary = Salary.findByIdOptional(salary.getUuid());
+        try {
+            self.createInTx(salary);
+        } catch (PersistenceException e) {
+            if (!isDuplicateSalaryKeyViolation(e)) {
+                throw e;
+            }
+            if (findByUuid(salary.getUuid()).isPresent()) {
+                // Deterministic update-collision: the caller's row exists and its new activefrom
+                // is already owned by another row of the same user. A retry would fail identically —
+                // let the violation surface as a 409 immediately.
+                throw e;
+            }
+            log.warnf("Concurrent duplicate salary insert (useruuid=%s, activefrom=%s) — reconciling idempotently in a fresh transaction",
+                    salary.getUseruuid(), salary.getActivefrom());
+            self.createInTx(salary);
+        }
+    }
+
+    @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
+    public void createInTx(Salary salary) {
+        // By-uuid first (the edit flow forwards the row's real uuid), then the natural key behind
+        // uq_salary_user_date — the add flow arrives with a freshly minted uuid, so a same-month
+        // re-save only ever matches on (useruuid, activefrom).
+        Optional<Salary> existingSalary = findByUuid(salary.getUuid())
+                .or(() -> findByUserAndDate(salary.getUseruuid(), salary.getActivefrom()));
         existingSalary.ifPresentOrElse(s -> {
             // UPDATE EXISTING SALARY RECORD
             log.debugf("Updating existing salary record for user %s (UUID: %s)", s.getUseruuid(), s.getUuid());
@@ -65,14 +119,7 @@ public class SalaryService {
             // Capture old salary type before updating
             SalaryType oldType = s.getType();
 
-            // Update salary fields
-            s.setSalary(salary.getSalary());
-            s.setLunch(salary.isLunch());
-            s.setPhone(salary.isPhone());
-            s.setPrayerDay(salary.isPrayerDay());
-            s.setType(salary.getType());
-            s.setActivefrom(salary.getActivefrom());
-            updateSalary(s);
+            bulkUpdate(s.getUuid(), salary);
 
             // NEW BUSINESS RULE: Check for HOURLY → NORMAL transition
             SalaryType newType = salary.getType();
@@ -82,17 +129,14 @@ public class SalaryService {
                 handleSalaryTypeChange(s.getUseruuid(), salary.getActivefrom());
             }
 
-            aggregateEventSender.handleEvent(new UpdateSalaryEvent(s.getUseruuid(), s));
+            sendUpdateEvent(reconciled(s.getUuid(), salary));
         }, () -> {
             // CREATE NEW SALARY RECORD
             log.infof("Creating new salary record for user %s (UUID: %s, effective: %s, type: %s)",
                     salary.getUseruuid(), salary.getUuid(), salary.getActivefrom(), salary.getType());
 
-            // persistAndFlush so a constraint violation surfaces to the caller HERE, not later
-            // inside handleSalaryTypeChange's best-effort try/catch (which would swallow the
-            // business-save failure → false success). See StatusService.create for the rationale.
-            salary.persistAndFlush();
-            aggregateEventSender.handleEvent(new CreateSalaryLogEvent(salary.getUseruuid(), salary));
+            persistNew(salary);
+            sendCreateEvent(salary);
 
             // FIX: Check for salary type change even when creating new record
             // This handles the case where a new NORMAL salary record is created instead of updating existing HOURLY record
@@ -114,22 +158,128 @@ public class SalaryService {
         });
     }
 
-    private void updateSalary(Salary salary) {
-        log.debugf("Updating salary uuid=%s for user %s", salary.getUuid(), salary.getUseruuid());
+    /**
+     * Panache primary-key lookup. Package-private seam so the reconcile decision in
+     * {@link #createInTx(Salary)} can be unit-tested without a live database.
+     */
+    Optional<Salary> findByUuid(String uuid) {
+        return Salary.findByIdOptional(uuid);
+    }
+
+    /**
+     * Panache lookup on the {@code uq_salary_user_date} natural key (useruuid, activefrom).
+     * Package-private seam so {@link #createInTx(Salary)} can be unit-tested without a
+     * live database.
+     */
+    Optional<Salary> findByUserAndDate(String useruuid, LocalDate activefrom) {
+        return Salary.find("useruuid = ?1 AND activefrom = ?2", useruuid, activefrom)
+                .firstResultOptional();
+    }
+
+    /**
+     * Immediate JPQL update of the existing row with the incoming values; the incoming row's
+     * fresh uuid is discarded so the (useruuid, activefrom) tuple keeps exactly one row. The
+     * field set matches the historical update path ({@code internet} was never updated there
+     * and stays untouched).
+     *
+     * <p>The loaded managed entity is deliberately <b>not</b> mutated: Hibernate 7 does not
+     * auto-flush before JPQL DML, so a dirty managed entity would be flushed <i>again</i> at JTA
+     * commit — where a lost race with a concurrent delete surfaces as a commit-time
+     * StaleStateException that escapes as ArcUndeclaredThrowableException → 500. Executing the
+     * update in-method keeps a unique-key violation (e.g. an update moving activefrom onto
+     * another row's month) catchable as an unchecked {@link PersistenceException} that maps to
+     * 409. Audit columns are set explicitly because a bulk update bypasses AuditEntityListener.
+     * Package-private seam for unit tests.
+     */
+    void bulkUpdate(String uuid, Salary incoming) {
         Salary.update("salary = ?1, " +
                         "activefrom = ?2, " +
                         "type = ?3, " +
                         "lunch = ?4, " +
                         "phone = ?5, " +
-                        "prayerDay = ?6 " +
-                        "WHERE uuid LIKE ?7 ",
-                salary.getSalary(),
-                salary.getActivefrom(),
-                salary.getType(),
-                salary.isLunch(),
-                salary.isPhone(),
-                salary.isPrayerDay(),
-                salary.getUuid());
+                        "prayerDay = ?6, " +
+                        "updatedAt = ?7, " +
+                        "modifiedBy = ?8 " +
+                        "WHERE uuid = ?9",
+                incoming.getSalary(),
+                incoming.getActivefrom(),
+                incoming.getType(),
+                incoming.isLunch(),
+                incoming.isPhone(),
+                incoming.isPrayerDay(),
+                LocalDateTime.now(),
+                currentUserUuid(),
+                uuid);
+    }
+
+    /**
+     * Package-private seam for unit tests.
+     *
+     * <p>persistAndFlush (not persist) so a constraint violation surfaces to the caller HERE, not
+     * later inside handleSalaryTypeChange's best-effort try/catch (which would swallow the
+     * business-save failure → false success), and so the retry orchestrator in
+     * {@link #create(Salary)} can catch it as an unchecked {@link PersistenceException} instead
+     * of a deferred commit-time 500.
+     */
+    void persistNew(Salary salary) {
+        salary.persistAndFlush();
+    }
+
+    /**
+     * Detached copy carrying the incoming values under the existing row's uuid — the payload for
+     * the update event. The incoming entity keeps its fresh uuid untouched so the
+     * deterministic-collision check in {@link #create(Salary)} still sees what the caller
+     * actually sent.
+     */
+    private static Salary reconciled(String uuid, Salary incoming) {
+        Salary copy = new Salary(uuid, incoming.getSalary(), incoming.getActivefrom(), incoming.getUseruuid());
+        copy.setType(incoming.getType());
+        copy.setLunch(incoming.isLunch());
+        copy.setPhone(incoming.isPhone());
+        copy.setInternet(incoming.isInternet());
+        copy.setPrayerDay(incoming.isPrayerDay());
+        return copy;
+    }
+
+    /** Package-private seam for unit tests. */
+    void sendCreateEvent(Salary salary) {
+        aggregateEventSender.handleEvent(new CreateSalaryLogEvent(salary.getUseruuid(), salary));
+    }
+
+    /** Package-private seam for unit tests. */
+    void sendUpdateEvent(Salary salary) {
+        aggregateEventSender.handleEvent(new UpdateSalaryEvent(salary.getUseruuid(), salary));
+    }
+
+    /** Mirrors AuditEntityListener's user resolution (X-Requested-By via RequestHeaderHolder). */
+    private static String currentUserUuid() {
+        try {
+            String userUuid = CDI.current().select(RequestHeaderHolder.class).get().getUserUuid();
+            return (userUuid == null || userUuid.isEmpty()) ? "system" : userUuid;
+        } catch (Exception e) {
+            return "system";
+        }
+    }
+
+    /**
+     * True only for a duplicate on the {@code uq_salary_user_date} unique key. Scoped to that
+     * one constraint so we retry a lost insert race but never loop on an unrelated violation
+     * (e.g. a foreign key), which is left to surface as a 409.
+     */
+    private static boolean isDuplicateSalaryKeyViolation(Throwable throwable) {
+        Throwable current = throwable;
+        for (int depth = 0; current != null && depth < 8; depth++) {
+            if (current instanceof ConstraintViolationException cve
+                    && cve.getConstraintName() != null
+                    && cve.getConstraintName().toLowerCase().contains("uq_salary_user_date")) {
+                return true;
+            }
+            if (current.getMessage() != null && current.getMessage().contains("uq_salary_user_date")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     @Transactional
@@ -161,12 +311,16 @@ public class SalaryService {
      * another employee's record by passing that record's uuid in the body (audit finding M1).
      * Responds 404 rather than 403 so the endpoint does not confirm that a guessed salary uuid
      * exists under another user.
+     *
+     * <p>Deliberately NOT {@code @Transactional}: the duplicate-key retry in
+     * {@link #create(Salary)} needs each {@link #createInTx(Salary)} attempt to run in its own
+     * transaction — a transaction opened here would be marked rollback-only by the first failed
+     * attempt and doom the retry. The ownership guard is a plain read.
      */
-    @Transactional
     public void createForUser(String useruuid, Salary salary) {
         salary.setUseruuid(useruuid);
         if (salary.getUuid() != null && !salary.getUuid().isBlank()) {
-            Salary existing = Salary.findById(salary.getUuid());
+            Salary existing = findByUuid(salary.getUuid()).orElse(null);
             if (existing != null && !useruuid.equals(existing.getUseruuid())) {
                 throw new NotFoundException("Salary record not found for user");
             }
@@ -189,30 +343,14 @@ public class SalaryService {
     }
 
     /**
-     * Handle salary type change from HOURLY to NORMAL (monthly).
-     * <p>
-     * This method implements the business rule for automatic Danløn number generation:
-     * - Check if user has a new UserStatus in the same month
-     * - UserStatus must NOT be TERMINATED or PREBOARDING
-     * - If conditions met, generate new Danløn number and create history record
-     * </p>
-     * <p>
-     * <b>Design Note:</b> This is triggered from SalaryService.create() when salary type changes.
-     * This ensures all salary changes (via REST API, batch jobs, migrations) are handled consistently.
-     * </p>
-     *
-     * @param useruuid      User UUID
-     * @param effectiveDate Date when salary type change becomes effective
-     */
-    /**
      * HOURLY → NORMAL transition (spec §6): delegate to the shared detector so the same
      * precedence/window applies whether the status or the salary write triggers it, and raise
      * at most one proposal — minting nothing (AC1). Never rolls back the salary save (N5):
      * detection runs in the caller's transaction (so the just-written NORMAL salary is visible),
      * and only the proposal write is isolated in a nested transaction; the reconciliation scan
-     * (AC10) re-derives and re-raises if the write fails.
+     * (AC10) re-derives and re-raises if the write fails. Package-private seam for unit tests.
      */
-    private void handleSalaryTypeChange(String useruuid, LocalDate effectiveDate) {
+    void handleSalaryTypeChange(String useruuid, LocalDate effectiveDate) {
         LocalDate month = effectiveDate.withDayOfMonth(1);
         UserStatus status = UserStatus.<UserStatus>find(
                 "useruuid = ?1 and statusdate <= ?2 and status not in (?3, ?4) order by statusdate desc",

@@ -82,7 +82,11 @@
       "requestBodyIsEntity": false,
       "fields": {
         "dk.trustworks.intranet.domain.user.entity.Role": {
+          "createdAt": "java.time.LocalDateTime @JsonIgnore",
+          "createdBy": "java.lang.String @JsonIgnore",
+          "modifiedBy": "java.lang.String @JsonIgnore",
           "role": "java.lang.String",
+          "updatedAt": "java.time.LocalDateTime @JsonIgnore",
           "useruuid": "java.lang.String @JsonIgnore",
           "uuid": "java.lang.String"
         },
@@ -104,7 +108,11 @@
       "requestBodyIsEntity": false,
       "fields": {
         "dk.trustworks.intranet.domain.user.entity.Role": {
+          "createdAt": "java.time.LocalDateTime @JsonIgnore",
+          "createdBy": "java.lang.String @JsonIgnore",
+          "modifiedBy": "java.lang.String @JsonIgnore",
           "role": "java.lang.String",
+          "updatedAt": "java.time.LocalDateTime @JsonIgnore",
           "useruuid": "java.lang.String @JsonIgnore",
           "uuid": "java.lang.String"
         },

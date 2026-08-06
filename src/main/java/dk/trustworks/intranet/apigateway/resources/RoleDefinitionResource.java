@@ -7,6 +7,7 @@ import dk.trustworks.intranet.domain.user.entity.RoleDefinition.RoleInUseExcepti
 import dk.trustworks.intranet.domain.user.entity.RoleDefinition.SystemRoleModificationException;
 import dk.trustworks.intranet.domain.user.service.RoleDefinitionService;
 import dk.trustworks.intranet.domain.user.service.RoleDefinitionService.RoleAlreadyExistsException;
+import dk.trustworks.intranet.domain.user.service.RoleDefinitionService.RoleHasPermissionBindingsException;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -112,6 +113,10 @@ public class RoleDefinitionResource {
                     .entity("{\"error\":\"" + e.getMessage() + "\"}")
                     .build();
         } catch (RoleInUseException e) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity("{\"error\":\"" + e.getMessage() + "\"}")
+                    .build();
+        } catch (RoleHasPermissionBindingsException e) {
             return Response.status(Response.Status.CONFLICT)
                     .entity("{\"error\":\"" + e.getMessage() + "\"}")
                     .build();
