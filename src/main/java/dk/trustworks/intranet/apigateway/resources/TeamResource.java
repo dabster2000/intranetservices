@@ -19,6 +19,9 @@ import dk.trustworks.intranet.services.TeamSettingService;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeEnforced;
+import dk.trustworks.intranet.security.ScopeGuard;
+import dk.trustworks.intranet.security.ScopeResolution;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
@@ -78,6 +81,38 @@ public class TeamResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    ScopeGuard scope;
+
+    static final String TEAMS_WRITE = "teams:write";
+
+    /**
+     * Phase 10.2 (access-intent Decision 10): membership writes are the one
+     * team mutation a <em>bounded</em> {@code teams:write} holder (a future
+     * TEAMLEAD@TEAM grant) may perform — and only on a team they currently
+     * lead. The self-widening this permits (adding a member is the act of
+     * granting yourself visibility of that member) is the owner's deliberate
+     * decision, not an accident. Unbounded holders (HR, ADMIN — today's only
+     * write audience) and headerless callers are untouched; an actor with no
+     * {@code teams:write} grant at all is refused.
+     */
+    private void requireMembershipWriteReach(String teamuuid) {
+        ScopeResolution reach = scope.reachOrNull(TEAMS_WRITE);
+        if (reach == null || reach.unbounded()) {
+            return;
+        }
+        if (reach.isNone()) {
+            throw new ForbiddenException("Team membership changes outside your reach");
+        }
+        boolean leadsTeam = teamService.getTeamLeadersByTeam(teamuuid, java.time.LocalDate.now())
+                .stream().anyMatch(u -> u != null && scope.actorOrNull().equals(u.getUuid()));
+        if (!leadsTeam) {
+            log.infof("teams:write scope denied — actor %s does not lead team %s",
+                    scope.actorOrNull(), teamuuid);
+            throw new ForbiddenException("Team membership changes outside your reach");
+        }
+    }
 
     public record CreateTeamRequest(String name, String shortname, String description, String practiceCode) {
     }
@@ -191,6 +226,7 @@ public class TeamResource {
     @Path("/{teamuuid}/users")
     @RolesAllowed({"teams:write"})
     public void addUserToTeam(@PathParam("teamuuid") String teamuuid, TeamRole teamrole) {
+        requireMembershipWriteReach(teamuuid);
         teamService.addTeamroleToUser(teamuuid, teamrole);
     }
 
@@ -198,12 +234,23 @@ public class TeamResource {
     @Path("/{teamuuid}/users")
     @RolesAllowed({"teams:write"})
     public void deleteTeamRole(@PathParam("teamuuid") String teamuuid, @QueryParam("teamroleuuid") String teamroleuuid) {
+        // The row mutated is the teamrole's own team — check that, not the path
+        // segment, so a bounded lead cannot delete another team's row by
+        // addressing it under their own team's URL.
+        TeamRole row = findTeamRole(teamroleuuid);
+        requireMembershipWriteReach(row != null ? row.getTeamuuid() : teamuuid);
         teamService.removeUserFromTeam(teamroleuuid);
+    }
+
+    /** Package-private seam so the scope tests can stub the row lookup without Panache. */
+    TeamRole findTeamRole(String teamroleuuid) {
+        return TeamRole.findById(teamroleuuid);
     }
 
     @POST
     @Path("/regenerate-descriptions")
     @RolesAllowed({"teams:write"})
+    @ScopeEnforced
     public void regenerateDescriptions() {
         teamService.updateTeamDescription();
     }
@@ -222,6 +269,7 @@ public class TeamResource {
     }
 
     @POST
+    @ScopeEnforced
     @RolesAllowed({"teams:write"})
     public Response createTeam(CreateTeamRequest request) {
         if (request == null) throw new BadRequestException("Request body is required");
@@ -241,6 +289,7 @@ public class TeamResource {
     /** Partial edit — omitted fields are left alone. The practice link has its own endpoint. */
     @PUT
     @Path("/{teamuuid}")
+    @ScopeEnforced
     @RolesAllowed({"teams:write"})
     public Team updateTeam(@PathParam("teamuuid") String teamuuid, UpdateTeamRequest request) {
         if (request == null) throw new BadRequestException("Request body is required");
@@ -254,6 +303,7 @@ public class TeamResource {
 
     @PUT
     @Path("/{teamuuid}/practice")
+    @ScopeEnforced
     @RolesAllowed({"teams:write"})
     public Team updateTeamPractice(@PathParam("teamuuid") String teamuuid, UpdateTeamPracticeRequest body) {
         String practiceCode = resolvePracticeCode(body);
@@ -312,6 +362,7 @@ public class TeamResource {
 
     @PUT
     @Path("/{teamuuid}/settings/{key}")
+    @ScopeEnforced
     @RolesAllowed({"teams:write"})
     public TeamSetting updateTeamSetting(@PathParam("teamuuid") String teamuuid,
                                          @PathParam("key") String key,
