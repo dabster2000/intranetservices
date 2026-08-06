@@ -2,6 +2,7 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.dao.workservice.model.Week;
 import dk.trustworks.intranet.dao.workservice.services.WeekService;
+import dk.trustworks.intranet.security.ScopeGuard;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -29,9 +30,18 @@ public class WeekResource {
     @Inject
     WeekService weekService;
 
+    @Inject
+    ScopeGuard scope;
+
+    // Phase 10.1: subject checks are inert while every timeregistration grant
+    // is ALL (access-intent Decision 14) — they pin the enforcement point for
+    // a future console narrowing.
+
     @POST
     @RolesAllowed({"timeregistration:write"})
     public void saveWeek(Week week) {
+        scope.requireSubjectWhenActor(WorkResource.WRITE_SCOPE, week.getUseruuid(),
+                "Week rows outside your reach");
         weekService.save(week);
     }
 
@@ -39,6 +49,11 @@ public class WeekResource {
     @Path("/{weekuuid}")
     @RolesAllowed({"timeregistration:write"})
     public void deleteWeek(@PathParam("weekuuid") String weekuuid) {
+        Week week = Week.findById(weekuuid);
+        if (week != null) {
+            scope.requireSubjectWhenActor(WorkResource.WRITE_SCOPE, week.getUseruuid(),
+                    "Week rows outside your reach");
+        }
         weekService.delete(weekuuid);
     }
 }

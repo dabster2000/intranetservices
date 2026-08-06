@@ -12,6 +12,8 @@ import dk.trustworks.intranet.dto.work.PagedWorkResponse;
 import dk.trustworks.intranet.dto.work.WorkByUserResponse;
 import dk.trustworks.intranet.dto.work.WorkSummary;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeEnforced;
+import dk.trustworks.intranet.security.ScopeGuard;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -49,6 +51,18 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class WorkResource {
 
+    /**
+     * Phase 10.1 (access-intent Decision 14): every {@code timeregistration:*}
+     * grant is scope {@code ALL} — client hours are shared data, and any
+     * employee may view or register hours for a colleague ("local timesheet
+     * impersonation"). The guards below are therefore inert for every actor
+     * today; they exist so a future console narrowing (USER → OWN) enforces
+     * here instead of silently doing nothing. Absence rows are protected by
+     * the BFF's two-tier visibility filter, never by data scope.
+     */
+    static final String READ_SCOPE = "timeregistration:read";
+    static final String WRITE_SCOPE = "timeregistration:write";
+
     @Inject
     WorkService workAPI;
 
@@ -61,8 +75,12 @@ public class WorkResource {
     @Inject
     MonthSubmissionService monthSubmissionService;
 
+    @Inject
+    ScopeGuard scope;
+
     @GET
     @Path("/work")
+    @ScopeEnforced
     public List<WorkFull> listAll(@QueryParam("page") Integer page) {
         log.debugf("WorkResource.listAll: page=%d", page);
         return workAPI.listAll(page);
@@ -71,23 +89,27 @@ public class WorkResource {
     @GET
     @Path("/work/search/findByPeriodAndUserAndTasks")
     public List<WorkFull> findByPeriodAndUserAndTasks(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
+        scope.requireSubjectWhenActor(READ_SCOPE, useruuid, "Work entries outside your reach");
         return workAPI.findByPeriodAndUserAndTasks(dateIt(fromdate), dateIt(todate), useruuid, taskuuids);
     }
 
     @GET
     @Path("/work/search/findByUserAndTasks")
     public List<WorkFull> findByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
+        scope.requireSubjectWhenActor(READ_SCOPE, useruuid, "Work entries outside your reach");
         return workAPI.findWorkFullByUserAndTasks(useruuid, taskuuids);
     }
 
     @GET
     @Path("/work/search/findByTasks")
+    @ScopeEnforced
     public List<WorkFull> findByTasks(@QueryParam("taskuuids") List<String> taskuuids) {
         return workAPI.findByTasks(taskuuids);
     }
 
     @GET
     @Path("/work/search/findByPeriod")
+    @ScopeEnforced
     public List<WorkFull> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return workAPI.findByPeriod(dateIt(fromdate), dateIt(todate));
     }
@@ -95,12 +117,14 @@ public class WorkResource {
     @GET
     @Path("/work/workduration/sum")
     public KeyValueDTO sumWorkdurationByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
+        scope.requireSubjectWhenActor(READ_SCOPE, useruuid, "Work entries outside your reach");
         return new KeyValueDTO("", Double.toString(workAPI.countByUserAndTasks(useruuid, taskuuids)));
     }
 
     @GET
     @Path("/work/billable/sum")
     public double sumBillableByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("month") String month) {
+        scope.requireSubjectWhenActor(READ_SCOPE, useruuid, "Work entries outside your reach");
         return workAPI.sumBillableByUserAndTasks(useruuid, DateUtils.dateIt(month));
     }
 
@@ -108,6 +132,10 @@ public class WorkResource {
     @Path("/work")
     @RolesAllowed({"timeregistration:write"})
     public void save(Work work) {
+        // Subject = the row's owner. Cross-user client-hour writes are allowed by
+        // Decision 14 (every write grant is ALL); cross-user ABSENCE writes are
+        // refused upstream by the BFF's two-tier filter, not here.
+        scope.requireSubjectWhenActor(WRITE_SCOPE, work.getUseruuid(), "Work entries outside your reach");
         log.infof("Work save requested: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f, requestedBy=%s",
                 work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
                 work.getWorkduration(), work.getRate(), requestHeaderHolder.getUserUuid());
@@ -145,6 +173,7 @@ public class WorkResource {
 
     @GET
     @Path("/work/search/findByPeriodPaged")
+    @ScopeEnforced
     @Operation(
             summary = "Get paginated work data by period",
             description = "Retrieves work entries for a date range with pagination support. " +
@@ -211,6 +240,7 @@ public class WorkResource {
 
     @GET
     @Path("/work/search/findByPeriodLightweight")
+    @ScopeEnforced
     @Operation(
             summary = "Get lightweight work data by period",
             description = "Retrieves only essential work fields for optimal performance. " +
@@ -270,6 +300,7 @@ public class WorkResource {
 
     @GET
     @Path("/work/search/countByPeriod")
+    @ScopeEnforced
     @Operation(
             summary = "Count work entries by period",
             description = "Returns the total count of work entries for a date range. " +
@@ -311,6 +342,7 @@ public class WorkResource {
 
     @GET
     @Path("/work/search/findByPeriodGroupedByUser")
+    @ScopeEnforced
     @Operation(
             summary = "Get work data grouped by user",
             description = "Retrieves work entries grouped by user for the specified period. " +
@@ -358,6 +390,7 @@ public class WorkResource {
 
     @GET
     @Path("/work/search/summaryByPeriod")
+    @ScopeEnforced
     @Operation(
             summary = "Get work summary statistics by period",
             description = "Returns aggregated statistics for work entries in the specified period. " +

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.dao.workservice.model.MonthSubmission;
 import dk.trustworks.intranet.dao.workservice.services.MonthSubmissionService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeGuard;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -42,15 +43,29 @@ public class MonthSubmissionResource {
     @Inject
     EntityManager em;
 
+    @Inject
+    ScopeGuard scope;
+
     @GET
     public MonthSubmission getSubmission(
             @QueryParam("useruuid") String useruuid,
             @QueryParam("year") int year,
             @QueryParam("month") int month) {
         log.debugf("GET /month-submissions: user=%s, year=%d, month=%d", useruuid, year, month);
+        scope.requireSubjectWhenActor(WorkResource.READ_SCOPE, useruuid,
+                "Month submissions outside your reach");
         return monthSubmissionService.findByUserAndMonth(useruuid, year, month).orElse(null);
     }
 
+    /**
+     * Deliberately NOT scope-checked (Phase 10.1, access-intent Decision 11):
+     * who may submit on behalf of another user — and who may unlock — is
+     * governed by the BFF's app_settings authority list ("Timesheet
+     * Submission" tab), a workflow-state control kept outside the permission
+     * model by owner decision. Adding a {@code timeregistration:write} reach
+     * check here would re-key that authority on data scope and 403 authority
+     * members the day a narrowing lands.
+     */
     @POST
     @Path("/submit")
     @RolesAllowed({"timeregistration:write"})
