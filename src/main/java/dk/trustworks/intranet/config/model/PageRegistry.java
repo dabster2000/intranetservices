@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.config.model;
 
+import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "page_registry")
-public class PageRegistry extends PanacheEntityBase {
+@EntityListeners(AuditEntityListener.class)
+public class PageRegistry extends PanacheEntityBase implements Auditable {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -50,11 +53,21 @@ public class PageRegistry extends PanacheEntityBase {
     @Column(name = "external_url", length = 500)
     private String externalUrl;
 
+    // Timestamps stay DB-managed (insertable/updatable = false): the columns have
+    // defaults and existing rows rely on them. The Auditable setters below satisfy
+    // the interface but only touch the in-memory value — the listener's real
+    // contribution on this entity is the actor columns (V469, Phase 7 task 7.1).
     @Column(name = "created_at", insertable = false, updatable = false)
     private LocalDateTime createdAt;
 
     @Column(name = "updated_at", insertable = false, updatable = false)
     private LocalDateTime updatedAt;
+
+    @Column(name = "created_by", updatable = false)
+    private String createdBy;
+
+    @Column(name = "modified_by")
+    private String modifiedBy;
 
     public PageRegistry() {}
 
@@ -94,8 +107,22 @@ public class PageRegistry extends PanacheEntityBase {
     public String getExternalUrl() { return externalUrl; }
     public void setExternalUrl(String externalUrl) { this.externalUrl = externalUrl; }
 
+    @Override
     public LocalDateTime getCreatedAt() { return createdAt; }
+    @Override
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    @Override
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    @Override
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    @Override
+    public String getCreatedBy() { return createdBy; }
+    @Override
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
+    @Override
+    public String getModifiedBy() { return modifiedBy; }
+    @Override
+    public void setModifiedBy(String modifiedBy) { this.modifiedBy = modifiedBy; }
 
     @Override
     public String toString() {

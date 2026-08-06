@@ -1,17 +1,23 @@
 package dk.trustworks.intranet.config.resources;
 
+import dk.trustworks.intranet.config.AnonymousRouteTrees;
 import dk.trustworks.intranet.config.PageRegistryValidation;
 import dk.trustworks.intranet.config.dto.PageRegistryResponse;
 import dk.trustworks.intranet.config.dto.PageRegistryDto;
 import dk.trustworks.intranet.config.model.PageRegistry;
 import dk.trustworks.intranet.config.repository.PageRegistryRepository;
 import dk.trustworks.intranet.domain.user.entity.RoleDefinition;
+import dk.trustworks.intranet.security.AuthzAuditService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
@@ -33,10 +39,22 @@ import java.util.stream.Collectors;
 public class PageRegistryResource {
 
     private final PageRegistryRepository repository;
+    private final AuthzAuditService authzAuditService;
 
     @Inject
-    public PageRegistryResource(PageRegistryRepository repository) {
+    public PageRegistryResource(PageRegistryRepository repository, AuthzAuditService authzAuditService) {
         this.repository = repository;
+        this.authzAuditService = authzAuditService;
+    }
+
+    /** Snapshot of the two authorization-bearing columns, for authz_audit before/after. */
+    private static Map<String, Object> gateSnapshot(PageRegistry page) {
+        Map<String, Object> snap = new LinkedHashMap<>();
+        snap.put("pageKey", page.getPageKey());
+        snap.put("reactRoute", page.getReactRoute());
+        snap.put("requiredRoles", page.getRequiredRoles());
+        snap.put("requiredPermission", page.getRequiredPermission());
+        return snap;
     }
 
     @GET
@@ -102,6 +120,7 @@ public class PageRegistryResource {
     @Operation(summary = "Update page required roles", description = "Sets the required roles for a page")
     @APIResponse(responseCode = "200", description = "Roles updated successfully")
     @APIResponse(responseCode = "404", description = "Page not found")
+    @Transactional
     public Response setRequiredRoles(
             @Parameter(description = "The page key", required = true)
             @PathParam("pageKey") String pageKey,
@@ -128,15 +147,22 @@ public class PageRegistryResource {
                     .build();
         }
 
-        Optional<PageRegistry> updated = repository.setRequiredRoles(pageKey, result.normalized());
-
-        if (updated.isEmpty()) {
+        Optional<PageRegistry> pageOpt = repository.findByPageKey(pageKey);
+        if (pageOpt.isEmpty()) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity("{\"error\": \"Page not found: " + pageKey + "\"}")
                     .build();
         }
 
-        return Response.ok(PageRegistryDto.fromEntity(updated.get())).build();
+        Map<String, Object> before = gateSnapshot(pageOpt.get());
+        PageRegistry updated = repository.setRequiredRoles(pageKey, result.normalized()).orElseThrow();
+
+        // Phase 7 (task 7.2): page-gate edits are authorization mutations — audited and
+        // version-bumped in this same transaction.
+        authzAuditService.record("PAGE_ROLES_CHANGED", "page_registry", pageKey,
+                before, gateSnapshot(updated));
+
+        return Response.ok(PageRegistryDto.fromEntity(updated)).build();
     }
 
     @PUT
@@ -147,6 +173,8 @@ public class PageRegistryResource {
     @APIResponse(responseCode = "200", description = "Permission updated successfully")
     @APIResponse(responseCode = "400", description = "Permission key not in the catalogue")
     @APIResponse(responseCode = "404", description = "Page not found")
+    @APIResponse(responseCode = "409", description = "Page belongs to an anonymous flow and cannot be permission-gated")
+    @Transactional
     public Response setRequiredPermission(
             @Parameter(description = "The page key", required = true)
             @PathParam("pageKey") String pageKey,
@@ -168,14 +196,35 @@ public class PageRegistryResource {
             value = result.normalized();
         }
 
-        Optional<PageRegistry> updated = repository.setRequiredPermission(pageKey, value);
-
-        if (updated.isEmpty()) {
+        Optional<PageRegistry> pageOpt = repository.findByPageKey(pageKey);
+        if (pageOpt.isEmpty()) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity("{\"error\": \"Page not found: " + pageKey + "\"}")
                     .build();
         }
 
-        return Response.ok(PageRegistryDto.fromEntity(updated.get())).build();
+        // Phase 7 hard block (owner decision 2026-08-06): a page inside an anonymous
+        // flow's tree (apply, consent, guest kiosk, onboarding, login, mobile expenses
+        // PWA) can never be permission-gated from here. Gating one breaks the flow
+        // outright for external users; un-gating stays a code change. Clearing (NULL)
+        // is equally refused so the rows stay untouched by this endpoint entirely.
+        if (AnonymousRouteTrees.isAnonymousTree(pageOpt.get().getReactRoute())) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity("{\"error\": \"Page '" + pageKey + "' (" + pageOpt.get().getReactRoute()
+                            + ") belongs to an anonymous flow (candidate apply, consent, guest kiosk,"
+                            + " onboarding upload, or the mobile expenses PWA). Its access is frozen by"
+                            + " the Phase 1 public allowlist and cannot be changed from the admin"
+                            + " console — see src/lib/auth/publicRoutes.ts in the frontend repo.\"}")
+                    .build();
+        }
+
+        Map<String, Object> before = gateSnapshot(pageOpt.get());
+        PageRegistry updated = repository.setRequiredPermission(pageKey, value).orElseThrow();
+
+        // Phase 7 (task 7.2): audited and version-bumped in this same transaction.
+        authzAuditService.record("PAGE_PERMISSION_CHANGED", "page_registry", pageKey,
+                before, gateSnapshot(updated));
+
+        return Response.ok(PageRegistryDto.fromEntity(updated)).build();
     }
 }
