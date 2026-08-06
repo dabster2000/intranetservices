@@ -68,11 +68,16 @@ public class WeekResource {
     @Path("/{weekuuid}")
     @RolesAllowed({"timeregistration:write"})
     public void deleteWeek(@PathParam("weekuuid") String weekuuid) {
-        Week week = Week.findById(weekuuid);
+        Week week = findWeek(weekuuid);
         if (week != null) {
             scope.requireSubjectWhenActor(WorkResource.WRITE_SCOPE, week.getUseruuid(),
                     "Week rows outside your reach");
         }
         weekService.delete(weekuuid);
+    }
+
+    /** Package-private seam so the scope tests can stub the row lookup without Panache. */
+    Week findWeek(String weekuuid) {
+        return Week.findById(weekuuid);
     }
 }
