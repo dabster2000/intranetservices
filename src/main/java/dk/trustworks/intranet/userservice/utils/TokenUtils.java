@@ -54,30 +54,6 @@ public class TokenUtils {
         return claims.jws().keyId(kid).sign(privateKey);
     }
 
-    public static String generateSystemUserTokenString(User user, Map<String, Long> timeClaims, List<Role> roles)
-            throws Exception {
-        PrivateKey pk = readPrivateKey("/privateKey.pem");
-        return generateSystemUserTokenString(user, pk, "/privateKey.pem", timeClaims, roles);
-    }
-
-    public static String generateSystemUserTokenString(User user, PrivateKey privateKey, String kid, Map<String, Long> timeClaims, List<Role> roles) {
-
-        long currentTimeInSecs = currentTimeInSecs();
-        long exp = timeClaims != null && timeClaims.containsKey(Claims.exp.name())
-                ? timeClaims.get(Claims.exp.name())
-                : currentTimeInSecs + 300000;
-
-        JwtClaimsBuilder claims = Jwt.claims()
-                .issuer("https://trustworks.dk")
-                .preferredUserName(user.getUsername())
-                .issuedAt(currentTimeInSecs)
-                .expiresAt(exp)
-                .groups(roles.stream().map(Role::getRole).collect(Collectors.toSet()));
-
-
-        return claims.jws().keyId(kid).sign(privateKey);
-    }
-
     /**
      * Read a PEM encoded private key from the classpath
      *

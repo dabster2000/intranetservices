@@ -26,127 +26,18 @@ import java.util.Set;
 @ApplicationScoped
 public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
 
-    static final String ADMIN_WILDCARD = "admin:*";
+    static final String ADMIN_WILDCARD = Permissions.ADMIN_WILDCARD;
 
     /**
      * All defined scopes in the system. When a client holds {@code admin:*},
      * every scope below is added to its identity so that fine-grained
      * {@code @RolesAllowed} annotations pass without modification.
+     *
+     * <p>Since Phase 4 of the authorization-model unification the catalogue lives
+     * in {@link Permissions}; this field is a view over it so the augmentor and the
+     * permission catalogue cannot diverge. Runtime behaviour is unchanged.
      */
-    static final Set<String> ALL_SCOPES = Set.of(
-            // Users & HR
-            "users:read", "users:write",
-            "userstatus:read", "userstatus:write",
-            "salaries:read", "salaries:write",
-
-            // CRM
-            "crm:read", "crm:write",
-
-            // Contracts
-            "contracts:read", "contracts:write",
-
-            // Time registration
-            "timeregistration:read", "timeregistration:write", "timeregistration:admin",
-
-            // Invoicing
-            "invoices:read", "invoices:write",
-
-            // Expenses
-            "expenses:read", "expenses:write", "expenses:review",
-
-            // Revenue & utilization
-            "revenue:read",
-            "utilization:read",
-            "availability:read",
-
-            // Budgets
-            "budgets:read", "budgets:write",
-
-            // Accounting
-            "accounting:read", "accounting:write",
-
-            // Bonuses
-            "bonus:read", "bonus:write",
-            "partnerbonus:read", "partnerbonus:write",
-            "teamleadbonus:read", "teamleadbonus:write",
-
-            // Signing & documents
-            "signing:read", "signing:write",
-            "dashboard:read", "dashboard:write",
-            "documents:read", "documents:write", "documents:gdpr",
-
-            // Knowledge
-            "knowledge:read", "knowledge:write",
-
-            // Teams
-            "teams:read", "teams:write",
-
-            // Practices
-            "practices:read", "practices:write",
-
-            // Career level
-            "careerlevel:read", "careerlevel:write",
-
-            // Vacation
-            "vacation:read", "vacation:write",
-
-            // Companies
-            "companies:read",
-
-            // Capacity
-            "capacity:read",
-
-            // Notifications
-            "notifications:write",
-
-            // Consultant
-            "consultant:read", "consultant:write",
-
-            // Conference
-            "conference:read", "conference:write",
-
-            // News
-            "news:read", "news:write",
-
-            // Taskboard
-            "taskboard:read", "taskboard:write",
-
-            // Devices
-            "devices:read", "devices:write",
-
-            // Transportation
-            "transportation:read", "transportation:write",
-
-            // DST statistics
-            "dststatistics:read", "dststatistics:write",
-
-            // System
-            "system:read", "system:write",
-
-            // Public
-            "public:read",
-
-            // Guest
-            "guest:read", "guest:write",
-
-            // Questionnaires
-            "questionnaires:read", "questionnaires:write",
-
-            // Bug Reports
-            "bugreports:read", "bugreports:write", "bugreports:admin",
-
-            // Recruitment (interview/refer/comp/gdpr/admin added upfront in
-            // ATS expansion P1 — endpoints using them arrive in P3–P19)
-            "recruitment:read", "recruitment:write",
-            "recruitment:interview", "recruitment:refer",
-            "recruitment:comp", "recruitment:gdpr", "recruitment:admin",
-
-            // Admin
-            "admin:read", "admin:write",
-
-            // Admin wildcard (included so admin:* is always present)
-            ADMIN_WILDCARD
-    );
+    static final Set<String> ALL_SCOPES = Permissions.allKeysAsSet();
 
     @Override
     public Uni<SecurityIdentity> augment(SecurityIdentity identity,

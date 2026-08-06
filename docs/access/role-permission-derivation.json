@@ -1,0 +1,1910 @@
+{
+  "generatedFrom": {
+    "feManifest": "src/access/access-manifest.json",
+    "beWorktree": "authz/phase-4-permission-catalogue"
+  },
+  "totals": {
+    "backendEndpoints": 1142,
+    "roleGatedHandlers": 255,
+    "permissionsSeeded": 35,
+    "pairsSeeded": 74,
+    "widenedPermissions": 11,
+    "unmappedCalls": 0,
+    "handlersWithNoBackendCall": 0
+  },
+  "perPermission": {
+    "admin:write": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "PUT /api/admin/app-settings": [
+          "ADMIN"
+        ]
+      }
+    },
+    "bonus:read": {
+      "seededRoles": [
+        "ADMIN",
+        "HR",
+        "PARTNER",
+        "TECHPARTNER",
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "HR",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        [
+          "USER"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/bonus/tw/calculate": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/bonus/tw/pools": [
+          "ADMIN",
+          "HR",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/bonus/yourpartoftrustworks/basis": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/dashboard/my-part-of-tw": [
+          "USER"
+        ]
+      }
+    },
+    "bonus:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR",
+        "TECHPARTNER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/bonus/tw/payouts": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "PUT /api/bonus/tw/pools/[companyUuid]": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/salary/recalc/bulk": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/salary/recalc/user/[useruuid]": [
+          "ADMIN",
+          "HR",
+          "TECHPARTNER"
+        ]
+      }
+    },
+    "companies:read": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/salary-payment/companies": [
+          "ADMIN",
+          "HR"
+        ]
+      }
+    },
+    "contracts:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/contracts/[uuid]": [
+          "USER"
+        ],
+        "GET /api/contracts/rules/batch": [
+          "USER"
+        ],
+        "GET /api/framework-agreements": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/audit": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/contracts": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/contracts-count": [
+          "USER"
+        ],
+        "POST /api/framework-agreements/[code]/pricing-preview": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/pricing-rules": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/revenue": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/[code]/validation-rules": [
+          "USER"
+        ],
+        "GET /api/framework-agreements/stats": [
+          "USER"
+        ]
+      }
+    },
+    "contracts:write": {
+      "seededRoles": [
+        "ADMIN",
+        "PARTNER",
+        "SALES"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/clients/[uuid]/contracts": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/contracts/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/contracts/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/framework-agreements/[code]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/framework-agreements/[code]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements/[code]/activate": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements/[code]/pricing-rules": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/framework-agreements/[code]/pricing-rules/[ruleId]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/framework-agreements/[code]/pricing-rules/[ruleId]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements/[code]/pricing-rules/[ruleId]/activate": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements/[code]/validation-rules": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/framework-agreements/[code]/validation-rules/[ruleId]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/framework-agreements/[code]/validation-rules/[ruleId]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/framework-agreements/[code]/validation-rules/[ruleId]/activate": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ]
+      }
+    },
+    "crm:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/clients/[uuid]/contracts": [
+          "USER"
+        ]
+      }
+    },
+    "dashboard:read": {
+      "seededRoles": [
+        "ADMIN",
+        "PARTNER",
+        "TECHPARTNER"
+      ],
+      "excludedPhantomRoles": [
+        "CXO"
+      ],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/cxo/cost/career-level-consultants": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/cxo/cost/career-level-economics": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/cxo/cost/cost-per-consultant": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/cxo/cost/salary-cost-ratio": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/cxo/finance/salary-gl-anomalies": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/executive/people/career-ladder": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/career-mix": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/gender-trend": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/headcount-composition": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/leadership-coverage": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/leadership-coverage/detail": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/pay-equity": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/pay-quartiles": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/pay-trend": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/practice-career-matrix": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/retention-cohorts": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/retention-rate": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/status-trend": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/tenure-distribution": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/upcoming-changes": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/upcoming-changes/detail": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/workforce-flow": [
+          "ADMIN"
+        ],
+        "GET /api/executive/people/workforce-summary": [
+          "ADMIN"
+        ],
+        "GET /api/executive/salary-growth": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ],
+        "GET /api/executive/total-salary-development": [
+          "ADMIN",
+          "CXO",
+          "PARTNER",
+          "TECHPARTNER"
+        ]
+      }
+    },
+    "documents:read": {
+      "seededRoles": [
+        "ADMIN",
+        "HR",
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ],
+        [
+          "ADMIN",
+          "HR"
+        ],
+        [
+          "USER"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/admin/document-migration/folders": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/items-errors": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/mappings/export": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/report": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/report/csv": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/status": [
+          "ADMIN"
+        ],
+        "GET /api/admin/document-migration/users-directory": [
+          "ADMIN"
+        ],
+        "GET /api/admin/employee-documents/retention-preview": [
+          "ADMIN"
+        ],
+        "GET /api/admin/employee-documents/stats": [
+          "ADMIN"
+        ],
+        "GET /api/employees/documents/review-queue": [
+          "ADMIN",
+          "HR"
+        ],
+        "GET /api/dashboard/todos": [
+          "USER"
+        ]
+      }
+    },
+    "documents:write": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/admin/document-migration/folders/[id]/[action]": [
+          "ADMIN"
+        ],
+        "POST /api/admin/document-migration/jobs/[job]": [
+          "ADMIN"
+        ],
+        "POST /api/admin/document-migration/mappings/import": [
+          "ADMIN"
+        ]
+      }
+    },
+    "expenses:read": {
+      "seededRoles": [
+        "HR",
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ],
+        [
+          "HR"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/dashboard/todos": [
+          "USER"
+        ],
+        "GET /api/expenses": [
+          "HR"
+        ],
+        "GET /api/expenses/[uuid]/image": [
+          "HR"
+        ],
+        "GET /api/expenses/[uuid]/validate": [
+          "HR"
+        ]
+      }
+    },
+    "invoices:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/invoice/[uuid]": [
+          "USER"
+        ]
+      }
+    },
+    "invoices:write": {
+      "seededRoles": [
+        "ADMIN",
+        "PARTNER",
+        "SALES"
+      ],
+      "excludedPhantomRoles": [
+        "MANAGER"
+      ],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        [
+          "ADMIN",
+          "MANAGER",
+          "PARTNER"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "POST /api/invoice/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/invoice/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/invoice/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/[uuid]/book": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/[uuid]/cancel-finalization": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/[uuid]/force-create": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/[uuid]/queue": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/creditnotes": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/drafts": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/internal": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoice/phantoms": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/invoices/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/invoices/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/invoices/controlling/client-status/control": [
+          "ADMIN",
+          "MANAGER",
+          "PARTNER"
+        ],
+        "POST /api/invoices/controlling/client-status/control/bulk-approve": [
+          "ADMIN",
+          "MANAGER",
+          "PARTNER"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/assignments/accept-suggested": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/code-map": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/documents/[lineUuid]/assign": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/invoices/cross-company/selfbilled/documents/[lineUuid]/assignments": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/documents/[lineUuid]/ignore": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/documents/[lineUuid]/same-company": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/documents/[lineUuid]/unmark": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/internals/[invoiceUuid]/link": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/invoices/cross-company/selfbilled/internals/queued/[invoiceUuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/settle": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/drafts": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "DELETE /api/invoices/drafts/[uuid]": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ]
+      }
+    },
+    "knowledge:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/dashboard/todos": [
+          "USER"
+        ]
+      }
+    },
+    "partnerbonus:read": {
+      "seededRoles": [
+        "ADMIN",
+        "TECHPARTNER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/bonus/partner-admin": [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        "GET /api/bonus/partner-admin/payout-status/[userUuid]": [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        "GET /api/bonus/partner-admin/prepaid/[userUuid]": [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        "GET /api/bonus/teamlead-admin": [
+          "ADMIN"
+        ],
+        "GET /api/bonus/teamlead-admin/adjustments": [
+          "ADMIN"
+        ],
+        "GET /api/bonus/teamlead-admin/config": [
+          "ADMIN"
+        ],
+        "GET /api/bonus/teamlead-admin/monthly-detail/[teamId]": [
+          "ADMIN"
+        ],
+        "GET /api/bonus/teamlead-admin/salary-exclusions": [
+          "ADMIN"
+        ]
+      }
+    },
+    "partnerbonus:write": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/bonus/partner-admin/invalidate-cache": [
+          "ADMIN"
+        ],
+        "POST /api/bonus/partner-admin/payouts": [
+          "ADMIN"
+        ],
+        "POST /api/bonus/teamlead-admin/adjustments": [
+          "ADMIN"
+        ],
+        "PUT /api/bonus/teamlead-admin/adjustments/[uuid]": [
+          "ADMIN"
+        ],
+        "DELETE /api/bonus/teamlead-admin/adjustments/[uuid]": [
+          "ADMIN"
+        ],
+        "PUT /api/bonus/teamlead-admin/config": [
+          "ADMIN"
+        ],
+        "POST /api/bonus/teamlead-admin/leader-exclusions": [
+          "ADMIN"
+        ],
+        "DELETE /api/bonus/teamlead-admin/leader-exclusions": [
+          "ADMIN"
+        ],
+        "PUT /api/bonus/teamlead-admin/member-overrides/[teamId]": [
+          "ADMIN"
+        ],
+        "DELETE /api/bonus/teamlead-admin/member-overrides/[teamId]": [
+          "ADMIN"
+        ],
+        "POST /api/bonus/teamlead-admin/payouts": [
+          "ADMIN"
+        ],
+        "POST /api/bonus/teamlead-admin/salary-exclusions": [
+          "ADMIN"
+        ],
+        "DELETE /api/bonus/teamlead-admin/salary-exclusions/[uuid]": [
+          "ADMIN"
+        ]
+      }
+    },
+    "practices:read": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/admin/practices/[code]/leads": [
+          "ADMIN"
+        ]
+      }
+    },
+    "practices:write": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/admin/practices": [
+          "ADMIN"
+        ],
+        "PUT /api/admin/practices/[code]": [
+          "ADMIN"
+        ],
+        "POST /api/admin/practices/[code]/leads": [
+          "ADMIN"
+        ],
+        "PUT /api/admin/practices/[code]/leads/[leadUuid]": [
+          "ADMIN"
+        ]
+      }
+    },
+    "questionnaires:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/dashboard/todos": [
+          "USER"
+        ]
+      }
+    },
+    "recruitment:admin": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/recruitment/reports/rebuild": [
+          "ADMIN"
+        ]
+      }
+    },
+    "recruitment:gdpr": {
+      "seededRoles": [
+        "ADMIN",
+        "DPO"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "DPO"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/recruitment/gdpr/candidates/[uuid]/anonymize": [
+          "ADMIN",
+          "DPO"
+        ],
+        "POST /api/recruitment/gdpr/candidates/[uuid]/art14-send": [
+          "ADMIN",
+          "DPO"
+        ],
+        "POST /api/recruitment/gdpr/candidates/[uuid]/dsar": [
+          "ADMIN",
+          "DPO"
+        ],
+        "GET /api/recruitment/gdpr/candidates/[uuid]/status": [
+          "ADMIN",
+          "DPO"
+        ],
+        "GET /api/recruitment/gdpr/queue": [
+          "ADMIN",
+          "DPO"
+        ]
+      }
+    },
+    "recruitment:interview": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/recruitment/interviews/[uuid]/scorecards": [
+          "USER"
+        ],
+        "GET /api/recruitment/interviews/mine": [
+          "USER"
+        ]
+      }
+    },
+    "recruitment:read": {
+      "seededRoles": [
+        "ADMIN",
+        "HR",
+        "PARTNER",
+        "TEAMLEAD",
+        "TECHPARTNER",
+        "USER"
+      ],
+      "excludedPhantomRoles": [
+        "CXO"
+      ],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        [
+          "USER"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/recruitment/ai/flags": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/applications/[uuid]/answers": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "GET /api/recruitment/candidates": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/ai/state": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/answers": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/applications": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/consents": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/documents": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier/revisions": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier/revisions/[revUuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier/revisions/[revUuid]/signing-status": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier/revisions/[revUuid]/signing-status/summary": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/emails/copy-options": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/emails/render": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/interviews": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/dedupe-check": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/triage-queue": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/email-settings": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/email-templates": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/emails/pending": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/positions": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "GET /api/recruitment/positions/[uuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "GET /api/recruitment/positions/[uuid]/board": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "GET /api/recruitment/positions/[uuid]/circle": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "GET /api/recruitment/referrals/pending": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/applications/[uuid]/debrief": [
+          "USER"
+        ],
+        "GET /api/recruitment/interviews/[uuid]/scorecards": [
+          "USER"
+        ],
+        "GET /api/recruitment/landing": [
+          "USER"
+        ]
+      }
+    },
+    "recruitment:refer": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/recruitment/referrals": [
+          "USER"
+        ],
+        "GET /api/recruitment/referrals/mine": [
+          "USER"
+        ]
+      }
+    },
+    "recruitment:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR",
+        "PARTNER",
+        "TEAMLEAD",
+        "TECHPARTNER"
+      ],
+      "excludedPhantomRoles": [
+        "CXO"
+      ],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "POST /api/recruitment/applications/[uuid]/assign-team": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "PUT /api/recruitment/applications/[uuid]/expected-start-date": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/applications/[uuid]/interviews": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/applications/[uuid]/reject": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/applications/[uuid]/return-to-pool": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/applications/[uuid]/stage": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/applications/[uuid]/withdraw": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "PUT /api/recruitment/candidates/[uuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/ai/regenerate": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/ai/resolve": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/applications": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/convert": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/decline": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/documents": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "PUT /api/recruitment/candidates/[uuid]/dossier": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/dossier/appendices": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "DELETE /api/recruitment/candidates/[uuid]/dossier/appendices/[fileUuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/dossier/branch-from-revision/[revUuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/dossier/send-review": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/dossier/send-signature": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/emails/draft": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/emails/send": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/pool": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/unpool": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/withdraw": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/candidates/tags/bulk": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "PUT /api/recruitment/email-settings": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/email-templates": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "PUT /api/recruitment/email-templates/[uuid]": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/emails/pending/[uuid]/approve": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/emails/pending/[uuid]/dismiss": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "POST /api/recruitment/interviews/[uuid]/cancel": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/interviews/[uuid]/schedule": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/positions": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "PUT /api/recruitment/positions/[uuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "POST /api/recruitment/positions/[uuid]/circle": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "DELETE /api/recruitment/positions/[uuid]/circle/[userUuid]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "POST /api/recruitment/positions/[uuid]/close": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD"
+        ],
+        "POST /api/recruitment/referrals/[uuid]/triage": [
+          "ADMIN",
+          "CXO",
+          "HR"
+        ],
+        "GET /api/recruitment/rooms": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER",
+          "TEAMLEAD",
+          "TECHPARTNER"
+        ]
+      }
+    },
+    "salaries:read": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/salary-payment/danlon/integrity": [
+          "ADMIN",
+          "HR"
+        ],
+        "GET /api/salary-payment/danlon/proposals": [
+          "ADMIN",
+          "HR"
+        ],
+        "GET /api/salary-payment/employees/changed": [
+          "ADMIN",
+          "HR"
+        ],
+        "GET /api/salary-payment/employees/new": [
+          "ADMIN",
+          "HR"
+        ],
+        "GET /api/salary-payment/supplements": [
+          "ADMIN",
+          "HR"
+        ]
+      }
+    },
+    "salaries:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/salary-payment/danlon/proposals/[uuid]/approve": [
+          "ADMIN",
+          "HR"
+        ],
+        "POST /api/salary-payment/danlon/proposals/[uuid]/reject": [
+          "ADMIN",
+          "HR"
+        ],
+        "POST /api/salary-payment/supplements/timestamp": [
+          "ADMIN",
+          "HR"
+        ],
+        "DELETE /api/salary-payment/supplements/timestamp": [
+          "ADMIN",
+          "HR"
+        ]
+      }
+    },
+    "system:write": {
+      "seededRoles": [
+        "ADMIN",
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ],
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "POST /api/dashboard/daily-brief": [
+          "USER"
+        ],
+        "PUT /api/system/page-registry/[pageKey]/roles": [
+          "ADMIN"
+        ],
+        "PUT /api/system/page-registry/[pageKey]/visibility": [
+          "ADMIN"
+        ]
+      }
+    },
+    "teams:read": {
+      "seededRoles": [
+        "ADMIN"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/admin/team-settings": [
+          "ADMIN"
+        ],
+        "GET /api/admin/teams": [
+          "ADMIN"
+        ],
+        "GET /api/admin/teams/[teamUuid]/practice/impact": [
+          "ADMIN"
+        ]
+      }
+    },
+    "teams:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ],
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "PUT /api/admin/team-settings": [
+          "ADMIN"
+        ],
+        "POST /api/admin/teams": [
+          "ADMIN"
+        ],
+        "PUT /api/admin/teams/[teamUuid]": [
+          "ADMIN"
+        ],
+        "PUT /api/admin/teams/[teamUuid]/practice": [
+          "ADMIN"
+        ],
+        "POST /api/employees/[uuid]/team-roles": [
+          "ADMIN",
+          "HR"
+        ],
+        "PUT /api/employees/[uuid]/team-roles/[roleId]": [
+          "ADMIN",
+          "HR"
+        ],
+        "DELETE /api/employees/[uuid]/team-roles/[roleId]": [
+          "ADMIN",
+          "HR"
+        ],
+        "PUT /api/teams/[teamId]/practice": [
+          "ADMIN"
+        ]
+      }
+    },
+    "timeregistration:read": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "GET /api/dashboard/todos": [
+          "USER"
+        ]
+      }
+    },
+    "timeregistration:write": {
+      "seededRoles": [
+        "USER"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "USER"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/timesheet": [
+          "USER"
+        ]
+      }
+    },
+    "users:read": {
+      "seededRoles": [
+        "ADMIN",
+        "DPO",
+        "HR",
+        "PARTNER",
+        "SALES",
+        "TECHPARTNER",
+        "USER"
+      ],
+      "excludedPhantomRoles": [
+        "CXO"
+      ],
+      "distinctContributingSets": [
+        [
+          "ADMIN"
+        ],
+        [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        [
+          "ADMIN",
+          "DPO"
+        ],
+        [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER"
+        ],
+        [
+          "USER"
+        ],
+        [
+          "HR"
+        ]
+      ],
+      "widened": true,
+      "contributingRoutes": {
+        "GET /api/admin/teams/member-counts": [
+          "ADMIN"
+        ],
+        "GET /api/bonus/partner-admin/export": [
+          "ADMIN",
+          "TECHPARTNER"
+        ],
+        "POST /api/clients/[uuid]/contracts": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/[uuid]/create-all-internal": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/cross-company/selfbilled/capture": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/invoices/phantoms/attribution/derive-all": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "PUT /api/invoices/phantoms/client-map": [
+          "ADMIN",
+          "PARTNER",
+          "SALES"
+        ],
+        "POST /api/recruitment/candidates/[uuid]/dossier/generate-review-pdf": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/dossier/revisions/[revUuid]/documents/[index]": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/events": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "TECHPARTNER"
+        ],
+        "POST /api/recruitment/gdpr/candidates/[uuid]/dsar-export": [
+          "ADMIN",
+          "DPO"
+        ],
+        "GET /api/recruitment/reports": [
+          "ADMIN",
+          "CXO",
+          "HR",
+          "PARTNER"
+        ],
+        "GET /api/clients/[uuid]/contracts": [
+          "USER"
+        ],
+        "GET /api/employees": [
+          "USER"
+        ],
+        "GET /api/recruitment/candidates/[uuid]/documents/[fileUuid]": [
+          "USER"
+        ],
+        "GET /api/timesheet": [
+          "USER"
+        ],
+        "GET /api/users/all": [
+          "HR"
+        ]
+      }
+    },
+    "users:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/employees": [
+          "ADMIN",
+          "HR"
+        ]
+      }
+    },
+    "userstatus:write": {
+      "seededRoles": [
+        "ADMIN",
+        "HR"
+      ],
+      "excludedPhantomRoles": [],
+      "distinctContributingSets": [
+        [
+          "ADMIN",
+          "HR"
+        ]
+      ],
+      "widened": false,
+      "contributingRoutes": {
+        "POST /api/employees": [
+          "ADMIN",
+          "HR"
+        ]
+      }
+    }
+  },
+  "excludedPhantom": {
+    "dashboard:read": [
+      "CXO"
+    ],
+    "invoices:write": [
+      "MANAGER"
+    ],
+    "recruitment:read": [
+      "CXO"
+    ],
+    "recruitment:write": [
+      "CXO"
+    ],
+    "users:read": [
+      "CXO"
+    ]
+  },
+  "multiScopeEndpoints": [
+    {
+      "route": "/api/recruitment/applications/[uuid]/debrief",
+      "call": "GET /recruitment/applications/{}/debrief",
+      "endpoint": "/recruitment/applications/{}/debrief",
+      "all": [
+        "recruitment:read",
+        "recruitment:interview"
+      ],
+      "picked": [
+        "recruitment:read"
+      ]
+    },
+    {
+      "route": "/api/recruitment/candidates/[uuid]/interviews",
+      "call": "GET /recruitment/candidates/{}/interviews",
+      "endpoint": "/recruitment/candidates/{}/interviews",
+      "all": [
+        "recruitment:read",
+        "recruitment:interview"
+      ],
+      "picked": [
+        "recruitment:read"
+      ]
+    },
+    {
+      "route": "/api/recruitment/interviews/[uuid]/scorecards",
+      "call": "GET /recruitment/interviews/{}/scorecards",
+      "endpoint": "/recruitment/interviews/{}/scorecards",
+      "all": [
+        "recruitment:read",
+        "recruitment:interview"
+      ],
+      "picked": [
+        "recruitment:read"
+      ]
+    }
+  ],
+  "unmapped": [],
+  "noBackendCall": []
+}
