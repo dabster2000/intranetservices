@@ -32,6 +32,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import java.net.URI;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -131,6 +132,18 @@ public class TeamResource {
     @Path("/{teamuuid}/users/search/findTeamleadersByMonth")
     public List<User> getTeamLeadersByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("month") String month) {
         return getUsers(teamService.getTeamLeadersByTeam(teamuuid, dateIt(month)));
+    }
+
+    /**
+     * Distinct users who are LEADER of ANY team today — the interviewer
+     * picker's "Team leaders" grouping. Deliberately shallow (no
+     * {@code addChildrenToUser}): callers only need identity fields, and
+     * the scope response filter strips the sensitive rest anyway.
+     */
+    @GET
+    @Path("/leaders")
+    public List<User> getAllActiveTeamLeaders() {
+        return teamService.getAllActiveTeamLeaders(LocalDate.now());
     }
 
     @GET

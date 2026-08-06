@@ -16,11 +16,14 @@ import java.util.List;
  * @param roomEmail        optional replacement room mailbox (null = keep,
  *                         blank = clear the booking)
  * @param interviewerUuids optional replacement interviewer list (1–10)
+ * @param durationMinutes  optional replacement length in minutes (15..480);
+ *                         null = keep the current length
  */
 public record InterviewScheduleRequest(
         LocalDateTime scheduledAt,
         String location,
         String roomEmail,
-        List<String> interviewerUuids
+        List<String> interviewerUuids,
+        Integer durationMinutes
 ) {
 }

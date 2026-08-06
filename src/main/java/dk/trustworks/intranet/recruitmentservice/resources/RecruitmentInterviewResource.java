@@ -1,11 +1,14 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DebriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScheduleRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.InterviewerAvailabilityResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ScorecardSubmitRequest;
@@ -37,9 +40,12 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.net.URI;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -76,6 +82,15 @@ public class RecruitmentInterviewResource {
     private static final String ADMIN_WILDCARD = "admin:*";
     private static final int LOCATION_MAX_LENGTH = 200;
     private static final int ROOM_EMAIL_MAX_LENGTH = 255;
+    private static final int DURATION_MIN_MINUTES = 15;
+    private static final int DURATION_MAX_MINUTES = 480;
+    private static final int DEFAULT_DURATION_MINUTES = 60;
+
+    /** Mirrors the FE interviewer dropdown (useEmployedUsers): who can be
+     * picked as an interviewer, and therefore whose free/busy is probed. */
+    private static final String[] INTERVIEWER_STATUSES =
+            {"ACTIVE", "PAID_LEAVE", "MATERNITY_LEAVE", "NON_PAY_LEAVE"};
+    private static final String[] INTERVIEWER_TYPES = {"CONSULTANT", "STAFF", "STUDENT"};
 
     @Inject
     RecruitmentFeatureFlag featureFlag;
@@ -95,6 +110,9 @@ public class RecruitmentInterviewResource {
     @Inject
     RecruitmentCalendarService calendarService;
 
+    @Inject
+    UserService userService;
+
     // ---- Scheduling ------------------------------------------------------------
 
     /** Create (= schedule) an interview on an application. */
@@ -113,6 +131,7 @@ public class RecruitmentInterviewResource {
         }
         requireLocationWithinLimit(request.location());
         requireRoomEmailValid(request.roomEmail());
+        requireDurationValid(request.durationMinutes());
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
@@ -140,6 +159,7 @@ public class RecruitmentInterviewResource {
         }
         requireLocationWithinLimit(request.location());
         requireRoomEmailValid(request.roomEmail());
+        requireDurationValid(request.durationMinutes());
         UUID actor = currentActor();
         RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
         RecruitmentApplication application = applicationOf(interview);
@@ -246,24 +266,71 @@ public class RecruitmentInterviewResource {
      * <p>
      * Optional {@code start} (ISO local datetime, wall-clock
      * Europe/Copenhagen): when present, each room carries its free/busy
-     * state for the 60-minute interview slot beginning there — the picker
-     * then offers only free rooms. Invalid values → 400.
+     * state for the interview slot beginning there — the picker then
+     * offers only free rooms. Optional {@code durationMinutes} (15..480,
+     * default 60) sets the slot length. Invalid values → 400.
      */
     @GET
     @Path("/interviews/rooms")
     @RolesAllowed({"recruitment:write"})
-    public MeetingRoomsResponse rooms(@QueryParam("start") String start) {
+    public MeetingRoomsResponse rooms(@QueryParam("start") String start,
+                                      @QueryParam("durationMinutes") Integer durationMinutes) {
         enforceFlag();
-        LocalDateTime slotStart = null;
-        if (start != null && !start.isBlank()) {
-            try {
-                slotStart = LocalDateTime.parse(start);
-            } catch (DateTimeParseException e) {
-                throw new WebApplicationException("start must be an ISO local datetime", 400);
-            }
-        }
-        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms(slotStart);
+        LocalDateTime slotStart = parseOptionalStart(start);
+        int duration = requireDurationValid(durationMinutes);
+        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms(slotStart, duration);
         return new MeetingRoomsResponse(rooms, rooms.size());
+    }
+
+    /**
+     * Outlook free/busy per potential interviewer for one interview slot
+     * — the interviewer picker's availability markers. The probed set
+     * mirrors the FE dropdown: currently employed CONSULTANT/STAFF/
+     * STUDENT users. Strictly free/busy booleans — event details are
+     * never requested from Graph and never ride here. Empty (never an
+     * error) when the Graph calendar toggle is off; a {@code null}
+     * {@code available} means unknown (no mailbox or lookup failure) and
+     * must render unmarked, not busy. Write-tier: only schedulers need it.
+     * <p>
+     * {@code start} (ISO local datetime, wall-clock Europe/Copenhagen) is
+     * required; optional {@code durationMinutes} (15..480, default 60)
+     * sets the slot length. Invalid values → 400.
+     */
+    @GET
+    @Path("/interviews/interviewer-availability")
+    @RolesAllowed({"recruitment:write"})
+    public InterviewerAvailabilityResponse interviewerAvailability(
+            @QueryParam("start") String start,
+            @QueryParam("durationMinutes") Integer durationMinutes) {
+        enforceFlag();
+        LocalDateTime slotStart = parseOptionalStart(start);
+        if (slotStart == null) {
+            throw badRequest("start is required — availability is per interview slot");
+        }
+        int duration = requireDurationValid(durationMinutes);
+        if (!calendarService.isEnabled()) {
+            return new InterviewerAvailabilityResponse(List.of(), 0);
+        }
+
+        List<User> users = userService.findUsersByDateAndStatusListAndTypes(
+                LocalDate.now(), INTERVIEWER_STATUSES, INTERVIEWER_TYPES, true);
+        List<String> emails = users.stream()
+                .map(User::getEmail)
+                .filter(email -> email != null && !email.isBlank())
+                .toList();
+        // Graph echoes the requested address as scheduleId; compare
+        // case-insensitively to be safe.
+        Map<String, Boolean> freeByEmail = new java.util.HashMap<>();
+        calendarService.interviewerAvailability(emails, slotStart, duration)
+                .forEach((email, free) -> freeByEmail.put(email.toLowerCase(Locale.ROOT), free));
+
+        List<InterviewerAvailabilityResponse.InterviewerAvailability> availability = users.stream()
+                .map(user -> new InterviewerAvailabilityResponse.InterviewerAvailability(
+                        user.getUuid(),
+                        user.getEmail() == null ? null
+                                : freeByEmail.get(user.getEmail().toLowerCase(Locale.ROOT))))
+                .toList();
+        return new InterviewerAvailabilityResponse(availability, availability.size());
     }
 
     // ---- Helpers ----------------------------------------------------------------------
@@ -390,6 +457,36 @@ public class RecruitmentInterviewResource {
         }
         if (!roomEmail.contains("@")) {
             throw badRequest("roomEmail must be a room mailbox address");
+        }
+    }
+
+    /**
+     * Duration sanity (create/reschedule bodies and the free/busy query
+     * params share the rule): null falls back to the 60-minute default;
+     * anything outside 15..480 → 400. The UI offers 30/60/90/120/240.
+     *
+     * @return the effective duration in minutes
+     */
+    private static int requireDurationValid(Integer durationMinutes) {
+        if (durationMinutes == null) {
+            return DEFAULT_DURATION_MINUTES;
+        }
+        if (durationMinutes < DURATION_MIN_MINUTES || durationMinutes > DURATION_MAX_MINUTES) {
+            throw badRequest("durationMinutes must be between " + DURATION_MIN_MINUTES
+                    + " and " + DURATION_MAX_MINUTES);
+        }
+        return durationMinutes;
+    }
+
+    /** Blank/absent → null; anything else must parse as ISO local datetime. */
+    private static LocalDateTime parseOptionalStart(String start) {
+        if (start == null || start.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(start);
+        } catch (DateTimeParseException e) {
+            throw new WebApplicationException("start must be an ISO local datetime", 400);
         }
     }
 

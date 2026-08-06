@@ -114,6 +114,19 @@ public class TeamService {
         return userService.filterForActiveTeamMembers(month, users);
     }
 
+    /**
+     * Distinct users who are LEADER of ANY team on the given date — the
+     * cross-team variant of {@link #getTeamLeadersByTeam(String, LocalDate)}
+     * (interviewer-picker grouping: teamleaders sort first).
+     */
+    public List<User> getAllActiveTeamLeaders(LocalDate month) {
+        List<User> users = User.find("select distinct u from User u " +
+                "join TeamRole tu on u.uuid = tu.useruuid " +
+                "where teammembertype like 'LEADER' AND " +
+                "tu.startdate <= ?1 AND (tu.enddate > ?1 OR tu.enddate is null)", month).list();
+        return userService.filterForActiveTeamMembers(month, users);
+    }
+
     public List<User> getTeammembersByTeamleadBonusEnabled() {
         return User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +

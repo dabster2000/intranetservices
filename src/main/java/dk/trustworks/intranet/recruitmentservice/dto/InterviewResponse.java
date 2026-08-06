@@ -26,6 +26,7 @@ public record InterviewResponse(
         RecruitmentInterviewKind kind,
         Integer round,
         LocalDateTime scheduledAt,
+        int durationMinutes,
         String location,
         String roomEmail,
         RecruitmentInterviewStatus status,
