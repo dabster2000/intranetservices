@@ -54,6 +54,16 @@ INSERT INTO role_permission (role, permission_key, data_scope)
   WHERE rd.name = 'HR' AND p.permission_key = 'documents:write'
   ON DUPLICATE KEY UPDATE data_scope = 'ALL';
 
+-- USER → documents:write @ OWN (matrix bookkeeping): employee self-upload is a real,
+-- flag-gated flow (POST /api/profile/documents → selfUpload=true, spec §6.4 — the
+-- backend forces needs_review and strips hrOnly on that path). Without this row the
+-- upload subject check would 403 self-uploads the day actor headers arrive. Sub-ALL,
+-- boolean-invisible; HR-only BFF routes keep their stricter gate regardless.
+INSERT INTO role_permission (role, permission_key, data_scope)
+  SELECT rd.name, p.permission_key, 'OWN' FROM role_definition rd, permission p
+  WHERE rd.name = 'USER' AND p.permission_key = 'documents:write'
+  ON DUPLICATE KEY UPDATE data_scope = 'OWN';
+
 -- documents:gdpr → ADMIN + DPO @ ALL (matrix bookkeeping): the erase/DSAR endpoints
 -- gate on documents:gdpr, which no role holds — a reach check would deny everyone.
 -- Mirrors the recruitment:gdpr audience (V465). Boolean-visible for ADMIN/DPO only,

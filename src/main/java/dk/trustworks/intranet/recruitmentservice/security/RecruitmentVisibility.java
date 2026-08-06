@@ -90,14 +90,47 @@ public class RecruitmentVisibility {
     /**
      * Hired-file tier (spec §7.2 field gate): once a candidate is HIRED,
      * profile access narrows to these roles (+ ADMIN) — colleagues must not
-     * browse a new colleague's interview file. DPO joins for GDPR duties.
+     * browse a new colleague's interview file.
      * {@code TEAMLEAD} is deliberately absent (D6): the wide read the
      * teamlead gets while a candidate is in play stops at the hire.
+     *
+     * <p>Phase 10.5: the DPO no longer appears here as a hardcoded role.
+     * GDPR-duty reach is expressed as holding the {@code recruitment:gdpr}
+     * permission ({@link #holdsRecruitmentGdprGrant}), so the console governs
+     * it — revoking {@code (DPO, recruitment:gdpr)} removes hired-file access
+     * without a code change. Equivalence for every current production user is
+     * proven in {@code docs/access/phase10-golden-baseline.md}.</p>
+     *
+     * <p>The role membership itself is the go-live's (D3/D6/D7), not Phase
+     * 10.5's original {@code HR, CXO, TECHPARTNER}: the recruitment access
+     * model landed on staging after this commit was written and removed
+     * {@code TECHPARTNER} from the module entirely (D7). Only the DPO
+     * hardcode is re-keyed here.</p>
      */
-    static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "RECRUITMENT", "DPO");
+    static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "RECRUITMENT");
 
     @Inject
     EntityManager em;
+
+    @Inject
+    dk.trustworks.intranet.security.EffectivePermissionService effectivePermissionService;
+
+    /**
+     * Whether the viewer holds {@code recruitment:gdpr} through the permission
+     * catalogue (ALL-scope grants only — the Phase 8 boolean projection).
+     * Fail-closed: any resolution failure reads as "does not hold it".
+     */
+    boolean holdsRecruitmentGdprGrant(String viewerUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return false;
+        }
+        try {
+            return effectivePermissionService.effectivePermissions(viewerUuid)
+                    .contains("recruitment:gdpr");
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
 
     // ---- Viewer capability resolution --------------------------------------
 
@@ -719,7 +752,9 @@ public class RecruitmentVisibility {
         if (candidate.getStatus() == CandidateStatus.HIRED) {
             // Involvement never survives HIRED: colleagues must not browse a
             // new colleague's interview file.
-            return roles.stream().anyMatch(HIRED_FILE_ROLES::contains)
+            // GDPR duty (formerly the hardcoded DPO role) is a permission grant.
+            return (roles.stream().anyMatch(HIRED_FILE_ROLES::contains)
+                        || holdsRecruitmentGdprGrant(viewerUuid))
                     && !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
         if (roles.stream().anyMatch(PROFILE_READ_ROLES::contains)) {
