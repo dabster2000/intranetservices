@@ -11,6 +11,7 @@ import dk.trustworks.intranet.domain.user.entity.SalaryLumpSum;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.LumpSumSalaryType;
+import dk.trustworks.intranet.security.ScopeEnforced;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -40,6 +41,14 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"bonus:read"})
+// Phase 9.3: every endpoint here is a company-wide bonus surface (pool configs,
+// the whole-company calculation, payout creation) with no per-person subject
+// dimension. A bounded actor is refused outright rather than served a partial
+// figure that looks like a total (9.4 policy, owner 2026-08-06). Every
+// legitimate caller (HR/ADMIN/PARTNER/TECHPARTNER via the BFF gates) holds
+// bonus:read — and for writes bonus:write — at scope ALL, so behaviour is
+// unchanged; headerless machine callers pass untouched until Phase 12.
+@ScopeEnforced
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class TwBonusResource {
 
