@@ -7,7 +7,10 @@ import dk.trustworks.intranet.domain.user.entity.RoleDefinition;
 import dk.trustworks.intranet.domain.user.entity.RoleDefinition.RoleInUseException;
 import dk.trustworks.intranet.domain.user.entity.RoleDefinition.SystemRoleModificationException;
 
+import dk.trustworks.intranet.security.AuthzStore;
+
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import java.util.List;
@@ -19,6 +22,9 @@ import java.util.Optional;
  */
 @ApplicationScoped
 public class RoleDefinitionService {
+
+    @Inject
+    AuthzStore authzStore;
 
     public List<RoleDefinitionDTO> listAll() {
         return RoleDefinition.listAllOrdered().stream()
@@ -67,6 +73,15 @@ public class RoleDefinitionService {
             throw new RoleInUseException(name, usageCount);
         }
 
+        // Phase 4 (owner decision 2026-08-06): a role bound to catalogue permissions
+        // is blocked from deletion with a clear message, not cascaded. The FK
+        // (fk_role_permission_role, ON DELETE RESTRICT) would reject the delete
+        // anyway; this check turns that DB error into an actionable 409.
+        long bindingCount = authzStore.countPermissionBindings(name);
+        if (bindingCount > 0) {
+            throw new RoleHasPermissionBindingsException(name, bindingCount);
+        }
+
         roleDefinition.delete();
     }
 
@@ -81,7 +96,32 @@ public class RoleDefinitionService {
         );
     }
 
-    // --- Domain exception ---
+    // --- Domain exceptions ---
+
+    /**
+     * The role still grants permissions in the Phase 4 catalogue. Deleting it is
+     * blocked (owner decision, 2026-08-06) until the bindings are deliberately
+     * removed — Phase 7's admin console is the intended tool for that.
+     */
+    public static class RoleHasPermissionBindingsException extends RuntimeException {
+        private final String roleName;
+        private final long bindingCount;
+
+        public RoleHasPermissionBindingsException(String roleName, long bindingCount) {
+            super("Role '" + roleName + "' grants " + bindingCount + " permission(s) in the permission catalogue"
+                    + " and cannot be deleted. Remove its permission bindings first.");
+            this.roleName = roleName;
+            this.bindingCount = bindingCount;
+        }
+
+        public String getRoleName() {
+            return roleName;
+        }
+
+        public long getBindingCount() {
+            return bindingCount;
+        }
+    }
 
     public static class RoleAlreadyExistsException extends RuntimeException {
         private final String roleName;

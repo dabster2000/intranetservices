@@ -1,0 +1,69 @@
+package dk.trustworks.intranet.security;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Guards the permission catalogue extracted in Phase 4 (task 4.1).
+ *
+ * <p>The catalogue is the promotion of the 85 scope strings that already existed in
+ * {@code AdminScopeAugmentor.ALL_SCOPES}. These tests pin (a) that the augmentor and
+ * the catalogue can never diverge, and (b) that every key keeps the {@code domain:action}
+ * colon-scope shape — task 4.2 removed the single non-scope value ({@code "ADMIN"}),
+ * and nothing may reintroduce one.
+ */
+class PermissionsCatalogueTest {
+
+    private static final Pattern SCOPE_SHAPE = Pattern.compile("^[a-z_-]+:[a-z*_-]+$");
+
+    @Test
+    void catalogueHolds85Permissions() {
+        assertEquals(85, Permissions.CATALOGUE.size(),
+                "The catalogue was extracted from AdminScopeAugmentor.ALL_SCOPES with exactly 85 scopes. "
+                        + "If this changed deliberately, regenerate V464 (see PermissionSeedSql) and update this number.");
+        assertEquals(85, Permissions.allKeys().size(), "Duplicate keys would collapse in the key set");
+    }
+
+    @Test
+    void augmentorViewIsTheCatalogue() {
+        assertEquals(Permissions.allKeysAsSet(), AdminScopeAugmentor.ALL_SCOPES,
+                "AdminScopeAugmentor must delegate to Permissions — the two diverging would "
+                        + "recreate the split catalogue Phase 4 exists to remove");
+    }
+
+    @Test
+    void everyKeyIsAColonScope() {
+        for (String key : Permissions.allKeys()) {
+            assertTrue(SCOPE_SHAPE.matcher(key).matches(),
+                    "Permission key '" + key + "' is not a domain:action scope string. "
+                            + "Role names (like the removed \"ADMIN\") are not permission keys.");
+        }
+    }
+
+    @Test
+    void adminWildcardIsPresent() {
+        assertTrue(Permissions.allKeys().contains(Permissions.ADMIN_WILDCARD),
+                "admin:* must stay in the catalogue — the augmentor keys its expansion off it");
+    }
+
+    @Test
+    void displayMetadataIsComplete() {
+        Set<String> seen = new HashSet<>();
+        for (Permissions.Permission p : Permissions.CATALOGUE) {
+            assertTrue(seen.add(p.key()), "Duplicate catalogue entry: " + p.key());
+            assertFalse(p.displayName() == null || p.displayName().isBlank(),
+                    "display_name is NOT NULL in the permission table — blank for " + p.key());
+            assertFalse(p.category() == null || p.category().isBlank(),
+                    "category should be set for " + p.key());
+            assertTrue(p.displayName().length() <= 128, "display_name column is VARCHAR(128): " + p.key());
+            assertTrue(p.key().length() <= 64, "permission_key column is VARCHAR(64): " + p.key());
+        }
+    }
+}
