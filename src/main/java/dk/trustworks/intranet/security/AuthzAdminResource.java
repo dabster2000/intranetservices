@@ -287,13 +287,17 @@ public class AuthzAdminResource {
             sql.append(" AND target_id = :targetId");
             params.put("targetId", targetId.trim());
         }
-        if (notBlank(from)) {
-            sql.append(" AND at >= :fromTs");
-            params.put("fromTs", parseInstant(from, false));
-        }
-        if (notBlank(to)) {
-            sql.append(" AND at <= :toTs");
-            params.put("toTs", parseInstant(to, true));
+        try {
+            if (notBlank(from)) {
+                sql.append(" AND at >= :fromTs");
+                params.put("fromTs", parseInstant(from, false));
+            }
+            if (notBlank(to)) {
+                sql.append(" AND at <= :toTs");
+                params.put("toTs", parseInstant(to, true));
+            }
+        } catch (java.time.format.DateTimeParseException e) {
+            return badRequest("Invalid date filter — use ISO date (2026-08-06) or date-time");
         }
         sql.append(" ORDER BY at DESC, id DESC");
         int cappedLimit = Math.min(Math.max(limit, 1), 500);
