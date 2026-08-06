@@ -7,6 +7,7 @@ import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService.StoreCommand;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeGuard;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.enterprise.context.RequestScoped;
@@ -54,8 +55,18 @@ public class UserEmployeeDocumentResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    @Inject
+    ScopeGuard scope;
+
     /**
      * List a user's documents (metadata only, never bytes).
+     *
+     * <p>Phase 10.6 (Decision 13): the path's {@code useruuid} is the subject.
+     * USER@OWN reaches exactly themselves; HR/ADMIN@ALL reach everyone —
+     * byte-identical to the BFF's {@code allowSelf: true, allowTeamLead: false}
+     * gate, now enforced server-side too. Headerless callers (the onboarding
+     * token flow posts to {@code /onboarding/tokens/**}, never here, and
+     * carries no actor) are untouched until Phase 12.</p>
      *
      * @param includeHrOnly   BFF-set trust flag: true only for the HR view
      * @param includeArchived include archived documents (HR "show archived" toggle)
@@ -64,6 +75,8 @@ public class UserEmployeeDocumentResource {
     public List<EmployeeDocumentDTO> list(@PathParam("useruuid") String useruuid,
                                           @QueryParam("includeHrOnly") @DefaultValue("false") boolean includeHrOnly,
                                           @QueryParam("includeArchived") @DefaultValue("false") boolean includeArchived) {
+        scope.requireSubjectWhenActor(EmployeeDocumentResource.READ_SCOPE, useruuid,
+                "Employee documents outside your reach");
         List<EmployeeDocument> docs = employeeDocumentService.list(useruuid, includeHrOnly, includeArchived);
         return toDTOs(docs);
     }
@@ -89,6 +102,10 @@ public class UserEmployeeDocumentResource {
         if (file == null) {
             throw new BadRequestException("Missing multipart part 'file'");
         }
+        // Subject = the file's owner. USER@OWN admits self-upload (the
+        // flag-gated profile flow); HR/ADMIN@ALL admit uploads to anyone.
+        scope.requireSubjectWhenActor(EmployeeDocumentResource.WRITE_SCOPE, useruuid,
+                "Employee documents outside your reach");
         byte[] bytes;
         try {
             bytes = Files.readAllBytes(file.uploadedFile());
