@@ -1,6 +1,6 @@
 -- V468: Seed role_permission pairs for page audiences (authorization-model-unification Phase 6)
 --
--- 32 pairs across 16 permissions, ALL owner-approved 2026-08-06 (AskUserQuestion,
+-- 34 pairs across 17 permissions, ALL owner-approved 2026-08-06 (AskUserQuestion,
 -- recorded in trustworks-intranet-v2 docs/access/page-registry-audit.md §10 and findings.md).
 -- These permissions gate PAGE ENTRY after the Phase 6 frontend conversion; they had zero
 -- seeded holders (or missed one holder) because the Phase 4 seed traced API gates, not page
@@ -68,6 +68,14 @@ INSERT INTO role_permission (role, permission_key)
 INSERT INTO role_permission (role, permission_key)
   SELECT rd.name, p.permission_key FROM role_definition rd, permission p
   WHERE rd.name = 'PARTNER' AND p.permission_key = 'crm:write'
+  ON DUPLICATE KEY UPDATE role_permission.role = role_permission.role;
+INSERT INTO role_permission (role, permission_key)
+  SELECT rd.name, p.permission_key FROM role_definition rd, permission p
+  WHERE rd.name = 'MARKETING' AND p.permission_key = 'conference:write'
+  ON DUPLICATE KEY UPDATE role_permission.role = role_permission.role;
+INSERT INTO role_permission (role, permission_key)
+  SELECT rd.name, p.permission_key FROM role_definition rd, permission p
+  WHERE rd.name = 'ADMIN' AND p.permission_key = 'conference:write'
   ON DUPLICATE KEY UPDATE role_permission.role = role_permission.role;
 INSERT INTO role_permission (role, permission_key)
   SELECT rd.name, p.permission_key FROM role_definition rd, permission p

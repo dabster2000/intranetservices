@@ -40,6 +40,7 @@ class PageAudienceSeedMigrationTest {
             "SALES->capacity:read", "ADMIN->capacity:read",
             "HR->consultant:read", "TEAMLEAD->consultant:read", "ADMIN->consultant:read",
             "SALES->crm:write", "ADMIN->crm:write", "PARTNER->crm:write",
+            "MARKETING->conference:write", "ADMIN->conference:write",
             "DPO->devices:read", "ADMIN->devices:read",
             "HR->expenses:review", "ADMIN->expenses:review",
             "EDITOR->knowledge:write", "ADMIN->knowledge:write",
