@@ -80,6 +80,21 @@ public class PageRegistryRepository implements PanacheRepository<PageRegistry> {
 
     @Transactional
     @CacheInvalidateAll(cacheName = CACHE_NAME)
+    public Optional<PageRegistry> setRequiredPermission(String pageKey, String requiredPermission) {
+        Optional<PageRegistry> pageOpt = findByPageKey(pageKey);
+
+        if (pageOpt.isPresent()) {
+            PageRegistry page = pageOpt.get();
+            page.setRequiredPermission(requiredPermission);
+            persist(page);
+            return Optional.of(page);
+        }
+
+        return Optional.empty();
+    }
+
+    @Transactional
+    @CacheInvalidateAll(cacheName = CACHE_NAME)
     public PageRegistry save(PageRegistry entity) {
         persist(entity);
         return entity;

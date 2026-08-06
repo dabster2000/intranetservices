@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.config.resources;
 
+import dk.trustworks.intranet.config.PageRegistryValidation;
 import dk.trustworks.intranet.config.dto.PageRegistryResponse;
 import dk.trustworks.intranet.config.dto.PageRegistryDto;
 import dk.trustworks.intranet.config.model.PageRegistry;
 import dk.trustworks.intranet.config.repository.PageRegistryRepository;
+import dk.trustworks.intranet.domain.user.entity.RoleDefinition;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -18,6 +20,8 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Tag(name = "Page Registry", description = "Page visibility and access configuration")
 @Path("/system/page-registry")
@@ -110,7 +114,61 @@ public class PageRegistryResource {
                     .build();
         }
 
-        Optional<PageRegistry> updated = repository.setRequiredRoles(pageKey, roles.trim());
+        // Phase 6 (task 6.10): normalise case on write and refuse role names that do not
+        // exist in this environment's role_definition — a value naming nothing would
+        // silently make the page unreachable.
+        Set<String> knownRoles = RoleDefinition.<RoleDefinition>listAll().stream()
+                .map(RoleDefinition::getName)
+                .collect(Collectors.toSet());
+        PageRegistryValidation.RolesResult result =
+                PageRegistryValidation.normalizeAndValidateRoles(roles, knownRoles);
+        if (!result.valid()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\": \"Unknown roles: " + String.join(", ", result.unknown()) + "\"}")
+                    .build();
+        }
+
+        Optional<PageRegistry> updated = repository.setRequiredRoles(pageKey, result.normalized());
+
+        if (updated.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\": \"Page not found: " + pageKey + "\"}")
+                    .build();
+        }
+
+        return Response.ok(PageRegistryDto.fromEntity(updated.get())).build();
+    }
+
+    @PUT
+    @Path("/{pageKey}/permission")
+    @RolesAllowed({"system:write"})
+    @Operation(summary = "Update page required permission",
+            description = "Sets the permission gating page entry. An empty value clears it, falling back to required roles (dual-read until Phase 14).")
+    @APIResponse(responseCode = "200", description = "Permission updated successfully")
+    @APIResponse(responseCode = "400", description = "Permission key not in the catalogue")
+    @APIResponse(responseCode = "404", description = "Page not found")
+    public Response setRequiredPermission(
+            @Parameter(description = "The page key", required = true)
+            @PathParam("pageKey") String pageKey,
+            @Parameter(description = "Permission key from the catalogue (e.g. invoices:write); empty clears")
+            @QueryParam("permission") String permission
+    ) {
+        String value = null;
+        if (permission != null && !permission.isBlank()) {
+            // Validated against the code catalogue (identical in every environment — never
+            // against role_definition, which diverges per environment). The V467 FK is the
+            // database-level backstop; this check exists to return a 400 instead of a 500.
+            PageRegistryValidation.PermissionResult result =
+                    PageRegistryValidation.normalizeAndValidatePermission(permission);
+            if (!result.valid()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity("{\"error\": \"Unknown permission: " + result.normalized() + "\"}")
+                        .build();
+            }
+            value = result.normalized();
+        }
+
+        Optional<PageRegistry> updated = repository.setRequiredPermission(pageKey, value);
 
         if (updated.isEmpty()) {
             return Response.status(Response.Status.NOT_FOUND)

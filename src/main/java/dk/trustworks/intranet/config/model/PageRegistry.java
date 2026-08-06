@@ -27,6 +27,14 @@ public class PageRegistry extends PanacheEntityBase {
     @Column(name = "required_roles", nullable = false, length = 255)
     private String requiredRoles = "USER";
 
+    /**
+     * Permission gating page entry (Phase 6). NULL means "fall back to requiredRoles" —
+     * deliberately so for universal USER pages and the dark ATS rows; requiredRoles is
+     * dual-read until Phase 14.
+     */
+    @Column(name = "required_permission", length = 64)
+    private String requiredPermission;
+
     @Column(name = "display_order", nullable = false)
     private int displayOrder;
 
@@ -67,6 +75,9 @@ public class PageRegistry extends PanacheEntityBase {
 
     public String getRequiredRoles() { return requiredRoles; }
     public void setRequiredRoles(String requiredRoles) { this.requiredRoles = requiredRoles; }
+
+    public String getRequiredPermission() { return requiredPermission; }
+    public void setRequiredPermission(String requiredPermission) { this.requiredPermission = requiredPermission; }
 
     public int getDisplayOrder() { return displayOrder; }
     public void setDisplayOrder(int displayOrder) { this.displayOrder = displayOrder; }
