@@ -38,12 +38,12 @@ public class RolePermissionAdminService {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
-    /** Attempted rebind of a protected permission ({@code admin:*} / {@code salaries:*}). */
+    /** Attempted rebind or scope edit of a protected permission ({@code admin:*} / {@code salaries:*}). */
     public static class ProtectedPermissionException extends RuntimeException {
         public ProtectedPermissionException(String permissionKey) {
             super("Permission '" + permissionKey + "' is protected (admin:*/salaries:*)."
-                    + " Its role bindings can only be changed in code, through review —"
-                    + " never from the admin console.");
+                    + " Its role bindings and data scopes can only be changed in code,"
+                    + " through review — never from the admin console.");
         }
     }
 
@@ -115,6 +115,41 @@ public class RolePermissionAdminService {
         return existing;
     }
 
+    /**
+     * Changes the data scope of an active binding (Phase 8, task 8.8). The 7.9
+     * rail extends to scope edits: a scope widening on {@code salaries:*} would
+     * be as dangerous as a grant, so protected permissions are refused outright
+     * (owner decision 2026-08-06) — their scopes only change by migration.
+     * Idempotent: setting the scope a binding already has is a no-op.
+     */
+    @Transactional
+    public RolePermission changeScope(String role, String permissionKey, DataScope newScope) {
+        String key = normalizeAndValidateKey(permissionKey);
+        String roleName = validateRole(role);
+        if (newScope == null) {
+            throw new UnknownPermissionException("data scope is required");
+        }
+
+        RolePermission existing = RolePermission.findByRoleAndKey(roleName, key)
+                .orElseThrow(() -> new NotFoundException(
+                        "No binding exists for role '" + roleName + "' and permission '" + key + "'"));
+        if (!existing.isActive()) {
+            throw new NotFoundException(
+                    "Binding for role '" + roleName + "' and permission '" + key + "' is revoked");
+        }
+        if (existing.getDataScope() == newScope) {
+            return existing; // no-op — no audit row, no version bump
+        }
+
+        Map<String, Object> before = snapshot(existing);
+        existing.setDataScope(newScope);
+
+        authzAuditService.record(
+                "ROLE_PERMISSION_SCOPE_CHANGED", "role_permission", roleName + ":" + key,
+                before, snapshot(existing));
+        return existing;
+    }
+
     private String normalizeAndValidateKey(String permissionKey) {
         if (permissionKey == null || permissionKey.isBlank()) {
             throw new UnknownPermissionException(String.valueOf(permissionKey));
@@ -158,6 +193,7 @@ public class RolePermissionAdminService {
         snap.put("role", binding.getRole());
         snap.put("permissionKey", binding.getPermissionKey());
         snap.put("active", binding.isActive());
+        snap.put("dataScope", binding.getDataScope().name());
         snap.put("grantedBy", binding.getGrantedBy());
         snap.put("grantedAt", String.valueOf(binding.getGrantedAt()));
         snap.put("revokedAt", binding.getRevokedAt() == null ? null : String.valueOf(binding.getRevokedAt()));
