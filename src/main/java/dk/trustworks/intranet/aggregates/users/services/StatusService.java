@@ -7,16 +7,21 @@ import dk.trustworks.intranet.aggregates.users.events.UpdateUserStatusEvent;
 import dk.trustworks.intranet.domain.user.entity.UserDanlonHistory;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.domain.user.service.UserDanlonHistoryService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.CDI;
 import jakarta.inject.Inject;
+import jakarta.persistence.PersistenceException;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import lombok.extern.jbosslog.JBossLog;
+import org.hibernate.exception.ConstraintViolationException;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,6 +29,15 @@ import java.util.UUID;
 @JBossLog
 @ApplicationScoped
 public class StatusService {
+
+    /**
+     * Self-proxy. Lets {@link #create(UserStatus)} re-enter the transactional unit of work
+     * {@link #createInTx(UserStatus)} through the CDI/interceptor stack so the duplicate-key
+     * retry runs in a <b>fresh</b> transaction (a plain {@code this.} call would bypass
+     * {@code @Transactional} via self-invocation and reuse the rolled-back session).
+     */
+    @Inject
+    StatusService self;
 
     @Inject
     AggregateEventSender aggregateEventSender;
@@ -55,42 +69,70 @@ public class StatusService {
         return latestEmployed;
     }
 
-    @Transactional
-    @CacheInvalidateAll(cacheName = "user-cache")
-    @CacheInvalidateAll(cacheName = "user-status-cache")
-    @CacheInvalidateAll(cacheName = "employee-availability")
+    /**
+     * Idempotent save for POST /users/{useruuid}/statuses. The stored row is unique on
+     * {@code uq_userstatus_user_date} = (useruuid, statusdate); the BFF mints a fresh uuid on
+     * every POST, so a same-day re-save arrives with an unknown uuid while the (user, date) row
+     * already exists — the save must converge on "one status per user per day" rather than 409.
+     *
+     * <p>The natural-key lookup in {@link #createInTx(UserStatus)} turns the common (serialized)
+     * re-save into an in-place update. Two genuinely concurrent requests can both pass that
+     * lookup — each JTA transaction has its own MariaDB REPEATABLE READ snapshot — and the
+     * loser's {@code persistAndFlush()} then trips the unique key. We swallow only that specific
+     * duplicate-key {@link PersistenceException} and retry the unit of work <b>once</b> in a
+     * fresh transaction (via {@link #self}); its new snapshot sees the winning row and takes the
+     * update path. A second consecutive failure is left to propagate — the flushed violation is
+     * an unchecked {@link PersistenceException}, mapped to a clean 409 by
+     * {@code DatabaseConstraintViolationExceptionMapper}, never a 500.
+     */
     public void create(@Valid UserStatus status) {
         if(status.getUuid() == null || status.getUuid().isEmpty()) {
             status.uuid = UUID.randomUUID().toString();
         }
-        Optional<UserStatus> existingStatus = UserStatus.findByIdOptional(status.getUuid());
+        try {
+            self.createInTx(status);
+        } catch (PersistenceException e) {
+            if (!isDuplicateUserStatusKeyViolation(e)) {
+                throw e;
+            }
+            if (findByUuid(status.getUuid()).isPresent()) {
+                // Deterministic update-collision: the caller's row exists and its new statusdate
+                // is already owned by another row of the same user. A retry would fail identically —
+                // let the violation surface as a 409 immediately.
+                throw e;
+            }
+            log.warnf("Concurrent duplicate user status insert (useruuid=%s, statusdate=%s) — reconciling idempotently in a fresh transaction",
+                    status.getUseruuid(), status.getStatusdate());
+            self.createInTx(status);
+        }
+    }
+
+    @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
+    @CacheInvalidateAll(cacheName = "user-status-cache")
+    @CacheInvalidateAll(cacheName = "employee-availability")
+    public void createInTx(UserStatus status) {
+        // By-uuid first (the PUT edit flow sends the row's real uuid), then the natural key behind
+        // uq_userstatus_user_date — the create flow mints a fresh uuid per POST, so a same-day
+        // re-save only ever matches on (useruuid, statusdate).
+        Optional<UserStatus> existingStatus = findByUuid(status.getUuid())
+                .or(() -> findByUserAndDate(status.getUseruuid(), status.getStatusdate()));
         existingStatus.ifPresentOrElse(s -> {
-            log.info("StatusService.create -> updating status");
-            log.info("status = " + status);
+            log.info("StatusService.create -> updating status " + s.getUuid());
 
             // VALIDATION: Prevent updates that would orphan Danløn numbers
             validateStatusUpdate(s, status);
 
-            s.setStatus(status.getStatus());
-            s.setStatusdate(status.getStatusdate());
-            s.setType(status.getType());
-            s.setCompany(status.getCompany());
-            s.setTwBonusEligible(status.isTwBonusEligible());
-            s.setAllocation(status.getAllocation());
-            updateStatusType(s);
-            sendUpdateEvent(s);
+            bulkUpdate(s.getUuid(), status);
+            UserStatus updated = reconciled(s.getUuid(), status);
+            sendUpdateEvent(updated);
 
             // Danløn lifecycle (propose-only): detect the single most-specific event for this
             // user/month/company and raise ONE proposal. No auto-mint (spec §6, AC1).
-            detectAndPropose(s);
+            detectAndPropose(updated);
         }, () -> {
-            log.info("StatusService.create -> creating status");
-            log.info("status = " + status);
-            // persistAndFlush so a constraint violation (e.g. duplicate uq_userstatus_user_date)
-            // surfaces to the caller HERE — NOT later inside detectAndPropose's best-effort
-            // try/catch (Hibernate would otherwise auto-flush this INSERT on the detector's first
-            // query and the catch would swallow the business-save failure → false 204).
-            status.persistAndFlush();
+            log.info("StatusService.create -> creating status " + status.getUuid());
+            persistNew(status);
             sendCreateEvent(status);
 
             // Danløn lifecycle (propose-only): see UPDATE branch.
@@ -98,21 +140,115 @@ public class StatusService {
         });
     }
 
-    private void updateStatusType(UserStatus s) {
+    /**
+     * Panache primary-key lookup. Package-private seam so the reconcile decision in
+     * {@link #createInTx(UserStatus)} can be unit-tested without a live database.
+     */
+    Optional<UserStatus> findByUuid(String uuid) {
+        return UserStatus.findByIdOptional(uuid);
+    }
+
+    /**
+     * Panache lookup on the {@code uq_userstatus_user_date} natural key (useruuid, statusdate).
+     * Package-private seam so {@link #createInTx(UserStatus)} can be unit-tested without a
+     * live database.
+     */
+    Optional<UserStatus> findByUserAndDate(String useruuid, LocalDate statusdate) {
+        return UserStatus.find("useruuid = ?1 AND statusdate = ?2", useruuid, statusdate)
+                .firstResultOptional();
+    }
+
+    /**
+     * Immediate JPQL update of the existing row with the incoming values; the incoming row's
+     * fresh uuid is discarded so the (useruuid, statusdate) tuple keeps exactly one row.
+     *
+     * <p>The loaded managed entity is deliberately <b>not</b> mutated: Hibernate 7 does not
+     * auto-flush before JPQL DML, so a dirty managed entity would be flushed <i>again</i> at JTA
+     * commit — where a lost race with a concurrent delete surfaces as a commit-time
+     * StaleStateException that escapes as ArcUndeclaredThrowableException → 500. Executing the
+     * update in-method keeps a unique-key violation (e.g. an update moving statusdate onto
+     * another row's date) catchable as an unchecked {@link PersistenceException} that maps to
+     * 409. Audit columns are set explicitly because a bulk update bypasses AuditEntityListener.
+     * Package-private seam for unit tests.
+     */
+    void bulkUpdate(String uuid, UserStatus incoming) {
         UserStatus.update("status = ?1, " +
                         "statusdate = ?2, " +
                         "type = ?3, " +
                         "company = ?4, " +
                         "isTwBonusEligible = ?5, " +
-                        "allocation = ?6 " +
-                        "WHERE uuid LIKE ?7 ",
-                s.getStatus(),
-                s.getStatusdate(),
-                s.getType(),
-                s.getCompany(),
-                s.isTwBonusEligible(),
-                s.getAllocation(),
-                s.getUuid());
+                        "allocation = ?6, " +
+                        "updatedAt = ?7, " +
+                        "modifiedBy = ?8 " +
+                        "WHERE uuid = ?9",
+                incoming.getStatus(),
+                incoming.getStatusdate(),
+                incoming.getType(),
+                incoming.getCompany(),
+                incoming.isTwBonusEligible(),
+                incoming.getAllocation(),
+                LocalDateTime.now(),
+                currentUserUuid(),
+                uuid);
+    }
+
+    /**
+     * Package-private seam for unit tests.
+     *
+     * <p>persistAndFlush (not persist) so a constraint violation (e.g. duplicate
+     * uq_userstatus_user_date) surfaces to the caller HERE — NOT later inside detectAndPropose's
+     * best-effort try/catch (Hibernate would otherwise auto-flush this INSERT on the detector's
+     * first query and the catch would swallow the business-save failure → false 204) — and so the
+     * retry orchestrator in {@link #create(UserStatus)} can catch it as an unchecked
+     * {@link PersistenceException} instead of a deferred commit-time 500.
+     */
+    void persistNew(UserStatus status) {
+        status.persistAndFlush();
+    }
+
+    /**
+     * Detached copy carrying the incoming values under the existing row's uuid — the payload for
+     * the update event and Danløn detection. The incoming entity keeps its fresh uuid untouched
+     * so the deterministic-collision check in {@link #create(UserStatus)} still sees what the
+     * caller actually sent.
+     */
+    private static UserStatus reconciled(String uuid, UserStatus incoming) {
+        UserStatus copy = new UserStatus(uuid, incoming.getType(), incoming.getStatus(),
+                incoming.getStatusdate(), incoming.getAllocation(), incoming.getUseruuid());
+        copy.setCompany(incoming.getCompany());
+        copy.setTwBonusEligible(incoming.isTwBonusEligible());
+        return copy;
+    }
+
+    /** Mirrors AuditEntityListener's user resolution (X-Requested-By via RequestHeaderHolder). */
+    private static String currentUserUuid() {
+        try {
+            String userUuid = CDI.current().select(RequestHeaderHolder.class).get().getUserUuid();
+            return (userUuid == null || userUuid.isEmpty()) ? "system" : userUuid;
+        } catch (Exception e) {
+            return "system";
+        }
+    }
+
+    /**
+     * True only for a duplicate on the {@code uq_userstatus_user_date} unique key. Scoped to that
+     * one constraint so we retry a lost insert race but never loop on an unrelated violation
+     * (e.g. a foreign key), which is left to surface as a 409.
+     */
+    private static boolean isDuplicateUserStatusKeyViolation(Throwable throwable) {
+        Throwable current = throwable;
+        for (int depth = 0; current != null && depth < 8; depth++) {
+            if (current instanceof ConstraintViolationException cve
+                    && cve.getConstraintName() != null
+                    && cve.getConstraintName().toLowerCase().contains("uq_userstatus_user_date")) {
+                return true;
+            }
+            if (current.getMessage() != null && current.getMessage().contains("uq_userstatus_user_date")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /**
@@ -178,12 +314,14 @@ public class StatusService {
         aggregateEventSender.handleEvent(new DeleteUserStatusEvent(entity.getUseruuid(), entity));
     }
 
-    private void sendCreateEvent(UserStatus status) {
+    /** Package-private seam for unit tests. */
+    void sendCreateEvent(UserStatus status) {
         CreateUserStatusEvent event = new CreateUserStatusEvent(status.getUseruuid(), status);
         aggregateEventSender.handleEvent(event);
     }
 
-    private void sendUpdateEvent(UserStatus status) {
+    /** Package-private seam for unit tests. */
+    void sendUpdateEvent(UserStatus status) {
         UpdateUserStatusEvent event = new UpdateUserStatusEvent(status.getUseruuid(), status);
         aggregateEventSender.handleEvent(event);
     }
