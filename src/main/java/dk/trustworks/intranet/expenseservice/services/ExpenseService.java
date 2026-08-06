@@ -11,6 +11,8 @@ import dk.trustworks.intranet.expenseservice.remote.dto.economics.Entries;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Journal;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Voucher;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.panache.common.Page;
+import io.quarkus.panache.common.Sort;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -26,6 +28,7 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 @JBossLog
 @RequestScoped
@@ -102,6 +105,46 @@ public class ExpenseService {
 
     public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
+    }
+
+    /** Panache lookup behind an instance method so resource authorization stays unit-testable. */
+    public Expense findByUuid(String uuid) {
+        return Expense.findById(uuid);
+    }
+
+    /**
+     * Scoped ledger page (Phase 9.2, per the Phase 8 rule 8.6): the resolved
+     * subject set is bound into the WHERE clause — never applied as a
+     * post-filter. {@code permittedSubjects == null} means the caller resolved
+     * no actor or an unbounded one; an empty set fails closed.
+     */
+    public List<Expense> findVisibleByUser(String useruuid, int page, int limit,
+                                           Set<String> permittedSubjects) {
+        if (permittedSubjects == null) {
+            return Expense.find("useruuid = ?1 and status <> ?2",
+                            Sort.by("expensedate").descending(), useruuid, STATUS_DELETED)
+                    .page(Page.of(page, limit)).list();
+        }
+        if (permittedSubjects.isEmpty()) {
+            return List.of(); // fail closed — an empty reach never falls back to unscoped
+        }
+        return Expense.find("useruuid = ?1 and useruuid in ?2 and status <> ?3",
+                        Sort.by("expensedate").descending(), useruuid, permittedSubjects, STATUS_DELETED)
+                .page(Page.of(page, limit)).list();
+    }
+
+    /** Scoped period search — same contract as {@link #findVisibleByUser}. */
+    public List<Expense> findVisibleByUserAndPeriod(String useruuid, LocalDate from, LocalDate to,
+                                                    Set<String> permittedSubjects) {
+        if (permittedSubjects == null) {
+            return Expense.find("useruuid like ?1 and expensedate >= ?2 and expensedate <= ?3 and status <> ?4",
+                    useruuid, from, to, STATUS_DELETED).list();
+        }
+        if (permittedSubjects.isEmpty()) {
+            return List.of(); // fail closed
+        }
+        return Expense.find("useruuid like ?1 and useruuid in ?2 and expensedate >= ?3 and expensedate <= ?4 and status <> ?5",
+                useruuid, permittedSubjects, from, to, STATUS_DELETED).list();
     }
 
     public List<Expense> findByUserLimited(String useruuid) {
