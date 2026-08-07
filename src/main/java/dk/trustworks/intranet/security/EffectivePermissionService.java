@@ -6,6 +6,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
@@ -34,6 +35,7 @@ public class EffectivePermissionService {
     private final AuthzStore store;
     private final LongSupplier nanoClock;
     private final Cache<String, Set<String>> cache;
+    private final Cache<String, Map<String, Set<DataScope>>> scopesCache;
     private final AtomicLong versionPollDueAtNanos;
     private final AtomicLong lastSeenVersion = new AtomicLong(NO_VERSION_SEEN);
 
@@ -51,13 +53,33 @@ public class EffectivePermissionService {
                 .maximumSize(4096)
                 .ticker(nanoClock::getAsLong)
                 .build();
+        this.scopesCache = Caffeine.newBuilder()
+                .expireAfterWrite(CACHE_TTL)
+                .maximumSize(4096)
+                .ticker(nanoClock::getAsLong)
+                .build();
         this.versionPollDueAtNanos = new AtomicLong(nanoClock.getAsLong());
     }
 
-    /** The user's effective permission keys; cached, never {@code null}. */
+    /**
+     * The user's effective permission keys; cached, never {@code null}.
+     * Since Phase 8 this is the legacy boolean projection — ALL-scope grants
+     * only (see {@link AuthzStore#loadEffectivePermissions}).
+     */
     public Set<String> effectivePermissions(String userUuid) {
         maybeRefreshOnVersionChange();
         return cache.get(userUuid, store::loadEffectivePermissions);
+    }
+
+    /**
+     * The scope-aware projection (Phase 8): permission key → granted
+     * {@link DataScope}s across the user's roles. Same staleness model as
+     * {@link #effectivePermissions}: 30 s TTL, flushed within ~1 s of any
+     * authorization write via the version poll.
+     */
+    public Map<String, Set<DataScope>> effectiveScopes(String userUuid) {
+        maybeRefreshOnVersionChange();
+        return scopesCache.get(userUuid, store::loadEffectivePermissionScopes);
     }
 
     /**
@@ -81,6 +103,7 @@ public class EffectivePermissionService {
         long previous = lastSeenVersion.getAndSet(version);
         if (previous != NO_VERSION_SEEN && previous != version) {
             cache.invalidateAll();
+            scopesCache.invalidateAll();
         }
     }
 }

@@ -191,6 +191,68 @@ class RolePermissionAdminServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Phase 8 — scope changes: the 7.9 rail extends to data scopes
+    // ------------------------------------------------------------------
+
+    @Test
+    void scopeChangeOnAProtectedPermissionIsRefused() {
+        assertThrows(RolePermissionAdminService.ProtectedPermissionException.class,
+                () -> service.changeScope("USER", "salaries:read", DataScope.ALL));
+        assertThrows(RolePermissionAdminService.ProtectedPermissionException.class,
+                () -> service.changeScope("SALES", "admin:read", DataScope.OWN));
+        verifyNoInteractions(audit);
+    }
+
+    @Test
+    void scopeChangeOnAnActiveBindingIsAuditedWithBeforeAndAfter() {
+        RolePermission active = new RolePermission("SALES", "invoices:write");
+        try (MockedStatic<PanacheEntityBase> panache = mockStatic(PanacheEntityBase.class)) {
+            stubRoleDefinition(panache, "SALES");
+            stubFindBinding(panache, active);
+
+            RolePermission result = service.changeScope("SALES", "invoices:write", DataScope.TEAM);
+
+            assertEquals(DataScope.TEAM, result.getDataScope());
+            verify(audit).record(eq("ROLE_PERMISSION_SCOPE_CHANGED"), eq("role_permission"),
+                    eq("SALES:invoices:write"), any(), any());
+        }
+    }
+
+    @Test
+    void scopeChangeToTheSameScopeIsANoOp() {
+        RolePermission active = new RolePermission("SALES", "invoices:write");
+        active.setDataScope(DataScope.TEAM);
+        try (MockedStatic<PanacheEntityBase> panache = mockStatic(PanacheEntityBase.class)) {
+            stubRoleDefinition(panache, "SALES");
+            stubFindBinding(panache, active);
+
+            RolePermission result = service.changeScope("SALES", "invoices:write", DataScope.TEAM);
+
+            assertEquals(DataScope.TEAM, result.getDataScope());
+            verifyNoInteractions(audit); // nothing changed — nothing to audit or bump
+        }
+    }
+
+    @Test
+    void scopeChangeOnAMissingOrRevokedBindingIs404() {
+        try (MockedStatic<PanacheEntityBase> panache = mockStatic(PanacheEntityBase.class)) {
+            stubRoleDefinition(panache, "SALES");
+            stubFindBinding(panache, null);
+            assertThrows(NotFoundException.class,
+                    () -> service.changeScope("SALES", "invoices:write", DataScope.TEAM));
+        }
+        RolePermission tombstoned = new RolePermission("SALES", "invoices:write");
+        tombstoned.setRevokedAt(LocalDateTime.now().minusDays(1));
+        try (MockedStatic<PanacheEntityBase> panache = mockStatic(PanacheEntityBase.class)) {
+            stubRoleDefinition(panache, "SALES");
+            stubFindBinding(panache, tombstoned);
+            assertThrows(NotFoundException.class,
+                    () -> service.changeScope("SALES", "invoices:write", DataScope.TEAM));
+        }
+        verifyNoInteractions(audit);
+    }
+
+    // ------------------------------------------------------------------
     // Stubs — Panache statics resolve to PanacheEntityBase in plain JUnit
     // ------------------------------------------------------------------
 
