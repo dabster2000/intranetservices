@@ -487,6 +487,34 @@ public class RecruitmentResource {
                 .build();
     }
 
+    /** Body of the manual document re-type action. */
+    public record DocumentKindRequest(String kind) { }
+
+    /**
+     * Manually re-type a stored candidate document (P8 Documents tab —
+     * document-type classification). Only files the system cannot
+     * classify itself are eligible; the service enforces eligibility
+     * (409), kind validity (400) and the download-grade IDOR guard (404)
+     * and appends the {@code DOCUMENT_KIND_CHANGED} timeline event.
+     */
+    @PUT
+    @Path("/candidates/{uuid}/documents/{fileUuid}/kind")
+    @RolesAllowed({"recruitment:write"})
+    public Response changeDocumentKind(@PathParam("uuid") UUID uuid,
+                                       @PathParam("fileUuid") String fileUuid,
+                                       DocumentKindRequest request) {
+        enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
+        if (fileUuid == null || fileUuid.isBlank()) {
+            throw new WebApplicationException("fileUuid is required", Response.Status.BAD_REQUEST);
+        }
+        if (request == null || request.kind() == null || request.kind().isBlank()) {
+            throw new WebApplicationException("kind is required", Response.Status.BAD_REQUEST);
+        }
+        return Response.ok(candidateService.changeDocumentKind(
+                uuid, fileUuid, request.kind(), currentActor())).build();
+    }
+
     /**
      * Specialization options for a practice, resolved from the per-practice
      * catalog in settings (keyed by practice uuid). An empty list means the
@@ -610,7 +638,7 @@ public class RecruitmentResource {
                         Response.Status.BAD_REQUEST);
             }
             fileUuid = recruitmentS3StorageService.storeAppendix(
-                    bytes, request.originalFilename, candidateUuid);
+                    bytes, request.originalFilename, candidateUuid, currentActor());
         } else {
             fileUuid = request.fileUuid;
         }
@@ -849,7 +877,7 @@ public class RecruitmentResource {
         //    audit-side store must not block the user-facing email when the
         //    in-memory bytes are valid attachments).
         List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsBestEffort(
-                pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL);
+                pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL, actor);
 
         // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
         RecipientInfo recipient = new RecipientInfo(
@@ -927,7 +955,7 @@ public class RecruitmentResource {
         //    revision row still records the action and the user still gets the
         //    documents).
         List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsBestEffort(
-                templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF);
+                templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF, actor);
 
         // 4) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
         RecipientInfo recipient = new RecipientInfo(
@@ -1004,7 +1032,7 @@ public class RecruitmentResource {
         // Persist each template-generated PDF to S3 before the revision row
         // references them in generated_pdfs_snapshot.
         List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
-                pdfs, candidateUuid, RevisionKind.SIGNATURE);
+                pdfs, candidateUuid, RevisionKind.SIGNATURE, actor);
 
         // Identity-verification schemas live on the document template, not on
         // individual signers. Fall back to the per-signer config only if the
@@ -1277,9 +1305,9 @@ public class RecruitmentResource {
      * an empty ref list; the revision row still records the action.
      */
     private List<RevisionResponse.PdfArtifactRef> storeTemplatePdfsBestEffort(
-            List<GeneratedPdf> pdfs, UUID candidateUuid, RevisionKind kind) {
+            List<GeneratedPdf> pdfs, UUID candidateUuid, RevisionKind kind, UUID actor) {
         try {
-            return recruitmentS3StorageService.storeTemplatePdfs(pdfs, candidateUuid, kind);
+            return recruitmentS3StorageService.storeTemplatePdfs(pdfs, candidateUuid, kind, actor);
         } catch (RuntimeException e) {
             log.warnf(e, "S3 audit-store failed for candidate=%s kind=%s — proceeding with empty pdf refs",
                     candidateUuid, kind);

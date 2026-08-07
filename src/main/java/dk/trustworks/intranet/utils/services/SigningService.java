@@ -972,11 +972,25 @@ public class SigningService {
     @Transactional
     public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners,
                                 String sharepointLocationUuid, String templateUuid) {
-        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, sharepointLocationUuid: %s, templateUuid: %s)",
-            caseKey, totalSigners, sharepointLocationUuid, templateUuid);
+        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, sharepointLocationUuid, templateUuid, null);
+    }
+
+    /**
+     * Full variant additionally carrying the sender-chosen archival
+     * category (V475): for template-less cases created via the upload
+     * wizard, the sender may pick an {@code EmployeeDocumentCategory}
+     * that wins over the template mapping at S3 archival time. Null for
+     * template-based cases and senders who chose nothing (→ OTHER).
+     */
+    @Transactional
+    public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners,
+                                String sharepointLocationUuid, String templateUuid, String archiveCategory) {
+        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, sharepointLocationUuid: %s, templateUuid: %s, archiveCategory: %s)",
+            caseKey, totalSigners, sharepointLocationUuid, templateUuid, archiveCategory);
 
         SigningCase entity = new SigningCase();
         entity.setTemplateUuid(templateUuid);
+        entity.setArchiveCategory(archiveCategory);
         entity.setCaseKey(caseKey);
         entity.setUserUuid(userUuid);
         entity.setDocumentName(documentName);
