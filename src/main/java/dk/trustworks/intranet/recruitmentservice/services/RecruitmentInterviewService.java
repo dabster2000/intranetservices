@@ -144,6 +144,9 @@ public class RecruitmentInterviewService {
         interview.setKind(request.kind());
         interview.setRound(request.kind() == RecruitmentInterviewKind.ROUND ? request.round() : null);
         interview.setScheduledAt(request.scheduledAt());
+        if (request.durationMinutes() != null) {
+            interview.setDurationMinutes(request.durationMinutes());
+        }
         interview.setInterviewerUuids(interviewers);
         interview.setLocation(trimToNull(request.location()));
         interview.setRoomEmail(trimToNull(request.roomEmail()));
@@ -183,6 +186,10 @@ public class RecruitmentInterviewService {
         requireActive(interview);
         LocalDateTime previous = interview.getScheduledAt();
         interview.setScheduledAt(request.scheduledAt());
+        if (request.durationMinutes() != null) {
+            // null = keep the current length (same convention as location).
+            interview.setDurationMinutes(request.durationMinutes());
+        }
         if (request.location() != null) {
             interview.setLocation(trimToNull(request.location()));
         }
@@ -594,6 +601,7 @@ public class RecruitmentInterviewService {
                 interview.getKind(),
                 interview.getRound(),
                 interview.getScheduledAt(),
+                interview.getDurationMinutes(),
                 interview.getLocation(),
                 interview.getRoomEmail(),
                 interview.getStatus(),

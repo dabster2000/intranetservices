@@ -84,6 +84,9 @@ public class CandidateService {
     RecruitmentGdprParameters gdprParameters;
 
     @Inject
+    CandidateProfileReadService profileReadService;
+
+    @Inject
     jakarta.persistence.EntityManager em;
 
     /** Bulk tag calls carry at most this many candidates (P8 contract). */
@@ -699,6 +702,62 @@ public class CandidateService {
         log.infof("Stored manual document candidate=%s fileUuid=%s kind=%s size=%d actor=%s",
                 candidate.getUuid(), fileUuid, kind, bytes.length, actor);
         return fileUuid;
+    }
+
+    /**
+     * Manually re-type a stored candidate document (P8 Documents tab).
+     * Only files the system cannot classify itself are eligible
+     * ({@code kindEditable} — no specific upload-event kind, no flow
+     * derivation); system-classified kinds stay locked. The change is an
+     * append-only {@code DOCUMENT_KIND_CHANGED} event (newest wins on
+     * read), so it is timeline-visible, actor-attributed and survives as
+     * an anonymous skeleton after GDPR anonymization (all-structural
+     * payload, no pii section). Re-typing an already-overridden file is
+     * allowed — mistakes stay correctable.
+     *
+     * @return the document row as the Documents tab should now render it
+     */
+    @Transactional
+    public dk.trustworks.intranet.recruitmentservice.dto.CandidateDocument changeDocumentKind(
+            UUID candidateUuid, String fileUuid, String kind, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        if (kind == null || !CandidateDocumentClassifier.ASSIGNABLE_KINDS.contains(kind)) {
+            throw new WebApplicationException(
+                    "kind must be one of " + CandidateDocumentClassifier.ASSIGNABLE_KINDS,
+                    Response.Status.BAD_REQUEST);
+        }
+        // IDOR guard — same 404-never-403 rule as the document download:
+        // a file uuid outside this candidate must not leak existence.
+        dk.trustworks.intranet.fileservice.model.File file =
+                dk.trustworks.intranet.fileservice.model.File.findById(fileUuid);
+        if (file == null || !candidate.getUuid().equals(file.getRelateduuid())) {
+            throw new NotFoundException("Document not found: " + fileUuid);
+        }
+        dk.trustworks.intranet.recruitmentservice.dto.CandidateDocument current =
+                profileReadService.documents(candidate.getUuid()).documents().stream()
+                        .filter(d -> fileUuid.equals(d.fileUuid()))
+                        .findFirst()
+                        .orElseThrow(() -> new NotFoundException("Document not found: " + fileUuid));
+        if (!current.kindEditable()) {
+            throw new WebApplicationException(
+                    "This document's kind is classified by the system and cannot be changed",
+                    Response.Status.CONFLICT);
+        }
+        if (kind.equals(current.kind())) {
+            return current;
+        }
+        eventRecorder.record(candidateEvent(RecruitmentEventType.DOCUMENT_KIND_CHANGED, candidate, actor)
+                .payload("file_uuid", fileUuid)
+                .payload("kind", kind)
+                .payload("previous_kind", current.kind())
+                .payload("origin", "manual"));
+        log.infof("Re-typed document candidate=%s fileUuid=%s %s -> %s actor=%s",
+                candidate.getUuid(), fileUuid, current.kind(), kind, actor);
+        return new dk.trustworks.intranet.recruitmentservice.dto.CandidateDocument(
+                current.fileUuid(), current.filename(), current.contentType(),
+                current.sizeBytes(), current.uploadedAt(), kind,
+                current.origin(), current.duplicateReason(), true);
     }
 
     /**

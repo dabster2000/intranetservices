@@ -2,9 +2,11 @@ package dk.trustworks.intranet.dao.workservice.services;
 
 import dk.trustworks.intranet.dao.workservice.model.Week;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -21,7 +23,10 @@ public class WeekService {
     WorkService workService;
 
     public List<Week> findByWeeknumberAndYearAndUseruuidOrderBySortingAsc(int weeknumber, int year, String useruuid) {
-        return Week.find("weeknumber = ?1 AND year = ?2 AND useruuid like ?3", weeknumber, year, useruuid).list();
+        // The Sort is load-bearing: the timesheet renders rows in returned order, so without it
+        // a persisted reorder (PUT /weeks/{uuid}) would not survive a page reload.
+        return Week.find("weeknumber = ?1 AND year = ?2 AND useruuid like ?3",
+                Sort.by("sorting"), weeknumber, year, useruuid).list();
     }
 
     @Transactional
@@ -33,8 +38,8 @@ public class WeekService {
         // then violates unique_task and — because the flush is deferred to commit — surfaces as a 500.
         // Reconcile to the existing row instead of inserting; the desired end state (task is on the
         // week) is already satisfied. Sorting/workas are intentionally left untouched here: reorder is
-        // a separate PATCH flow and the add payload omits sorting (defaults to 0), so overwriting them
-        // would clobber the existing order.
+        // a separate flow (PUT /weeks/{uuid} -> updateSorting) and the add payload omits sorting
+        // (defaults to 0), so overwriting them would clobber the existing order.
         Optional<Week> existing = findExistingWeek(week);
         if (existing.isPresent()) {
             log.infof("save: task already on week (task=%s user=%s week=%d/%d) — returning existing row, no insert",
@@ -57,6 +62,23 @@ public class WeekService {
         return Week.find("taskuuid = ?1 AND useruuid = ?2 AND weeknumber = ?3 AND year = ?4",
                 week.getTaskuuid(), week.getUseruuid(), week.getWeeknumber(), week.getYear())
                 .firstResultOptional();
+    }
+
+    @Transactional
+    public void updateSorting(String uuid, int sorting) {
+        Week week = findWeek(uuid);
+        if (week == null) {
+            throw new NotFoundException("Week " + uuid + " not found");
+        }
+        week.setSorting(sorting);
+    }
+
+    /**
+     * Loads a week row by primary key. Package-private seam so
+     * {@link #updateSorting(String, int)} can be unit-tested without a live database.
+     */
+    Week findWeek(String uuid) {
+        return Week.findById(uuid);
     }
 
     @Transactional

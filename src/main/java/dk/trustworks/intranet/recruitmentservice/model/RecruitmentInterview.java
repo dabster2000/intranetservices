@@ -65,6 +65,14 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     private LocalDateTime scheduledAt;
 
     /**
+     * Interview length in minutes (V474). Drives the Outlook event end
+     * time and the free/busy window probed for rooms and interviewers.
+     * Defaults to 60 — the length every pre-V474 row was booked with.
+     */
+    @Column(name = "duration_minutes", nullable = false)
+    private int durationMinutes = 60;
+
+    /**
      * Outlook linkage when Graph calendar scheduling is enabled
      * ({@code dk.trustworks.recruitment.graph.calendar.enabled});
      * {@code NULL} under manual scheduling (plan §P11 fallback).

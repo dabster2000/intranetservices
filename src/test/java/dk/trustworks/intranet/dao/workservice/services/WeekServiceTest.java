@@ -1,12 +1,14 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 import dk.trustworks.intranet.dao.workservice.model.Week;
+import jakarta.ws.rs.NotFoundException;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -15,7 +17,8 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
 /**
- * Plain unit test (no DB / no @QuarkusTest) for {@link WeekService#save(Week)}.
+ * Plain unit test (no DB / no @QuarkusTest) for {@link WeekService#save(Week)} and
+ * {@link WeekService#updateSorting(String, int)}.
  *
  * <p>Reproduces the production bug where POST /weeks returned HTTP 500 on a {@code unique_task}
  * (taskuuid, useruuid, weeknumber, year) collision: the frontend mints a fresh uuid on every
@@ -31,7 +34,7 @@ class WeekServiceTest {
     @Test
     void duplicateTupleIsReconciledToExistingRow_andNothingIsInserted() {
         // An identical (taskuuid, useruuid, weeknumber, year) already lives on the user's week,
-        // with a meaningful display order set previously via the reorder (PATCH) flow.
+        // with a meaningful display order set previously via the reorder (PUT) flow.
         Week existing = newWeek("existing-uuid", "task-1", "user-1", 25, 2026);
         existing.setSorting(7);
 
@@ -66,6 +69,37 @@ class WeekServiceTest {
         assertSame(incoming, result);
         // Flushed (not a deferred commit) so a concurrent-insert race surfaces as a catchable 409.
         verify(incoming).persistAndFlush();
+    }
+
+    @Test
+    void updateSortingChangesOnlyTheSortingField() {
+        // The reorder flow (PUT /weeks/{uuid}) must update display order without being able
+        // to touch the row's identity tuple — that is the whole point of the narrow endpoint.
+        Week existing = newWeek("existing-uuid", "task-1", "user-1", 25, 2026);
+        existing.setSorting(0);
+        existing.setWorkas("someone-else");
+
+        WeekService service = spy(new WeekService());
+        doReturn(existing).when(service).findWeek("existing-uuid");
+
+        service.updateSorting("existing-uuid", 3);
+
+        assertEquals(3, existing.getSorting(), "the new display order must be applied to the loaded row");
+        assertEquals("task-1", existing.getTaskuuid());
+        assertEquals("user-1", existing.getUseruuid());
+        assertEquals(25, existing.getWeeknumber());
+        assertEquals(2026, existing.getYear());
+        assertEquals("someone-else", existing.getWorkas());
+    }
+
+    @Test
+    void updateSortingOnUnknownWeekIsA404NotASilentSuccess() {
+        // A vanished row (deleted in another tab) must surface as 404 so the frontend can
+        // report the partial failure and refetch — not pretend the order was saved.
+        WeekService service = spy(new WeekService());
+        doReturn(null).when(service).findWeek("missing-uuid");
+
+        assertThrows(NotFoundException.class, () -> service.updateSorting("missing-uuid", 1));
     }
 
     private static Week newWeek(String uuid, String taskuuid, String useruuid, int weeknumber, int year) {

@@ -17,12 +17,18 @@ import java.util.List;
  * @param referenceId      Optional external reference ID for tracking
  * @param signingSchemas   List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
  *                         If null or empty, backend will use default schemas.
+ * @param archiveCategory  Optional sender-chosen archival category
+ *                         ({@code EmployeeDocumentCategory} enum name, e.g. "CONTRACT",
+ *                         "SALARY"). Template-less cases have no template to map a
+ *                         category from — this choice drives the S3 archival category
+ *                         at completion. Null/blank falls back to OTHER.
  */
 public record CreateMultiDocumentSigningRequest(
     List<UploadedDocument> documents,
     List<SignerInfo> signers,
     String referenceId,
-    List<String> signingSchemas
+    List<String> signingSchemas,
+    String archiveCategory
 ) {
     /**
      * Validates that required fields are present and valid.
@@ -56,6 +62,22 @@ public record CreateMultiDocumentSigningRequest(
                 throw new IllegalArgumentException("Signer group must be 1 or greater");
             }
         }
+        if (archiveCategory != null && !archiveCategory.isBlank()) {
+            try {
+                dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory
+                        .valueOf(archiveCategory);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        "archiveCategory must be one of the employee document categories: "
+                                + java.util.Arrays.toString(
+                                dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory.values()));
+            }
+        }
+    }
+
+    /** The validated archive category, or null when the sender chose none. */
+    public String normalizedArchiveCategory() {
+        return archiveCategory == null || archiveCategory.isBlank() ? null : archiveCategory;
     }
 
     /**

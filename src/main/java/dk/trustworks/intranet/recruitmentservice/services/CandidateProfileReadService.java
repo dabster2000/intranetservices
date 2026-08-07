@@ -48,16 +48,22 @@ public class CandidateProfileReadService {
             new TypeReference<>() {
             };
 
-    /** The document kinds emitted by P5; anything else renders as OTHER. */
-    private static final Set<String> KNOWN_DOCUMENT_KINDS = Set.of("CV", "COVER_LETTER");
+    /**
+     * The kinds an upload/kind-change event may carry; anything else
+     * renders as OTHER (shared registry on the classifier).
+     */
+    private static final Set<String> KNOWN_DOCUMENT_KINDS = CandidateDocumentClassifier.ALL_KINDS;
 
-    static final String KIND_OTHER = "OTHER";
+    static final String KIND_OTHER = CandidateDocumentClassifier.KIND_OTHER;
 
     @Inject
     ObjectMapper objectMapper;
 
     @Inject
     S3FileService s3FileService;
+
+    @Inject
+    CandidateDocumentClassifier documentClassifier;
 
     // ---- Form answers (P8 Application tab) --------------------------------------
 
@@ -111,13 +117,29 @@ public class CandidateProfileReadService {
     public CandidateDocumentsResponse documents(String candidateUuid) {
         List<File> files = File.list("relateduuid", candidateUuid);
         Map<String, DocumentEventFacts> facts = documentEventFacts(candidateUuid);
+        Map<String, String> overrides = kindOverrides(candidateUuid);
+        Map<String, String> derived = documentClassifier.derivedKinds(candidateUuid);
         List<CandidateDocument> documents = files.stream()
-                .map(file -> toDocument(file, facts.get(file.getUuid())))
+                .map(file -> toDocument(file, facts.get(file.getUuid()),
+                        overrides.get(file.getUuid()), derived.get(file.getUuid())))
                 .sorted(Comparator.comparing(CandidateDocument::uploadedAt,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(CandidateDocument::fileUuid))
                 .toList();
         return new CandidateDocumentsResponse(documents);
+    }
+
+    /**
+     * Whether one file is manually re-typeable: only files the system
+     * cannot classify itself — no specific upload-event kind (missing or
+     * OTHER) and no flow derivation. A manual override never revokes
+     * editability, so mistakes stay correctable. Used by the kind-change
+     * command as the server-side eligibility gate.
+     */
+    public boolean isKindEditable(String candidateUuid, String fileUuid) {
+        DocumentEventFacts facts = documentEventFacts(candidateUuid).get(fileUuid);
+        String derivedKind = documentClassifier.derivedKinds(candidateUuid).get(fileUuid);
+        return systemKind(facts, derivedKind) == null;
     }
 
     /**
@@ -151,19 +173,59 @@ public class CandidateProfileReadService {
     public record DocumentDownload(byte[] bytes, String filename, String contentType) {
     }
 
-    private CandidateDocument toDocument(File file, DocumentEventFacts facts) {
+    private CandidateDocument toDocument(File file, DocumentEventFacts facts,
+                                         String overrideKind, String derivedKind) {
         LocalDateTime uploadedAt = facts != null
                 ? facts.occurredAt()
                 : (file.getUploaddate() != null ? file.getUploaddate().atStartOfDay() : null);
+        String systemKind = systemKind(facts, derivedKind);
+        String kind = overrideKind != null ? overrideKind
+                : systemKind != null ? systemKind
+                : KIND_OTHER;
         return new CandidateDocument(
                 file.getUuid(),
                 file.getFilename(),
                 facts != null ? facts.contentType() : null,
                 facts != null ? facts.sizeBytes() : null,
                 uploadedAt,
-                facts != null ? facts.kind() : KIND_OTHER,
+                kind,
                 facts != null ? facts.origin() : null,
-                facts != null ? facts.reason() : null);
+                facts != null ? facts.reason() : null,
+                systemKind == null);
+    }
+
+    /**
+     * The system's own classification of a file: a specific (non-OTHER)
+     * upload-event kind wins over the flow derivation; null when the
+     * system has no specific claim (→ the file is manually re-typeable).
+     */
+    private static String systemKind(DocumentEventFacts facts, String derivedKind) {
+        if (facts != null && facts.kind() != null && !KIND_OTHER.equals(facts.kind())) {
+            return facts.kind();
+        }
+        return derivedKind;
+    }
+
+    /**
+     * Newest manual kind override per file uuid — the
+     * {@code DOCUMENT_KIND_CHANGED} events in seq order, later wins.
+     * Unknown kinds are ignored (defensive: the command validates on
+     * write, so this only guards against future enum drift).
+     */
+    private Map<String, String> kindOverrides(String candidateUuid) {
+        List<RecruitmentEvent> events = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType = ?2 order by seq",
+                candidateUuid, RecruitmentEventType.DOCUMENT_KIND_CHANGED);
+        Map<String, String> overrides = new HashMap<>();
+        for (RecruitmentEvent event : events) {
+            Map<String, Object> payload = parsePayload(event.getPayload());
+            if (payload.get("file_uuid") instanceof String key && !key.isBlank()
+                    && payload.get("kind") instanceof String kind
+                    && KNOWN_DOCUMENT_KINDS.contains(kind)) {
+                overrides.put(key, kind);
+            }
+        }
+        return overrides;
     }
 
     /** Enrichment facts parsed from one {@code DOCUMENT_UPLOADED} payload. */

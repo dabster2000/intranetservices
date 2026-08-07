@@ -95,6 +95,18 @@ public enum RecruitmentEventType {
     EMAIL_SENT,
     NOTE_ADDED,
     DOCUMENT_UPLOADED,
+    /**
+     * A recruiter manually re-typed a stored candidate document whose
+     * kind the system could not classify (P8 Documents tab). Payload:
+     * {@code file_uuid}, {@code kind} (the new kind), {@code previous_kind};
+     * all structural — no pii section. The Documents tab resolves a
+     * file's kind as: newest {@code DOCUMENT_KIND_CHANGED} &gt; the
+     * upload event's kind &gt; flow-derived (dossier snapshots /
+     * appendices / onboarding submissions) &gt; OTHER. Catalog addition
+     * made by the document-type classification feature — a manual
+     * correction is an auditable action like every other mutation.
+     */
+    DOCUMENT_KIND_CHANGED,
 
     // --- Offer bridge to the existing dossier module (P10) ---------------
     OFFER_OPENED,
