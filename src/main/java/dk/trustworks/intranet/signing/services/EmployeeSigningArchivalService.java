@@ -125,7 +125,7 @@ public class EmployeeSigningArchivalService {
             return false;
         }
 
-        EmployeeDocumentCategory category = mapTemplateCategory(signingCase.getTemplateUuid());
+        EmployeeDocumentCategory category = resolveCategory(signingCase);
         String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
 
         int present = 0;
@@ -226,6 +226,26 @@ public class EmployeeSigningArchivalService {
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
+
+    /**
+     * Archival category resolution (V475 precedence): the sender's
+     * explicit {@code archive_category} pick (upload-wizard cases) wins;
+     * otherwise the template's {@code TemplateCategory} mapping; OTHER
+     * when neither resolves. An unparseable stored value degrades to the
+     * template mapping rather than failing the archival pass.
+     */
+    static EmployeeDocumentCategory resolveCategory(SigningCase signingCase) {
+        String explicit = signingCase.getArchiveCategory();
+        if (explicit != null && !explicit.isBlank()) {
+            try {
+                return EmployeeDocumentCategory.valueOf(explicit);
+            } catch (IllegalArgumentException e) {
+                log.warnf("Unknown archive_category '%s' on case %s — falling back to template mapping",
+                        explicit, signingCase.getCaseKey());
+            }
+        }
+        return mapTemplateCategory(signingCase.getTemplateUuid());
+    }
 
     static EmployeeDocumentCategory mapTemplateCategory(String templateUuid) {
         if (templateUuid == null || templateUuid.isBlank()) return EmployeeDocumentCategory.OTHER;

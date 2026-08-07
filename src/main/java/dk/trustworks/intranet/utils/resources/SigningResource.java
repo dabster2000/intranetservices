@@ -429,9 +429,12 @@ public class SigningResource {
                 String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
                     targetUserUuid, SharePointLocationType.EMPLOYEE);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
-                    response.caseKey(), totalSigners, sharepointLocationUuid);
+                // archive_category (V475): the sender's optional category pick
+                // for these template-less cases — used at S3 archival time.
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners,
+                    sharepointLocationUuid, null, request.normalizedArchiveCategory());
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s, archiveCategory: %s)",
+                    response.caseKey(), totalSigners, sharepointLocationUuid, request.normalizedArchiveCategory());
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "

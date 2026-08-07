@@ -3,6 +3,9 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -31,6 +34,42 @@ public class RecruitmentS3StorageService {
 
     @Inject
     S3FileService s3FileService;
+
+    @Inject
+    RecruitmentEventRecorder eventRecorder;
+
+    /**
+     * Best-effort {@code DOCUMENT_UPLOADED} emission for flow-stored files
+     * (document-type classification): timeline provenance + kind facts for
+     * the P8 Documents tab. Never fails the store — the tab derives the
+     * same kind from the flow tables even when no event exists.
+     */
+    private void emitDocumentUploaded(RecruitmentEventBuilder builder,
+                                      UUID candidateUuid, String fileUuid, String kind) {
+        try {
+            eventRecorder.record(builder);
+        } catch (RuntimeException e) {
+            log.warnf(e, "DOCUMENT_UPLOADED emission failed candidate=%s fileUuid=%s kind=%s "
+                            + "(store unaffected — the Documents tab derives the kind from flow tables)",
+                    candidateUuid, fileUuid, kind);
+        }
+    }
+
+    private static RecruitmentEventBuilder documentEvent(UUID candidateUuid, String fileUuid,
+                                                         String kind, String origin, String contentType,
+                                                         String filename, int sizeBytes) {
+        RecruitmentEventBuilder builder = RecruitmentEventBuilder.event(RecruitmentEventType.DOCUMENT_UPLOADED)
+                .candidate(candidateUuid.toString())
+                .payload("file_uuid", fileUuid)
+                .payload("kind", kind)
+                .payload("size_bytes", sizeBytes)
+                .payload("origin", origin)
+                .pii("filename", filename);
+        if (contentType != null) {
+            builder.payload("content_type", contentType);
+        }
+        return builder;
+    }
 
     /**
      * Store a generated PDF in S3 and return the new file UUID.
@@ -62,10 +101,11 @@ public class RecruitmentS3StorageService {
      * via the dossier UI) in S3 alongside other recruitment files. Returns
      * the new {@code fileUuid} that callers persist on the appendix row.
      */
-    public String storeAppendix(byte[] bytes, String filename, UUID candidateUuid) {
+    public String storeAppendix(byte[] bytes, String filename, UUID candidateUuid, UUID actor) {
         Objects.requireNonNull(bytes, "bytes must not be null");
         Objects.requireNonNull(filename, "filename must not be null");
         Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        Objects.requireNonNull(actor, "actor must not be null");
 
         String fileUuid = UUID.randomUUID().toString();
         File file = new File(
@@ -77,6 +117,11 @@ public class RecruitmentS3StorageService {
                 LocalDate.now(),
                 bytes);
         s3FileService.save(file);
+        emitDocumentUploaded(
+                documentEvent(candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_APPENDIX,
+                        "dossier", "application/pdf", filename, bytes.length)
+                        .actorUser(actor.toString()),
+                candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_APPENDIX);
         log.infof("Stored recruitment appendix candidate=%s fileUuid=%s size=%d filename=%s",
                 candidateUuid, fileUuid, bytes.length, filename);
         return fileUuid;
@@ -108,6 +153,11 @@ public class RecruitmentS3StorageService {
                 LocalDate.now(),
                 bytes);
         s3FileService.save(file);
+        emitDocumentUploaded(
+                documentEvent(candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_ID_DOCUMENT,
+                        "onboarding", null, filename, bytes.length)
+                        .actorCandidate(),
+                candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_ID_DOCUMENT);
         log.infof("Stored onboarding identity document candidate=%s fileUuid=%s size=%d",
                 candidateUuid, fileUuid, bytes.length);
         return fileUuid;
@@ -171,6 +221,11 @@ public class RecruitmentS3StorageService {
                 LocalDate.now(),
                 bytes);
         s3FileService.save(file);
+        emitDocumentUploaded(
+                documentEvent(candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_SIGNED_DOCUMENT,
+                        "signing", "application/pdf", filename, bytes.length)
+                        .actorSystem(),
+                candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_SIGNED_DOCUMENT);
         log.infof("Stored signed recruitment document candidate=%s fileUuid=%s size=%d",
                 candidateUuid, fileUuid, bytes.length);
         return fileUuid;
@@ -259,10 +314,12 @@ public class RecruitmentS3StorageService {
     public List<RevisionResponse.PdfArtifactRef> storeTemplatePdfs(
             List<DossierPdfGenerationService.GeneratedPdf> pdfs,
             UUID candidateUuid,
-            RevisionKind kind) {
+            RevisionKind kind,
+            UUID actor) {
         Objects.requireNonNull(pdfs, "pdfs must not be null");
         Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
         Objects.requireNonNull(kind, "kind must not be null");
+        Objects.requireNonNull(actor, "actor must not be null");
 
         // Filter to template-generated PDFs only (appendices already in S3).
         List<DossierPdfGenerationService.GeneratedPdf> templatePdfs = pdfs.stream()
@@ -277,6 +334,11 @@ public class RecruitmentS3StorageService {
         for (DossierPdfGenerationService.GeneratedPdf pdf : templatePdfs) {
             String fileUuid = storeGeneratedPdf(
                     pdf.pdfBytes(), pdf.filename(), candidateUuid, kind);
+            emitDocumentUploaded(
+                    documentEvent(candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_CONTRACT_DRAFT,
+                            "dossier", "application/pdf", pdf.filename(), pdf.pdfBytes().length)
+                            .actorUser(actor.toString()),
+                    candidateUuid, fileUuid, CandidateDocumentClassifier.KIND_CONTRACT_DRAFT);
             refs.add(new RevisionResponse.PdfArtifactRef(pdf.filename(), fileUuid));
         }
         return refs;
