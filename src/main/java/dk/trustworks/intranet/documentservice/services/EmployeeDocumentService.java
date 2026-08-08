@@ -122,13 +122,23 @@ public class EmployeeDocumentService {
             Integer documentIndex,
             String migratedFrom) { }
 
-    /** Patch command — null field = leave unchanged. */
+    /**
+     * Patch command — null field = leave unchanged.
+     *
+     * <p>{@code displayName} is the one field with a third state: an
+     * explicit <b>empty/blank</b> string means "clear it, fall back to
+     * the original filename" (the UI's "Reset to original filename"
+     * affordance). A non-blank value is normalized server-side —
+     * sanitized, forced onto the original file's extension, truncated
+     * (see {@link #normalizeDisplayName}).</p>
+     */
     public record PatchCommand(
             EmployeeDocumentCategory category,
             String label,
             Boolean archived,
             Boolean hrOnly,
-            Boolean needsReview) { }
+            Boolean needsReview,
+            String displayName) { }
 
     /** Download result: bytes + serving metadata. */
     public record DocumentContent(byte[] bytes, String contentType, String filename) { }
@@ -433,7 +443,18 @@ public class EmployeeDocumentService {
             log.warnf(e, "DOWNLOAD audit failed for document %s (read served anyway)", docUuid);
         }
         String contentType = stored.contentType() != null ? stored.contentType() : doc.getContentType();
-        return new DocumentContent(stored.bytes(), contentType, doc.getOriginalFilename());
+        return new DocumentContent(stored.bytes(), contentType, servingFilename(doc));
+    }
+
+    /**
+     * What the downloaded file is called: the standardized display name
+     * when one has been assigned, else the original filename (V476).
+     * The bytes and the S3 key are unaffected — renames are metadata
+     * only (spec §6.3).
+     */
+    public static String servingFilename(EmployeeDocument doc) {
+        String displayName = doc.getDisplayName();
+        return displayName != null && !displayName.isBlank() ? displayName : doc.getOriginalFilename();
     }
 
     /** Metadata lookup without bytes (BFF authz checks). 404 when missing. */
@@ -444,9 +465,9 @@ public class EmployeeDocumentService {
     // ── Mutations ──────────────────────────────────────────────────────────
 
     /**
-     * Patch category/label/archived/hr_only/needs_review. Clearing
-     * {@code needsReview} together with a category set is how HR approves
-     * a self-upload (spec §6.8A).
+     * Patch category/label/archived/hr_only/needs_review/display_name.
+     * Clearing {@code needsReview} together with a category set is how
+     * HR approves a self-upload (spec §6.8A).
      */
     @Transactional
     public EmployeeDocument update(String docUuid, PatchCommand cmd, String actorUuid) {
@@ -458,12 +479,67 @@ public class EmployeeDocumentService {
         if (cmd.archived() != null) doc.setArchived(cmd.archived());
         if (cmd.hrOnly() != null) doc.setHrOnly(cmd.hrOnly());
         if (cmd.needsReview() != null) doc.setNeedsReview(cmd.needsReview());
+        if (cmd.displayName() != null) {
+            // Blank = "reset to the original filename"; anything else is
+            // normalized (sanitized + original extension forced) before
+            // it can reach a Content-Disposition header.
+            doc.setDisplayName(cmd.displayName().isBlank()
+                    ? null
+                    : normalizeDisplayName(cmd.displayName(), doc.getOriginalFilename()));
+        }
         doc.persist();
 
         audit(new EmployeeDocumentAudit(doc.getUuid(), doc.getUserUuid(), actorUuid,
                 archiving ? EmployeeDocumentAuditAction.ARCHIVE : EmployeeDocumentAuditAction.UPDATE,
                 auditDetail(doc)));
         return doc;
+    }
+
+    /** Result of one bulk flag flip. */
+    public record BulkFlagsSummary(int requested, int updated, int notFound, List<String> skipped) { }
+
+    /**
+     * Flip {@code hr_only} and/or {@code archived} on a set of documents
+     * in one transaction — the HR tab's multi-select action bar. Every
+     * document gets its own audit row, exactly as a single PATCH would;
+     * documents that no longer exist are reported rather than failing
+     * the batch.
+     *
+     * <p>Callers must have already verified that every uuid belongs to
+     * the employee whose file is open (the BFF does this — IDOR
+     * defense, spec §10).</p>
+     */
+    @Transactional
+    public BulkFlagsSummary updateFlags(List<String> docUuids, Boolean hrOnly, Boolean archived,
+                                        String actorUuid) {
+        if (docUuids == null || docUuids.isEmpty()) {
+            throw badRequest("NO_DOCUMENTS", "Select at least one document.");
+        }
+        if (hrOnly == null && archived == null) {
+            throw badRequest("NO_CHANGES", "Nothing to change — set hrOnly and/or archived.");
+        }
+
+        int updated = 0;
+        List<String> missing = new java.util.ArrayList<>();
+        for (String docUuid : docUuids) {
+            EmployeeDocument doc = EmployeeDocument.findById(docUuid);
+            if (doc == null) {
+                missing.add(docUuid);
+                continue;
+            }
+            boolean archiving = archived != null && archived && !doc.isArchived();
+            if (hrOnly != null) doc.setHrOnly(hrOnly);
+            if (archived != null) doc.setArchived(archived);
+            doc.persist();
+            new EmployeeDocumentAudit(doc.getUuid(), doc.getUserUuid(), actorUuid,
+                    archiving ? EmployeeDocumentAuditAction.ARCHIVE : EmployeeDocumentAuditAction.UPDATE,
+                    auditDetail(doc)).persist();
+            updated++;
+        }
+
+        log.infof("Employee documents bulk flags: %d/%d updated hrOnly=%s archived=%s by=%s",
+                updated, docUuids.size(), hrOnly, archived, actorUuid);
+        return new BulkFlagsSummary(docUuids.size(), updated, missing.size(), missing);
     }
 
     /**
@@ -528,7 +604,10 @@ public class EmployeeDocumentService {
         try (ZipOutputStream zip = new ZipOutputStream(baos, StandardCharsets.UTF_8)) {
             ArrayNode manifestDocs = objectMapper.createArrayNode();
             for (EmployeeDocument doc : docs) {
-                String entryName = "documents/" + doc.getUuid().substring(0, 8) + "-" + doc.getOriginalFilename();
+                // Zip entries carry the display name (what the subject
+                // recognises); manifest.json keeps original_filename as
+                // the provenance record — HR compares it to SharePoint.
+                String entryName = "documents/" + doc.getUuid().substring(0, 8) + "-" + servingFilename(doc);
                 try {
                     byte[] bytes = storage.get(doc.getS3Key()).bytes();
                     zip.putNextEntry(new ZipEntry(entryName));
@@ -541,6 +620,7 @@ public class EmployeeDocumentService {
                 ObjectNode node = manifestDocs.addObject();
                 node.put("uuid", doc.getUuid());
                 node.put("filename", doc.getOriginalFilename());
+                node.put("displayName", doc.getDisplayName());
                 node.put("category", doc.getCategory().name());
                 node.put("label", doc.getLabel());
                 node.put("source", doc.getSource().name());
@@ -619,6 +699,74 @@ public class EmployeeDocumentService {
         String filtered = raw.replaceAll("[^A-Za-z0-9æøåÆØÅ ._()\\-]", "");
         filtered = filtered.replaceAll("\\.{2,}", ".");
         return filtered.trim();
+    }
+
+    /** Max width of {@code employee_documents.display_name} (V476). */
+    public static final int DISPLAY_NAME_MAX = 255;
+
+    /**
+     * Hard server-side validation of a proposed display name (V476).
+     * The proposal is attacker-influenceable — it arrives either from an
+     * OpenAI response during the migration rename pass or from HR's
+     * PATCH field — so nothing about it is trusted:
+     *
+     * <ol>
+     *   <li>{@link #sanitizeFilename} (positive allow-list) removes
+     *       slashes, control characters and CR/LF, so neither path
+     *       traversal nor {@code Content-Disposition} header injection
+     *       can survive, and collapses {@code ..} runs;</li>
+     *   <li>leading dots/spaces are stripped — a name may not turn a
+     *       download into a dotfile;</li>
+     *   <li>the extension the caller proposed is <b>discarded</b> and
+     *       the original file's extension re-appended: a wrong
+     *       extension makes the downloaded file unopenable;</li>
+     *   <li>the stem is truncated so stem + extension fits
+     *       {@value #DISPLAY_NAME_MAX} — truncating the whole string
+     *       would cut the extension back off;</li>
+     *   <li>a proposal with nothing usable left returns {@code null}
+     *       ("no name proposed"), never an exception — the caller falls
+     *       back to the original filename.</li>
+     * </ol>
+     *
+     * @param proposed         the untrusted proposal (model output or HR input)
+     * @param originalFilename the immutable stored filename; supplies the extension
+     * @return a safe display name, or null when nothing usable remains
+     */
+    public static String normalizeDisplayName(String proposed, String originalFilename) {
+        if (proposed == null) return null;
+        String safe = sanitizeFilename(proposed);
+        // Strip leading dots/spaces so a proposal can never produce a
+        // dotfile or a name that reads as an extension only.
+        safe = safe.replaceAll("^[. ]+", "").trim();
+        if (safe.isBlank()) return null;
+
+        String extension = extensionOf(originalFilename);
+        String stem = stripExtension(safe);
+        if (stem.isBlank()) return null;
+
+        int stemBudget = DISPLAY_NAME_MAX - extension.length();
+        if (stemBudget <= 0) return null;          // pathological extension — no name
+        if (stem.length() > stemBudget) stem = stem.substring(0, stemBudget).trim();
+        if (stem.isBlank()) return null;
+
+        return stem + extension;
+    }
+
+    /** {@code ".pdf"} for {@code "a.PDF"}; {@code ""} when there is no extension. */
+    public static String extensionOf(String filename) {
+        if (filename == null) return "";
+        int dot = filename.lastIndexOf('.');
+        if (dot <= 0 || dot == filename.length() - 1) return "";
+        String extension = filename.substring(dot);
+        // Extensions are short by nature; anything longer is not one.
+        return extension.length() > 12 ? "" : extension;
+    }
+
+    /** The filename without its extension (unchanged when it has none). */
+    public static String stripExtension(String filename) {
+        if (filename == null) return "";
+        int dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 
     /**

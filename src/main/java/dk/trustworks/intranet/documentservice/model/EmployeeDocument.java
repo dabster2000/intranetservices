@@ -50,8 +50,22 @@ public class EmployeeDocument extends PanacheEntityBase {
     @Column(name = "label", length = 255)
     private String label;
 
+    /**
+     * Immutable. The signing linkage matches this byte-for-byte
+     * (decision A4) and HR compares it against SharePoint during
+     * runbook verification — nothing renames it. Standardized names
+     * live in {@link #displayName}.
+     */
     @Column(name = "original_filename", nullable = false, length = 500)
     private String originalFilename;
+
+    /**
+     * Standardized display name {@code {date}_{CATEGORY}_{subject}.{ext}}
+     * (V476). What the download is called and what both UIs show; NULL
+     * ⇒ fall back to {@link #originalFilename}.
+     */
+    @Column(name = "display_name", length = 255)
+    private String displayName;
 
     @Column(name = "content_type", nullable = false, length = 100)
     private String contentType;

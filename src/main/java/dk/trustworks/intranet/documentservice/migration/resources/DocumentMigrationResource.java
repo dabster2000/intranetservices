@@ -11,6 +11,7 @@ import dk.trustworks.intranet.documentservice.migration.services.SharePointMappi
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCategorizerService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCopyService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCrawlerService;
+import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationRenameService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationReportService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationReportService.MigrationReport;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationVerifierService;
@@ -75,6 +76,9 @@ public class DocumentMigrationResource {
     SharePointMigrationCategorizerService categorizerService;
 
     @Inject
+    SharePointMigrationRenameService renameService;
+
+    @Inject
     SharePointMigrationVerifierService verifierService;
 
     @Inject
@@ -119,6 +123,22 @@ public class DocumentMigrationResource {
     @RolesAllowed({"documents:write"})
     public JobStatus categorize() {
         return jobRunner.start(JobType.CATEGORIZE, categorizerService::categorize);
+    }
+
+    /**
+     * M6 — standardized display names (V476). Selects on
+     * {@code source = MIGRATION AND display_name IS NULL}, so it also
+     * backfills documents an earlier categorize run already placed.
+     * Metadata only: {@code original_filename} and the S3 keys are never
+     * written. Always run {@code dryRun=true} first — it produces the
+     * full before/after list without a single DB write.
+     */
+    @POST
+    @Path("/rename")
+    @RolesAllowed({"documents:write"})
+    public JobStatus rename(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun) {
+        return jobRunner.start(dryRun ? JobType.RENAME_DRY_RUN : JobType.RENAME,
+                () -> renameService.rename(dryRun));
     }
 
     /** M5 — size + sha256 verification, folder promotion. */

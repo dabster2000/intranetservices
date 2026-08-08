@@ -1,0 +1,47 @@
+-- ===================================================================
+-- V476: employee_documents.display_name — standardized display names
+-- ===================================================================
+-- Feature: Employee Documents — standardized display names
+--          (spec docs/superpowers/specs/2026-07-24-employee-documents-s3-only-design.md
+--          §6.2/§6.3/§6.4, prompt 2026-08-07-employee-documents-display-name)
+--
+-- Purpose:
+--   Documents migrated out of SharePoint carry whatever filename HR
+--   happened to save them under ("loenreg_2021_final(2).pdf"). This
+--   column holds a standardized, human-readable name derived from the
+--   document's category and content:
+--       {YYYY-MM-DD}_{CATEGORY}_{subject}.{ext}
+--   It is what the user's downloaded file is called and what both HR
+--   and the employee see in the UI.
+--
+--   original_filename is deliberately UNTOUCHED by this feature: the
+--   deterministic signing linkage (spec decision A4,
+--   SharePointMigrationCategorizerService.matchesExactly) matches the
+--   legacy SharePoint filename byte-for-byte, and HR compares that same
+--   column against SharePoint during runbook verification 2a-9. A
+--   rename that overwrote it would silently drop every signed
+--   employment contract to UNMATCHED.
+--
+--   NULL = no standardized name; every read path falls back to
+--   original_filename, so the column is inert until the rename pass
+--   (POST /admin/document-migration/rename) fills it in.
+--
+-- No index: display_name is never a query key (the rename pass selects
+--   on source + display_name IS NULL, which is a full scan of a small
+--   table by design, and runs admin-triggered only).
+--
+-- Staging sync: employee_documents is already excluded from the
+--   prod->staging nightly sync by V453 (verified — the table is in the
+--   cur_tables NOT IN block), so no sync-exclusion change is required.
+--
+-- Idempotency: ADD COLUMN IF NOT EXISTS; additive only.
+--
+-- Author: Claude Code
+-- Rollback: ALTER TABLE employee_documents DROP COLUMN IF EXISTS display_name;
+--   (two-step drop rule applies — the column is only read by code that
+--   tolerates NULL, so a revert deploy is safe without dropping it.)
+-- ===================================================================
+
+ALTER TABLE employee_documents
+    ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) NULL
+        COMMENT 'Standardized display name {date}_{CATEGORY}_{subject}.{ext}; NULL = fall back to original_filename';

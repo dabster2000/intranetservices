@@ -103,9 +103,16 @@ public class EmployeeDocumentResource {
 
     // ── Mutations ──────────────────────────────────────────────────────────
 
-    /** Patch body — absent/null field = leave unchanged. */
+    /**
+     * Patch body — absent/null field = leave unchanged.
+     *
+     * <p>{@code displayName} is the exception: an explicit empty string
+     * means "clear it and fall back to the original filename". A value
+     * is normalized server-side (sanitized, original extension forced,
+     * truncated) before it can reach a Content-Disposition header.</p>
+     */
     public record PatchRequest(String category, String label, Boolean archived,
-                               Boolean hrOnly, Boolean needsReview) { }
+                               Boolean hrOnly, Boolean needsReview, String displayName) { }
 
     @PATCH
     @Path("/{uuid}")
@@ -122,9 +129,32 @@ public class EmployeeDocumentResource {
         }
         EmployeeDocument doc = employeeDocumentService.update(uuid,
                 new PatchCommand(category, request.label(), request.archived(),
-                        request.hrOnly(), request.needsReview()),
+                        request.hrOnly(), request.needsReview(), request.displayName()),
                 requestHeaderHolder.getUserUuid());
         return EmployeeDocumentDTO.from(doc, UserEmployeeDocumentResource.resolveName(doc.getUploadedBy()));
+    }
+
+    /** Bulk flag body — null field = leave unchanged on every document. */
+    public record BulkFlagsRequest(List<String> uuids, Boolean hrOnly, Boolean archived) { }
+
+    /**
+     * Flip {@code hrOnly} and/or {@code archived} on many documents at
+     * once — the HR tab's multi-select action bar. One transaction, one
+     * audit row per document (identical to N single PATCHes, minus the
+     * partial-failure window).
+     *
+     * <p>Ownership is enforced at the BFF, which verifies every uuid
+     * belongs to the employee whose file is open before forwarding
+     * (IDOR defense, spec §10) — the same check the single-document
+     * PATCH route performs.</p>
+     */
+    @POST
+    @Path("/bulk/flags")
+    @RolesAllowed({"documents:write"})
+    public EmployeeDocumentService.BulkFlagsSummary bulkFlags(BulkFlagsRequest request) {
+        if (request == null) throw new BadRequestException("Request body is required");
+        return employeeDocumentService.updateFlags(request.uuids(), request.hrOnly(),
+                request.archived(), requestHeaderHolder.getUserUuid());
     }
 
     /** Hard delete: all S3 versions + row + DELETE audit (spec §6.4). */

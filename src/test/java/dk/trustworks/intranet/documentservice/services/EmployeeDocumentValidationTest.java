@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -17,6 +18,72 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ASCII S3-key slug, and the TemplateCategory→category mapping.
  */
 class EmployeeDocumentValidationTest {
+
+    // ── display-name normalization (V476) ──────────────────────────────────
+    // The proposal is untrusted: it arrives from OpenAI (rename pass) or
+    // from HR's PATCH field, and ends up in a Content-Disposition header.
+
+    @Test
+    void displayNameKeepsTheOriginalExtensionNotTheProposedOne() {
+        assertEquals("2021_SALARY_loenregulering.pdf",
+                EmployeeDocumentService.normalizeDisplayName(
+                        "2021_SALARY_loenregulering.docx", "loenreg_2021_final(2).pdf"));
+        assertEquals("CONTRACT_kontrakt.docx",
+                EmployeeDocumentService.normalizeDisplayName("CONTRACT_kontrakt", "Kontrakt.docx"));
+        assertEquals("OTHER_notat",
+                EmployeeDocumentService.normalizeDisplayName("OTHER_notat.pdf", "notat"),
+                "no extension on the original ⇒ none invented");
+    }
+
+    @Test
+    void displayNameTraversalAndSeparatorsAreKilled() {
+        String name = EmployeeDocumentService.normalizeDisplayName("../../etc/passwd", "k.pdf");
+        assertFalse(name.contains("/"));
+        assertFalse(name.contains(".."));
+        assertEquals("etcpasswd.pdf", name);
+
+        assertEquals("windowspath.pdf",
+                EmployeeDocumentService.normalizeDisplayName("windows\\path", "k.pdf"));
+    }
+
+    @Test
+    void displayNameHeaderInjectionIsStripped() {
+        String name = EmployeeDocumentService.normalizeDisplayName(
+                "evil\r\nSet-Cookie: a=b\"; x=\"1", "k.pdf");
+        assertFalse(name.contains("\r"));
+        assertFalse(name.contains("\n"));
+        assertFalse(name.contains("\""));
+        assertFalse(name.contains(";"));
+    }
+
+    @Test
+    void displayNameBlankOrUnusableReturnsNull() {
+        assertNull(EmployeeDocumentService.normalizeDisplayName(null, "k.pdf"));
+        assertNull(EmployeeDocumentService.normalizeDisplayName("   ", "k.pdf"));
+        assertNull(EmployeeDocumentService.normalizeDisplayName("***", "k.pdf"),
+                "nothing survives the allow-list ⇒ no name proposed, not an exception");
+        assertNull(EmployeeDocumentService.normalizeDisplayName("...", "k.pdf"));
+    }
+
+    @Test
+    void displayNameCannotBecomeADotfile() {
+        assertEquals("bashrc.pdf",
+                EmployeeDocumentService.normalizeDisplayName(".bashrc", "k.pdf"));
+    }
+
+    @Test
+    void displayNameTruncatesToTheColumnWidthWithoutLosingTheExtension() {
+        String name = EmployeeDocumentService.normalizeDisplayName("a".repeat(400) + ".pdf", "orig.pdf");
+        assertEquals(255, name.length());
+        assertTrue(name.endsWith(".pdf"));
+    }
+
+    @Test
+    void displayNamePreservesDanishCharacters() {
+        assertEquals("2021_SALARY_lønregulering.pdf",
+                EmployeeDocumentService.normalizeDisplayName(
+                        "2021_SALARY_lønregulering.pdf", "loenreg.pdf"));
+    }
 
     // ── magic bytes ────────────────────────────────────────────────────────
 
