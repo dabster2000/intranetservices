@@ -68,7 +68,8 @@ public class InternalInvoiceOrchestrator {
      * @param sendBy      optional delivery method (null | "ean" | "Email")
      * @return the updated invoice entity
      */
-    @Transactional
+    // Deliberately NOT @Transactional — see InvoiceService.bookInvoice. The irreversible
+    // e-conomic POST must not sit inside a transaction that can roll back underneath it.
     public Invoice bookDraft(String invoiceUuid, String sendBy) {
         assertInternalType(invoiceUuid);
         return issuerSide.bookDraft(invoiceUuid, sendBy);
@@ -83,6 +84,11 @@ public class InternalInvoiceOrchestrator {
      * @param invoiceUuid the UUID of the INTERNAL or INTERNAL_SERVICE invoice
      * @return the updated invoice entity (status = CREATED if both sides succeed)
      */
+    // @Transactional is LOAD-BEARING here and must stay. createDraft and bookDraft run in ONE
+    // transaction so the recalculator-set, @Transient grandTotal survives from createDraft into
+    // the debtor-side voucher (InvoiceResource:378-381). EconomicsInvoiceService reads it with a
+    // silent `!= null ? : 0.0` fallback, so splitting this would post 0.00 DKK intercompany
+    // vouchers with no error at all.
     @Transactional
     public Invoice finalizeAutomatically(String invoiceUuid) {
         assertInternalType(invoiceUuid);

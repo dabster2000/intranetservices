@@ -690,7 +690,11 @@ public class InvoiceService {
      * Step 2 of the new finalization flow: books the e-conomic draft invoice and sets
      * status to CREATED with the e-conomic-assigned invoice number. SPEC-INV-001 §7.2.
      */
-    @Transactional
+    // Deliberately NOT @Transactional. bookDraft issues an irreversible POST to e-conomic and
+    // manages its own transaction boundaries around it (the booking outbox). An ambient
+    // transaction here would put that POST back inside a rollback-able unit of work — the
+    // 2026-08-07 split-brain, where e-conomic booked 28214 and a deadlock at commit discarded
+    // the local record of it.
     public Invoice bookInvoice(String invoiceUuid, String sendBy) {
         return orchestrator.bookDraft(invoiceUuid, sendBy);
     }

@@ -41,11 +41,13 @@ public class InvoiceBookedPayoutObserver {
         } catch (Exception e) {
             // Exception, not RuntimeException: the tx interceptor sneaky-throws checked
             // commit-phase exceptions (RollbackException & co.) past the method signature.
+            // bookedNumber and idempotencyKey identify the e-conomic document and the outbox row,
+            // so this line alone is enough to find both sides of a payout that needs repairing.
             log.errorf(e, "registerAsPaidout failed AFTER booking committed for invoice %s "
-                    + "(contract=%s project=%s %d-%02d) — booking is durable; work-item payout "
-                    + "needs manual reconciliation/retry",
+                    + "(contract=%s project=%s %d-%02d bookedNumber=%s idempotencyKey=%s) — booking "
+                    + "is durable; work-item payout needs manual reconciliation/retry",
                     event.invoiceUuid(), event.contractuuid(), event.projectuuid(),
-                    event.year(), event.month());
+                    event.year(), event.month(), event.bookedNumber(), event.idempotencyKey());
         }
     }
 }

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 
 import java.time.LocalDate;
@@ -23,9 +24,56 @@ public class InvoiceRepository {
         return Optional.ofNullable(Invoice.findById(uuid));
     }
 
+    /**
+     * Loads an invoice under a {@code PESSIMISTIC_WRITE} row lock, so a concurrent finalize
+     * blocks here instead of racing past a status check.
+     *
+     * <p>Without this, {@code requireEditableInvoice} is a check-then-act: under REPEATABLE READ
+     * two overlapping finalizes both read DRAFT/QUEUED on their own snapshots, both proceed, and
+     * both create a real e-conomic draft — the second silently orphaning the first. That happened
+     * on 2026-08-07 (invoice 77ee648a) and again the same morning (9b931d71), and it is what
+     * produced the deadlock that split the booking.
+     *
+     * <p>Deliberately a lock rather than {@code @Version}. There is no {@code @Version} anywhere in
+     * this codebase today, so during a blue/green rollout old tasks have no version column in their
+     * mapping: their bulk {@code Invoice.update(… WHERE uuid like ?)} neither checks nor increments
+     * it. A new task would read v=5, an old task would commit leaving v=5, and the new task's
+     * {@code WHERE version = 5} would still match and silently clobber — zero protection during
+     * exactly the window it is needed, plus a schema change a code revert cannot undo.
+     *
+     * <p>Callers must already be in a transaction; a lock outside one is meaningless. Contention
+     * surfaces as a lock-wait timeout, which now maps to a retriable 409 rather than a 500
+     * (see {@code ArcUndeclaredThrowableExceptionMapper}).
+     */
+    public Optional<Invoice> findByUuidForUpdate(String uuid) {
+        return Optional.ofNullable(
+                Invoice.getEntityManager().find(Invoice.class, uuid, LockModeType.PESSIMISTIC_WRITE));
+    }
+
     @Transactional
     public void persist(Invoice invoice) {
         Invoice.getEntityManager().merge(invoice);
+    }
+
+    /**
+     * Forces Hibernate to issue the pending SQL now, inside the caller's method frame.
+     *
+     * <p>Exists purely so a lock conflict surfaces where it can still be classified. MariaDB raises
+     * 1213 at the statement that closes the lock cycle; by default that statement is issued during
+     * the auto-flush in {@code beforeCompletion}, after the caller has returned, where the failure
+     * becomes a checked {@code RollbackException} that Arc rewraps and
+     * {@code GenericExceptionMapper} turns into a 500 (invoice 77ee648a, 2026-08-07). Flushed
+     * in-method it is an unchecked {@code PersistenceException} on the caller's frame instead.
+     *
+     * <p>Goes through the repository rather than calling {@code Invoice.getEntityManager()} at the
+     * call site for the reason stated on this class: Panache statics cannot be mocked, and the
+     * orchestrator's fast-tier tests run without a persistence context.
+     *
+     * <p>No {@code @Transactional} — a flush is only meaningful inside the caller's existing
+     * transaction, and {@code REQUIRED} would silently start one of its own if there were none.
+     */
+    public void flush() {
+        Invoice.getEntityManager().flush();
     }
 
     /**
