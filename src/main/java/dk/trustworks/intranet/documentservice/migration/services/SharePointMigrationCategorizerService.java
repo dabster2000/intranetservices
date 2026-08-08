@@ -104,11 +104,15 @@ public class SharePointMigrationCategorizerService {
             int ambiguous,
             List<String> unmatchedCaseKeys) { }
 
-    /** Outcome of the AI passes for one document. */
+    /**
+     * Outcome of the AI passes for one document. {@code suggestedName}
+     * rides along on the same verdict — no extra call, no extra cost
+     * (V476); it is null whenever the model proposed nothing usable.
+     */
     record AiVerdict(EmployeeDocumentCategory category, Boolean archived, String label,
-                     String confidence, boolean inconclusive) {
+                     String confidence, String suggestedName, boolean inconclusive) {
         static AiVerdict inconclusiveVerdict() {
-            return new AiVerdict(null, null, null, null, true);
+            return new AiVerdict(null, null, null, null, null, true);
         }
     }
 
@@ -221,17 +225,40 @@ public class SharePointMigrationCategorizerService {
                     doc.setLabel(verdict.label().length() > 255
                             ? verdict.label().substring(0, 255) : verdict.label());
                 }
+                // Standardized name off the same verdict (V476) — already
+                // normalized in parseVerdict. If the model proposed
+                // nothing usable, the table builder names it instead;
+                // an existing name (HR edit, earlier rename pass) is
+                // never overwritten.
+                applyDisplayName(doc, verdict.suggestedName() != null
+                        ? verdict.suggestedName()
+                        : MigrationCategorizerRules.buildDisplayName(
+                                verdict.category(), doc.getOriginalFilename(), path, null));
             } else {
                 doc.setCategory(rule.category());
                 if (rule.archived()) doc.setArchived(true);
                 if (rule.label() != null && (doc.getLabel() == null || doc.getLabel().isBlank())) {
                     doc.setLabel(rule.label());
                 }
+                applyDisplayName(doc, MigrationCategorizerRules.buildDisplayName(
+                        rule.category(), doc.getOriginalFilename(), path, null));
                 if (aiEnabled) doc.setNeedsReview(true);
             }
             doc.persist();
         });
         return useAi;
+    }
+
+    /**
+     * Set the standardized display name only when the document does not
+     * already have one — HR's manual edits and an earlier rename pass
+     * are both sticky (V476). {@code original_filename} is never
+     * touched: the signing linkage matches on it (decision A4).
+     */
+    static void applyDisplayName(EmployeeDocument doc, String displayName) {
+        if (displayName == null || displayName.isBlank()) return;
+        if (doc.getDisplayName() != null && !doc.getDisplayName().isBlank()) return;
+        doc.setDisplayName(displayName);
     }
 
     static boolean excerptEligible(String contentType) {
@@ -242,7 +269,8 @@ public class SharePointMigrationCategorizerService {
 
     // ── AI passes ──────────────────────────────────────────────────────────
 
-    private List<AiVerdict> namePassVerdicts(List<String[]> pathFilenamePairs) {
+    /** Package-private: the rename pass (M6) reuses this exact call. */
+    List<AiVerdict> namePassVerdicts(List<String[]> pathFilenamePairs) {
         StringBuilder userMsg = new StringBuilder();
         userMsg.append("DOCUMENTS (index | folder path | filename):\n");
         for (int i = 0; i < pathFilenamePairs.size(); i++) {
@@ -257,7 +285,7 @@ public class SharePointMigrationCategorizerService {
                 categorizerSystemPrompt(), userMsg.toString(),
                 batchSchema(), "employee_document_categories",
                 null, aiModel, 32768, false);
-        return parseBatchVerdicts(response, pathFilenamePairs.size());
+        return parseBatchVerdicts(response, pathFilenamePairs.stream().map(pair -> pair[1]).toList());
     }
 
     private AiVerdict excerptPassVerdict(String path, String filename, String excerpt) {
@@ -268,15 +296,23 @@ public class SharePointMigrationCategorizerService {
                 singleSchema(), "employee_document_category",
                 null, aiModel, 8192, false);
         try {
-            return parseVerdict(objectMapper.readTree(response));
+            return parseVerdict(objectMapper.readTree(response), filename);
         } catch (Exception e) {
             log.warnf("Excerpt-pass response unparseable — inconclusive");
             return AiVerdict.inconclusiveVerdict();
         }
     }
 
-    /** Hard server-side validation (house rule): unknown category ⇒ inconclusive. */
-    List<AiVerdict> parseBatchVerdicts(String responseJson, int expected) {
+    /**
+     * Hard server-side validation (house rule): unknown category ⇒
+     * inconclusive.
+     *
+     * @param originalFilenames the batch's stored filenames, index-aligned
+     *                          with the request — the extension source for
+     *                          each suggested name
+     */
+    List<AiVerdict> parseBatchVerdicts(String responseJson, List<String> originalFilenames) {
+        int expected = originalFilenames.size();
         List<AiVerdict> verdicts = new ArrayList<>();
         for (int i = 0; i < expected; i++) verdicts.add(AiVerdict.inconclusiveVerdict());
         try {
@@ -291,7 +327,7 @@ public class SharePointMigrationCategorizerService {
             for (JsonNode node : results) {
                 int index = node.path("index").asInt(-1);
                 if (index < 0 || index >= expected) continue;
-                verdicts.set(index, parseVerdict(node));
+                verdicts.set(index, parseVerdict(node, originalFilenames.get(index)));
             }
         } catch (Exception e) {
             log.warnf("AI categorizer response unparseable — all inconclusive");
@@ -299,7 +335,11 @@ public class SharePointMigrationCategorizerService {
         return verdicts;
     }
 
-    AiVerdict parseVerdict(JsonNode node) {
+    /**
+     * @param originalFilename the document's stored filename — the only
+     *                         source of the extension for a suggested name
+     */
+    AiVerdict parseVerdict(JsonNode node, String originalFilename) {
         String rawCategory = node.path("category").asText("");
         if (rawCategory.isBlank() || rawCategory.equalsIgnoreCase("INCONCLUSIVE")) {
             return AiVerdict.inconclusiveVerdict();
@@ -317,7 +357,18 @@ public class SharePointMigrationCategorizerService {
         }
         JsonNode labelNode = node.path("label");
         String label = labelNode.isNull() ? null : labelNode.asText(null);
-        return new AiVerdict(category, node.path("archived").asBoolean(false), label, confidence, false);
+
+        // The suggested name is untrusted model output that ends up in a
+        // Content-Disposition header and on the user's disk: sanitize,
+        // force the ORIGINAL file's extension (a wrong one makes the
+        // download unopenable), truncate. Nothing usable left ⇒ null,
+        // which means "no name proposed", not an error.
+        JsonNode nameNode = node.path("suggested_name");
+        String suggestedName = nameNode.isNull() ? null
+                : EmployeeDocumentService.normalizeDisplayName(nameNode.asText(null), originalFilename);
+
+        return new AiVerdict(category, node.path("archived").asBoolean(false), label,
+                confidence, suggestedName, false);
     }
 
     private String categorizerSystemPrompt() {
@@ -332,7 +383,21 @@ public class SharePointMigrationCategorizerService {
                 A path containing 'Arkiv' means the document is archived (archived=true).
                 Set label only when a short human-readable note adds value (e.g. an email subject).
                 Use category INCONCLUSIVE when path+filename genuinely aren't enough.
-                confidence is HIGH only when the category is unmistakable.""";
+                confidence is HIGH only when the category is unmistakable.
+
+                Also return suggested_name: a standardized, human-readable filename in the form
+                  {YYYY-MM-DD}_{CATEGORY}_{subject}.{ext}
+                Rules for suggested_name:
+                - The date segment is OPTIONAL and must be OMITTED ENTIRELY unless a real
+                  document date is genuinely present in the filename or the excerpt. NEVER
+                  invent, guess or infer a date. No date ⇒ {CATEGORY}_{subject}.{ext}.
+                  A year on its own renders as the year alone (2021_SALARY_loenregulering.pdf).
+                - {CATEGORY} is exactly the category you chose above.
+                - {subject} is short (1-4 words), lowercase, hyphen-separated, and says what
+                  the document IS (loenregulering, ansaettelseskontrakt, sundhedskort).
+                  Danish words are preserved; drop noise like "final", "ny", "kopi", "(2)".
+                - {ext} keeps the original file's extension.
+                Return null for suggested_name when the input says too little to name it.""";
     }
 
     private ObjectNode batchSchema() {
@@ -358,7 +423,10 @@ public class SharePointMigrationCategorizerService {
         target.put("additionalProperties", false);
         var required = target.putArray("required");
         if (withIndex) required.add("index");
-        required.add("category").add("archived").add("label").add("confidence");
+        // OpenAI strict schema: additionalProperties=false means EVERY
+        // property must also be listed in required (nullable ones use a
+        // ["string","null"] type instead of being optional).
+        required.add("category").add("archived").add("label").add("confidence").add("suggested_name");
         ObjectNode props = target.putObject("properties");
         if (withIndex) props.putObject("index").put("type", "integer");
         var categoryEnum = props.putObject("category").put("type", "string").putArray("enum");
@@ -370,6 +438,7 @@ public class SharePointMigrationCategorizerService {
         props.putObject("label").putArray("type").add("string").add("null");
         props.putObject("confidence").put("type", "string")
                 .putArray("enum").add("HIGH").add("MEDIUM").add("LOW");
+        props.putObject("suggested_name").putArray("type").add("string").add("null");
     }
 
     // ── Excerpt extraction (pass 2) ────────────────────────────────────────

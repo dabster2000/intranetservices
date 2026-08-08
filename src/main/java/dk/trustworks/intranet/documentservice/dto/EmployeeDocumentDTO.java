@@ -11,7 +11,10 @@ import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 public record EmployeeDocumentDTO(
         String uuid,
         String userUuid,
+        /** The original (immutable) filename — the UI shows it as subtext. */
         String filename,
+        /** Standardized name, or null when none has been assigned (V476). */
+        String displayName,
         String label,
         String category,
         String source,
@@ -33,6 +36,7 @@ public record EmployeeDocumentDTO(
                 doc.getUuid(),
                 doc.getUserUuid(),
                 doc.getOriginalFilename(),
+                doc.getDisplayName(),
                 doc.getLabel(),
                 doc.getCategory().name(),
                 doc.getSource().name(),

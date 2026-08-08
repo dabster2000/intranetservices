@@ -35,9 +35,14 @@ class InvoiceBookedPayoutObserverTest {
     @Mock
     WorkService workService;
 
+    /** The event as bookDraft fires it: period fields plus the booking correlation pair (S6.3). */
+    private static InvoiceBookedEvent event() {
+        return new InvoiceBookedEvent("i1", "c1", "p1", 6, 2026, 28218, "book-i1");
+    }
+
     @Test
     void marks_work_paid_out_with_the_events_contract_project_period() {
-        observer.onInvoiceBooked(new InvoiceBookedEvent("i1", "c1", "p1", 6, 2026));
+        observer.onInvoiceBooked(event());
         verify(workService).registerAsPaidout("c1", "p1", 6, 2026);
     }
 
@@ -47,10 +52,38 @@ class InvoiceBookedPayoutObserverTest {
                 .when(workService).registerAsPaidout(anyString(), anyString(), anyInt(), anyInt());
 
         // Must NOT propagate — the booking has already durably committed.
-        assertDoesNotThrow(() ->
-                observer.onInvoiceBooked(new InvoiceBookedEvent("i1", "c1", "p1", 6, 2026)));
+        assertDoesNotThrow(() -> observer.onInvoiceBooked(event()));
 
         verify(workService).registerAsPaidout("c1", "p1", 6, 2026);
+    }
+
+    /**
+     * S6.3: the event carries the booked number and the idempotency key so the observer's failure
+     * log can name the e-conomic document and the outbox row. The payout itself must keep using
+     * only the period fields — a booked number is correlation, not control flow.
+     */
+    @Test
+    void carries_booked_number_and_idempotency_key_for_correlation() {
+        InvoiceBookedEvent e = event();
+        assertEquals(28218, e.bookedNumber());
+        assertEquals("book-i1", e.idempotencyKey());
+
+        observer.onInvoiceBooked(e);
+        verify(workService).registerAsPaidout("c1", "p1", 6, 2026);
+    }
+
+    /**
+     * The reconciliation short-circuit in bookDraft replays an earlier attempt whose booked number
+     * may not be known, so the field is boxed and nullable. A null must not break the payout or the
+     * failure log.
+     */
+    @Test
+    void tolerates_a_null_booked_number_on_the_reconciliation_path() {
+        doThrow(new RuntimeException("boom"))
+                .when(workService).registerAsPaidout(anyString(), anyString(), anyInt(), anyInt());
+
+        assertDoesNotThrow(() -> observer.onInvoiceBooked(
+                new InvoiceBookedEvent("i1", "c1", "p1", 6, 2026, null, "book-i1")));
     }
 
     /**

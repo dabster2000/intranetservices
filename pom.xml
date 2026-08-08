@@ -13,6 +13,10 @@
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
     <quarkus.platform.version>3.36.3</quarkus.platform.version>
     <skipITs>true</skipITs>
+    <!-- Test-fork sizing. Peak RAM ~= surefire.forkCount x surefire.maxHeap.
+         See the maven-surefire-plugin block for why maxHeap must stay set. -->
+    <surefire.forkCount>1C</surefire.forkCount>
+    <surefire.maxHeap>1g</surefire.maxHeap>
     <!--<quarkus-amazon-services.version>2.5.1</quarkus-amazon-services.version>-->
   </properties>
   <dependencyManagement>
@@ -568,14 +572,31 @@
                rather than JUnit's thread-level parallelism because these tests
                were written assuming a private static world per class; separate
                JVMs preserve that assumption exactly, so no test needed changing.
-               reuseForks keeps JVM startup off the per-class path. -->
-          <forkCount>1C</forkCount>
+               reuseForks keeps JVM startup off the per-class path.
+
+               Both knobs below are properties, and BOTH matter for memory:
+               peak test-run RAM is roughly forkCount x surefire.maxHeap.
+
+               surefire.maxHeap is NOT optional. Without an explicit -Xmx each
+               fork inherits the JVM default of MaxRAMPercentage=25, so on a
+               36 GB workstation every fork claims a 9 GB ceiling and grows into
+               it unchecked: 14 forks reached 65 GB and the macOS OOM killer
+               took the machine down. With -Xmx1g the same 2786-test run peaks
+               at 6 GB and is 56s. CI (4-core ubuntu-latest, DB-free tier only)
+               is unaffected by the default: 1C = 4 forks there.
+
+               Running the @QuarkusTest tier locally boots a full Quarkus app
+               per fork, so lower the fork count and raise the heap for it:
+                 ./mvnw test -Dsurefire.forkCount=4 -Dsurefire.maxHeap=2g -->
+          <forkCount>${surefire.forkCount}</forkCount>
           <reuseForks>true</reuseForks>
           <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
             <maven.home>${maven.home}</maven.home>
           </systemPropertyVariables>
-          <argLine>@{argLine}</argLine>
+          <!-- @{argLine} carries Quarkus's add-opens/add-exports JVM flags; it
+               is load-bearing and must stay first. -->
+          <argLine>@{argLine} -Xmx${surefire.maxHeap} -XX:MaxMetaspaceSize=384m</argLine>
         </configuration>
       </plugin>
     </plugins>

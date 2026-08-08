@@ -14,11 +14,23 @@ package dk.trustworks.intranet.aggregates.invoice.services;
  * invoice {@code dba892b4} / bookedNumber 28084, 2026-06-30).
  *
  * <p>Carries only scalar identifiers so no managed entity crosses the transaction boundary.
+ *
+ * <p>{@code bookedNumber} and {@code idempotencyKey} are carried for correlation, not for control
+ * flow. Every consumer runs after the vendor call, so when one of them logs a failure these are the
+ * two values that identify the e-conomic document and the booking attempt behind it — the pair that
+ * was missing from the logs on 2026-08-07 and made the incident hard to reconstruct
+ * ({@code EconomicsBookingErrorMapper} is a {@code ResponseExceptionMapper} and has no invoice in
+ * scope, so it can never supply them).
+ *
+ * <p>{@code bookedNumber} is boxed and may be null: {@code applyBookedState} is also reached on the
+ * reconciliation short-circuit, where an earlier attempt's number is replayed and may not be known.
  */
 public record InvoiceBookedEvent(
         String invoiceUuid,
         String contractuuid,
         String projectuuid,
         int month,
-        int year) {
+        int year,
+        Integer bookedNumber,
+        String idempotencyKey) {
 }
