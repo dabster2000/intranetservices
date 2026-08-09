@@ -121,7 +121,7 @@ class RecruitmentCandidateAnswersApiTest {
                 .statusCode(200)
                 .body("answers", Matchers.hasSize(2))
                 .body("answers[0].questionKey", Matchers.equalTo("WHY_TRUSTWORKS"))
-                .body("answers[0].label", Matchers.equalTo("Hvorfor Trustworks?"))
+                .body("answers[0].label", Matchers.equalTo("Hvad har fået dig til at søge netop Trustworks?"))
                 .body("answers[0].answer", Matchers.containsString("kulturen"))
                 // Unknown keys sort after the known set and label as the key.
                 .body("answers[1].questionKey", Matchers.equalTo("LEGACY_KEY"))

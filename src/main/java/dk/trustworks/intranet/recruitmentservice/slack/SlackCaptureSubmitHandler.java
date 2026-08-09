@@ -95,7 +95,7 @@ public class SlackCaptureSubmitHandler implements SlackInboundHandler {
 
         candidateService.addNote(
                 UUID.fromString(candidate.getUuid()),
-                new NoteRequest(noteText, isPrivate, null),
+                new NoteRequest(noteText, isPrivate, null, null),
                 UUID.fromString(actor.getUuid()),
                 "slack", permalink);
 

@@ -232,6 +232,50 @@ public class RecruitmentS3StorageService {
     }
 
     /**
+     * Store a shared interview-resource file (guide, case, assessment
+     * template). Same {@code trustworksfiles} bucket as every other
+     * recruitment file; {@code relateduuid} is the
+     * {@code interview_resources.uuid} so the library row and its S3
+     * object stay traceable to each other. NOT candidate data — the
+     * GDPR anonymizer never touches these.
+     *
+     * @return the new {@code fileUuid} recorded on the resource row
+     */
+    public String storeInterviewResource(byte[] bytes, String filename, UUID resourceUuid) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        Objects.requireNonNull(resourceUuid, "resourceUuid must not be null");
+
+        String fileUuid = UUID.randomUUID().toString();
+        File file = new File(
+                fileUuid,
+                resourceUuid.toString(),
+                "DOCUMENT",
+                filename,
+                filename,
+                LocalDate.now(),
+                bytes);
+        s3FileService.save(file);
+        log.infof("Stored interview resource file resource=%s fileUuid=%s size=%d",
+                resourceUuid, fileUuid, bytes.length);
+        return fileUuid;
+    }
+
+    /**
+     * Fetch the bytes of a stored interview-resource file.
+     *
+     * @throws IllegalStateException if the file is not found in S3
+     */
+    public byte[] fetchInterviewResource(String fileUuid) {
+        Objects.requireNonNull(fileUuid, "fileUuid must not be null");
+        File file = s3FileService.findOne(fileUuid);
+        if (file == null || file.getFile() == null || file.getFile().length == 0) {
+            throw new IllegalStateException("Interview resource file not found in S3: " + fileUuid);
+        }
+        return file.getFile();
+    }
+
+    /**
      * Fetch the bytes of a previously stored generated PDF.
      *
      * @throws IllegalStateException if the file is not found in S3

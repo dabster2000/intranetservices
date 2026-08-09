@@ -15,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperience
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateLawfulBasis;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -33,7 +34,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions.PII_SENTINEL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -317,6 +320,29 @@ class PublicApplyServiceIntegrationTest {
                 "no CONSENT_GRANTED without the ticked checkbox");
     }
 
+    @Test
+    void mandatoryConsents_gdprAndIsae_areRecordedWithKinds() {
+        String email = uniqueEmail();
+        submitForPosition(submission(email, false, true, true, null));
+
+        RecruitmentCandidate candidate = candidateByEmail(email);
+        List<RecruitmentConsent> consents = consentsOf(candidate.getUuid());
+        assertEquals(Set.of(RecruitmentConsentKind.APPLICATION_PROCESSING,
+                        RecruitmentConsentKind.CRIMINAL_RECORD_ACKNOWLEDGED),
+                consents.stream().map(RecruitmentConsent::getKind).collect(Collectors.toSet()));
+        for (RecruitmentConsent consent : consents) {
+            assertEquals(RecruitmentConsentStatus.GRANTED, consent.getStatus());
+            assertNotNull(consent.getGrantedAt());
+            assertNull(consent.getExpiresAt(),
+                    "no fixed expiry — the retention sweep governs the deadline");
+        }
+
+        // Resubmission must not duplicate the consent rows.
+        submitForPosition(submission(email, false, true, true, null));
+        assertEquals(2, consentsOf(candidate.getUuid()).size(),
+                "an active GRANTED consent of the same kind suppresses a duplicate row");
+    }
+
     // ---- Unsolicited -------------------------------------------------------------
 
     @Test
@@ -381,8 +407,21 @@ class PublicApplyServiceIntegrationTest {
 
     // ---- Fixtures & helpers ------------------------------------------------------
 
-    /** A valid submission with {@code PII_SENTINEL} in every personal field. */
+    /**
+     * A valid submission with {@code PII_SENTINEL} in every personal field.
+     * The mandatory gdpr/isae consents default to {@code false} here so the
+     * long-standing tests keep pinning pool-consent mechanics in isolation
+     * (the resource — not the service — enforces that they are ticked);
+     * {@link #mandatoryConsents_gdprAndIsae_areRecordedWithKinds()} covers
+     * the mandatory pair.
+     */
     private PublicApplySubmission submission(String email, boolean poolConsent,
+                                             String desiredPracticeUuid) {
+        return submission(email, poolConsent, false, false, desiredPracticeUuid);
+    }
+
+    private PublicApplySubmission submission(String email, boolean poolConsent,
+                                             boolean gdprConsent, boolean isaeConsent,
                                              String desiredPracticeUuid) {
         Map<String, String> answers = new LinkedHashMap<>();
         answers.put("WHY_TRUSTWORKS", PII_SENTINEL + " fordi opgaverne er spændende");
@@ -401,6 +440,8 @@ class PublicApplyServiceIntegrationTest {
                 PII_SENTINEL + " Jane Reference",
                 answers,
                 poolConsent,
+                gdprConsent,
+                isaeConsent,
                 new UploadedDocument(PDF_BYTES, PII_SENTINEL + "-cv.pdf", "cv.pdf", "application/pdf"),
                 null,
                 desiredPracticeUuid);

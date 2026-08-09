@@ -670,6 +670,10 @@ public class CandidateService {
         if (slackPermalink != null) {
             builder.payload("slack_permalink", slackPermalink);
         }
+        if (note.mentions() != null && !note.mentions().isEmpty()) {
+            // Employee identifiers (structural), not candidate data.
+            builder.payload("mentions", note.mentions());
+        }
         return eventRecorder.record(builder.pii("text", note.text()));
     }
 

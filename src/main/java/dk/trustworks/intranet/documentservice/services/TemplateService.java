@@ -17,6 +17,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -311,6 +312,7 @@ public class TemplateService {
         DocumentTemplateDTO dto = toDTO(entity);
 
         List<TemplatePlaceholderDTO> placeholderDTOs = entity.getPlaceholders().stream()
+                .sorted(Comparator.comparingInt(TemplatePlaceholderEntity::getDisplayOrder))
                 .map(this::toPlaceholderDTO)
                 .collect(Collectors.toList());
         dto.setPlaceholders(placeholderDTOs);

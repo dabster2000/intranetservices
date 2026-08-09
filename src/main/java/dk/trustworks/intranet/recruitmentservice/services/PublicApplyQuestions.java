@@ -15,8 +15,10 @@ import java.util.List;
  * reporting never interpret wording, so labels/help texts may be reworded
  * freely; keys must never change once answers exist.
  * <p>
- * All four questions are optional (spec decision: the CV is the only
- * required artifact; the cover letter carries the motivation).
+ * Wording and required-ness mirror the Airtable form this system
+ * replaces: the questions substitute a classic motivated application, so
+ * the first three are required; STRENGTHS stays optional. The resource
+ * enforces required answers server-side ({@code ANSWER_REQUIRED}).
  */
 public final class PublicApplyQuestions {
 
@@ -30,26 +32,27 @@ public final class PublicApplyQuestions {
     private static final List<Question> QUESTIONS = List.of(
             new Question(
                     "WHY_TRUSTWORKS",
-                    "Hvorfor Trustworks?",
-                    "Fortæl kort, hvorfor Trustworks er interessant for dig. Fx: 'Jeg vil arbejde med "
-                            + "digitalisering i den offentlige sektor sammen med erfarne kolleger.'",
-                    false),
-            new Question(
-                    "BEST_TASKS",
-                    "Hvilke opgaver trives du bedst med?",
-                    "Beskriv de typer opgaver, der giver dig energi. Fx: 'Workshops med kunder og design "
-                            + "af løsninger.'",
-                    false),
+                    "Hvad har fået dig til at søge netop Trustworks?",
+                    "Fortæl kort, hvad der gjorde dig nysgerrig på os — og hvorfor det skal være "
+                            + "Trustworks og ikke et andet konsulenthus.",
+                    true),
             new Question(
                     "DNA_MATCH",
-                    "Hvad matcher dig bedst ved Trustworks?",
-                    "Hvad i vores måde at arbejde på passer godt til dig? Det er fint at nævne konkrete "
-                            + "eksempler.",
-                    false),
+                    "Livet som konsulent — fordele og udfordringer",
+                    "Vi sætter pris på, at du har gjort dig tanker om at være konsulent. Hvor ser du "
+                            + "dine fordele, og hvad bliver dine største udfordringer i netop dette job?",
+                    true),
+            new Question(
+                    "BEST_TASKS",
+                    "Hvilke typer opgaver trives du bedst med?",
+                    "Nævn gerne mindst to — de opgaver, der giver dig energi og får dig til at yde "
+                            + "dit bedste.",
+                    true),
             new Question(
                     "STRENGTHS",
-                    "Erfaringer og styrker",
-                    "Dine vigtigste erfaringer og styrker — gerne med et konkret eksempel.",
+                    "Hvor kan dine erfaringer og styrker komme i spil hos os?",
+                    "Valgfrit — men et konkret eksempel på, hvor du gør en forskel, er altid "
+                            + "velkomment.",
                     false));
 
     private PublicApplyQuestions() {

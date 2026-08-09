@@ -101,6 +101,9 @@ public class RecruitmentApplicationService {
     @Inject
     RecruitmentOfferBridge offerBridge;
 
+    @Inject
+    RecordCheckService recordCheckService;
+
     // ---- Create (attach candidate → position) ---------------------------------
 
     /**
@@ -256,6 +259,10 @@ public class RecruitmentApplicationService {
         // same transaction, so the timeline never diverges from the move.
         if (move.to() == RecruitmentStage.OFFER) {
             offerBridge.onOfferEntered(application, position, move.from(), actor);
+            // ISAE 3000 sampling: one deterministic record-check draw per
+            // candidate, performed on the first OFFER entry (idempotent on
+            // re-entries) — same transaction as the move.
+            recordCheckService.drawOnOfferEntry(application, position, actor);
         }
 
         log.infof("Application %s stage %s -> %s (%s) by actor=%s",

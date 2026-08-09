@@ -19,17 +19,19 @@ class PublicApplyQuestionsTest {
 
     @Test
     void questionKeys_areStable_andOrdered() {
-        assertEquals(List.of("WHY_TRUSTWORKS", "BEST_TASKS", "DNA_MATCH", "STRENGTHS"),
+        // Display order mirrors the Airtable form the system replaces:
+        // motivation → consultant reflection → tasks → strengths.
+        assertEquals(List.of("WHY_TRUSTWORKS", "DNA_MATCH", "BEST_TASKS", "STRENGTHS"),
                 PublicApplyQuestions.keys(),
                 "question keys are persisted on answers rows — never rename or reorder silently");
     }
 
     @Test
-    void allQuestions_areOptional_withDanishWordingPresent() {
+    void requiredFlags_matchAirtableParity_withDanishWordingPresent() {
         assertEquals(4, PublicApplyQuestions.all().size());
         for (PublicApplyQuestions.Question question : PublicApplyQuestions.all()) {
-            assertFalse(question.required(),
-                    "all four questions are optional — the CV is the only required artifact");
+            assertEquals(!question.key().equals("STRENGTHS"), question.required(),
+                    "the questions replace the motivated application — only STRENGTHS is optional");
             assertFalse(question.label().isBlank(), "label missing for " + question.key());
             assertFalse(question.helpText().isBlank(), "helpText missing for " + question.key());
         }

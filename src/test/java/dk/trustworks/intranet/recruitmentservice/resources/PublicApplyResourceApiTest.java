@@ -173,8 +173,8 @@ class PublicApplyResourceApiTest {
                 .body("practiceName", equalTo("P5 Api Practice"))
                 .body("questions.size()", equalTo(4))
                 .body("questions[0].key", equalTo("WHY_TRUSTWORKS"))
-                .body("questions[0].label", equalTo("Hvorfor Trustworks?"))
-                .body("questions[0].required", equalTo(false))
+                .body("questions[0].label", equalTo("Hvad har fået dig til at søge netop Trustworks?"))
+                .body("questions[0].required", equalTo(true))
                 .body("questions.key", hasItem("STRENGTHS"));
     }
 
@@ -242,12 +242,14 @@ class PublicApplyResourceApiTest {
 
         List<RecruitmentApplicationAnswer> answers = RecruitmentApplicationAnswer
                 .list("applicationUuid", applications.get(0).getUuid());
-        assertEquals(2, answers.size(), "WHY_TRUSTWORKS + STRENGTHS");
+        assertEquals(4, answers.size(),
+                "the three required answers + the optional STRENGTHS");
 
         List<RecruitmentConsent> consents =
                 RecruitmentConsent.list("candidateUuid", candidate.getUuid());
-        assertEquals(1, consents.size());
-        assertNotNull(consents.get(0).getGrantedAt());
+        assertEquals(3, consents.size(),
+                "APPLICATION_PROCESSING + CRIMINAL_RECORD_ACKNOWLEDGED + TALENT_POOL_RETENTION");
+        consents.forEach(c -> assertNotNull(c.getGrantedAt()));
 
         verify(storageService, times(2))
                 .storeApplicationDocument(any(byte[].class), anyString(), any(UUID.class));
@@ -258,6 +260,8 @@ class PublicApplyResourceApiTest {
                         RecruitmentEventType.APPLICATION_CREATED,
                         RecruitmentEventType.DOCUMENT_UPLOADED,
                         RecruitmentEventType.DOCUMENT_UPLOADED,
+                        RecruitmentEventType.CONSENT_GRANTED,
+                        RecruitmentEventType.CONSENT_GRANTED,
                         RecruitmentEventType.CONSENT_GRANTED),
                 events.stream().map(RecruitmentEvent::getEventType).toList());
         for (RecruitmentEvent event : events) {
@@ -358,11 +362,48 @@ class PublicApplyResourceApiTest {
 
     @Test
     void postPosition_answerTooLong_is400AnswerTooLong() throws IOException {
+        // STRENGTHS is the one answer baseForm does not already carry — a
+        // duplicate part name would race the valid value.
         baseForm(uniqueEmail())
-                .multiPart("answer_BEST_TASKS", "a".repeat(10_001))
+                .multiPart("answer_STRENGTHS", "a".repeat(10_001))
                 .when().post("/apply/" + slug)
                 .then().statusCode(400)
                 .body(equalTo("{\"error\":\"ANSWER_TOO_LONG\"}"));
+    }
+
+    @Test
+    void postPosition_missingRequiredAnswer_is400AnswerRequired() throws IOException {
+        given()
+                .header("X-Forwarded-For", nextIp())
+                .multiPart("firstName", PII_SENTINEL + "-Anna")
+                .multiPart("lastName", PII_SENTINEL + "-Hansen")
+                .multiPart("email", uniqueEmail())
+                .multiPart("answer_WHY_TRUSTWORKS", PII_SENTINEL + " fordi arbejdet er spændende")
+                .multiPart("gdprConsent", "true")
+                .multiPart("isaeConsent", "true")
+                .multiPart("cv", tempFile(PDF_BYTES, "cv.pdf"), "application/pdf")
+                .when().post("/apply/" + slug)
+                .then().statusCode(400)
+                .body(equalTo("{\"error\":\"ANSWER_REQUIRED\"}"));
+    }
+
+    @Test
+    void postPosition_missingConsents_is400ConsentRequired() throws IOException {
+        baseFormWithoutConsents(uniqueEmail())
+                .multiPart("cv", tempFile(PDF_BYTES, "cv.pdf"), "application/pdf")
+                .when().post("/apply/" + slug)
+                .then().statusCode(400)
+                .body(equalTo("{\"error\":\"CONSENT_REQUIRED\"}"));
+    }
+
+    @Test
+    void postPosition_isaeConsentAloneMissing_is400ConsentRequired() throws IOException {
+        baseFormWithoutConsents(uniqueEmail())
+                .multiPart("gdprConsent", "true")
+                .multiPart("cv", tempFile(PDF_BYTES, "cv.pdf"), "application/pdf")
+                .when().post("/apply/" + slug)
+                .then().statusCode(400)
+                .body(equalTo("{\"error\":\"CONSENT_REQUIRED\"}"));
     }
 
     @Test
@@ -433,8 +474,8 @@ class PublicApplyResourceApiTest {
                 "unsolicited creates the candidate ONLY — no application");
         List<RecruitmentApplicationAnswer> answers = RecruitmentApplicationAnswer
                 .list("candidateUuid", candidate.getUuid());
-        assertEquals(1, answers.size(), "the WHY_TRUSTWORKS answer, candidate-scoped");
-        assertNull(answers.get(0).getApplicationUuid());
+        assertEquals(3, answers.size(), "the three required answers, candidate-scoped");
+        answers.forEach(a -> assertNull(a.getApplicationUuid()));
         assertEquals(practiceUuid, candidate.getSourceDetail().get("desiredPracticeUuid"));
         assertEquals("P5 Api Practice", candidate.getSourceDetail().get("desiredPracticeName"));
     }
@@ -480,19 +521,30 @@ class PublicApplyResourceApiTest {
 
     // ---- Fixtures & helpers --------------------------------------------------------
 
-    /** Minimal VALID form: names, email, one answer, a PDF CV — plus a unique source IP. */
+    /**
+     * Minimal VALID form: names, email, the three required answers, both
+     * mandatory consents, a PDF CV — plus a unique source IP.
+     */
     private RequestSpecification baseForm(String email) throws IOException {
         return baseFormWithoutCv(email)
                 .multiPart("cv", tempFile(PDF_BYTES, "cv.pdf"), "application/pdf");
     }
 
     private RequestSpecification baseFormWithoutCv(String email) {
+        return baseFormWithoutConsents(email)
+                .multiPart("gdprConsent", "true")
+                .multiPart("isaeConsent", "true");
+    }
+
+    private RequestSpecification baseFormWithoutConsents(String email) {
         return given()
                 .header("X-Forwarded-For", nextIp())
                 .multiPart("firstName", PII_SENTINEL + "-Anna")
                 .multiPart("lastName", PII_SENTINEL + "-Hansen")
                 .multiPart("email", email)
-                .multiPart("answer_WHY_TRUSTWORKS", PII_SENTINEL + " fordi arbejdet er spændende");
+                .multiPart("answer_WHY_TRUSTWORKS", PII_SENTINEL + " fordi arbejdet er spændende")
+                .multiPart("answer_DNA_MATCH", PII_SENTINEL + " frihed og faglighed")
+                .multiPart("answer_BEST_TASKS", PII_SENTINEL + " workshops og analyse");
     }
 
     /**

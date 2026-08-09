@@ -138,6 +138,48 @@ public class WordPlaceholderExtractor {
     }
 
     /**
+     * Extracts the full readable text of a Word document in document order
+     * (body paragraphs and tables, then headers and footers). Used as AI
+     * context for placeholder enrichment — the surrounding contract
+     * language is what gives labels and help texts their meaning.
+     *
+     * @param docxBytes The Word document as byte array
+     * @return The document text, or an empty string when unreadable
+     */
+    public String extractDocumentText(byte[] docxBytes) {
+        if (docxBytes == null || docxBytes.length == 0) {
+            return "";
+        }
+
+        StringBuilder text = new StringBuilder();
+        try (ByteArrayInputStream bais = new ByteArrayInputStream(docxBytes);
+             XWPFDocument document = new XWPFDocument(bais)) {
+
+            for (XWPFParagraph paragraph : document.getParagraphs()) {
+                appendLine(text, paragraph.getText());
+            }
+            for (XWPFTable table : document.getTables()) {
+                appendLine(text, table.getText());
+            }
+            for (XWPFHeader header : document.getHeaderList()) {
+                appendLine(text, header.getText());
+            }
+            for (XWPFFooter footer : document.getFooterList()) {
+                appendLine(text, footer.getText());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Failed to extract document text for AI enrichment");
+        }
+        return text.toString();
+    }
+
+    private static void appendLine(StringBuilder text, String line) {
+        if (line != null && !line.isBlank()) {
+            text.append(line).append('\n');
+        }
+    }
+
+    /**
      * Validates if a string is a valid placeholder name.
      *
      * @param name The placeholder name to validate

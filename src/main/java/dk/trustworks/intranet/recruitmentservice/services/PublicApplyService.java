@@ -154,7 +154,7 @@ public class PublicApplyService {
             persistApplicationAnswers(application, submission.answers());
             storeDocuments(submission, candidate, position, application, null);
         }
-        grantPoolConsentIfTicked(submission, candidate, position, application);
+        recordSubmissionConsents(submission, candidate, position, application);
         log.infof("Public application received: position=%s candidate=%s reused=%s duplicateOpen=%s",
                 position.getUuid(), candidate.getUuid(), resolution.reused(), duplicateOpen);
     }
@@ -177,7 +177,7 @@ public class PublicApplyService {
 
         persistCandidateAnswers(candidate, submission.answers(), resolution.reused());
         storeDocuments(submission, candidate, null, null, null);
-        grantPoolConsentIfTicked(submission, candidate, null, null);
+        recordSubmissionConsents(submission, candidate, null, null);
         log.infof("Public unsolicited submission received: candidate=%s reused=%s",
                 candidate.getUuid(), resolution.reused());
     }
@@ -374,41 +374,68 @@ public class PublicApplyService {
     // ---- Consent ---------------------------------------------------------------
 
     /**
-     * A ticked pool-consent checkbox creates a GRANTED
-     * {@code TALENT_POOL_RETENTION} consent ({@code granted_at} now UTC,
-     * {@code expires_at} +12 months, {@code token_hash} NULL until P19)
-     * and appends {@code CONSENT_GRANTED}. Idempotent per candidate: an
-     * unexpired GRANTED consent of the same kind suppresses a duplicate
-     * row (repeat submissions must not spam the consent table).
+     * Record the consents carried by a public submission:
+     * <ul>
+     *   <li>{@code APPLICATION_PROCESSING} — always (the resource rejects
+     *       submissions without the mandatory storage consent). No
+     *       {@code expires_at}; the retention sweep governs the deadline.</li>
+     *   <li>{@code CRIMINAL_RECORD_ACKNOWLEDGED} — always (mandatory ISAE
+     *       3000 acknowledgment). No {@code expires_at}.</li>
+     *   <li>{@code TALENT_POOL_RETENTION} — only when ticked
+     *       ({@code granted_at} now UTC, {@code expires_at} +12 months,
+     *       {@code token_hash} NULL until P19).</li>
+     * </ul>
+     * Each grant appends {@code CONSENT_GRANTED} and is idempotent per
+     * candidate: an active GRANTED consent of the same kind suppresses a
+     * duplicate row (repeat submissions must not spam the consent table).
      */
-    private void grantPoolConsentIfTicked(PublicApplySubmission submission,
+    private void recordSubmissionConsents(PublicApplySubmission submission,
                                           RecruitmentCandidate candidate,
                                           RecruitmentPosition position,
                                           RecruitmentApplication application) {
-        if (!submission.poolConsent()) {
-            return;
-        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        if (submission.gdprConsent()) {
+            grantConsent(RecruitmentConsentKind.APPLICATION_PROCESSING, null, now,
+                    candidate, position, application);
+        }
+        if (submission.isaeConsent()) {
+            grantConsent(RecruitmentConsentKind.CRIMINAL_RECORD_ACKNOWLEDGED, null, now,
+                    candidate, position, application);
+        }
+        if (submission.poolConsent()) {
+            grantConsent(RecruitmentConsentKind.TALENT_POOL_RETENTION,
+                    now.plusMonths(POOL_CONSENT_MONTHS), now,
+                    candidate, position, application);
+        }
+    }
+
+    private void grantConsent(RecruitmentConsentKind kind,
+                              LocalDateTime expiresAt,
+                              LocalDateTime now,
+                              RecruitmentCandidate candidate,
+                              RecruitmentPosition position,
+                              RecruitmentApplication application) {
+        // Active = GRANTED and (no expiry OR not yet expired).
         long alreadyGranted = RecruitmentConsent.count(
-                "candidateUuid = ?1 and kind = ?2 and status = ?3 and expiresAt > ?4",
-                candidate.getUuid(), RecruitmentConsentKind.TALENT_POOL_RETENTION,
-                RecruitmentConsentStatus.GRANTED, now);
+                "candidateUuid = ?1 and kind = ?2 and status = ?3 "
+                        + "and (expiresAt is null or expiresAt > ?4)",
+                candidate.getUuid(), kind, RecruitmentConsentStatus.GRANTED, now);
         if (alreadyGranted > 0) {
             return;
         }
         RecruitmentConsent consent = new RecruitmentConsent();
         consent.setCandidateUuid(candidate.getUuid());
-        consent.setKind(RecruitmentConsentKind.TALENT_POOL_RETENTION);
+        consent.setKind(kind);
         consent.setStatus(RecruitmentConsentStatus.GRANTED);
         consent.setGrantedAt(now);
-        consent.setExpiresAt(now.plusMonths(POOL_CONSENT_MONTHS));
+        consent.setExpiresAt(expiresAt);
         consent.persist();
 
         RecruitmentEventBuilder event = RecruitmentEventBuilder
                 .event(RecruitmentEventType.CONSENT_GRANTED)
                 .candidate(candidate.getUuid())
                 .actorCandidate()
-                .payload("kind", RecruitmentConsentKind.TALENT_POOL_RETENTION.name())
+                .payload("kind", kind.name())
                 .payload("consent_uuid", consent.getUuid());
         subjectAndVisibility(event, position, application);
         eventRecorder.record(event);

@@ -119,6 +119,8 @@ public class PublicApplyResource {
             @RestForm("answer_DNA_MATCH") String answerDnaMatch,
             @RestForm("answer_STRENGTHS") String answerStrengths,
             @RestForm("poolConsent") String poolConsent,
+            @RestForm("gdprConsent") String gdprConsent,
+            @RestForm("isaeConsent") String isaeConsent,
             @RestForm("desiredPracticeUuid") String desiredPracticeUuid,
             @RestForm("cv") FileUpload cv,
             @RestForm("coverLetter") FileUpload coverLetter) {
@@ -128,7 +130,7 @@ public class PublicApplyResource {
                 educationLevel, educationOther, experienceLevel,
                 channel, selfReportedSource, sourceFollowUp,
                 answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths,
-                poolConsent, cv, coverLetter, desiredPracticeUuid);
+                poolConsent, gdprConsent, isaeConsent, cv, coverLetter, desiredPracticeUuid);
         publicApplyService.submitUnsolicited(submission);
         return received();
     }
@@ -155,6 +157,8 @@ public class PublicApplyResource {
             @RestForm("answer_DNA_MATCH") String answerDnaMatch,
             @RestForm("answer_STRENGTHS") String answerStrengths,
             @RestForm("poolConsent") String poolConsent,
+            @RestForm("gdprConsent") String gdprConsent,
+            @RestForm("isaeConsent") String isaeConsent,
             @RestForm("cv") FileUpload cv,
             @RestForm("coverLetter") FileUpload coverLetter) {
         requireFlag();
@@ -166,7 +170,7 @@ public class PublicApplyResource {
                 educationLevel, educationOther, experienceLevel,
                 channel, selfReportedSource, sourceFollowUp,
                 answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths,
-                poolConsent, cv, coverLetter, null);
+                poolConsent, gdprConsent, isaeConsent, cv, coverLetter, null);
         publicApplyService.submitForPosition(slug, submission);
         return received();
     }
@@ -191,7 +195,8 @@ public class PublicApplyResource {
             String channel, String selfReportedSource, String sourceFollowUp,
             String answerWhyTrustworks, String answerBestTasks,
             String answerDnaMatch, String answerStrengths,
-            String poolConsent, FileUpload cv, FileUpload coverLetter,
+            String poolConsent, String gdprConsent, String isaeConsent,
+            FileUpload cv, FileUpload coverLetter,
             String desiredPracticeUuid) {
 
         String first = requiredField(firstName, 100);
@@ -220,14 +225,38 @@ public class PublicApplyResource {
                 ? readDocument(coverLetter, "cover-letter")
                 : null;
 
-        boolean consent = poolConsent != null && Boolean.parseBoolean(poolConsent.trim());
+        // After the file checks so file-error precedence stays stable for
+        // clients; the frontend enforces required answers before submitting.
+        requireRequiredAnswers(answers);
+
+        boolean pool = parseCheckbox(poolConsent);
+        boolean gdpr = parseCheckbox(gdprConsent);
+        boolean isae = parseCheckbox(isaeConsent);
+        // Both consents are mandatory (Airtable parity): storage consent and
+        // the ISAE 3000 criminal-record acknowledgment.
+        if (!gdpr || !isae) {
+            throw badRequest("CONSENT_REQUIRED");
+        }
 
         return new PublicApplySubmission(
                 first, last, mail, phoneValue, linkedin,
                 education, educationOtherValue, experience,
                 entryChannel, selfReported, followUp,
-                answers, consent, cvDocument, coverLetterDocument,
+                answers, pool, gdpr, isae, cvDocument, coverLetterDocument,
                 trimToNull(desiredPracticeUuid));
+    }
+
+    private static boolean parseCheckbox(String raw) {
+        return raw != null && Boolean.parseBoolean(raw.trim());
+    }
+
+    /** Questions flagged required in {@link PublicApplyQuestions} must carry an answer. */
+    private static void requireRequiredAnswers(Map<String, String> answers) {
+        for (PublicApplyQuestions.Question question : PublicApplyQuestions.all()) {
+            if (question.required() && !answers.containsKey(question.key())) {
+                throw badRequest("ANSWER_REQUIRED");
+            }
+        }
     }
 
     private static Map<String, String> collectAnswers(String whyTrustworks, String bestTasks,
