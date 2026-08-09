@@ -422,8 +422,13 @@ public class InvoiceEconomicsUploadService {
 
     /**
      * Gets upload statistics for monitoring.
+     *
+     * <p>{@code failed == retryable + terminal}: {@code retryable} rows will be picked up again
+     * by {@link #retryFailedUploads()}, {@code terminal} rows have exhausted all attempts and
+     * are dead until a human re-arms them ({@link #retryUploadsForInvoice(String)}) or closes
+     * them as {@link UploadStatus#ABANDONED}.
      */
-    public record UploadStats(long pending, long success, long failed, long retryable) {}
+    public record UploadStats(long pending, long success, long failed, long retryable, long terminal) {}
 
     public UploadStats getUploadStats() {
         long pending = InvoiceEconomicsUpload.count("status", UploadStatus.PENDING);
@@ -431,7 +436,45 @@ public class InvoiceEconomicsUploadService {
         long failed = InvoiceEconomicsUpload.count("status", UploadStatus.FAILED);
         long retryable = InvoiceEconomicsUpload.count("status = ?1 AND attemptCount < maxAttempts",
                 UploadStatus.FAILED);
+        long terminal = InvoiceEconomicsUpload.count("status = ?1 AND attemptCount >= maxAttempts",
+                UploadStatus.FAILED);
 
-        return new UploadStats(pending, success, failed, retryable);
+        return new UploadStats(pending, success, failed, retryable, terminal);
+    }
+
+    /**
+     * Finds uploads that have permanently failed: FAILED with all retry attempts exhausted.
+     * These are invisible to {@link #retryFailedUploads()} and stay dead until a human acts.
+     */
+    public List<InvoiceEconomicsUpload> findTerminalFailures() {
+        return InvoiceEconomicsUpload.list("status = ?1 AND attemptCount >= maxAttempts",
+                UploadStatus.FAILED);
+    }
+
+    /**
+     * Human-triggered retry: re-arms ALL failed uploads for an invoice — including terminal
+     * ones past max_attempts — and processes them immediately.
+     *
+     * <p>The automatic retry job never touches uploads with {@code attemptCount >= maxAttempts};
+     * this is the deliberate manual override for after the underlying cause is fixed (e.g. a
+     * barred accounting period was reopened). One trigger buys exactly one new attempt: if it
+     * fails again the upload returns to terminal FAILED.
+     *
+     * @param invoiceuuid Invoice UUID
+     * @return Upload result summary
+     */
+    @Transactional
+    public UploadResult retryUploadsForInvoice(String invoiceuuid) {
+        List<InvoiceEconomicsUpload> failedUploads = InvoiceEconomicsUpload.list(
+                "invoiceuuid = ?1 AND status = ?2", invoiceuuid, UploadStatus.FAILED);
+
+        for (InvoiceEconomicsUpload upload : failedUploads) {
+            log.infof("Manual re-arm of upload %s (invoice %s, attempts %d/%d)",
+                    upload.getUuid(), invoiceuuid, upload.getAttemptCount(), upload.getMaxAttempts());
+            upload.setStatus(UploadStatus.PENDING);
+            upload.persist();
+        }
+
+        return processUploads(invoiceuuid);
     }
 }
