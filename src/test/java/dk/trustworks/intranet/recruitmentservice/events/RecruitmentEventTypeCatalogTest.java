@@ -43,6 +43,11 @@ class RecruitmentEventTypeCatalogTest {
         // AI_ASSISTANT_EXCHANGE is the P25 addition: every @Recruiting-
         // assistant exchange is logged for spot review (question in pii,
         // answer skeleton in payload). Recorded in findings §P25.
+        // DOCUMENT_KIND_CHANGED is the document-type classification
+        // addition: a recruiter manually re-typing a stored document is a
+        // mutation like any other ("every mutating endpoint = one command
+        // = ≥1 event", spec §6.2), and the Documents tab resolves a file's
+        // kind from the newest such event.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -53,7 +58,7 @@ class RecruitmentEventTypeCatalogTest {
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
-                "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED",
+                "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
                 "ART14_NOTICE_SENT", "DSAR_RECEIVED", "DSAR_EXPORTED", "CANDIDATE_ANONYMIZED",
@@ -68,9 +73,10 @@ class RecruitmentEventTypeCatalogTest {
         assertEquals(expected, actual,
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
-                        + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT and "
-                        + "P25 AI_ASSISTANT_EXCHANGE additions exactly");
-        assertEquals(48, RecruitmentEventType.values().length);
+                        + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
+                        + "P25 AI_ASSISTANT_EXCHANGE and DOCUMENT_KIND_CHANGED "
+                        + "additions exactly");
+        assertEquals(49, RecruitmentEventType.values().length);
     }
 
     @Test

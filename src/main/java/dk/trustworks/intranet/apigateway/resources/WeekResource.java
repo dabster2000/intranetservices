@@ -35,6 +35,25 @@ public class WeekResource {
         weekService.save(week);
     }
 
+    @PUT
+    @Path("/{weekuuid}")
+    @RolesAllowed({"timeregistration:write"})
+    public void updateWeekSorting(@PathParam("weekuuid") String weekuuid, UpdateWeekSortingRequest request) {
+        if (request == null || request.sorting() == null) {
+            throw new BadRequestException("Request body with a sorting value is required");
+        }
+        weekService.updateSorting(weekuuid, request.sorting());
+    }
+
+    /**
+     * Deliberately narrow request body: the row's identity tuple (taskuuid, useruuid,
+     * weeknumber, year) must not be reachable through this endpoint, and POST /weeks
+     * intentionally never touches sorting on an existing row (see WeekService#save) —
+     * so display order can only be changed here. Boxed Integer so an absent field is a
+     * 400, not a silent sorting=0.
+     */
+    public record UpdateWeekSortingRequest(Integer sorting) {}
+
     @DELETE
     @Path("/{weekuuid}")
     @RolesAllowed({"timeregistration:write"})

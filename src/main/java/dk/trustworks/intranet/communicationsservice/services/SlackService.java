@@ -24,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static com.slack.api.model.block.Blocks.*;
@@ -39,6 +40,22 @@ public class SlackService {
 
     /** Slack's hard cap on notification text is 40.000; it recommends staying under 4.000. */
     private static final int SLACK_FALLBACK_TEXT_MAX_CHARS = 4000;
+
+    /**
+     * Slack's {@code views.publish} answer when the app's Home tab is switched off
+     * in the app configuration. Permanent and non-retryable — every publish answers
+     * this until "App Home → Home Tab" is enabled for the app at api.slack.com/apps
+     * — so it is a configuration state, not an incident, and must never reach
+     * ERROR-level alerting. See {@link #reportPublishFailure}.
+     */
+    private static final String HOME_TAB_NOT_ENABLED = "not_enabled";
+
+    /**
+     * One actionable INFO per JVM for {@link #HOME_TAB_NOT_ENABLED}; every later hit
+     * drops to DEBUG, so a permanently disabled Home tab cannot grow into log volume
+     * that scales with recruitment activity.
+     */
+    private final AtomicBoolean homeTabDisabledReported = new AtomicBoolean();
 
     @ConfigProperty(name = "slack.motherSlackBotToken")
     String motherSlackBotToken;
@@ -335,18 +352,56 @@ public class SlackService {
      * Slack member id ({@code U…}) from {@code user.slackusername}. Unlike
      * modal opens there is no trigger id — the view can be published at any
      * time, whether or not the user has the tab open. Throws on transport
-     * failure or a not-ok API response; App Home callers treat that as
+     * failure or a genuine not-ok API response; App Home callers treat that as
      * best-effort (the tab is a convenience mirror — staleness is fine, a
      * blocked reactor is not).
+     * <p>
+     * Returns {@code false} — without throwing — for the one permanent,
+     * non-retryable outcome: the app's Home tab is disabled in the Slack app
+     * configuration ({@link #HOME_TAB_NOT_ENABLED}). That is a setting, not a
+     * failure, so it is reported quietly; see {@link #reportPublishFailure}.
+     *
+     * @return {@code true} when Slack accepted the view.
      */
-    public void publishView(String slackUserId, com.slack.api.model.view.View view)
+    public boolean publishView(String slackUserId, com.slack.api.model.view.View view)
             throws IOException, SlackApiException {
         var response = Slack.getInstance().methods(motherSlackBotToken)
                 .viewsPublish(req -> req.userId(slackUserId).view(view));
-        if (!response.isOk()) {
-            log.errorf("Failed to publish Slack home view: %s", response.getError());
-            throw new RuntimeException("Slack API error: " + response.getError());
+        if (response.isOk()) {
+            return true;
         }
+        return reportPublishFailure(slackUserId, response.getError());
+    }
+
+    /**
+     * The severity rule for a failed {@code views.publish}, split out of
+     * {@link #publishView} so it is unit-testable without mocking Slack's static
+     * client.
+     * <p>
+     * {@link #HOME_TAB_NOT_ENABLED} is a permanent configuration state: retrying
+     * cannot clear it and no incident response applies, so it is logged once at
+     * INFO (then DEBUG) and reported as "not published" via {@code false}. Every
+     * other error may be transient or genuinely broken, so it keeps the original
+     * ERROR-and-throw posture — ERROR-level alerting stays meaningful.
+     *
+     * @return {@code false} for the known-disabled Home tab.
+     * @throws RuntimeException for every genuine Slack failure.
+     */
+    boolean reportPublishFailure(String slackUserId, String error) {
+        if (HOME_TAB_NOT_ENABLED.equals(error)) {
+            if (homeTabDisabledReported.compareAndSet(false, true)) {
+                log.infof("Slack App Home is disabled for this app — not publishing the home view for"
+                                + " user %s. Enable Features → App Home → Home Tab at api.slack.com/apps"
+                                + " to switch the feature on; until then every publish answers '%s'.",
+                        slackUserId, HOME_TAB_NOT_ENABLED);
+            } else {
+                log.debugf("Slack App Home still disabled — skipped home view publish for user %s",
+                        slackUserId);
+            }
+            return false;
+        }
+        log.errorf("Failed to publish Slack home view: %s", error);
+        throw new RuntimeException("Slack API error: " + error);
     }
 
     /**

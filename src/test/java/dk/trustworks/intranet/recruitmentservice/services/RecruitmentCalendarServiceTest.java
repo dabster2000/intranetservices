@@ -327,6 +327,92 @@ class RecruitmentCalendarServiceTest {
     }
 
     @Test
+    void event_usesTheInterviewsOwnDuration() {
+        service.calendarEnabled = true;
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-90"));
+
+        RecruitmentInterview interview = interview();
+        interview.setDurationMinutes(90);
+        QuarkusTransaction.requiringNew().run(() ->
+                service.createEvent(interview, candidate(), position()));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        assertEquals("2026-08-01T10:00", body.getValue().start().dateTime());
+        assertEquals("2026-08-01T11:30", body.getValue().end().dateTime(),
+                "the Outlook event end follows duration_minutes, not a fixed hour");
+    }
+
+    @Test
+    void rooms_withStartAndDuration_freeBusyWindowMatchesDuration() {
+        service.calendarEnabled = true;
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
+        when(graph.getSchedule(anyString(), any()))
+                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "room-hq2@trustworks.dk", "0"))));
+
+        service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0), 120);
+
+        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        verify(graph).getSchedule(anyString(), body.capture());
+        assertEquals("2026-08-01T12:00", body.getValue().endTime().dateTime(),
+                "the probed window is the picked duration, not a fixed hour");
+    }
+
+    // ---- Interviewer availability ----------------------------------------------
+
+    @Test
+    void interviewerAvailability_toggleOff_returnsEmpty_neverTouchesGraph() {
+        service.calendarEnabled = false;
+        assertTrue(service.interviewerAvailability(
+                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60).isEmpty());
+        verifyNoInteractions(graph);
+    }
+
+    @Test
+    void interviewerAvailability_strictRule_anyNonFreeDigitIsBusy() {
+        service.calendarEnabled = true;
+        when(graph.getSchedule(anyString(), any()))
+                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "free@example.com", "0"),
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "tentative@example.com", "1"),
+                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                                "busy@example.com", "2"))));
+
+        var result = service.interviewerAvailability(
+                List.of("free@example.com", "tentative@example.com", "busy@example.com"),
+                LocalDateTime.of(2026, 8, 1, 10, 0), 90);
+
+        assertEquals(Boolean.TRUE, result.get("free@example.com"));
+        assertEquals(Boolean.FALSE, result.get("tentative@example.com"),
+                "tentative counts as busy — same strict rule as rooms");
+        assertEquals(Boolean.FALSE, result.get("busy@example.com"));
+
+        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        verify(graph).getSchedule(eq("free@example.com"), body.capture());
+        assertEquals("2026-08-01T11:30", body.getValue().endTime().dateTime(),
+                "the probed window follows the picked duration");
+    }
+
+    @Test
+    void interviewerAvailability_graphFailure_returnsEmpty_neverThrows() {
+        service.calendarEnabled = true;
+        when(graph.getSchedule(anyString(), any()))
+                .thenThrow(new RuntimeException("Graph 503"));
+        assertTrue(service.interviewerAvailability(
+                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60).isEmpty());
+    }
+
+    @Test
     void graphFailure_isSwallowed_schedulingNeverBreaks() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))

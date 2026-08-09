@@ -40,16 +40,14 @@ import java.util.Optional;
  * <p>
  * Event shape: created in the FIRST interviewer's calendar (they act as
  * organizer); remaining interviewers and the candidate (external, when an
- * email exists) are invited as required attendees. Duration is fixed at
- * 60 minutes.
+ * email exists) are invited as required attendees. Duration is the
+ * interview row's {@code duration_minutes} (V474), default 60.
  */
-// ponytail: fixed 60-minute duration — add a duration column + picker when
-// Graph scheduling actually goes live and real bookings need other lengths.
 @JBossLog
 @ApplicationScoped
 public class RecruitmentCalendarService {
 
-    static final int DURATION_MINUTES = 60;
+    static final int DEFAULT_DURATION_MINUTES = 60;
 
     /** Graph getSchedule accepts at most 20 schedules per call. */
     static final int GET_SCHEDULE_BATCH = 20;
@@ -175,14 +173,21 @@ public class RecruitmentCalendarService {
     }
 
     /**
-     * As {@link #listRooms()}, but when {@code start} is given each room
-     * additionally carries its free/busy state for the interview slot
-     * {@code [start, start + 60 min)} (one Graph {@code getSchedule} call
-     * for all rooms). Availability failures degrade to {@code available =
-     * null} — never to an empty room list; a broken free/busy lookup must
-     * not block scheduling.
+     * As {@link #listRooms()}, with the default 60-minute slot length.
      */
     public List<MeetingRoomsResponse.MeetingRoom> listRooms(LocalDateTime start) {
+        return listRooms(start, DEFAULT_DURATION_MINUTES);
+    }
+
+    /**
+     * As {@link #listRooms()}, but when {@code start} is given each room
+     * additionally carries its free/busy state for the interview slot
+     * {@code [start, start + durationMinutes)} (one Graph
+     * {@code getSchedule} call for all rooms). Availability failures
+     * degrade to {@code available = null} — never to an empty room list;
+     * a broken free/busy lookup must not block scheduling.
+     */
+    public List<MeetingRoomsResponse.MeetingRoom> listRooms(LocalDateTime start, int durationMinutes) {
         if (!calendarEnabled) {
             return List.of();
         }
@@ -205,9 +210,9 @@ public class RecruitmentCalendarService {
         if (start == null || rooms.isEmpty()) {
             return rooms;
         }
-        Map<String, Boolean> freeByRoom = roomAvailability(
+        Map<String, Boolean> freeByRoom = mailboxAvailability(
                 rooms.stream().map(MeetingRoomsResponse.MeetingRoom::emailAddress).toList(),
-                start);
+                start, durationMinutes);
         return rooms.stream()
                 .map(room -> new MeetingRoomsResponse.MeetingRoom(
                         room.displayName(), room.emailAddress(),
@@ -217,25 +222,47 @@ public class RecruitmentCalendarService {
     }
 
     /**
-     * Free/busy per room mailbox for {@code [start, start + 60 min)} via
-     * Graph {@code getSchedule} (max 20 schedules per call — batched).
-     * A room is available only when its whole availability view is "0"s.
-     * Failures return an empty map (= unknown), logged, never thrown.
+     * Free/busy per interviewer mailbox for the interview slot — the same
+     * strict rule and Graph call as rooms. Empty map when the toggle is
+     * off; a mailbox missing from the result means "unknown" (callers
+     * show the person unmarked, never as busy). Strictly free/busy — no
+     * event details are requested or returned.
      */
-    private Map<String, Boolean> roomAvailability(List<String> roomEmails, LocalDateTime start) {
+    public Map<String, Boolean> interviewerAvailability(List<String> emails,
+                                                        LocalDateTime start,
+                                                        int durationMinutes) {
+        if (!calendarEnabled || emails.isEmpty()) {
+            return Map.of();
+        }
+        return mailboxAvailability(emails, start, durationMinutes);
+    }
+
+    /**
+     * Free/busy per mailbox (room or person) for
+     * {@code [start, start + durationMinutes)} via Graph
+     * {@code getSchedule} (max 20 schedules per call — batched).
+     * A mailbox is available only when its whole availability view is
+     * "0"s — tentative ("1"), busy ("2"), out-of-office ("3") and
+     * working-elsewhere ("4") all count as busy.
+     * Failures return what was resolved so far (missing = unknown),
+     * logged, never thrown.
+     */
+    private Map<String, Boolean> mailboxAvailability(List<String> mailboxes,
+                                                     LocalDateTime start,
+                                                     int durationMinutes) {
         Map<String, Boolean> result = new HashMap<>();
         try {
-            for (int i = 0; i < roomEmails.size(); i += GET_SCHEDULE_BATCH) {
-                List<String> batch = roomEmails.subList(i,
-                        Math.min(i + GET_SCHEDULE_BATCH, roomEmails.size()));
+            for (int i = 0; i < mailboxes.size(); i += GET_SCHEDULE_BATCH) {
+                List<String> batch = mailboxes.subList(i,
+                        Math.min(i + GET_SCHEDULE_BATCH, mailboxes.size()));
                 GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
                         batch.get(0),
                         new GraphApiClient.ScheduleRequest(
                                 batch,
                                 new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
                                 new CalendarEventRequest.DateTimeTimeZone(
-                                        start.plusMinutes(DURATION_MINUTES).toString(), EVENT_TIME_ZONE),
-                                DURATION_MINUTES));
+                                        start.plusMinutes(durationMinutes).toString(), EVENT_TIME_ZONE),
+                                durationMinutes));
                 if (response == null || response.value() == null) {
                     continue;
                 }
@@ -247,7 +274,7 @@ public class RecruitmentCalendarService {
                 }
             }
         } catch (Exception e) {
-            log.warnv("Graph free/busy lookup failed: {0} — rooms shown without availability",
+            log.warnv("Graph free/busy lookup failed: {0} — shown without availability",
                     e.getMessage());
         }
         return result;
@@ -291,7 +318,7 @@ public class RecruitmentCalendarService {
                 new CalendarEventRequest.DateTimeTimeZone(
                         interview.getScheduledAt().toString(), EVENT_TIME_ZONE),
                 new CalendarEventRequest.DateTimeTimeZone(
-                        interview.getScheduledAt().plusMinutes(DURATION_MINUTES).toString(),
+                        interview.getScheduledAt().plusMinutes(interview.getDurationMinutes()).toString(),
                         EVENT_TIME_ZONE),
                 interview.getLocation() != null
                         ? new CalendarEventRequest.EventLocation(interview.getLocation())

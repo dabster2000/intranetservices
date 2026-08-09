@@ -83,8 +83,9 @@ public class SlackAppHomeService {
 
     /**
      * Build and publish the Home view for one user. Returns true when a
-     * view was actually published; false on any gate, an unlinked user or
-     * a failure (logged, never thrown).
+     * view was actually published; false on any gate, an unlinked user, a
+     * Home tab disabled in the Slack app configuration, or a failure
+     * (logged, never thrown).
      */
     public boolean publishFor(String userUuid) {
         if (userUuid == null || !enabled()) {
@@ -102,8 +103,10 @@ public class SlackAppHomeService {
                     referralService.listMine(UUID.fromString(userUuid)).referrals();
             View view = SlackAppHomeViews.appHomeView(landing, referrals,
                     slackFlags.isScorecardEnabled(), baseUrl, LocalDateTime.now(COPENHAGEN));
-            slackService.publishView(user.getSlackusername(), view);
-            return true;
+            // false here means Slack's Home tab is disabled in the app
+            // configuration — a permanent setting that SlackService already
+            // reported, not a failure this path should warn about again.
+            return slackService.publishView(user.getSlackusername(), view);
         } catch (Exception e) {
             // Best-effort: a stale Home tab beats a blocked reactor or a
             // failed dispatch — the next open/refresh repaints it.

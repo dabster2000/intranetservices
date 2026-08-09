@@ -53,6 +53,61 @@ class InvoiceFinalizationOrchestratorSendByTest {
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;
+    @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter attempts;
+    @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptRepository attemptRepo;
+    @Mock dk.trustworks.intranet.perf.PerfMetrics perfMetrics;
+
+    /**
+     * requireEditableInvoice now loads the row under a PESSIMISTIC_WRITE lock (S4), so the
+     * finalize path calls findByUuidForUpdate. The lock variant returns the same row, so mirror
+     * every findByUuid stub onto it rather than restating ~40 stubs. lenient() because the
+     * booking and cancel paths do not take the lock.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void mirrorLockingLookupOntoPlainLookup() {
+        org.mockito.Mockito.lenient()
+            .when(invoices.findByUuidForUpdate(org.mockito.ArgumentMatchers.anyString()))
+            .thenAnswer(a -> invoices.findByUuid(a.getArgument(0)));
+    }
+
+    /**
+     * The booking outbox reserves a durable attempt row before the e-conomic POST (S1). Return a
+     * realistic PENDING attempt echoing the caller's arguments, so bookDraft proceeds to the POST
+     * exactly as it does in production. The frozen payload is stubbed to a constant whose hash
+     * matches, so the pre-POST "payload has not drifted" assertion passes.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void stubBookingAttemptReservation() {
+        final String frozenJson = "{}";
+        org.mockito.Mockito.lenient()
+            .when(attempts.serialise(org.mockito.ArgumentMatchers.any())).thenReturn(frozenJson);
+        org.mockito.Mockito.lenient().when(attempts.reserve(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any()))
+            .thenAnswer(a -> {
+                var att = new dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttempt();
+                att.setUuid("attempt-1");
+                att.setInvoiceUuid(a.getArgument(0));
+                att.setCompanyUuid(a.getArgument(1));
+                att.setEconomicsDraftNumber(a.getArgument(2));
+                att.setDraftInvoiceNumber(a.getArgument(3));
+                att.setSendBy(a.getArgument(4));
+                att.setIdempotencyKey(a.getArgument(5));
+                att.setPayloadJson(frozenJson);
+                att.setPayloadHash(dk.trustworks.intranet.aggregates.invoice.economics.book
+                        .InvoiceBookingAttemptWriter.sha256(frozenJson));
+                att.setState(dk.trustworks.intranet.aggregates.invoice.economics.book
+                        .InvoiceBookingAttempt.State.PENDING);
+                return att;
+            });
+    }
+
+
 
     /**
      * bookDraft() now resolves Q2C {@code number} → legacy {@code draftInvoiceNumber}

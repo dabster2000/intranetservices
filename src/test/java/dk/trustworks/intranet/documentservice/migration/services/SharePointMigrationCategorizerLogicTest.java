@@ -33,21 +33,24 @@ class SharePointMigrationCategorizerLogicTest {
     @Test
     void invalidCategoryNameIsRejectedAsInconclusive() throws Exception {
         AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
-                "{\"category\":\"PAYROLL\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\"}"));
+                "{\"category\":\"PAYROLL\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\"}"),
+                "x.pdf");
         assertTrue(verdict.inconclusive());
     }
 
     @Test
     void inconclusiveCategoryIsInconclusive() throws Exception {
         AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
-                "{\"category\":\"INCONCLUSIVE\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\"}"));
+                "{\"category\":\"INCONCLUSIVE\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\"}"),
+                "x.pdf");
         assertTrue(verdict.inconclusive());
     }
 
     @Test
     void validHighVerdictParses() throws Exception {
         AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
-                "{\"category\":\"salary\",\"archived\":true,\"label\":\"Lønregulering 2021\",\"confidence\":\"HIGH\"}"));
+                "{\"category\":\"salary\",\"archived\":true,\"label\":\"Lønregulering 2021\",\"confidence\":\"HIGH\"}"),
+                "loenreg.pdf");
         assertFalse(verdict.inconclusive());
         assertEquals(EmployeeDocumentCategory.SALARY, verdict.category());
         assertTrue(verdict.archived());
@@ -57,7 +60,8 @@ class SharePointMigrationCategorizerLogicTest {
     @Test
     void garbageConfidenceBecomesLow() throws Exception {
         AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
-                "{\"category\":\"CONTRACT\",\"archived\":false,\"label\":null,\"confidence\":\"very sure\"}"));
+                "{\"category\":\"CONTRACT\",\"archived\":false,\"label\":null,\"confidence\":\"very sure\"}"),
+                "x.pdf");
         assertEquals("LOW", verdict.confidence());
     }
 
@@ -67,7 +71,7 @@ class SharePointMigrationCategorizerLogicTest {
                 {"results":[
                   {"index":1,"category":"CONTRACT","archived":false,"label":null,"confidence":"HIGH"},
                   {"index":7,"category":"SALARY","archived":false,"label":null,"confidence":"HIGH"}
-                ]}""", 3);
+                ]}""", List.of("a.pdf", "b.pdf", "c.pdf"));
         assertEquals(3, verdicts.size());
         assertTrue(verdicts.get(0).inconclusive());
         assertEquals(EmployeeDocumentCategory.CONTRACT, verdicts.get(1).category());
@@ -76,10 +80,93 @@ class SharePointMigrationCategorizerLogicTest {
 
     @Test
     void unparseableResponseIsAllInconclusive() {
-        List<AiVerdict> verdicts = service.parseBatchVerdicts("not json at all", 2);
+        List<AiVerdict> verdicts = service.parseBatchVerdicts("not json at all", List.of("a.pdf", "b.pdf"));
         assertEquals(2, verdicts.size());
         assertTrue(verdicts.get(0).inconclusive());
         assertTrue(verdicts.get(1).inconclusive());
+    }
+
+    // ── suggested_name hard validation (V476) ──────────────────────────────
+    // The model's proposal ends up in a Content-Disposition header and on
+    // the user's disk. Nothing about it is trusted.
+
+    @Test
+    void suggestedNameAlwaysGetsTheOriginalFileExtension() throws Exception {
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"SALARY\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"2021_SALARY_loenregulering.docx\"}"),
+                "loenreg_2021_final(2).pdf");
+        assertEquals("2021_SALARY_loenregulering.pdf", verdict.suggestedName(),
+                "the model's extension is discarded — a wrong one makes the download unopenable");
+    }
+
+    @Test
+    void suggestedNameWithoutAnExtensionGetsTheOriginalOne() throws Exception {
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"IDENTITY\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"2019-03-04_IDENTITY_sundhedskort\"}"),
+                "Scan_20190304.pdf");
+        assertEquals("2019-03-04_IDENTITY_sundhedskort.pdf", verdict.suggestedName());
+    }
+
+    @Test
+    void blankOrNullSuggestedNameMeansNoNameProposedNotAnError() throws Exception {
+        AiVerdict blank = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"OTHER\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"   \"}"), "x.pdf");
+        assertNull(blank.suggestedName());
+        assertFalse(blank.inconclusive(), "a missing name never invalidates the category verdict");
+
+        AiVerdict nullName = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"OTHER\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":null}"), "x.pdf");
+        assertNull(nullName.suggestedName());
+
+        AiVerdict absent = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"OTHER\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\"}"),
+                "x.pdf");
+        assertNull(absent.suggestedName(), "an absent property must not throw");
+    }
+
+    @Test
+    void pathTraversalAndSlashesAreSanitizedAway() throws Exception {
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"CONTRACT\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"../../etc/passwd\"}"), "kontrakt.pdf");
+        String name = verdict.suggestedName();
+        assertFalse(name.contains("/"), "no slashes survive: " + name);
+        assertFalse(name.contains(".."), "no parent-directory hops survive: " + name);
+        assertTrue(name.endsWith(".pdf"));
+    }
+
+    @Test
+    void headerInjectionCharactersAreStripped() throws Exception {
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"CONTRACT\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"evil\\r\\nSet-Cookie: a=b\\\";x=\\\"1\"}"), "k.pdf");
+        String name = verdict.suggestedName();
+        assertFalse(name.contains("\r") || name.contains("\n"),
+                "CR/LF would split the Content-Disposition header: " + name);
+        assertFalse(name.contains("\""), "quotes would break out of a quoted filename: " + name);
+    }
+
+    @Test
+    void overlongSuggestedNameIsTruncatedButKeepsItsExtension() throws Exception {
+        String longName = "a".repeat(400) + ".pdf";
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"OTHER\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"" + longName + "\"}"), "orig.pdf");
+        String name = verdict.suggestedName();
+        assertEquals(255, name.length(), "must fit the display_name column");
+        assertTrue(name.endsWith(".pdf"), "truncation must not eat the extension: " + name);
+    }
+
+    @Test
+    void danishCharactersInASuggestedNameSurvive() throws Exception {
+        AiVerdict verdict = service.parseVerdict(new ObjectMapper().readTree(
+                "{\"category\":\"SALARY\",\"archived\":false,\"label\":null,\"confidence\":\"HIGH\","
+                        + "\"suggested_name\":\"2021_SALARY_lønregulering.pdf\"}"), "loenreg.pdf");
+        assertEquals("2021_SALARY_lønregulering.pdf", verdict.suggestedName());
     }
 
     // ── Excerpt pass eligibility: images NEVER get pass 2 (decision A3) ────

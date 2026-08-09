@@ -76,6 +76,13 @@ Request DTO → validation (@Valid) → service method → Response DTO
 ## Build Commands
 
 ```
-./mvnw compile    # Compile
-./mvnw test       # Run tests
+./mvnw compile                                                  # Compile
+./mvnw test -DexcludedGroups=io.quarkus.test.junit.QuarkusTest  # DB-free tier (~45s) — default
+./mvnw test -Dsurefire.forkCount=4 -Dsurefire.maxHeap=2g        # full tier, incl. @QuarkusTest
 ```
+
+**Test memory:** peak RAM ≈ `surefire.forkCount` × `surefire.maxHeap` (defaults
+`1C` × `1g` in `pom.xml`). `forkCount=1C` is one JVM per core — 14 on a 14-core
+Mac. Never drop the `-Xmx` from the surefire `argLine`: without it each fork takes
+the JVM default ceiling of 25% of physical RAM and a plain `./mvnw test` reaches
+65 GB, which is enough to have the macOS OOM killer take the machine down.

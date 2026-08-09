@@ -753,6 +753,11 @@ public class InvoiceResource {
     /**
      * Manually trigger e-conomics upload retry for an invoice.
      * Useful for urgent cases or after fixing e-conomics connectivity.
+     *
+     * <p>Re-arms FAILED uploads first — including terminal ones past max_attempts, which the
+     * automatic retry job never touches — so this endpoint can actually resolve dead-lettered
+     * uploads. (It previously only processed PENDING rows, making it a no-op for exactly the
+     * uploads that needed manual intervention.)
      */
     @POST
     @Path("/{invoiceuuid}/retry-economics-upload")
@@ -766,7 +771,7 @@ public class InvoiceResource {
 
         log.infof("Manual retry triggered for invoice %s", invoiceuuid);
 
-        var result = uploadService.processUploads(invoiceuuid);
+        var result = uploadService.retryUploadsForInvoice(invoiceuuid);
 
         return Response.ok(java.util.Map.of(
             "message", "Upload retry processed",

@@ -180,6 +180,113 @@ class OpenAIServiceStoreTest {
                 "the legacy overload must not gain a reasoning node");
     }
 
+    /**
+     * The 2026-08-06 production incident: the ai-intake reactor's OpenAI call died with a
+     * transport failure, but the store=false branch logged only the outermost wrapper class
+     * ("errorType=ProcessingException; details suppressed") — so timeout vs connection reset
+     * vs serialization bug could not be told apart from the logs. The suppressed branch must
+     * now log the cause-chain classes and the JVM-generated transport message, while still
+     * never attaching a stack trace or echoing prompt content.
+     */
+    @Test
+    void transportFailureOnNoStorePathLogsCauseChain_withoutStackOrPayload() {
+        OpenAIClient client = mock(OpenAIClient.class);
+        when(client.createResponse(anyString(), anyString(), anyString()))
+                .thenThrow(new jakarta.ws.rs.ProcessingException(
+                        "RESTEASY004655: Unable to invoke request",
+                        new java.net.SocketTimeoutException("Read timed out")));
+
+        OpenAIService service = new OpenAIService();
+        service.openAIClient = client;
+        service.apiKey = "test-key";
+        service.model = "default-model";
+        ObjectNode schema = JSON.createObjectNode().put("type", "object");
+
+        List<LogRecord> records = new ArrayList<>();
+        Handler capture = new Handler() {
+            @Override public void publish(LogRecord record) { records.add(record); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        Logger julLogger = Logger.getLogger(OpenAIService.class.getName());
+        julLogger.addHandler(capture);
+        try {
+            assertEquals("{}", service.askQuestionWithSchema(
+                    "SECRET-SYSTEM-PROMPT", "SECRET-USER-PROMPT", schema, "test_schema",
+                    null, "gpt-5.6-terra", 8192, false));
+        } finally {
+            julLogger.removeHandler(capture);
+        }
+
+        LogRecord failure = records.stream()
+                .filter(r -> r.getMessage().contains("Responses request failed (schema"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("suppressed branch must still log; captured: "
+                        + records.stream().map(LogRecord::getMessage).toList()));
+        assertTrue(failure.getMessage().contains(
+                        "ProcessingException <- SocketTimeoutException(Read timed out)"),
+                failure.getMessage());
+        assertNull(failure.getThrown(), "no-store path must not attach a stack trace");
+        assertFalse(failure.getMessage().contains("SECRET-"), "must not echo prompt content");
+    }
+
+    /**
+     * The discrimination that keeps the chain privacy-safe: Jackson exceptions are
+     * IOExceptions whose messages can embed payload fragments, so they must render
+     * class-name-only even though socket-level IOExceptions render their message.
+     */
+    @Test
+    void jacksonFailureStaysClassNameOnlyOnNoStorePath() {
+        OpenAIClient client = mock(OpenAIClient.class);
+        when(client.createResponse(anyString(), anyString(), anyString()))
+                .thenThrow(new RuntimeException(new com.fasterxml.jackson.core.JsonParseException(
+                        null, "candidate-cv-fragment leaked into the parser message")));
+
+        OpenAIService service = new OpenAIService();
+        service.openAIClient = client;
+        service.apiKey = "test-key";
+        service.model = "default-model";
+        ObjectNode schema = JSON.createObjectNode().put("type", "object");
+
+        List<String> logged = new ArrayList<>();
+        Handler capture = new Handler() {
+            @Override public void publish(LogRecord record) { logged.add(record.getMessage()); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        Logger julLogger = Logger.getLogger(OpenAIService.class.getName());
+        julLogger.addHandler(capture);
+        try {
+            assertEquals("{}", service.askQuestionWithSchema(
+                    "system", "user", schema, "test_schema", null, "gpt-5.6-terra", 8192, false));
+        } finally {
+            julLogger.removeHandler(capture);
+        }
+
+        String failure = logged.stream()
+                .filter(m -> m.contains("Responses request failed (schema"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("suppressed branch must still log; captured: " + logged));
+        assertTrue(failure.contains("RuntimeException <- JsonParseException"), failure);
+        assertFalse(failure.contains("candidate-cv-fragment"),
+                "Jackson messages can carry payload content and must stay suppressed: " + failure);
+    }
+
+    @Test
+    void describeFailureChain_rendersTransportMessages_andTerminatesOnCyclicCauses() {
+        assertEquals("ProcessingException <- SocketTimeoutException(Read timed out)",
+                OpenAIService.describeFailureChain(new jakarta.ws.rs.ProcessingException(
+                        "RESTEASY004655: Unable to invoke request",
+                        new java.net.SocketTimeoutException("Read timed out"))));
+        assertEquals("UnknownHostException(api.openai.com)",
+                OpenAIService.describeFailureChain(new java.net.UnknownHostException("api.openai.com")));
+
+        Exception inner = new Exception("inner");
+        Exception outer = new Exception("outer", inner);
+        inner.initCause(outer); // 2-cycle — must terminate via the depth cap, not hang
+        assertTrue(OpenAIService.describeFailureChain(outer).startsWith("Exception <- Exception"));
+    }
+
     private static Response successfulResponse() {
         Response response = mock(Response.class);
         when(response.getStatus()).thenReturn(200);

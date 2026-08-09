@@ -111,7 +111,13 @@ public class InvoiceEconomicsUpload extends PanacheEntityBase {
         /** Upload succeeded */
         SUCCESS,
         /** Upload failed (may be retried if attempt_count < max_attempts) */
-        FAILED
+        FAILED,
+        /**
+         * Terminal failure reviewed by a human and deliberately closed without uploading —
+         * e.g. the document already exists in e-conomic, so a retry would double-post it.
+         * Excluded from failure counts and from the terminal-failure alarm; kept for audit.
+         */
+        ABANDONED
     }
 
     /**

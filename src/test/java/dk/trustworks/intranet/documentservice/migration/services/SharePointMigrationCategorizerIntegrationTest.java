@@ -78,6 +78,15 @@ class SharePointMigrationCategorizerIntegrationTest {
 
         assertEquals(EmployeeDocumentCategory.OTHER, load(plain).getCategory());
 
+        // V476: with AI off every document still gets a deterministic
+        // display name off the same rule table — and none of them lost
+        // their original filename.
+        assertEquals("SICKNESS_mulighedserklæring.pdf", sicknessDoc.getDisplayName());
+        assertEquals("mulighedserklæring.pdf", sicknessDoc.getOriginalFilename());
+        assertEquals("2019_SALARY_lønregulering.pdf", archivedDoc.getDisplayName());
+        assertEquals("Lønregulering 2019.pdf", archivedDoc.getOriginalFilename());
+        assertEquals("OTHER_scan.pdf", load(plain).getDisplayName());
+
         verify(openAIService, never()).askQuestionWithSchema(
                 anyString(), anyString(), any(), anyString(), any(), any(), anyInt(), anyBoolean());
     }
@@ -85,7 +94,8 @@ class SharePointMigrationCategorizerIntegrationTest {
     @Test
     void highVerdictAppliesDirectly() {
         String docUuid = persistDoc("", "loenreg_2021_final(2).pdf");
-        AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, true, "Lønregulering 2021", "HIGH", false);
+        AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, true, "Lønregulering 2021", "HIGH",
+                "2021_SALARY_loenregulering.pdf", false);
 
         boolean applied = categorizer.applyVerdict(docUuid, "", "loenreg_2021_final(2).pdf", high, true);
 
@@ -95,12 +105,15 @@ class SharePointMigrationCategorizerIntegrationTest {
         assertTrue(doc.isArchived());
         assertEquals("Lønregulering 2021", doc.getLabel());
         assertFalse(doc.isNeedsReview(), "AI-HIGH is trusted — no review flag");
+        assertEquals("2021_SALARY_loenregulering.pdf", doc.getDisplayName());
+        assertEquals("loenreg_2021_final(2).pdf", doc.getOriginalFilename(),
+                "the original filename is immutable — the signing linkage matches on it");
     }
 
     @Test
     void mediumVerdictFallsBackToRuleTableAndFlags() {
         String docUuid = persistDoc("Sygdom", "notat.pdf");
-        AiVerdict medium = new AiVerdict(EmployeeDocumentCategory.CONTRACT, false, null, "MEDIUM", false);
+        AiVerdict medium = new AiVerdict(EmployeeDocumentCategory.CONTRACT, false, null, "MEDIUM", null, false);
 
         boolean applied = categorizer.applyVerdict(docUuid, "Sygdom", "notat.pdf", medium, true);
 
@@ -120,7 +133,7 @@ class SharePointMigrationCategorizerIntegrationTest {
             doc.persist();
         });
 
-        AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, false, null, "HIGH", false);
+        AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, false, null, "HIGH", null, false);
         categorizer.applyVerdict(docUuid, "", "something.pdf", high, true);
 
         assertEquals(EmployeeDocumentCategory.CONTRACT, load(docUuid).getCategory(),

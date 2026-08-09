@@ -20,6 +20,9 @@ import java.util.List;
  *                         "resource" attendee on the Outlook event
  * @param scheduledAt      required, wall-clock Europe/Copenhagen as entered
  *                         (the Graph bridge stamps the timezone)
+ * @param durationMinutes  optional interview length in minutes (15..480);
+ *                         null = the 60-minute default. Drives the Outlook
+ *                         event end time and the free/busy windows.
  */
 public record InterviewCreateRequest(
         RecruitmentInterviewKind kind,
@@ -27,6 +30,7 @@ public record InterviewCreateRequest(
         List<String> interviewerUuids,
         String location,
         String roomEmail,
-        LocalDateTime scheduledAt
+        LocalDateTime scheduledAt,
+        Integer durationMinutes
 ) {
 }

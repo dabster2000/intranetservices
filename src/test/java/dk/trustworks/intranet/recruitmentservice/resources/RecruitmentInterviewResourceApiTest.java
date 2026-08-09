@@ -650,6 +650,121 @@ class RecruitmentInterviewResourceApiTest {
                 .then().statusCode(403);
     }
 
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void rooms_durationOutOfRange_isRejected() {
+        given().header("X-Requested-By", teamleadUser)
+                .queryParam("start", "2026-08-01T10:00:00")
+                .queryParam("durationMinutes", 5)
+                .when().get("/recruitment/interviews/rooms")
+                .then().statusCode(400);
+    }
+
+    // ---- Interviewer availability -------------------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void interviewerAvailability_calendarToggleOff_returnsEmptyList() {
+        // Same posture as rooms: toggle off answers empty (the UI shows the
+        // interviewer list without markers), never an error.
+        given().header("X-Requested-By", teamleadUser)
+                .queryParam("start", "2026-08-01T10:00:00")
+                .when().get("/recruitment/interviews/interviewer-availability")
+                .then().statusCode(200)
+                .body("totalCount", is(0))
+                .body("availability", hasSize(0));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void interviewerAvailability_withoutStart_isRejected() {
+        given().header("X-Requested-By", teamleadUser)
+                .when().get("/recruitment/interviews/interviewer-availability")
+                .then().statusCode(400);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void interviewerAvailability_malformedStart_isRejected() {
+        given().header("X-Requested-By", teamleadUser)
+                .queryParam("start", "next tuesday")
+                .when().get("/recruitment/interviews/interviewer-availability")
+                .then().statusCode(400);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void interviewerAvailability_requiresWriteScope() {
+        given().header("X-Requested-By", teamleadUser)
+                .queryParam("start", "2026-08-01T10:00:00")
+                .when().get("/recruitment/interviews/interviewer-availability")
+                .then().statusCode(403);
+    }
+
+    // ---- Duration -----------------------------------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void create_durationOutOfRange_isRejected() {
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("kind", "ROUND", "round", 1,
+                        "interviewerUuids", List.of(interviewerA),
+                        "durationMinutes", 481,
+                        "scheduledAt", "2026-08-01T10:00:00"))
+                .when().post("/recruitment/applications/{uuid}/interviews", applicationUuid)
+                .then().statusCode(400);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void create_persistsDuration_defaultsTo60WhenAbsent() {
+        String withDuration = given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("kind", "ROUND", "round", 1,
+                        "interviewerUuids", List.of(interviewerA),
+                        "durationMinutes", 90,
+                        "scheduledAt", "2026-08-01T10:00:00"))
+                .when().post("/recruitment/applications/{uuid}/interviews", applicationUuid)
+                .then().statusCode(201)
+                .extract().path("interviewUuid");
+        assertEquals(90, durationInDb(withDuration));
+
+        String withoutDuration = createRoundOne(teamleadUser, List.of(interviewerA));
+        assertEquals(60, durationInDb(withoutDuration));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void reschedule_nullDuration_keepsCurrent_valueReplaces() {
+        String interviewUuid = given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("kind", "ROUND", "round", 1,
+                        "interviewerUuids", List.of(interviewerA),
+                        "durationMinutes", 90,
+                        "scheduledAt", "2026-08-01T10:00:00"))
+                .when().post("/recruitment/applications/{uuid}/interviews", applicationUuid)
+                .then().statusCode(201)
+                .extract().path("interviewUuid");
+
+        // No durationMinutes in the body → the 90 stays.
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("scheduledAt", "2026-08-02T10:00:00"))
+                .when().post("/recruitment/interviews/{uuid}/schedule", interviewUuid)
+                .then().statusCode(200);
+        assertEquals(90, durationInDb(interviewUuid));
+
+        // An explicit value replaces it.
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("scheduledAt", "2026-08-03T10:00:00",
+                        "durationMinutes", 120))
+                .when().post("/recruitment/interviews/{uuid}/schedule", interviewUuid)
+                .then().statusCode(200);
+        assertEquals(120, durationInDb(interviewUuid));
+    }
+
     // ---- Helpers ------------------------------------------------------------------------------
 
     private String roomEmailInDb(String interviewUuid) {
@@ -658,6 +773,14 @@ class RecruitmentInterviewResourceApiTest {
                                 "SELECT room_email FROM recruitment_interviews WHERE uuid = :u")
                         .setParameter("u", interviewUuid)
                         .getSingleResult());
+    }
+
+    private int durationInDb(String interviewUuid) {
+        return QuarkusTransaction.requiringNew().call(() ->
+                ((Number) em.createNativeQuery(
+                                "SELECT duration_minutes FROM recruitment_interviews WHERE uuid = :u")
+                        .setParameter("u", interviewUuid)
+                        .getSingleResult()).intValue());
     }
 
     private String createRoundOne(String actor, List<String> interviewers) {

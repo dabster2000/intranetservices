@@ -26,7 +26,7 @@ import java.util.function.Supplier;
 @ApplicationScoped
 public class DocumentMigrationJobRunner {
 
-    public enum JobType { CRAWL, MATCH, COPY_DRY_RUN, COPY, CATEGORIZE, VERIFY }
+    public enum JobType { CRAWL, MATCH, COPY_DRY_RUN, COPY, CATEGORIZE, RENAME_DRY_RUN, RENAME, VERIFY }
 
     public record JobStatus(
             JobType job,

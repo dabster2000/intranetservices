@@ -229,6 +229,16 @@ public class SigningCase {
     private String templateUuid;
 
     /**
+     * Sender-chosen archival category ({@code EmployeeDocumentCategory}
+     * enum name, V475) for template-less cases created via the upload
+     * wizard. At S3 archival time an explicit value here wins over the
+     * {@link #templateUuid} mapping; NULL falls back to the template
+     * mapping (else OTHER).
+     */
+    @Column(name = "archive_category", length = 20)
+    private String archiveCategory;
+
+    /**
      * JPA lifecycle callback to set created_at on first persist.
      */
     @PrePersist
