@@ -6,6 +6,8 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
@@ -50,6 +52,16 @@ public class RolePermission extends PanacheEntityBase implements Auditable {
 
     @Column(name = "revoked_at")
     private LocalDateTime revokedAt;
+
+    /**
+     * Row-level reach of this grant (Phase 8, V470). Column default is ALL —
+     * pre-Phase-8 semantics, where holding a permission implied unbounded reach.
+     * Console-editable per grant EXCEPT for {@link ProtectedPermissions}, whose
+     * scopes (like their bindings) only change through a reviewed migration.
+     */
+    @Column(name = "data_scope")
+    @Enumerated(EnumType.STRING)
+    private DataScope dataScope = DataScope.ALL;
 
     @Column(name = "created_at", updatable = false)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
@@ -117,6 +129,14 @@ public class RolePermission extends PanacheEntityBase implements Auditable {
 
     public void setRevokedAt(LocalDateTime revokedAt) {
         this.revokedAt = revokedAt;
+    }
+
+    public DataScope getDataScope() {
+        return dataScope == null ? DataScope.ALL : dataScope;
+    }
+
+    public void setDataScope(DataScope dataScope) {
+        this.dataScope = dataScope;
     }
 
     @Override
