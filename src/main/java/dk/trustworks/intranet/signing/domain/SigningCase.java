@@ -7,6 +7,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 
 import java.time.LocalDateTime;
+import java.util.Set;
 
 /**
  * JPA Entity representing a document signing case tracked in our system.
@@ -30,6 +31,29 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @Builder
 public class SigningCase {
+
+    /**
+     * Signing statuses from which NextSign can make no further progress AND
+     * no signed document can ever be produced. A case observed in one of
+     * these is marked {@code processing_status = SKIPPED} and permanently
+     * leaves the status-sync poll set.
+     */
+    public static final Set<String> TERMINAL_NON_UPLOADABLE_STATUSES = Set.of(
+        "expired", "rejected", "denied", "cancelled"
+    );
+
+    /**
+     * All statuses where signing can make no further progress — the
+     * non-uploadable set above plus {@code completed}. The status-sync
+     * batchlet keeps polling a case until it reaches one of these; the
+     * poll-set query in {@code SigningCaseRepository#findCasesNeedingStatusFetch}
+     * and the skip logic in {@code SigningService} must agree on this set,
+     * which is why it lives on the domain class. Values are lowercase — the
+     * query compares against {@code lower(status)}.
+     */
+    public static final Set<String> TERMINAL_STATUSES = Set.of(
+        "completed", "expired", "rejected", "denied", "cancelled"
+    );
 
     /**
      * Internal database ID.

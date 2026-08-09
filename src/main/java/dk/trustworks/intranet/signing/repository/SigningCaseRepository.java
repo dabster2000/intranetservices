@@ -110,36 +110,66 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
     // ========================================================================
 
     /**
+     * Hours between retries once a FAILED case has exhausted its fast-retry
+     * budget. This slow lane exists so an external outage longer than the
+     * fast-retry window (maxRetries × retryDelayMinutes ≈ 75 min) cannot
+     * permanently orphan in-flight cases: they re-enter the poll set a few
+     * times a day until a fetch succeeds. Cases that are genuinely gone from
+     * NextSign never reach this lane — the batchlet abandons them as SKIPPED
+     * after a full window of consecutive 404s.
+     */
+    private static final int EXHAUSTED_RETRY_BACKOFF_HOURS = 6;
+
+    /**
      * Find cases that need status fetching (for batch job).
      * Includes:
      * - Cases with processing_status = PENDING_FETCH (new cases)
      * - Cases with processing_status = FAILED that haven't exceeded max retries
      *   and enough time has passed since last attempt (retry delay)
+     * - Cases with processing_status = FAILED that exhausted the fast retries:
+     *   these re-enter on a slow lane (every {@link #EXHAUSTED_RETRY_BACKOFF_HOURS}h)
+     *   so a NextSign outage cannot freeze cases forever
+     * - Cases with processing_status = COMPLETED whose signing status is not yet
+     *   terminal (pending / in_progress / …). Signing completes hours or days
+     *   after the first fetch, so these keep polling until NextSign reports a
+     *   status in {@link SigningCase#TERMINAL_STATUSES}. This branch deliberately
+     *   does NOT depend on SharePoint fields — recruitment cases carry no
+     *   SharePoint location, and before this branch existed they froze at their
+     *   first-fetch snapshot forever (never showing signatures in the intranet)
      * - Cases with processing_status = COMPLETED that have pending SharePoint upload
      *   (signing may have completed after initial status fetch)
      *
      * Used by NextSignStatusSyncBatchlet to find cases to process.
      *
-     * @param maxRetries Maximum retry count before giving up
+     * @param maxRetries Maximum fast-retry count before dropping to the slow lane
      * @param retryDelayMinutes Wait time before retrying failed cases
      * @return List of cases needing status fetch, ordered by creation date
      */
     public List<SigningCase> findCasesNeedingStatusFetch(int maxRetries, int retryDelayMinutes) {
         LocalDateTime retryThreshold = LocalDateTime.now().minusMinutes(retryDelayMinutes);
+        LocalDateTime exhaustedRetryThreshold = LocalDateTime.now().minusHours(EXHAUSTED_RETRY_BACKOFF_HOURS);
 
         return find(
             // Case 1: New cases awaiting first fetch
             "processingStatus = 'PENDING_FETCH' OR " +
-            // Case 2: Failed cases eligible for retry
+            // Case 2: Failed cases eligible for fast retry
             "(processingStatus = 'FAILED' AND retryCount < ?1 AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) OR " +
-            // Case 3: Completed cases needing SharePoint upload (signing may have completed after fetch)
+            // Case 3: Failed cases past the fast-retry budget — slow lane
+            "(processingStatus = 'FAILED' AND retryCount >= ?1 AND " +
+            "(lastStatusFetch IS NULL OR lastStatusFetch < ?4)) OR " +
+            // Case 4: Fetched cases whose signing is still in flight — poll
+            // until a terminal signing status is reached, SharePoint or not
+            "(processingStatus = 'COMPLETED' AND " +
+            "(status IS NULL OR lower(status) NOT IN ?3) AND " +
+            "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) OR " +
+            // Case 5: Completed cases needing SharePoint upload (signing may have completed after fetch)
             // Includes both PENDING (not yet attempted) and FAILED (retry after delay)
             "(processingStatus = 'COMPLETED' AND sharepointLocationUuid IS NOT NULL AND " +
             "sharepointUploadStatus IN ('PENDING', 'FAILED') AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) " +
             "ORDER BY createdAt ASC",
-            maxRetries, retryThreshold
+            maxRetries, retryThreshold, SigningCase.TERMINAL_STATUSES, exhaustedRetryThreshold
         ).list();
     }
 

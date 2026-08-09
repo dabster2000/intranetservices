@@ -38,12 +38,20 @@ import java.util.UUID;
  * with PENDING_FETCH status and this batch job fetches the full status asynchronously.
  *
  * Processing Flow:
- * 1. Find cases needing status fetch (PENDING_FETCH or FAILED with retries remaining)
+ * 1. Find cases needing status fetch — new cases (PENDING_FETCH), FAILED cases
+ *    with retries remaining (plus a slow retry lane for exhausted ones), and
+ *    fetched cases whose signing status is not yet terminal. In-flight cases
+ *    keep polling until NextSign reports completed/expired/rejected/denied/
+ *    cancelled — signatures arrive days after creation, and downstream
+ *    consumers (recruitment summary endpoint, completion listener, archival
+ *    sweep) all read the polled row.
  * 2. For each case, attempt to fetch status from NextSign
  * 3. On success: update database and mark as COMPLETED
  * 4. On 404: mark as FAILED and retry later (NextSign not ready yet)
  * 5. On other errors: mark as FAILED with error message
- * 6. After max retries: log and skip (manual intervention needed)
+ * 6. After max fast retries: 404s are abandoned as SKIPPED (case is gone from
+ *    NextSign); other errors drop to the repository's slow retry lane so an
+ *    outage cannot orphan cases permanently
  *
  * Schedule:
  * Runs every 5 minutes via BatchScheduler.scheduleNextSignStatusSync()
@@ -91,8 +99,10 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
         DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
 
     /**
-     * Maximum retry attempts before giving up.
-     * With 15min delay between retries = ~75min total retry window.
+     * Maximum fast-lane retry attempts. With 15min delay between retries
+     * = ~75min fast retry window. Exhaustion is not a dead end: 404 cases
+     * are abandoned as SKIPPED, all other failures drop to the repository's
+     * slow retry lane (see SigningCaseRepository#findCasesNeedingStatusFetch).
      */
     private static final int MAX_RETRIES = 5;
 
@@ -184,9 +194,10 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 String errorMsg = e.getMessage();
 
                 // Check if it's a 404 (case not ready yet - expected during race condition window)
-                if (errorMsg != null && errorMsg.contains("404")) {
-                    log.warnf("Case %s still not available (404), will retry later", caseKey);
-                    signingService.markCaseFetchFailed(signingCase, "Case not yet available in NextSign");
+                boolean notFound = errorMsg != null && errorMsg.contains("404");
+                if (notFound) {
+                    log.warnf("Case %s not available in NextSign (404), will retry later", caseKey);
+                    signingService.markCaseFetchFailed(signingCase, "Case not available in NextSign (404)");
                     failed++;
 
                 } else {
@@ -196,10 +207,20 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                     failed++;
                 }
 
-                // Check if max retries exceeded (needs manual intervention)
                 if (signingCase.getRetryCount() >= MAX_RETRIES) {
-                    log.errorf("Case %s exceeded max retries (%d), manual intervention needed",
-                        caseKey, MAX_RETRIES);
+                    if (notFound) {
+                        // Consecutive 404s across the whole fast-retry window go far
+                        // beyond the create-then-fetch race this loop was built for:
+                        // the case no longer exists in NextSign (deleted, or never
+                        // durably created). Abandon it permanently — the slow retry
+                        // lane is for outages, not dead case keys.
+                        signingService.markCaseMissingInNextsign(signingCase);
+                        log.errorf("Case %s abandoned: not found in NextSign after %d attempts",
+                            caseKey, signingCase.getRetryCount());
+                    } else {
+                        log.errorf("Case %s exceeded fast retries (%d); slow retry lane takes over",
+                            caseKey, MAX_RETRIES);
+                    }
                     skipped++;
                 }
             }

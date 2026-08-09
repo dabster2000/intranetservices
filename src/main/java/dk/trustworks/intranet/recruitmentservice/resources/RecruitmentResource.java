@@ -1075,10 +1075,12 @@ public class RecruitmentResource {
         // tracks status for this recruitment case. user_uuid must reference
         // an existing row in `user` (FK), so use the actor who triggered the
         // send — the candidate UUID is not a system user and breaks the FK.
-        // The 5th argument is the literal null: SharePoint upload is owned by
-        // the Convert flow, not by the sync batchlet (whose skip guard fires
-        // when the location uuid is null/blank — see
-        // NextSignStatusSyncBatchlet.java:214).
+        // The 5th argument is the literal null: recruitment cases have no
+        // SharePoint auto-upload location; their signed documents land in the
+        // candidate's S3 staging space via EmployeeSigningArchivalService.
+        // Status sync is unaffected by the null — the poll-set query tracks
+        // every case to a terminal signing status regardless of SharePoint
+        // fields (SigningCaseRepository#findCasesNeedingStatusFetch).
         String actorUuid = actor.toString();
         try {
             withJdbcRetry("saveMinimalCase", () -> {

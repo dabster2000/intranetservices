@@ -100,6 +100,52 @@ class SigningServiceStatusMappingTest {
     }
 
     @Test
+    void terminalStatusSets_agreeAcrossDomainAndService() {
+        // The repository poll-set query stops polling on TERMINAL_STATUSES;
+        // the service's skip logic uses TERMINAL_NON_UPLOADABLE_STATUSES.
+        // They must differ by exactly "completed" or cases either poll
+        // forever or freeze mid-flight.
+        var expected = new java.util.HashSet<>(SigningCase.TERMINAL_NON_UPLOADABLE_STATUSES);
+        expected.add("completed");
+        assertEquals(expected, SigningCase.TERMINAL_STATUSES);
+    }
+
+    @Test
+    void getCaseDetail_refreshesStaleLocalRow() {
+        // Row frozen at its first-fetch snapshot (the pre-fix recruitment
+        // situation): signing completed in NextSign long ago, cache says pending.
+        SigningCase staleRow = SigningCase.builder()
+            .caseKey(CASE_KEY)
+            .userUuid("11111111-1111-1111-1111-111111111111")
+            .documentName("Contract")
+            .status("pending")
+            .processingStatus("COMPLETED")
+            .totalSigners(1)
+            .completedSigners(0)
+            .build();
+        when(nextsignService.getCaseStatus(CASE_KEY)).thenReturn(expiredResponse("signed"));
+        when(signingCaseRepository.findByCaseKey(CASE_KEY)).thenReturn(Optional.of(staleRow));
+
+        var detail = signingService.getCaseDetail(CASE_KEY);
+
+        assertEquals(CASE_KEY, detail.id());
+        assertEquals("completed", staleRow.getStatus());
+        assertEquals(1, staleRow.getCompletedSigners());
+        verify(signingCaseRepository).persist(staleRow);
+    }
+
+    @Test
+    void getCaseDetail_cacheRefreshFailure_doesNotBreakDetailResponse() {
+        when(nextsignService.getCaseStatus(CASE_KEY)).thenReturn(expiredResponse("signed"));
+        when(signingCaseRepository.findByCaseKey(CASE_KEY))
+            .thenThrow(new RuntimeException("db unavailable"));
+
+        var detail = signingService.getCaseDetail(CASE_KEY);
+
+        assertEquals(CASE_KEY, detail.id());
+    }
+
+    @Test
     void alreadyTerminalLocalStatus_isPersistedAsSkipped() {
         SigningCase entity = SigningCase.builder()
             .caseKey(CASE_KEY)
