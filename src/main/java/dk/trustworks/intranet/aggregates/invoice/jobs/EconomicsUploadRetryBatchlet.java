@@ -9,6 +9,8 @@ import jakarta.inject.Named;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.stream.Collectors;
+
 /**
  * Batch job that processes pending e-conomics uploads and retries failed ones.
  *
@@ -49,8 +51,9 @@ public class EconomicsUploadRetryBatchlet extends AbstractBatchlet {
         try {
             // Get current stats before processing
             InvoiceEconomicsUploadService.UploadStats statsBefore = uploadService.getUploadStats();
-            log.infof("Upload stats before processing: pending=%d, success=%d, failed=%d, retryable=%d",
-                    statsBefore.pending(), statsBefore.success(), statsBefore.failed(), statsBefore.retryable());
+            log.infof("Upload stats before processing: pending=%d, success=%d, failed=%d, retryable=%d, terminal=%d",
+                    statsBefore.pending(), statsBefore.success(), statsBefore.failed(),
+                    statsBefore.retryable(), statsBefore.terminal());
 
             // Process brand-new pending uploads (never attempted)
             int pendingProcessed = uploadService.processPendingUploads();
@@ -60,8 +63,11 @@ public class EconomicsUploadRetryBatchlet extends AbstractBatchlet {
 
             // Get stats after processing
             InvoiceEconomicsUploadService.UploadStats statsAfter = uploadService.getUploadStats();
-            log.infof("Upload stats after processing: pending=%d, success=%d, failed=%d, retryable=%d",
-                    statsAfter.pending(), statsAfter.success(), statsAfter.failed(), statsAfter.retryable());
+            log.infof("Upload stats after processing: pending=%d, success=%d, failed=%d, retryable=%d, terminal=%d",
+                    statsAfter.pending(), statsAfter.success(), statsAfter.failed(),
+                    statsAfter.retryable(), statsAfter.terminal());
+
+            alertTerminalFailures(statsBefore, statsAfter);
 
             log.infof("EconomicsUploadRetryBatchlet completed: %d pending processed, %d failed retried",
                     pendingProcessed, failedRetried);
@@ -69,6 +75,41 @@ public class EconomicsUploadRetryBatchlet extends AbstractBatchlet {
         } catch (Exception e) {
             log.error("EconomicsUploadRetryBatchlet failed", e);
             throw e;
+        }
+    }
+
+    /**
+     * Surfaces permanently-failed uploads instead of letting them sit in an INFO counter.
+     *
+     * <p>The token {@code ECONOMICS_UPLOAD_TERMINAL_FAILED} feeds the CloudWatch metric filter
+     * created by {@code scripts/setup-invoice-booking-alarms.sh}; the alarm stays red for as
+     * long as the dead-letter set is non-empty. The line is ERROR on the run where an upload
+     * first exhausts its retries (a new, actionable event) and a WARN heartbeat on every later
+     * run, so log-based error monitoring sees each terminal failure exactly once.
+     *
+     * <p>Resolution: inspect {@code GET /invoices/{uuid}/economics-upload-status}, then either
+     * re-arm via {@code POST /invoices/{uuid}/retry-economics-upload} (after fixing the cause)
+     * or close the row as ABANDONED if the document already exists in e-conomic.
+     */
+    private void alertTerminalFailures(InvoiceEconomicsUploadService.UploadStats before,
+                                       InvoiceEconomicsUploadService.UploadStats after) {
+        if (after.terminal() == 0) {
+            return;
+        }
+        String detail = uploadService.findTerminalFailures().stream()
+                .limit(20)
+                .map(u -> "invoice=" + u.getInvoiceuuid() + " type=" + u.getUploadType()
+                        + " attempts=" + u.getAttemptCount() + "/" + u.getMaxAttempts())
+                .collect(Collectors.joining("; "));
+
+        if (after.terminal() > before.terminal()) {
+            log.errorf("ECONOMICS_UPLOAD_TERMINAL_FAILED: %d upload(s) permanently failed, %d exhausted retries this run. "
+                            + "These will NEVER retry automatically — re-arm via POST /invoices/{uuid}/retry-economics-upload "
+                            + "or mark ABANDONED after verifying in e-conomic. [%s]",
+                    after.terminal(), after.terminal() - before.terminal(), detail);
+        } else {
+            log.warnf("ECONOMICS_UPLOAD_TERMINAL_FAILED: %d upload(s) remain permanently failed and need manual resolution. [%s]",
+                    after.terminal(), detail);
         }
     }
 }
