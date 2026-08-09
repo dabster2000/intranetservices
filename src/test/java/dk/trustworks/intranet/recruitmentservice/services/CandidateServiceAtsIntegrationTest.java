@@ -286,7 +286,7 @@ class CandidateServiceAtsIntegrationTest {
 
         candidateService.addNote(UUID.fromString(created.uuid()),
                 new NoteRequest(PII_SENTINEL + " expects 75.000 kr/md",
-                        true, NoteRequest.FIELD_SALARY_EXPECTATION),
+                        true, NoteRequest.FIELD_SALARY_EXPECTATION, null),
                 actor);
 
         List<RecruitmentEvent> events = eventsFor(created.uuid());
@@ -303,7 +303,7 @@ class CandidateServiceAtsIntegrationTest {
         CandidateResponse created = create(builder().source(CandidateSource.OTHER).build());
         WebApplicationException e = assertThrows(WebApplicationException.class,
                 () -> candidateService.addNote(UUID.fromString(created.uuid()),
-                        new NoteRequest("text", false, "SOME_OTHER_FIELD"), actor));
+                        new NoteRequest("text", false, "SOME_OTHER_FIELD", null), actor));
         assertEquals(400, e.getResponse().getStatus());
     }
 
@@ -369,7 +369,7 @@ class CandidateServiceAtsIntegrationTest {
                 builder().experienceLevel(CandidateExperienceLevel.MID).build(), actor);
         candidateService.pool(UUID.fromString(created.uuid()), null, actor);
         candidateService.addNote(UUID.fromString(created.uuid()),
-                new NoteRequest(PII_SENTINEL + " strong profile", false, null), actor);
+                new NoteRequest(PII_SENTINEL + " strong profile", false, null, null), actor);
 
         List<RecruitmentEvent> events = eventsFor(created.uuid());
         assertEquals(List.of(

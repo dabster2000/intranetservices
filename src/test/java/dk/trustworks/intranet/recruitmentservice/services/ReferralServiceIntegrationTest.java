@@ -559,7 +559,7 @@ class ReferralServiceIntegrationTest {
         assertEquals(2, card.answers().size());
         assertEquals("WHY_TRUSTWORKS", card.answers().get(0).questionKey(),
                 "answers follow the question display order, not insert order");
-        assertEquals("Hvorfor Trustworks?", card.answers().get(0).label(),
+        assertEquals("Hvad har fået dig til at søge netop Trustworks?", card.answers().get(0).label(),
                 "labels resolve from PublicApplyQuestions — the UI never interprets keys");
         assertTrue(card.answers().get(1).answer().contains("workshops"));
     }

@@ -48,6 +48,12 @@ class RecruitmentEventTypeCatalogTest {
         // mutation like any other ("every mutating endpoint = one command
         // = ≥1 event", spec §6.2), and the Documents tab resolves a file's
         // kind from the newest such event.
+        // RECORD_CHECK_DRAWN and RECORD_CHECK_OUTCOME_RECORDED are the
+        // V481 ISAE 3000 sampling additions: the deterministic draw on
+        // first OFFER entry and the HR outcome verification are auditable
+        // actions ("every mutating endpoint = one command = ≥1 event",
+        // spec §6.2); together with recruitment_record_checks they form
+        // the ISAE audit trail. The attest itself is never stored.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -60,6 +66,7 @@ class RecruitmentEventTypeCatalogTest {
                 "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
                 "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
+                "RECORD_CHECK_DRAWN", "RECORD_CHECK_OUTCOME_RECORDED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
                 "ART14_NOTICE_SENT", "DSAR_RECEIVED", "DSAR_EXPORTED", "CANDIDATE_ANONYMIZED",
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
@@ -74,9 +81,9 @@ class RecruitmentEventTypeCatalogTest {
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
-                        + "P25 AI_ASSISTANT_EXCHANGE and DOCUMENT_KIND_CHANGED "
-                        + "additions exactly");
-        assertEquals(49, RecruitmentEventType.values().length);
+                        + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED and "
+                        + "V481 RECORD_CHECK_* additions exactly");
+        assertEquals(51, RecruitmentEventType.values().length);
     }
 
     @Test

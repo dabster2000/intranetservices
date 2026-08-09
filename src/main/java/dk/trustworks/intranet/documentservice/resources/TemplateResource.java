@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.documentservice.resources;
 
 import dk.trustworks.intranet.documentservice.dto.DocumentTemplateDTO;
+import dk.trustworks.intranet.documentservice.dto.TemplatePlaceholderDTO;
 import dk.trustworks.intranet.documentservice.dto.WordTemplateUploadRequest;
 import dk.trustworks.intranet.documentservice.dto.WordTemplateUploadResponse;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
+import dk.trustworks.intranet.documentservice.services.TemplatePlaceholderAiService;
 import dk.trustworks.intranet.documentservice.services.TemplateService;
 import dk.trustworks.intranet.utils.services.WordDocumentService;
 import jakarta.annotation.security.RolesAllowed;
@@ -38,6 +40,9 @@ public class TemplateResource {
 
     @Inject
     WordDocumentService wordDocumentService;
+
+    @Inject
+    TemplatePlaceholderAiService templatePlaceholderAiService;
 
     @Context
     SecurityContext securityContext;
@@ -275,6 +280,43 @@ public class TemplateResource {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("{\"error\":\"" + e.getMessage() + "\"}")
                     .type(MediaType.APPLICATION_JSON)
+                    .build();
+        }
+    }
+
+    /**
+     * AI-suggest full placeholder definitions for a stored Word template:
+     * labels, help texts, section groups and field types, ordered exactly
+     * as the placeholders occur in the document. Suggestions only — the
+     * caller (templates admin) reviews and saves them via the normal
+     * template update. Falls back to deterministic document-order
+     * definitions when the AI call fails, so this endpoint degrades
+     * gracefully rather than erroring.
+     *
+     * @param fileUuid UUID of the file in S3
+     * @return Ordered list of suggested placeholder definitions
+     */
+    @POST
+    @Path("/documents/{fileUuid}/suggest-placeholders")
+    @RolesAllowed({"documents:write"})
+    public Response suggestPlaceholders(@PathParam("fileUuid") String fileUuid) {
+        log.infof("POST /templates/documents/%s/suggest-placeholders", fileUuid);
+
+        try {
+            byte[] fileBytes = wordDocumentService.getWordTemplate(fileUuid);
+            List<TemplatePlaceholderDTO> suggestions =
+                    templatePlaceholderAiService.suggestPlaceholders(fileBytes);
+            return Response.ok(suggestions).build();
+
+        } catch (WordDocumentService.WordDocumentException e) {
+            log.errorf(e, "Word template not found: %s", fileUuid);
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"Template not found\"}")
+                    .build();
+        } catch (Exception e) {
+            log.errorf(e, "Failed to suggest placeholders: %s", fileUuid);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("{\"error\":\"" + e.getMessage() + "\"}")
                     .build();
         }
     }

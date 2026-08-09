@@ -114,6 +114,23 @@ public enum RecruitmentEventType {
     CANDIDATE_HIRED,
     TEAM_ASSIGNED,
 
+    // --- ISAE 3000 record-check sampling (V481) --------------------------
+    /**
+     * The deterministic criminal-record draw performed on a candidate's
+     * FIRST entry into OFFER. Payload: {@code selected},
+     * {@code rate_applied}, {@code check_uuid} — all structural. One per
+     * candidate ever (the draw row's uniqueness is the idempotency key);
+     * together with {@code recruitment_record_checks} this is the audit
+     * trail ISAE auditors read.
+     */
+    RECORD_CHECK_DRAWN,
+    /**
+     * HR recorded what they saw when a selected candidate presented
+     * their straffeattest. Payload: {@code outcome}, {@code check_uuid}.
+     * The attest itself is never stored anywhere (data minimization).
+     */
+    RECORD_CHECK_OUTCOME_RECORDED,
+
     // --- GDPR (P4 capture, P19 engine) ----------------------------------
     CONSENT_REQUESTED,
     CONSENT_GRANTED,

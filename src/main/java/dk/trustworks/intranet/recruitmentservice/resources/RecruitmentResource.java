@@ -162,6 +162,9 @@ public class RecruitmentResource {
     CandidateService candidateService;
 
     @Inject
+    dk.trustworks.intranet.recruitmentservice.notifications.CandidateDiscussionSlackNotifier discussionSlackNotifier;
+
+    @Inject
     CandidateDedupeService dedupeService;
 
     @Inject
@@ -417,7 +420,17 @@ public class RecruitmentResource {
                     "Salary-expectation notes require the recruitment:comp scope",
                     Response.Status.FORBIDDEN);
         }
-        RecruitmentEvent event = candidateService.addNote(uuid, request, currentActor());
+        UUID actor = currentActor();
+        RecruitmentEvent event = candidateService.addNote(uuid, request, actor);
+        // AFTER the note's transaction committed: Slack channel thread +
+        // mention DMs (author + candidate + link, never the note body).
+        // The notifier is dark until its app-setting flag is on, checks the
+        // confidentiality rules itself, and never throws.
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(uuid.toString());
+        if (candidate != null) {
+            discussionSlackNotifier.onNoteAdded(candidate, actor, request.mentions(),
+                    Boolean.TRUE.equals(request.isPrivate()));
+        }
         return Response.status(Response.Status.CREATED)
                 .entity(Map.of(
                         "eventId", event.getEventId(),

@@ -31,6 +31,14 @@ import java.util.Map;
  * @param answers             non-blank answers keyed by question code, in
  *                            question order; each ≤10 000 chars
  * @param poolConsent         true iff the talent-pool checkbox was ticked
+ * @param gdprConsent         always true here — the resource rejects a
+ *                            submission without the mandatory
+ *                            application-processing consent
+ *                            ({@code CONSENT_REQUIRED})
+ * @param isaeConsent         always true here — the resource rejects a
+ *                            submission without the mandatory ISAE 3000
+ *                            criminal-record acknowledgment
+ *                            ({@code CONSENT_REQUIRED})
  * @param cv                  required document (PDF/JPEG/PNG, ≤10 MiB)
  * @param coverLetter         optional document, same constraints
  * @param desiredPracticeUuid unsolicited form only; validated against the
@@ -51,6 +59,8 @@ public record PublicApplySubmission(
         String sourceFollowUp,
         Map<String, String> answers,
         boolean poolConsent,
+        boolean gdprConsent,
+        boolean isaeConsent,
         UploadedDocument cv,
         UploadedDocument coverLetter,
         String desiredPracticeUuid
