@@ -31,8 +31,9 @@ import java.util.UUID;
  *       sponsoring partner) get NO channel posts — in-app + DMs only,
  *       mirroring the circle-visibility rules.</li>
  * </ul>
- * Dark by default: the {@code recruitment.discussion.slack.enabled} app
- * setting must be 'true' (staging-first rollout for external
+ * Dark by default: the {@code recruitment.slack.discussion.enabled} app
+ * setting (13th toggle on the admin "Recruitment AI & Slack" tab) must be
+ * 'true' (staging-first rollout for external
  * integrations). All Slack I/O is called AFTER the note transaction
  * committed and every failure is logged and swallowed — a Slack outage
  * must never fail a note.
@@ -42,9 +43,9 @@ import java.util.UUID;
 public class CandidateDiscussionSlackNotifier {
 
     /** app_settings toggle — the surface stays dark until flipped. */
-    public static final String ENABLED_SETTING_KEY = "recruitment.discussion.slack.enabled";
+    public static final String ENABLED_SETTING_KEY = "recruitment.slack.discussion.enabled";
     /** app_settings override for the discussion channel; falls back to the HR channel. */
-    public static final String CHANNEL_SETTING_KEY = "recruitment.discussion.slack.channel-id";
+    public static final String CHANNEL_SETTING_KEY = "recruitment.slack.channel.discussion";
 
     @Inject
     SlackService slackService;
