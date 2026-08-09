@@ -5,7 +5,7 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.model.AppSetting;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
-import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSlackThread;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentDiscussionThread;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.services.AppSettingService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -119,8 +119,8 @@ public class CandidateDiscussionSlackNotifier {
      */
     private String threadRootTs(RecruitmentCandidate candidate, String channel,
                                 String candidateName, String link) throws Exception {
-        RecruitmentSlackThread existing = RecruitmentSlackThread
-                .<RecruitmentSlackThread>find("candidateUuid = ?1 and channelId = ?2",
+        RecruitmentDiscussionThread existing = RecruitmentDiscussionThread
+                .<RecruitmentDiscussionThread>find("candidateUuid = ?1 and channelId = ?2",
                         candidate.getUuid(), channel)
                 .firstResult();
         if (existing != null) {
@@ -129,7 +129,7 @@ public class CandidateDiscussionSlackNotifier {
         String rootTs = slackService.sendMessageReturningTs(channel,
                 "Discussion: " + candidateName + " — " + link, null);
         QuarkusTransaction.requiringNew().run(() -> {
-            RecruitmentSlackThread thread = new RecruitmentSlackThread();
+            RecruitmentDiscussionThread thread = new RecruitmentDiscussionThread();
             thread.setCandidateUuid(candidate.getUuid());
             thread.setChannelId(channel);
             thread.setRootTs(rootTs);

@@ -21,14 +21,20 @@ import java.util.UUID;
  * The per-candidate discussion thread in the recruitment Slack channel
  * (V482): one root message per candidate; note notifications reply into
  * the thread. Bookkeeping only — the note text never reaches Slack.
+ * <p>
+ * Named DISCUSSION thread deliberately: {@code RecruitmentSlackThread}
+ * (notifications pkg, table {@code recruitment_slack_threads}) is the
+ * P22 per-APPLICATION living card — a distinct concern; Hibernate
+ * requires distinct entity simple names, and the 2026-08-09 staging
+ * rollback was exactly this clash.
  */
 @Getter
 @Setter
 @NoArgsConstructor
 @Entity
-@Table(name = "recruitment_slack_threads")
+@Table(name = "recruitment_discussion_threads")
 @EntityListeners(AuditEntityListener.class)
-public class RecruitmentSlackThread extends PanacheEntityBase implements Auditable {
+public class RecruitmentDiscussionThread extends PanacheEntityBase implements Auditable {
 
     @Id
     @Column(name = "uuid", length = 36, nullable = false, updatable = false)
