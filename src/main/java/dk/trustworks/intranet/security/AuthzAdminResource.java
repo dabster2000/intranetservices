@@ -12,6 +12,7 @@ import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -61,6 +62,12 @@ public class AuthzAdminResource {
     @Inject
     RolePermissionAdminService rolePermissionAdminService;
 
+    @Inject
+    AuthorizationService authorizationService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
     // ------------------------------------------------------------------
     // Matrix — the editor's read model (7.3)
     // ------------------------------------------------------------------
@@ -97,7 +104,7 @@ public class AuthzAdminResource {
 
         List<Map<String, Object>> bindings = new ArrayList<>();
         for (Object[] row : this.<Object[]>nativeRows("""
-                SELECT rp.role, rp.permission_key, rp.granted_by, rp.granted_at
+                SELECT rp.role, rp.permission_key, rp.granted_by, rp.granted_at, rp.data_scope
                 FROM role_permission rp
                 JOIN permission p ON p.permission_key = rp.permission_key AND p.revoked_at IS NULL
                 WHERE rp.revoked_at IS NULL
@@ -108,6 +115,7 @@ public class AuthzAdminResource {
             entry.put("permissionKey", row[1]);
             entry.put("grantedBy", row[2]);
             entry.put("grantedAt", String.valueOf(row[3]));
+            entry.put("dataScope", row[4]);
             bindings.add(entry);
         }
 
@@ -116,6 +124,7 @@ public class AuthzAdminResource {
         payload.put("roles", roles);
         payload.put("bindings", bindings);
         payload.put("protectedPrefixes", ProtectedPermissions.PROTECTED_PREFIXES);
+        payload.put("dataScopes", java.util.Arrays.stream(DataScope.values()).map(Enum::name).toList());
         return Response.ok(payload).build();
     }
 
@@ -158,6 +167,132 @@ public class AuthzAdminResource {
             return badRequest(e.getMessage());
         } catch (NotFoundException e) {
             return notFound(e.getMessage());
+        }
+    }
+
+    /** Body of a scope change: one of the {@link DataScope} names. */
+    public record ScopeChangeRequest(String scope) {}
+
+    @PUT
+    @Path("/roles/{role}/permissions/{permissionKey}/scope")
+    @RolesAllowed({"admin:write"})
+    @Operation(summary = "Change a binding's data scope (Phase 8; protected permissions refused, audited, version-bumped)")
+    public Response changeScope(@PathParam("role") String role,
+                                @PathParam("permissionKey") String permissionKey,
+                                ScopeChangeRequest body) {
+        DataScope scope = body == null ? null : DataScope.fromDb(body.scope());
+        if (scope == null) {
+            return badRequest("Unknown data scope — expected one of "
+                    + java.util.Arrays.toString(DataScope.values()));
+        }
+        try {
+            RolePermission binding = rolePermissionAdminService.changeScope(role, permissionKey, scope);
+            return Response.ok(Map.of("role", binding.getRole(), "permissionKey",
+                    binding.getPermissionKey(), "dataScope", binding.getDataScope().name())).build();
+        } catch (ProtectedPermissionException e) {
+            return conflict(e.getMessage());
+        } catch (UnknownPermissionException e) {
+            return badRequest(e.getMessage());
+        } catch (NotFoundException e) {
+            return notFound(e.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Authorization decisions (Phase 8, task 8.4) — the BFF's thin call
+    // ------------------------------------------------------------------
+
+    /**
+     * Body of a subject-access check. {@code allowSelf} / {@code allowTeamLead}
+     * carry the retired BFF guard's tier options: {@code allowSelf=false}
+     * excludes the OWN tier (mutations — self-service is read-only);
+     * {@code allowTeamLead=false} excludes every relationship tier (surfaces
+     * where team-lead reach would be escalation — HR/ADMIN only).
+     */
+    public record AccessCheckRequest(String permissionKey, String subjectUuid,
+                                     Boolean allowSelf, Boolean allowTeamLead) {}
+
+    /**
+     * Decides whether the acting human — always the {@code X-Requested-By}
+     * header, never a body field, so a confused BFF route cannot ask about
+     * someone else — may touch one subject under a permission. Consumed by the
+     * BFF's {@code checkEmployeeDataAccess} (Phase 8, task 8.5).
+     */
+    @POST
+    @Path("/check")
+    @Operation(summary = "Row-level access decision for the acting user (X-Requested-By)")
+    public Response check(AccessCheckRequest body) {
+        if (body == null || !notBlank(body.permissionKey()) || !notBlank(body.subjectUuid())) {
+            return badRequest("permissionKey and subjectUuid are required");
+        }
+        String actor = actorOrNull();
+        if (actor == null) {
+            return badRequest("No acting user — the X-Requested-By header is required for access checks");
+        }
+        java.util.EnumSet<DataScope> disabled = java.util.EnumSet.noneOf(DataScope.class);
+        if (Boolean.FALSE.equals(body.allowSelf())) {
+            disabled.add(DataScope.OWN);
+        }
+        if (Boolean.FALSE.equals(body.allowTeamLead())) {
+            disabled.add(DataScope.TEAM);
+            disabled.add(DataScope.PRACTICE);
+            disabled.add(DataScope.COMPANY);
+        }
+        AuthorizationService.AccessDecision decision = authorizationService.decideSubjectAccess(
+                actor, body.permissionKey().trim().toLowerCase(), body.subjectUuid().trim(),
+                LocalDate.now(), disabled);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("allowed", decision.allowed());
+        payload.put("actorUuid", actor);
+        payload.put("widestScope", decision.widestScope() == null ? null : decision.widestScope().name());
+        payload.put("unbounded", decision.unbounded());
+        payload.put("subjectCount", decision.subjectCount());
+        payload.put("reason", decision.reason());
+        return Response.ok(payload).build();
+    }
+
+    /**
+     * A user's reach for one permission — the simulator's trace data
+     * ("scope TEAM, 12 subjects as of 2026-08-03"). Subject UUIDs are counted,
+     * never listed: the console needs the size, not a person inventory.
+     */
+    @GET
+    @Path("/users/{useruuid}/reach/{permissionKey}")
+    @Operation(summary = "A user's resolved data-scope reach for a permission (simulator trace)")
+    public Response reach(@PathParam("useruuid") String useruuid,
+                          @PathParam("permissionKey") String permissionKey,
+                          @QueryParam("asOf") String asOf,
+                          @QueryParam("subject") String subject) {
+        String key = permissionKey.trim().toLowerCase();
+        if (Permissions.byKey(key) == null) {
+            return badRequest("Unknown permission: " + key);
+        }
+        LocalDate asOfDate;
+        try {
+            asOfDate = notBlank(asOf) ? LocalDate.parse(asOf.trim()) : LocalDate.now();
+        } catch (java.time.format.DateTimeParseException e) {
+            return badRequest("Invalid asOf — use ISO date (2026-08-06)");
+        }
+        ScopeResolution reach = authorizationService.resolveReach(
+                useruuid, key, asOfDate, java.util.Set.of());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("useruuid", useruuid);
+        payload.put("permissionKey", key);
+        payload.put("asOf", asOfDate.toString());
+        payload.put("widestScope", reach.widestScope() == null ? null : reach.widestScope().name());
+        payload.put("unbounded", reach.unbounded());
+        payload.put("subjectCount", reach.unbounded() ? null : reach.subjects().size());
+        // "Bo is not among them" — membership of one subject, never the list.
+        payload.put("subjectIncluded", notBlank(subject) ? reach.permits(subject.trim()) : null);
+        return Response.ok(payload).build();
+    }
+
+    private String actorOrNull() {
+        try {
+            String actor = requestHeaderHolder.getUserUuid();
+            return (actor == null || actor.isBlank()) ? null : actor;
+        } catch (jakarta.enterprise.context.ContextNotActiveException e) {
+            return null;
         }
     }
 
@@ -218,11 +353,12 @@ public class AuthzAdminResource {
      */
     @GET
     @Path("/users/{useruuid}/permissions/trace")
-    @Operation(summary = "A user's effective permissions with the granting role(s) per key")
+    @Operation(summary = "A user's effective permissions with the granting role(s) and data scope(s) per key")
     public Response trace(@PathParam("useruuid") String useruuid) {
         Map<String, List<String>> viaByKey = new TreeMap<>();
+        Map<String, List<String>> scopesByKey = new TreeMap<>();
         for (Object[] row : this.<Object[]>nativeRows("""
-                SELECT rp.permission_key, r.role
+                SELECT rp.permission_key, r.role, rp.data_scope
                 FROM roles r
                 JOIN role_permission rp ON rp.role = r.role AND rp.revoked_at IS NULL
                 JOIN permission p ON p.permission_key = rp.permission_key AND p.revoked_at IS NULL
@@ -230,6 +366,10 @@ public class AuthzAdminResource {
                 ORDER BY rp.permission_key, r.role
                 """, q -> q.setParameter("useruuid", useruuid))) {
             viaByKey.computeIfAbsent((String) row[0], k -> new ArrayList<>()).add((String) row[1]);
+            List<String> scopes = scopesByKey.computeIfAbsent((String) row[0], k -> new ArrayList<>());
+            if (!scopes.contains((String) row[2])) {
+                scopes.add((String) row[2]);
+            }
         }
 
         List<String> roles = this.nativeRows(
@@ -241,6 +381,9 @@ public class AuthzAdminResource {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("permissionKey", key);
             entry.put("viaRoles", viaRoles);
+            // Phase 8: every granted scope for the key. Boolean consumers are
+            // satisfied only when this contains ALL (the legacy projection).
+            entry.put("scopes", scopesByKey.getOrDefault(key, List.of()));
             permissions.add(entry);
         });
 

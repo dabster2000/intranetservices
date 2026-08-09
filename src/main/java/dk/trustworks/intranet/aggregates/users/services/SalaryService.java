@@ -26,6 +26,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @JBossLog
@@ -340,6 +341,19 @@ public class SalaryService {
 
     public List<Salary> findByUseruuid(String useruuid) {
         return Salary.findByUseruuid(useruuid);
+    }
+
+    /**
+     * Scoped variant (Phase 8, task 8.6): the resolved subject set is bound into
+     * the WHERE clause — never applied as a post-filter. With the subject filter
+     * in the query, {@code UserScopeResponseFilter} stays defence in depth with
+     * nothing to strip (task 8.7).
+     */
+    public List<Salary> findByUseruuid(String useruuid, Set<String> permittedSubjects) {
+        if (permittedSubjects == null || permittedSubjects.isEmpty()) {
+            return List.of(); // fail closed — an empty reach never falls back to unscoped
+        }
+        return Salary.list("useruuid = ?1 and useruuid in ?2", useruuid, permittedSubjects);
     }
 
     /**

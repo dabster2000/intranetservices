@@ -85,6 +85,23 @@ class EffectivePermissionServiceTest {
     }
 
     @Test
+    void scopesAreCachedAndFlushedWithTheSameVersionModel() {
+        store.scopes.put(ALICE, Map.of("salaries:read", Set.of(DataScope.OWN)));
+
+        assertEquals(Map.of("salaries:read", Set.of(DataScope.OWN)), service.effectiveScopes(ALICE));
+        service.effectiveScopes(ALICE);
+        assertEquals(1, store.scopeLoadCalls(ALICE), "second read inside the TTL must come from the cache");
+
+        store.version = 2; // a scope change on another task bumped authz_version
+        store.scopes.put(ALICE, Map.of("salaries:read", Set.of(DataScope.TEAM)));
+        clock.advance(Duration.ofMillis(1100));
+
+        assertEquals(Map.of("salaries:read", Set.of(DataScope.TEAM)), service.effectiveScopes(ALICE),
+                "a version bump must surface the new scope well before the 30 s TTL");
+        assertEquals(2, store.scopeLoadCalls(ALICE));
+    }
+
+    @Test
     void unchangedVersionDoesNotFlush() {
         service.effectivePermissions(ALICE);
         clock.advance(Duration.ofMillis(1100));
@@ -114,7 +131,9 @@ class EffectivePermissionServiceTest {
 
     private static final class FakeStore implements AuthzStore {
         final Map<String, Set<String>> permissions = new HashMap<>();
+        final Map<String, Map<String, Set<DataScope>>> scopes = new HashMap<>();
         final Map<String, Integer> loads = new HashMap<>();
+        final Map<String, Integer> scopeLoads = new HashMap<>();
         long version = 1;
         int versionReads;
         int bumps;
@@ -123,10 +142,20 @@ class EffectivePermissionServiceTest {
             return loads.getOrDefault(uuid, 0);
         }
 
+        int scopeLoadCalls(String uuid) {
+            return scopeLoads.getOrDefault(uuid, 0);
+        }
+
         @Override
         public Set<String> loadEffectivePermissions(String userUuid) {
             loads.merge(userUuid, 1, Integer::sum);
             return permissions.getOrDefault(userUuid, Set.of());
+        }
+
+        @Override
+        public Map<String, Set<DataScope>> loadEffectivePermissionScopes(String userUuid) {
+            scopeLoads.merge(userUuid, 1, Integer::sum);
+            return scopes.getOrDefault(userUuid, Map.of());
         }
 
         @Override

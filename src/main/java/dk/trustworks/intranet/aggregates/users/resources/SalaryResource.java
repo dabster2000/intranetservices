@@ -19,9 +19,13 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.TransportationRegistration;
 import dk.trustworks.intranet.userservice.model.VacationPool;
+import dk.trustworks.intranet.security.AuthorizationService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeResolution;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.utils.NumberUtils;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.ContextNotActiveException;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -84,16 +88,31 @@ public class SalaryResource {
     @Inject
     AggregateEventSender aggregateEventSender;
 
+    @Inject
+    AuthorizationService authorizationService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
 
     @GET
     @Path("/{useruuid}/salaries")
     public List<Salary> listAll(@PathParam("useruuid") String useruuid) {
-        return salaryService.findByUseruuid(useruuid);
+        ScopeResolution reach = actorReachOrNull();
+        if (reach == null || reach.unbounded()) {
+            return salaryService.findByUseruuid(useruuid);
+        }
+        if (!reach.permits(useruuid)) {
+            throw salariesReadDenied(useruuid);
+        }
+        // 8.6: the resolved subject set reaches the WHERE clause, never a post-filter.
+        return salaryService.findByUseruuid(useruuid, reach.subjects());
     }
 
     @GET
     @Path("/{useruuid}/salaries/payments/{month}")
     public List<SalaryPayment> listPayments(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
+        enforceSalariesReadScope(useruuid);
         List<SalaryPayment> payments = new ArrayList<>();
         LocalDate date;
         try {
@@ -242,6 +261,7 @@ public class SalaryResource {
     @GET
     @Path("/{useruuid}/salaries/paycheck-overview")
     public PaycheckOverview getPaycheckOverview(@PathParam("useruuid") String useruuid) {
+        enforceSalariesReadScope(useruuid);
         LocalDate nextPayMonth = resolveNextPayMonth(useruuid);
         List<PaycheckOverview.PaycheckMonth> months = new ArrayList<>();
         for (int i = 1; i <= 6; i++) {
@@ -459,6 +479,53 @@ public class SalaryResource {
                 + result.getLumpSumsTotal() + result.getBonus() + result.getHourlyAmount()
                 + result.getExpensesTotal(), 2));
         return result;
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 8 (tasks 8.4 + 8.6): row-level reach of salaries:read
+    // ------------------------------------------------------------------
+
+    /**
+     * The acting human's salaries:read reach, or {@code null} when the caller
+     * carries no {@code X-Requested-By} actor. The BFF always sends the header,
+     * so BFF traffic is scoped; batch jobs and API clients keep pre-Phase-8
+     * behaviour until Phase 12 — a deliberate, findings-recorded fail-open.
+     * Anonymous flows never reach this resource: no session, no actor header,
+     * and no salaries:read-scoped client credential.
+     */
+    private ScopeResolution actorReachOrNull() {
+        String actor = actorOrNull();
+        if (actor == null) {
+            return null;
+        }
+        return authorizationService.resolveReach(actor, "salaries:read", LocalDate.now(), Set.of());
+    }
+
+    /** 403 unless the acting human (when present) may reach the target's salary data. */
+    private void enforceSalariesReadScope(String targetUseruuid) {
+        String actor = actorOrNull();
+        if (actor == null) {
+            return; // non-BFF caller — Phase 12
+        }
+        AuthorizationService.AccessDecision decision = authorizationService.decideSubjectAccess(
+                actor, "salaries:read", targetUseruuid, LocalDate.now(), Set.of());
+        if (!decision.allowed()) {
+            throw salariesReadDenied(targetUseruuid);
+        }
+    }
+
+    private String actorOrNull() {
+        try {
+            String actor = requestHeaderHolder.getUserUuid();
+            return (actor == null || actor.isBlank()) ? null : actor;
+        } catch (ContextNotActiveException e) {
+            return null;
+        }
+    }
+
+    private ForbiddenException salariesReadDenied(String targetUseruuid) {
+        log.infof("salaries:read scope denied — target %s outside the acting user's reach", targetUseruuid);
+        return new ForbiddenException("This employee's salary data is outside your reach");
     }
 
     private static PaycheckOverview.PaycheckWorkItem toWorkItem(Work work) {

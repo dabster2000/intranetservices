@@ -5,7 +5,10 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -23,8 +26,25 @@ public class DbAuthzStore implements AuthzStore {
     @Override
     @SuppressWarnings("unchecked")
     public Set<String> loadEffectivePermissions(String userUuid) {
+        // data_scope = 'ALL' — the legacy boolean projection (Phase 8): sub-ALL
+        // grants must never satisfy a scope-blind check. See AuthzStore javadoc.
         List<String> keys = em.createNativeQuery("""
                 SELECT DISTINCT rp.permission_key
+                FROM roles r
+                JOIN role_permission rp ON rp.role = r.role AND rp.revoked_at IS NULL
+                JOIN permission p ON p.permission_key = rp.permission_key AND p.revoked_at IS NULL
+                WHERE r.useruuid = :useruuid AND rp.data_scope = 'ALL'
+                """)
+                .setParameter("useruuid", userUuid)
+                .getResultList();
+        return Set.copyOf(keys);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, Set<DataScope>> loadEffectivePermissionScopes(String userUuid) {
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT DISTINCT rp.permission_key, rp.data_scope
                 FROM roles r
                 JOIN role_permission rp ON rp.role = r.role AND rp.revoked_at IS NULL
                 JOIN permission p ON p.permission_key = rp.permission_key AND p.revoked_at IS NULL
@@ -32,7 +52,15 @@ public class DbAuthzStore implements AuthzStore {
                 """)
                 .setParameter("useruuid", userUuid)
                 .getResultList();
-        return Set.copyOf(keys);
+        Map<String, Set<DataScope>> scopes = new HashMap<>();
+        for (Object[] row : rows) {
+            DataScope scope = DataScope.fromDb((String) row[1]);
+            if (scope == null) {
+                continue; // unparseable value — fail closed by dropping, never widening
+            }
+            scopes.computeIfAbsent((String) row[0], k -> EnumSet.noneOf(DataScope.class)).add(scope);
+        }
+        return scopes;
     }
 
     @Override
