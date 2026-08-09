@@ -115,6 +115,35 @@ class NextSignStatusSyncBatchletTest {
         assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
         assertEquals(5, signingCase.getRetryCount());
         verify(signingService).markCaseFetchFailed(signingCase, "Read timed out");
+        // Transient errors must NOT be abandoned — the repository's slow
+        // retry lane re-drives them after the backoff.
+        verify(signingService, never()).markCaseMissingInNextsign(signingCase);
+        verifyNoInteractions(sharePointService, slackService);
+    }
+
+    @Test
+    void fifthConsecutive404_isAbandonedAsMissingFromNextsign() throws Exception {
+        SigningCase signingCase = signingCase("pending", "FAILED", 4);
+        when(signingCaseRepository.findCasesNeedingStatusFetch(5, 15))
+            .thenReturn(List.of(signingCase));
+        when(signingService.getStatus(signingCase.getCaseKey())).thenThrow(
+            new SigningService.SigningException("Nextsign API error: 404 Not Found", null)
+        );
+        doAnswer(invocation -> {
+            SigningCase failedCase = invocation.getArgument(0);
+            failedCase.setProcessingStatus("FAILED");
+            failedCase.setRetryCount(failedCase.getRetryCount() + 1);
+            return null;
+        }).when(signingService).markCaseFetchFailed(signingCase, "Case not available in NextSign (404)");
+
+        String result = batchlet.doProcess();
+
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals(5, signingCase.getRetryCount());
+        // A case that 404s across the whole fast-retry window no longer
+        // exists in NextSign — it must be permanently abandoned, not left
+        // to drip through the slow retry lane forever.
+        verify(signingService).markCaseMissingInNextsign(signingCase);
         verifyNoInteractions(sharePointService, slackService);
     }
 

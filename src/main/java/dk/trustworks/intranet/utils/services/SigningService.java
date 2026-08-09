@@ -51,9 +51,12 @@ public class SigningService {
     private static final DateTimeFormatter NEXTSIGN_DATE_FORMATTER =
         DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
-    private static final Set<String> TERMINAL_NON_UPLOADABLE_STATUSES = Set.of(
-        "expired", "rejected", "denied", "cancelled"
-    );
+    /**
+     * Canonical definition lives on {@link SigningCase} so the poll-set query
+     * in {@code SigningCaseRepository} and this skip logic cannot drift apart.
+     */
+    private static final Set<String> TERMINAL_NON_UPLOADABLE_STATUSES =
+        SigningCase.TERMINAL_NON_UPLOADABLE_STATUSES;
 
     private static final String PROCESSING_STATUS_SKIPPED = "SKIPPED";
 
@@ -1110,6 +1113,28 @@ public class SigningService {
     }
 
     /**
+     * Permanently stops polling a case that NextSign reports as not found.
+     * Called by the status-sync batchlet once a case has answered 404 for the
+     * entire fast-retry window: the create-then-fetch race lasts seconds, so a
+     * case still unknown after that many attempts was deleted in NextSign (or
+     * never durably created) and will never produce a status. The row is kept
+     * for audit; SKIPPED removes it from every poll branch.
+     *
+     * @param entity signing case to abandon
+     */
+    @Transactional
+    public void markCaseMissingInNextsign(SigningCase entity) {
+        entity.setProcessingStatus(PROCESSING_STATUS_SKIPPED);
+        entity.setStatusFetchError(
+            "Status sync abandoned: case not found in NextSign (404) after "
+                + entity.getRetryCount() + " attempts");
+        signingCaseRepository.persist(entity);
+
+        log.warnf("Marked case %s as SKIPPED: not found in NextSign after %d attempts",
+            entity.getCaseKey(), entity.getRetryCount());
+    }
+
+    /**
      * Syncs local database with NextSign's case list.
      * Discovers cases created externally (via NextSign dashboard or direct API).
      *
@@ -1301,12 +1326,21 @@ public class SigningService {
     }
 
     /**
-     * Fetches full case detail from NextSign API for the admin detail view.
+     * Fetches full case detail from NextSign API for the admin detail view
+     * and the recruitment dossier's expanded signing panel.
+     *
+     * <p>Also refreshes the local {@code signing_cases} row with what was just
+     * fetched: the 5-minute batchlet is the primary sync, but a human opening
+     * the detail view must never see live data contradicted by a stale cached
+     * row — the collapsed summary endpoint and the recruitment completion
+     * listener both read that row. The refresh is best-effort; a failure
+     * never breaks the detail response.</p>
      *
      * @param caseKey NextSign case key (MongoDB _id)
      * @return Rich case detail DTO with settings, recipients, audit trail, and documents
      * @throws SigningException if case not found or API error
      */
+    @Transactional
     public NextSignCaseDetailDTO getCaseDetail(String caseKey) {
         log.infof("Fetching case detail from NextSign for: %s", caseKey);
 
@@ -1314,6 +1348,12 @@ public class SigningService {
 
         if (!response.isSuccess() || response.caseDetails() == null) {
             throw new SigningException("Case not found or error from NextSign: " + response.message());
+        }
+
+        try {
+            mergeWithDbAndUpdate(caseKey, mapToSigningCaseStatus(caseKey, response));
+        } catch (Exception e) {
+            log.warnf(e, "Local cache refresh failed for case %s (detail response unaffected)", caseKey);
         }
 
         return NextSignCaseDetailDTO.fromCaseDetails(response.caseDetails());
