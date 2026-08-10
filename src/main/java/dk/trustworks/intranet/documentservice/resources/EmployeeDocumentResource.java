@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.documentservice.resources;
 
 import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentDTO;
+import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentHistoryEntryDTO;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocumentAudit;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentAuditAction;
@@ -30,6 +31,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.nio.charset.StandardCharsets;
 import java.net.URLEncoder;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -99,6 +101,29 @@ public class EmployeeDocumentResource {
     public EmployeeDocumentDTO get(@PathParam("uuid") String uuid) {
         EmployeeDocument doc = employeeDocumentService.get(uuid);
         return EmployeeDocumentDTO.from(doc, UserEmployeeDocumentResource.resolveName(doc.getUploadedBy()));
+    }
+
+    /**
+     * A document's lifecycle history — filed / migrated / changed /
+     * archived, oldest first. Access events are excluded (see
+     * {@link EmployeeDocumentAudit#LIFECYCLE_ACTIONS}).
+     *
+     * <p>Ownership is enforced at the BFF, exactly as for
+     * {@code /{uuid}/content}: this endpoint takes a document uuid and
+     * the caller has already proven the document belongs to the file
+     * they may read.</p>
+     */
+    @GET
+    @Path("/{uuid}/history")
+    public List<EmployeeDocumentHistoryEntryDTO> history(@PathParam("uuid") String uuid) {
+        EmployeeDocument doc = employeeDocumentService.get(uuid);
+        Map<String, String> nameCache = new HashMap<>();
+        return EmployeeDocumentAudit.findLifecycleByDocument(uuid).stream()
+                .map(a -> EmployeeDocumentHistoryEntryDTO.from(a, doc.getUserUuid(),
+                        a.getActorUuid() == null ? null
+                                : nameCache.computeIfAbsent(a.getActorUuid(),
+                                        UserEmployeeDocumentResource::resolveName)))
+                .toList();
     }
 
     // ── Mutations ──────────────────────────────────────────────────────────
