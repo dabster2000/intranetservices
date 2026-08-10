@@ -2,6 +2,7 @@ package dk.trustworks.intranet.signing.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
@@ -136,10 +137,17 @@ public class EmployeeSigningArchivalService {
                 continue;
             }
             String baseName = doc.name() != null && !doc.name().isBlank() ? doc.name() : "document_" + doc.index();
+            // original_filename keeps the archival timestamp — it is what makes
+            // repeat sends of the same document distinguishable. The display
+            // name is built from the CLEAN base name instead, so the employee
+            // reads "Lønregulering" and not "Lønregulering signed 2026 08 10
+            // 143022": a machine-uniqueness suffix is not part of a title.
             String filename = stripPdfSuffix(baseName) + "_signed_" + timestamp + ".pdf";
+            String displayName = MigrationCategorizerRules.buildDisplayName(
+                    category, stripPdfSuffix(baseName) + ".pdf", null, null);
             try {
                 employeeDocumentService.store(new StoreCommand(
-                        userUuid, doc.pdfBytes(), filename, "application/pdf",
+                        userUuid, doc.pdfBytes(), filename, displayName, "application/pdf",
                         category, null, EmployeeDocumentSource.SIGNING,
                         caseKey, doc.index(),
                         false, false, null, null, true));

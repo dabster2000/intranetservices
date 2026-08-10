@@ -2,9 +2,11 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * The names a converted candidate's documents land under.
@@ -63,5 +65,40 @@ class PromotedDocumentNamingTest {
         assertEquals("2026-08-09_CONTRACT_studenteransættelseskontrakt-tw-frederikke.pdf",
                 promoted(EmployeeDocumentCategory.CONTRACT,
                         "Studenteransættelseskontrakt_TW - Frederikke_signed_2026-08-09_203311.pdf"));
+    }
+
+    // ── Post-hire signing archival ─────────────────────────────────────────
+
+    /**
+     * {@code EmployeeSigningArchivalService} stores
+     * {@code {name}_signed_{yyyy-MM-dd_HHmmss}.pdf} as the original
+     * filename — that suffix is what keeps repeat sends of the same
+     * document distinct — but builds the display name from the clean base
+     * name, so the archival timestamp never reaches the employee's title.
+     */
+    private static String archived(EmployeeDocumentCategory category, String documentName) {
+        return MigrationCategorizerRules.buildDisplayName(category, documentName + ".pdf", null, null);
+    }
+
+    @Test
+    void aPayRaiseFilesUnderItsOwnName() {
+        assertEquals("SALARY_lønregulering.pdf",
+                archived(EmployeeDocumentCategory.SALARY, "Lønregulering"));
+    }
+
+    @Test
+    void theArchivalTimestampNeverReachesTheTitle() {
+        String name = archived(EmployeeDocumentCategory.SALARY, "Lønregulering Anders Boier");
+        assertEquals("SALARY_lønregulering-anders-boier.pdf", name);
+        assertFalse(name.contains("signed"), "archival marker leaked into the name: " + name);
+        assertFalse(name.matches(".*\\d{6}.*"), "archival timestamp leaked into the name: " + name);
+    }
+
+    @Test
+    void salaryTemplatesCanNowReachTheSalaryCategory() {
+        // Before this, TemplateCategory had no SALARY at all, so a pay-raise
+        // template could only ever map to ADDENDUM or OTHER.
+        assertEquals(EmployeeDocumentCategory.SALARY,
+                EmployeeDocumentCategory.fromTemplateCategory(TemplateCategory.SALARY));
     }
 }

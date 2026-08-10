@@ -77,11 +77,21 @@ public class EmployeeDocumentService {
 
     // ── Commands / results ─────────────────────────────────────────────────
 
-    /** Byte-level store command (uploads + signing archival). */
+    /**
+     * Byte-level store command (uploads + signing archival).
+     *
+     * <p>{@code displayName} is the standardized name the caller has
+     * already built (see
+     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * it is normalized again here). Null ⇒ the row falls back to
+     * {@code original_filename}, which is what interactive uploads want:
+     * HR typed that name deliberately.</p>
+     */
     public record StoreCommand(
             String userUuid,
             byte[] bytes,
             String filename,
+            String displayName,
             String contentType,
             EmployeeDocumentCategory category,
             String label,
@@ -94,12 +104,12 @@ public class EmployeeDocumentService {
             String migratedFrom,
             boolean bypassSizeCap) {
 
-        /** Interactive upload (HR or self-service). */
+        /** Interactive upload (HR or self-service) — the typed filename stands. */
         public static StoreCommand upload(String userUuid, byte[] bytes, String filename,
                                           String contentType, EmployeeDocumentCategory category,
                                           String label, boolean hrOnly, boolean selfUpload,
                                           String actorUuid) {
-            return new StoreCommand(userUuid, bytes, filename, contentType,
+            return new StoreCommand(userUuid, bytes, filename, null, contentType,
                     category, label,
                     selfUpload ? EmployeeDocumentSource.MANUAL_SELF : EmployeeDocumentSource.MANUAL_HR,
                     null, null,
@@ -215,6 +225,10 @@ public class EmployeeDocumentService {
         doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
         doc.setLabel(trimTo(cmd.label(), 255));
         doc.setOriginalFilename(trimTo(safeFilename, 500));
+        // Normalized here too: the builder already did it, but this is the
+        // boundary a caller could bypass, and a display name reaches a
+        // Content-Disposition header.
+        doc.setDisplayName(normalizeDisplayName(cmd.displayName(), safeFilename));
         doc.setContentType(contentType);
         doc.setFileSizeBytes(cmd.bytes().length);
         doc.setSha256(sha256Hex(cmd.bytes()));
