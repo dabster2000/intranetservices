@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -30,9 +31,13 @@ import java.util.UUID;
  * template. Keys are never renamed once {@code EMAIL_SENT} events reference
  * them (reporting joins on the key).
  * <p>
- * {@link #body} is plain text — HTML-escaping and newline conversion happen
- * at send time ({@code RecruitmentEmailRenderer}), so templates can never
- * carry markup or scripts into the mail client.
+ * {@link #body} is read according to {@link #bodyFormat}: legacy {@code PLAIN}
+ * text (HTML-escaped and newline-converted at send time, as before rich text)
+ * or a {@code HTML} fragment already reduced to
+ * {@code RecruitmentEmailHtmlSanitizer}'s allow-list on write. Either way the
+ * body is run through the send-time conversion in
+ * {@code RecruitmentEmailRenderer}, so no template can carry scripts or
+ * unknown markup into a mail client.
  */
 @Getter
 @Setter
@@ -57,9 +62,20 @@ public class RecruitmentEmailTemplate extends PanacheEntityBase implements Audit
     @Column(name = "subject", length = 300, nullable = false)
     private String subject;
 
-    /** Danish plain-text body with merge fields. */
+    /** Danish body with merge fields; interpretation governed by {@link #bodyFormat}. */
     @Column(name = "body", columnDefinition = "TEXT", nullable = false)
     private String body;
+
+    /**
+     * Whether {@link #body} is legacy plain text or a sanitized HTML fragment.
+     * Every row predating rich text is {@code PLAIN} (V485) and stays that way
+     * until a recruiter deliberately saves the template from the rich editor —
+     * which is what keeps a rollback to the previous release harmless for
+     * templates nobody has touched.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "body_format", length = 5, nullable = false)
+    private RecruitmentEmailBodyFormat bodyFormat = RecruitmentEmailBodyFormat.PLAIN;
 
     /**
      * {@code true} = the reactor sends immediately; {@code false} =

@@ -12,6 +12,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -220,7 +221,11 @@ public class RecruitmentDsarExportService {
             m.put("status", String.valueOf(p.getStatus()));
             m.put("to_email", p.getToEmail());
             m.put("subject", p.getSubject());
-            m.put("body", p.getBody());
+            // A data subject is entitled to the email we hold about them, not
+            // to its markup — a rich-text body would otherwise arrive as HTML
+            // source in an Art. 15 deliverable.
+            m.put("body", readable(p.getBody(), p.getBodyFormat()));
+            m.put("body_format", String.valueOf(p.getBodyFormat()));
             m.put("created_at", String.valueOf(p.getCreatedAt()));
             return m;
         }).toList());
@@ -330,20 +335,38 @@ public class RecruitmentDsarExportService {
             pdf.heading("6. Timeline (all recorded events)");
             for (RecruitmentEvent event : events) {
                 pdf.line(event.getOccurredAt() + "  " + event.getEventType());
-                appendJsonLines(pdf, parse(event.getPayload()));
-                appendJsonLines(pdf, parse(event.getPii()));
+                Map<String, Object> payload = parse(event.getPayload());
+                appendJsonLines(pdf, payload, false);
+                // Only an event that says its body is markup gets flattened.
+                // A legacy plain-text body may legitimately contain "<mit
+                // direkte nummer>", which the HTML parser would eat as a tag.
+                appendJsonLines(pdf, parse(event.getPii()),
+                        "HTML".equals(String.valueOf(payload.get("body_format"))));
             }
             return pdf.finish();
         }
     }
 
-    private static void appendJsonLines(PdfWriter pdf, Map<String, Object> section)
-            throws IOException {
+    private static void appendJsonLines(PdfWriter pdf, Map<String, Object> section,
+                                        boolean bodyIsHtml) throws IOException {
         for (Map.Entry<String, Object> entry : section.entrySet()) {
             if (entry.getValue() != null) {
-                pdf.line("    " + entry.getKey() + ": " + entry.getValue());
+                // A rich-text email body archived on EMAIL_SENT /
+                // AI_EMAIL_DRAFT_GENERATED would otherwise reach an Art. 15
+                // deliverable as HTML source; the PDF is read by a human.
+                String value = bodyIsHtml && "body".equals(entry.getKey())
+                        ? RecruitmentEmailHtmlSanitizer.toPlainText(String.valueOf(entry.getValue()))
+                        : String.valueOf(entry.getValue());
+                pdf.line("    " + entry.getKey() + ": " + value);
             }
         }
+    }
+
+    /** An email body as a human reads it, whatever format it was stored in. */
+    private static String readable(String body, RecruitmentEmailBodyFormat format) {
+        return format != null && format.isHtml()
+                ? RecruitmentEmailHtmlSanitizer.toPlainText(body)
+                : body;
     }
 
     // ------------------------------------------------------------------

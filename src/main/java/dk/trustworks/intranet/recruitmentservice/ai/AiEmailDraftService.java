@@ -8,7 +8,9 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailHtmlSanitizer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -85,7 +87,8 @@ public class AiEmailDraftService {
     RecruitmentAiVoiceCard voiceCard;
 
     /** The draft the endpoint answers with — same shape as a template render. */
-    public record Draft(String subject, String body, Set<String> unresolvedFields) {
+    public record Draft(String subject, String body, RecruitmentEmailBodyFormat bodyFormat,
+                        Set<String> unresolvedFields) {
     }
 
     /** Phase-1 output: every input the model round-trip and the append need. */
@@ -94,6 +97,7 @@ public class AiEmailDraftService {
                                  String applicationUuid, String positionUuid,
                                  String positionTitle, String stage,
                                  String renderedSubject, String renderedBody,
+                                 RecruitmentEmailBodyFormat bodyFormat,
                                  String voiceCard) {
     }
 
@@ -125,7 +129,7 @@ public class AiEmailDraftService {
         // Phase 3 — the bookkeeping event in a fresh short tx.
         QuarkusTransaction.requiringNew()
                 .run(() -> appendDraftEvent(prepared, instruction, body, actorUserUuid));
-        return new Draft(prepared.renderedSubject(), body,
+        return new Draft(prepared.renderedSubject(), body, prepared.bodyFormat(),
                 RecruitmentEmailRenderer.tokensIn(body));
     }
 
@@ -134,9 +138,11 @@ public class AiEmailDraftService {
                                   RecruitmentApplication application) {
         RecruitmentPosition position = application == null ? null
                 : RecruitmentPosition.findById(application.getPositionUuid());
+        RecruitmentEmailBodyFormat bodyFormat = template.getBodyFormat() == null
+                ? RecruitmentEmailBodyFormat.PLAIN : template.getBodyFormat();
         RecruitmentEmailRenderer.Rendered rendered =
                 RecruitmentEmailRenderer.render(template.getSubject(), template.getBody(),
-                        candidate, position);
+                        candidate, position, java.util.Map.of(), bodyFormat);
         return new PreparedDraft(candidate.getUuid(), candidate.getFirstName(),
                 template.getUuid(), template.getTemplateKey(),
                 application == null ? null : application.getUuid(),
@@ -144,21 +150,22 @@ public class AiEmailDraftService {
                 position == null ? null : position.getTitle(),
                 application == null || application.getStage() == null
                         ? null : application.getStage().name(),
-                rendered.subject(), rendered.body(),
+                rendered.subject(), rendered.body(), bodyFormat,
                 // Read inside phase 1: the settings lookup is a DB read and
                 // must not happen on the untransacted OpenAI leg.
                 voiceCard.effectiveCard());
     }
 
-    /** Phase 2: the plain-text round-trip — network only, no DB access. */
+    /** Phase 2: the text round-trip — network only, no DB access. */
     private String callModel(PreparedDraft prepared, String instruction) {
+        boolean html = prepared.bodyFormat().isHtml();
         String raw = openAIService.generatePlainText(
-                AiEmailComposerPrompts.systemPrompt(prepared.voiceCard()),
+                AiEmailComposerPrompts.systemPrompt(prepared.voiceCard(), html),
                 AiEmailComposerPrompts.userPrompt(prepared.candidateFirstName(),
                         prepared.positionTitle(), prepared.stage(),
                         prepared.renderedBody(), instruction),
                 draftModel, MAX_OUTPUT_TOKENS, TEMPERATURE, false);
-        String body = sanitizeBody(raw);
+        String body = html ? sanitizeHtmlBody(raw) : sanitizeBody(raw);
         if (body == null) {
             // Never log the prompt or output body — just the fact.
             throw new IllegalStateException(
@@ -222,6 +229,52 @@ public class AiEmailDraftService {
             cleaned = cleaned.substring(0, RecruitmentEmailService.BODY_MAX_LENGTH).trim();
         }
         return cleaned;
+    }
+
+    /**
+     * Draft-body sanitisation for an HTML template. Order matters:
+     * <ol>
+     *   <li>strip a wrapping markdown code fence — models emit
+     *       <code>```html … ```</code> habitually regardless of instructions,
+     *       and the fence would otherwise be sanitized into visible text;</li>
+     *   <li>reduce to the allow-list, which also re-balances the fragment
+     *       (jsoup closes an unterminated {@code <strong>} for us);</li>
+     *   <li>check emptiness on the rendered text, not the string —
+     *       {@code <p><br></p>} is a refusal dressed as content;</li>
+     *   <li>cap length only AFTER sanitising, then re-clean, because cutting
+     *       a raw string at N characters cuts mid-tag.</li>
+     * </ol>
+     * Blank ⇒ null (upstream failure/refusal), same contract as
+     * {@link #sanitizeBody(String)}.
+     */
+    static String sanitizeHtmlBody(String value) {
+        if (value == null) {
+            return null;
+        }
+        String cleaned = RecruitmentEmailHtmlSanitizer.clean(stripCodeFence(value));
+        if (RecruitmentEmailHtmlSanitizer.isBlankHtml(cleaned)) {
+            return null;
+        }
+        if (cleaned.length() > RecruitmentEmailService.BODY_MAX_LENGTH) {
+            cleaned = RecruitmentEmailHtmlSanitizer.clean(
+                    cleaned.substring(0, RecruitmentEmailService.BODY_MAX_LENGTH));
+        }
+        return cleaned;
+    }
+
+    /** Unwrap a single fenced code block, if the whole answer is one. */
+    static String stripCodeFence(String value) {
+        String trimmed = value.strip();
+        if (!trimmed.startsWith("```")) {
+            return value;
+        }
+        int firstNewline = trimmed.indexOf('\n');
+        if (firstNewline < 0) {
+            return value;
+        }
+        String inner = trimmed.substring(firstNewline + 1);
+        int closing = inner.lastIndexOf("```");
+        return closing < 0 ? inner : inner.substring(0, closing);
     }
 
     /** Test seam — the config value the service will send drafts with. */

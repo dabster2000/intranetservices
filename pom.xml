@@ -401,6 +401,16 @@
       <version>3.0.7</version>
     </dependency>
 
+    <!-- jsoup — allow-list HTML sanitizer for the rich-text candidate-email bodies
+         (RecruitmentEmailHtmlSanitizer). Chosen over hand-rolled escaping because an email
+         body is attacker-adjacent content (candidate names merge into it) that we both store
+         and render; Safelist is a parse-then-rebuild sanitizer, not a regex filter. -->
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>1.22.2</version>
+    </dependency>
+
     <!-- TESTING -->
     <dependency>
       <groupId>io.quarkus</groupId>

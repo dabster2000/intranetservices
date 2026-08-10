@@ -15,9 +15,19 @@ import jakarta.validation.constraints.Size;
  * for {@code generate-review-pdf} the note is just persisted on the revision
  * row for audit and may be blank.
  *
- * @param note free-text message; constraints depend on the calling endpoint
+ * <strong>Note format:</strong> {@code noteFormat} says whether {@code note}
+ * is legacy plain text or a rich-text HTML fragment. Absent means PLAIN, so a
+ * client predating rich text produces exactly the email it always did.
+ *
+ * @param note       free-text message; constraints depend on the calling endpoint
+ * @param noteFormat PLAIN (default) or HTML
  */
 public record SendReviewRequest(
-        @Size(max = 2000) String note
+        @Size(max = 4000) String note,
+        String noteFormat
 ) {
+    /** Back-compat constructor for callers that predate rich text. */
+    public SendReviewRequest(String note) {
+        this(note, null);
+    }
 }

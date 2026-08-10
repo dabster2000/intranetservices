@@ -151,7 +151,7 @@ public class CandidateMailerReactor extends RecruitmentReactor {
         if (template.isAutoSend() && !partnerReferralRejection) {
             emailService.send(candidate, event.getApplicationUuid(), event.getPositionUuid(),
                     template.getTemplateKey(), template.getUuid(),
-                    rendered.subject(), rendered.body(), "AUTO", null,
+                    rendered.subject(), rendered.body(), template.getBodyFormat(), "AUTO", null,
                     RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT).actorSystem(),
                     event.getVisibility(),
                     emailService.replyToFallback(), copies);

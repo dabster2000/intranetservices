@@ -280,13 +280,17 @@ public class RecruitmentGdprService {
         }
         RecruitmentConsentService.MintedToken minted = consentService.mintToken(
                 candidateUuid, candidate.getRetentionDeadline());
+        // The format matters here: in an HTML body {{consent_link}} must
+        // become a real anchor, or the renewal link arrives as dead text and
+        // the candidate is deleted for not clicking something unclickable.
         RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
                 template.getSubject(), template.getBody(), candidate, null,
-                Map.of("consent_link", consentBaseUrl + "/consent/" + minted.token()));
+                Map.of("consent_link", consentBaseUrl + "/consent/" + minted.token()),
+                template.getBodyFormat());
 
         emailService.send(candidate, null, null,
                 template.getTemplateKey(), template.getUuid(),
-                rendered.subject(), rendered.body(), "GDPR_SWEEP", null,
+                rendered.subject(), rendered.body(), template.getBodyFormat(), "GDPR_SWEEP", null,
                 RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                         .actorScheduler()
                         .payload("renewal_number", renewalNumber)

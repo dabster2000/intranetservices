@@ -13,6 +13,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
@@ -64,7 +65,18 @@ public class RecruitmentEmailService {
     public static final String STAGE_KEY_PREFIX = "STAGE_";
 
     public static final int SUBJECT_MAX_LENGTH = 300;
-    public static final int BODY_MAX_LENGTH = 10_000;
+
+    /**
+     * Cap on the stored body string, in characters. Raised from 10 000 with
+     * rich text: markup costs roughly 10 % on prose and 2-3× on heavily
+     * formatted text, and the pre-rich-text budget was the recruiter's writing
+     * room, not the markup's. 16 000 is deliberately below 16 383 — the
+     * worst-case 4-bytes-per-character bound of the {@code TEXT} column's
+     * 65 535 bytes — so no input can overflow the column and no widening
+     * migration is needed. For scale, the longest real template today is 1 010
+     * characters.
+     */
+    public static final int BODY_MAX_LENGTH = 16_000;
     public static final int NAME_MAX_LENGTH = 120;
 
     private static final Pattern TEMPLATE_KEY_PATTERN = Pattern.compile("[A-Z][A-Z0-9_]{1,59}");
@@ -118,11 +130,15 @@ public class RecruitmentEmailService {
 
     @Transactional
     public RecruitmentEmailTemplate createTemplate(String templateKey, String name, String subject,
-                                                   String body, boolean autoSend, boolean active,
+                                                   String body, RecruitmentEmailBodyFormat bodyFormat,
+                                                   boolean autoSend, boolean active,
                                                    Set<RecruitmentEmailCopyRole> copyRoles,
                                                    RecruitmentEmailCopyMode copyMode) {
         String key = normalizeKey(templateKey);
-        validateTemplateFields(name, subject, body);
+        RecruitmentEmailBodyFormat format = bodyFormat == null
+                ? RecruitmentEmailBodyFormat.PLAIN : bodyFormat;
+        String storedBody = sanitizeBodyForStorage(body, format);
+        validateTemplateFields(name, subject, storedBody, format);
         if (RecruitmentEmailTemplate.count("templateKey = ?1", key) > 0) {
             throw new BusinessRuleViolation("A template with key '" + key + "' already exists");
         }
@@ -130,7 +146,8 @@ public class RecruitmentEmailService {
         template.setTemplateKey(key);
         template.setName(name.trim());
         template.setSubject(subject.trim());
-        template.setBody(body);
+        template.setBody(storedBody);
+        template.setBodyFormat(format);
         template.setAutoSend(autoSend);
         template.setActive(active);
         template.setCopyRoles(RecruitmentEmailCopyRole.toCsv(copyRoles));
@@ -141,22 +158,72 @@ public class RecruitmentEmailService {
 
     @Transactional
     public RecruitmentEmailTemplate updateTemplate(String uuid, String name, String subject,
-                                                   String body, boolean autoSend, boolean active,
+                                                   String body, RecruitmentEmailBodyFormat bodyFormat,
+                                                   boolean autoSend, boolean active,
                                                    Set<RecruitmentEmailCopyRole> copyRoles,
                                                    RecruitmentEmailCopyMode copyMode) {
         RecruitmentEmailTemplate template = RecruitmentEmailTemplate.findById(uuid);
         if (template == null) {
             return null;
         }
-        validateTemplateFields(name, subject, body);
+        // Absent format keeps whatever the row already had, so a caller that
+        // predates rich text cannot silently reinterpret a stored body.
+        RecruitmentEmailBodyFormat format = bodyFormat == null
+                ? template.getBodyFormat() : bodyFormat;
+        String storedBody = sanitizeBodyForStorage(body, format);
+        validateTemplateFields(name, subject, storedBody, format);
         template.setName(name.trim());
         template.setSubject(subject.trim());
-        template.setBody(body);
+        template.setBody(storedBody);
+        template.setBodyFormat(format);
         template.setAutoSend(autoSend);
         template.setActive(active);
         template.setCopyRoles(RecruitmentEmailCopyRole.toCsv(copyRoles));
         template.setCopyMode(copyMode == null ? RecruitmentEmailCopyMode.BCC : copyMode);
         return template;
+    }
+
+    /**
+     * Reduce an inbound body to what we are willing to store. The client is
+     * never trusted: the frontend sanitizes so the author sees what will be
+     * kept, this runs so that is actually true, and the send path sanitizes
+     * once more because a body can be stored by one release and sent by the
+     * next.
+     */
+    public static String sanitizeBodyForStorage(String body, RecruitmentEmailBodyFormat format) {
+        if (format == null || !format.isHtml()) {
+            return body;
+        }
+        return RecruitmentEmailHtmlSanitizer.clean(body);
+    }
+
+    /**
+     * Sanitize, then re-check that anything readable survived. The required-body
+     * checks upstream run on the raw string, and the two do not agree on
+     * invisible format characters: a body of {@code <p>\uFEFF</p>} has
+     * non-blank text before cleaning and none after, which would otherwise send
+     * an empty email to a candidate — and through the review queue, flip a
+     * one-shot row to APPROVED on the way.
+     */
+    private static String sanitizeSendableBody(String body, RecruitmentEmailBodyFormat format) {
+        String cleaned = sanitizeBodyForStorage(body, format);
+        if (isBlankBody(cleaned, format)) {
+            throw new BusinessRuleViolation(
+                    "The message is empty once formatting is removed — write something to send");
+        }
+        return cleaned;
+    }
+
+    /**
+     * True when a body carries no readable text. {@code "<p><br></p>"} is what
+     * an empty rich editor serialises to and {@code isBlank()} calls that
+     * non-empty, so every required-body check goes through here.
+     */
+    public static boolean isBlankBody(String body, RecruitmentEmailBodyFormat format) {
+        if (format != null && format.isHtml()) {
+            return RecruitmentEmailHtmlSanitizer.isBlankHtml(body);
+        }
+        return body == null || body.isBlank();
     }
 
     /** Active template for a reactor-trigger key; null = trigger silently off. */
@@ -174,14 +241,15 @@ public class RecruitmentEmailService {
                 || key != null && key.startsWith(STAGE_KEY_PREFIX);
     }
 
-    private static void validateTemplateFields(String name, String subject, String body) {
+    private static void validateTemplateFields(String name, String subject, String body,
+                                               RecruitmentEmailBodyFormat format) {
         if (name == null || name.isBlank() || name.trim().length() > NAME_MAX_LENGTH) {
             throw new BusinessRuleViolation("name is required (max " + NAME_MAX_LENGTH + " characters)");
         }
         if (subject == null || subject.isBlank() || subject.trim().length() > SUBJECT_MAX_LENGTH) {
             throw new BusinessRuleViolation("subject is required (max " + SUBJECT_MAX_LENGTH + " characters)");
         }
-        if (body == null || body.isBlank() || body.length() > BODY_MAX_LENGTH) {
+        if (isBlankBody(body, format) || body.length() > BODY_MAX_LENGTH) {
             throw new BusinessRuleViolation("body is required (max " + BODY_MAX_LENGTH + " characters)");
         }
     }
@@ -203,7 +271,27 @@ public class RecruitmentEmailService {
                                                     RecruitmentCandidate candidate,
                                                     RecruitmentPosition position) {
         return RecruitmentEmailRenderer.render(template.getSubject(), template.getBody(),
-                candidate, position);
+                candidate, position, java.util.Map.of(), template.getBodyFormat());
+    }
+
+    /**
+     * Render a template for a surface that composes in rich text — the compose
+     * dialog and the review queue. A legacy {@code PLAIN} template is
+     * up-converted to the equivalent HTML so those surfaces have exactly one
+     * editing mode; the candidate sees the same email either way, because the
+     * up-conversion is the same escape-and-linebreak step the send path has
+     * always applied to plain bodies.
+     */
+    public RecruitmentEmailRenderer.Rendered renderAsHtml(RecruitmentEmailTemplate template,
+                                                          RecruitmentCandidate candidate,
+                                                          RecruitmentPosition position) {
+        if (template.getBodyFormat() != null && template.getBodyFormat().isHtml()) {
+            return render(template, candidate, position);
+        }
+        RecruitmentEmailRenderer.Rendered plain = render(template, candidate, position);
+        return new RecruitmentEmailRenderer.Rendered(plain.subject(),
+                RecruitmentEmailHtmlSanitizer.plainToHtml(plain.body()),
+                plain.unresolvedFields());
     }
 
     // ------------------------------------------------------------------
@@ -221,7 +309,8 @@ public class RecruitmentEmailService {
     @Transactional
     public RecruitmentPendingEmailResult sendManual(String candidateUuid, String templateUuid,
                                                     String applicationUuid, String subject,
-                                                    String body, String actorUserUuid,
+                                                    String body, RecruitmentEmailBodyFormat bodyFormat,
+                                                    String actorUserUuid,
                                                     List<String> copyUserUuids,
                                                     RecruitmentEmailCopyMode copyMode) {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
@@ -229,6 +318,11 @@ public class RecruitmentEmailService {
         RecruitmentEmailTemplate template = templateUuid == null ? null
                 : RecruitmentEmailTemplate.findById(templateUuid);
         String templateKey = template == null ? null : template.getTemplateKey();
+        // The recruiter's own text — the one body on this path that was never
+        // sanitized on write, because there is no write. Clean it here.
+        RecruitmentEmailBodyFormat format = bodyFormat == null
+                ? RecruitmentEmailBodyFormat.PLAIN : bodyFormat;
+        String cleanBody = sanitizeSendableBody(body, format);
         // An explicit list (even an empty one) is the recruiter's decision
         // and wins; a null list means "whatever the template asks for".
         EmailCopies copies = copyUserUuids == null
@@ -239,7 +333,7 @@ public class RecruitmentEmailService {
                                         : RecruitmentEmailCopyMode.BCC);
         String mailUuid = send(candidate, applicationUuid, positionUuidOf(applicationUuid),
                 templateKey, template == null ? null : template.getUuid(),
-                subject, body, "MANUAL", null,
+                subject, cleanBody, format, "MANUAL", null,
                 RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                         .actorUser(actorUserUuid),
                 visibilityFor(candidate.getUuid()),
@@ -287,6 +381,8 @@ public class RecruitmentEmailService {
         pending.setToEmail(candidate.getEmail());
         pending.setSubject(rendered.subject());
         pending.setBody(rendered.body());
+        pending.setBodyFormat(template.getBodyFormat() == null
+                ? RecruitmentEmailBodyFormat.PLAIN : template.getBodyFormat());
         pending.setTriggerEventUuid(triggerEventUuid);
         // Snapshot the resolved copy list next to the rendered text
         // (§P15 deviation 5): approving sends what the recruiter reviewed,
@@ -306,7 +402,9 @@ public class RecruitmentEmailService {
      */
     @Transactional
     public RecruitmentPendingEmail approve(String pendingUuid, String editedSubject,
-                                           String editedBody, String actorUserUuid,
+                                           String editedBody,
+                                           RecruitmentEmailBodyFormat editedBodyFormat,
+                                           String actorUserUuid,
                                            List<String> copyUserUuids,
                                            RecruitmentEmailCopyMode copyMode) {
         RecruitmentPendingEmail pending = em.find(RecruitmentPendingEmail.class, pendingUuid,
@@ -319,8 +417,17 @@ public class RecruitmentEmailService {
         requireEmail(candidate);
         String subject = editedSubject == null || editedSubject.isBlank()
                 ? pending.getSubject() : editedSubject.trim();
-        String body = editedBody == null || editedBody.isBlank()
-                ? pending.getBody() : editedBody;
+        // An edited body arrives in the format the approver's editor used —
+        // which may be HTML even when the queued snapshot was plain, because
+        // the review dialog composes in rich text regardless. The snapshot's
+        // own format is only right when there was no edit.
+        boolean edited = !isBlankBody(editedBody,
+                editedBodyFormat == null ? pending.getBodyFormat() : editedBodyFormat);
+        RecruitmentEmailBodyFormat format = !edited ? pending.getBodyFormat()
+                : editedBodyFormat == null ? pending.getBodyFormat() : editedBodyFormat;
+        String body = edited
+                ? sanitizeSendableBody(editedBody, format)
+                : pending.getBody();
         // Same rule as the manual path: an explicit list is the approver's
         // decision; null falls back to the snapshot taken at queue time.
         // Either way the people are re-authorized now, not at queue time —
@@ -331,7 +438,7 @@ public class RecruitmentEmailService {
                 copyMode != null ? copyMode : pending.getCopyMode());
         send(candidate, pending.getApplicationUuid(), positionUuidOf(pending.getApplicationUuid()),
                 pending.getTemplateKey(), pending.getTemplateUuid(),
-                subject, body, "REVIEW_APPROVED", pending.getUuid(),
+                subject, body, format, "REVIEW_APPROVED", pending.getUuid(),
                 RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                         .actorUser(actorUserUuid),
                 visibilityFor(candidate.getUuid()),
@@ -410,13 +517,16 @@ public class RecruitmentEmailService {
      */
     public String send(RecruitmentCandidate candidate, String applicationUuid, String positionUuid,
                        String templateKey, String templateUuid, String subject, String body,
+                       RecruitmentEmailBodyFormat bodyFormat,
                        String trigger, String pendingUuid, RecruitmentEventBuilder eventBase,
                        RecruitmentEventVisibility visibility,
                        String replyTo, EmailCopies copies) {
         EmailCopies effectiveCopies = copies == null ? EmailCopies.none() : copies;
+        RecruitmentEmailBodyFormat format = bodyFormat == null
+                ? RecruitmentEmailBodyFormat.PLAIN : bodyFormat;
         String mailUuid = UUID.randomUUID().toString();
         TrustworksMail mail = new TrustworksMail(mailUuid, candidate.getEmail(),
-                subject, RecruitmentEmailRenderer.toHtml(body));
+                subject, RecruitmentEmailRenderer.toHtml(body, format));
         mail.setStatus(MailStatus.READY);
         mail.setFromName(fromName);
         if (replyTo != null && !replyTo.isBlank()) {
@@ -439,6 +549,9 @@ public class RecruitmentEmailService {
                 .visibility(visibility)
                 .payload("trigger", trigger)
                 .payload("mail_uuid", mailUuid)
+                // Structural, so the timeline and the DSAR export know whether
+                // the archived body is text or markup without re-sniffing it.
+                .payload("body_format", format.name())
                 .pii("to_email", candidate.getEmail())
                 .pii("subject", subject)
                 .pii("body", body);

@@ -17,6 +17,8 @@ public record EmailTemplateRequest(
         String name,
         String subject,
         String body,
+        /** PLAIN (legacy text) or HTML (rich text); absent keeps the stored format. */
+        String bodyFormat,
         Boolean autoSend,
         Boolean active,
         List<String> copyRoles,
