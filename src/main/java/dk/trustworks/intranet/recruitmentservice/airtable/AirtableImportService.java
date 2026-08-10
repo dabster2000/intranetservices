@@ -223,8 +223,11 @@ public class AirtableImportService {
         try {
             Map<String, String> positionCache = new HashMap<>();
             // One directory load per run — referrer matching (by name) and
-            // comment-author resolution (by email) share it.
-            List<User> users = inTx(User::listAll);
+            // comment-author resolution (by email) share it. NOTE: must be
+            // an explicit call in a lambda — a method reference
+            // (User::listAll) bypasses Panache's build-time enhancement and
+            // throws "did you forget to annotate your entity with @Entity?".
+            List<User> users = inTx(() -> User.<User>listAll());
             List<AirtableReferrerMatcher.DirectoryUser> directory = users.stream()
                     .map(user -> new AirtableReferrerMatcher.DirectoryUser(
                             user.getUuid(), user.getFirstname(), user.getLastname()))
