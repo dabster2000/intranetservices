@@ -224,7 +224,7 @@ public class AirtableImportService {
                     log.errorf(e, "Airtable import: record %s (%s) failed",
                             record.airtableRecordId(), record.airtableTable());
                     ledgerSkip(record, run.getUuid(),
-                            "Import failed: " + truncate(e.getMessage(), 150));
+                            FAILED_PREFIX + " " + truncate(e.getMessage(), 150));
                 }
             }
             int importedFinal = imported;
@@ -264,13 +264,30 @@ public class AirtableImportService {
     // One record (own transaction; attachment downloads outside it)
     // ------------------------------------------------------------------
 
+    /** Ledger skip-reason prefix marking a FAILURE (retryable) vs a deliberate skip. */
+    static final String FAILED_PREFIX = "Import failed:";
+
     /** @return true when the record was imported by THIS call. */
     private boolean importOne(AirtableMappedRecord record, String runUuid,
                               Map<String, String> positionCache,
                               List<AirtableReconciliationReport.RecordIssue> attachmentFailures) {
-        boolean alreadyImported = inTx(() ->
-                AirtableImportRecord.findById(record.airtableRecordId()) != null);
-        if (alreadyImported) {
+        // A previously FAILED record retries (its ledger row is removed);
+        // imported records and deliberate skips stay settled.
+        boolean settled = inTx(() -> {
+            AirtableImportRecord existing = AirtableImportRecord.findById(record.airtableRecordId());
+            if (existing == null) {
+                return false;
+            }
+            boolean retryable = existing.getStatus() == AirtableImportRecord.Status.SKIPPED
+                    && existing.getSkipReason() != null
+                    && existing.getSkipReason().startsWith(FAILED_PREFIX);
+            if (retryable) {
+                existing.delete();
+                return false;
+            }
+            return true;
+        });
+        if (settled) {
             return false;
         }
         if (record.skipReason() != null) {
