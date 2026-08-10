@@ -4,6 +4,7 @@ import dk.trustworks.intranet.documentservice.migration.model.SharePointMigratio
 import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationItem;
 import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationItem.ItemStatus;
 import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrationJobRunner;
+import dk.trustworks.intranet.documentservice.migration.services.EmployeeDocumentHashBackfillService;
 import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrationJobRunner.JobStatus;
 import dk.trustworks.intranet.documentservice.migration.services.DocumentMigrationJobRunner.JobType;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointFolderMatcherService;
@@ -88,6 +89,9 @@ public class DocumentMigrationResource {
     SharePointMappingTransferService mappingTransferService;
 
     @Inject
+    EmployeeDocumentHashBackfillService hashBackfillService;
+
+    @Inject
     EmployeeDocumentsParameters parameters;
 
     // ── Jobs ───────────────────────────────────────────────────────────────
@@ -117,12 +121,33 @@ public class DocumentMigrationResource {
                 () -> copyService.copy(dryRun));
     }
 
-    /** M4 — AI-first categorization + deterministic signing linkage. */
+    /**
+     * M4 — AI-first categorization + deterministic signing linkage.
+     *
+     * <p>Re-runnable, and re-running is the intended way to finish an
+     * interrupted pass: the candidate set is recomputed from the current
+     * OTHER rows, and everything already placed is skipped. Two opt-ins
+     * widen it for a clean-up run:</p>
+     *
+     * <ul>
+     *   <li>{@code includeFlagged} — also reconsider rows already flagged
+     *       {@code needs_review}. They are skipped by default, which
+     *       leaves them stranded once a first pass has flagged them.</li>
+     *   <li>{@code forceContentPass} — read a first-page excerpt for
+     *       every still-OTHER document, not only the ones the name pass
+     *       could not place. This is what reaches scans and generically
+     *       named files; it costs one extra OpenAI call per document and
+     *       needs the migration AI flag ON.</li>
+     * </ul>
+     */
     @POST
     @Path("/categorize")
     @RolesAllowed({"documents:write"})
-    public JobStatus categorize() {
-        return jobRunner.start(JobType.CATEGORIZE, categorizerService::categorize);
+    public JobStatus categorize(
+            @QueryParam("includeFlagged") @DefaultValue("false") boolean includeFlagged,
+            @QueryParam("forceContentPass") @DefaultValue("false") boolean forceContentPass) {
+        return jobRunner.start(JobType.CATEGORIZE,
+                () -> categorizerService.categorize(includeFlagged, forceContentPass));
     }
 
     /**
@@ -139,6 +164,22 @@ public class DocumentMigrationResource {
     public JobStatus rename(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun) {
         return jobRunner.start(dryRun ? JobType.RENAME_DRY_RUN : JobType.RENAME,
                 () -> renameService.rename(dryRun));
+    }
+
+    /**
+     * Backfill {@code sha256} for the rows that never got one (every
+     * server-side S3→S3 copy left it null). Duplicate detection falls
+     * back to filename + exact size without it, which is good enough to
+     * archive a redundant row but not to delete one — this job is what
+     * turns that evidence into proof. Idempotent; run {@code dryRun=true}
+     * first for the count and the bytes it would read.
+     */
+    @POST
+    @Path("/backfill-sha256")
+    @RolesAllowed({"documents:write"})
+    public JobStatus backfillSha256(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun) {
+        return jobRunner.start(dryRun ? JobType.HASH_BACKFILL_DRY_RUN : JobType.HASH_BACKFILL,
+                () -> hashBackfillService.backfill(dryRun));
     }
 
     /** M5 — size + sha256 verification, folder promotion. */

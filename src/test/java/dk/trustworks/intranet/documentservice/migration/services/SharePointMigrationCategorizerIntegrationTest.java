@@ -97,7 +97,7 @@ class SharePointMigrationCategorizerIntegrationTest {
         AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, true, "Lønregulering 2021", "HIGH",
                 "2021_SALARY_loenregulering.pdf", false);
 
-        boolean applied = categorizer.applyVerdict(docUuid, "", "loenreg_2021_final(2).pdf", high, true);
+        boolean applied = categorizer.applyVerdict(docUuid, "", "loenreg_2021_final(2).pdf", high, true, false);
 
         assertTrue(applied);
         EmployeeDocument doc = load(docUuid);
@@ -115,7 +115,7 @@ class SharePointMigrationCategorizerIntegrationTest {
         String docUuid = persistDoc("Sygdom", "notat.pdf");
         AiVerdict medium = new AiVerdict(EmployeeDocumentCategory.CONTRACT, false, null, "MEDIUM", null, false);
 
-        boolean applied = categorizer.applyVerdict(docUuid, "Sygdom", "notat.pdf", medium, true);
+        boolean applied = categorizer.applyVerdict(docUuid, "Sygdom", "notat.pdf", medium, true, false);
 
         assertFalse(applied);
         EmployeeDocument doc = load(docUuid);
@@ -134,7 +134,7 @@ class SharePointMigrationCategorizerIntegrationTest {
         });
 
         AiVerdict high = new AiVerdict(EmployeeDocumentCategory.SALARY, false, null, "HIGH", null, false);
-        categorizer.applyVerdict(docUuid, "", "something.pdf", high, true);
+        categorizer.applyVerdict(docUuid, "", "something.pdf", high, true, false);
 
         assertEquals(EmployeeDocumentCategory.CONTRACT, load(docUuid).getCategory(),
                 "a non-default category means HR already decided — hands off");

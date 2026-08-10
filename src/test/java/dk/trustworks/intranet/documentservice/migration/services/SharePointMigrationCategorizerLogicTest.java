@@ -230,4 +230,44 @@ class SharePointMigrationCategorizerLogicTest {
     void docxTextReturnsNullOnGarbage() {
         assertNull(SharePointMigrationCategorizerService.docxText(new byte[]{1, 2, 3}));
     }
+
+    // ── Re-run guard ───────────────────────────────────────────────────────
+
+    /**
+     * A categorized document is a decision and is never overwritten —
+     * this is what makes the job safely re-runnable, and it holds no
+     * matter what the caller asked for.
+     */
+    @Test
+    void aRealCategoryIsNeverReconsidered() {
+        for (EmployeeDocumentCategory placed : EmployeeDocumentCategory.values()) {
+            if (placed == EmployeeDocumentCategory.OTHER) continue;
+            assertTrue(SharePointMigrationCategorizerService.skip(placed, false, false));
+            assertTrue(SharePointMigrationCategorizerService.skip(placed, false, true));
+            assertTrue(SharePointMigrationCategorizerService.skip(placed, true, true));
+        }
+    }
+
+    @Test
+    void anUnflaggedOtherIsAlwaysACandidate() {
+        assertFalse(SharePointMigrationCategorizerService.skip(
+                EmployeeDocumentCategory.OTHER, false, false));
+        assertFalse(SharePointMigrationCategorizerService.skip(
+                EmployeeDocumentCategory.OTHER, false, true));
+    }
+
+    /**
+     * The regression this parameter exists for: 126 production rows sat
+     * at OTHER *and* flagged for review, and every subsequent run skipped
+     * them because the flag was read as a human decision. It is not one —
+     * it records that the AI could not place the document — so a caller
+     * must be able to ask for them back.
+     */
+    @Test
+    void aFlaggedOtherIsStrandedUntilTheCallerAsksForIt() {
+        assertTrue(SharePointMigrationCategorizerService.skip(
+                EmployeeDocumentCategory.OTHER, true, false));
+        assertFalse(SharePointMigrationCategorizerService.skip(
+                EmployeeDocumentCategory.OTHER, true, true));
+    }
 }

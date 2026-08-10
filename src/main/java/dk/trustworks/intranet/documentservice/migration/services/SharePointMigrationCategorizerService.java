@@ -119,9 +119,32 @@ public class SharePointMigrationCategorizerService {
     // ── The run ────────────────────────────────────────────────────────────
 
     public CategorizeSummary categorize() {
+        return categorize(false, false);
+    }
+
+    /**
+     * @param includeFlagged   also reconsider rows already flagged
+     *                         {@code needs_review}. The default run skips
+     *                         them, which is right for a first pass but
+     *                         strands them forever afterwards: the flag
+     *                         means "the AI was not sure", not "a human
+     *                         decided". Rows that a human has actually
+     *                         categorized are still never touched —
+     *                         the candidate set is category OTHER only.
+     * @param forceContentPass send a first-page excerpt for every
+     *                         still-OTHER document, not just the ones the
+     *                         name pass called inconclusive. Without it a
+     *                         confident-but-wrong "OTHER" is never read;
+     *                         with it the scans and generically-named
+     *                         files get a second, content-based opinion.
+     *                         Costs one extra OpenAI call per document.
+     */
+    public CategorizeSummary categorize(boolean includeFlagged, boolean forceContentPass) {
+        String candidateQuery = includeFlagged
+                ? "source = ?1 AND category = ?2"
+                : "source = ?1 AND category = ?2 AND needsReview = false";
         List<String> docUuids = QuarkusTransaction.requiringNew().call(() ->
-                EmployeeDocument.<EmployeeDocument>list(
-                                "source = ?1 AND category = ?2 AND needsReview = false",
+                EmployeeDocument.<EmployeeDocument>list(candidateQuery,
                                 dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.MIGRATION,
                                 EmployeeDocumentCategory.OTHER).stream()
                         .map(EmployeeDocument::getUuid)
@@ -165,22 +188,34 @@ public class SharePointMigrationCategorizerService {
                 DocFacts doc = facts.get(i);
                 AiVerdict verdict = i < verdicts.size() ? verdicts.get(i) : null;
 
-                // Pass 2: excerpt for the inconclusive PDF/DOCX tail only —
-                // images stay name-only by decision A3.
-                if (aiEnabled && verdict != null && verdict.inconclusive()
-                        && excerptEligible(doc.contentType())) {
+                // Pass 2: excerpt for the inconclusive PDF/DOCX tail —
+                // images stay name-only by decision A3. With
+                // forceContentPass the excerpt also runs when the name
+                // pass answered OTHER, which is the only way a
+                // confidently-wrong "OTHER" ever gets reconsidered.
+                boolean wantExcerpt = verdict != null && (verdict.inconclusive()
+                        || (forceContentPass && verdict.category() == EmployeeDocumentCategory.OTHER));
+                if (aiEnabled && wantExcerpt && excerptEligible(doc.contentType())) {
                     try {
                         String excerpt = extractExcerpt(doc.uuid(), doc.contentType());
                         if (excerpt != null && !excerpt.isBlank()) {
                             excerptCalls++;
-                            verdict = excerptPassVerdict(doc.path(), doc.filename(), excerpt);
+                            AiVerdict fromExcerpt = excerptPassVerdict(doc.path(), doc.filename(), excerpt);
+                            // Never let the excerpt pass make things worse.
+                            // On a forced pass the incoming verdict was a
+                            // usable (if dull) HIGH OTHER; an inconclusive
+                            // excerpt would demote it to the rule table and
+                            // push it into the review queue — the opposite
+                            // of what the forced pass is for.
+                            if (!fromExcerpt.inconclusive()) verdict = fromExcerpt;
                         }
                     } catch (Exception e) {
                         log.warnf("Excerpt pass failed for %s: %s", doc.uuid(), e.getMessage());
                     }
                 }
 
-                boolean applied = applyVerdict(doc.uuid(), doc.path(), doc.filename(), verdict, aiEnabled);
+                boolean applied = applyVerdict(doc.uuid(), doc.path(), doc.filename(), verdict,
+                        aiEnabled, includeFlagged);
                 if (applied) {
                     aiHigh++;
                 } else {
@@ -207,7 +242,8 @@ public class SharePointMigrationCategorizerService {
      *
      * @return true when the AI verdict was applied (AI-HIGH), false on fallback
      */
-    boolean applyVerdict(String docUuid, String path, String filename, AiVerdict verdict, boolean aiEnabled) {
+    boolean applyVerdict(String docUuid, String path, String filename, AiVerdict verdict,
+                         boolean aiEnabled, boolean includeFlagged) {
         boolean useAi = verdict != null && !verdict.inconclusive()
                 && "HIGH".equals(verdict.confidence()) && verdict.category() != null;
         RuleResult rule = MigrationCategorizerRules.categorize(path, filename);
@@ -215,11 +251,13 @@ public class SharePointMigrationCategorizerService {
         QuarkusTransaction.requiringNew().run(() -> {
             EmployeeDocument doc = EmployeeDocument.findById(docUuid);
             if (doc == null) return;
-            // Idempotency guard: someone (HR) may have edited since we listed.
-            if (doc.getCategory() != EmployeeDocumentCategory.OTHER || doc.isNeedsReview()) return;
+            if (skip(doc.getCategory(), doc.isNeedsReview(), includeFlagged)) return;
 
             if (useAi) {
                 doc.setCategory(verdict.category());
+                // Placed confidently this time — it no longer needs a
+                // human, so it leaves the review queue.
+                doc.setNeedsReview(false);
                 if (verdict.archived() != null) doc.setArchived(verdict.archived());
                 if (verdict.label() != null && !verdict.label().isBlank()) {
                     doc.setLabel(verdict.label().length() > 255
@@ -247,6 +285,30 @@ public class SharePointMigrationCategorizerService {
             doc.persist();
         });
         return useAi;
+    }
+
+    /**
+     * The re-run guard, re-evaluated inside the write transaction because
+     * HR may have edited the document since the candidate list was taken.
+     *
+     * <p>Two different protections, deliberately not the same rule:</p>
+     *
+     * <ul>
+     *   <li>A <b>real category</b> is a decision — by a human or by an
+     *       earlier confident pass — and is never overwritten. This is
+     *       what makes the job safely re-runnable.</li>
+     *   <li>{@code needs_review} is <b>not</b> a decision. It records
+     *       that the AI could not place the document, so treating it like
+     *       one strands the row forever: every later run skips it, and
+     *       nothing else ever revisits it. It blocks the run only until a
+     *       caller explicitly asks to reconsider flagged rows.</li>
+     * </ul>
+     *
+     * @return true when this document must be left alone
+     */
+    static boolean skip(EmployeeDocumentCategory current, boolean needsReview, boolean includeFlagged) {
+        if (current != EmployeeDocumentCategory.OTHER) return true;
+        return needsReview && !includeFlagged;
     }
 
     /**

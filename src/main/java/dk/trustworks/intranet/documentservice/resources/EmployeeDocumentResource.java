@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.documentservice.resources;
 
+import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentCorpusRowDTO;
 import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentDTO;
 import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentHistoryEntryDTO;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
@@ -159,27 +160,65 @@ public class EmployeeDocumentResource {
         return EmployeeDocumentDTO.from(doc, UserEmployeeDocumentResource.resolveName(doc.getUploadedBy()));
     }
 
-    /** Bulk flag body — null field = leave unchanged on every document. */
-    public record BulkFlagsRequest(List<String> uuids, Boolean hrOnly, Boolean archived) { }
+    /**
+     * Bulk update body — every field is optional; null = leave unchanged
+     * on every document. {@code category} and {@code needsReview} were
+     * added for the HR console: triaging the review queue or the
+     * uncategorized backlog is "apply one category to a hand-picked set
+     * and clear the flag", which was otherwise N single PATCHes.
+     */
+    public record BulkFlagsRequest(List<String> uuids, Boolean hrOnly, Boolean archived,
+                                   String category, Boolean needsReview) { }
 
     /**
-     * Flip {@code hrOnly} and/or {@code archived} on many documents at
-     * once — the HR tab's multi-select action bar. One transaction, one
-     * audit row per document (identical to N single PATCHes, minus the
-     * partial-failure window).
+     * Apply one metadata change to many documents at once — the HR tab's
+     * multi-select action bar and the HR console's bulk actions. One
+     * transaction, one audit row per document (identical to N single
+     * PATCHes, minus the partial-failure window).
      *
-     * <p>Ownership is enforced at the BFF, which verifies every uuid
-     * belongs to the employee whose file is open before forwarding
-     * (IDOR defense, spec §10) — the same check the single-document
-     * PATCH route performs.</p>
+     * <p>Authorization is enforced at the BFF: the per-employee route
+     * verifies every uuid belongs to the employee whose file is open
+     * (IDOR defense, spec §10), and the console route is HR/ADMIN-gated
+     * because its selections are cross-employee by design.</p>
      */
     @POST
     @Path("/bulk/flags")
     @RolesAllowed({"documents:write"})
     public EmployeeDocumentService.BulkFlagsSummary bulkFlags(BulkFlagsRequest request) {
         if (request == null) throw new BadRequestException("Request body is required");
-        return employeeDocumentService.updateFlags(request.uuids(), request.hrOnly(),
-                request.archived(), requestHeaderHolder.getUserUuid());
+        EmployeeDocumentCategory category = null;
+        if (request.category() != null && !request.category().isBlank()) {
+            try {
+                category = EmployeeDocumentCategory.valueOf(request.category().trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException("Unknown category: " + request.category());
+            }
+        }
+        return employeeDocumentService.updateBulk(request.uuids(), request.hrOnly(),
+                request.archived(), category, request.needsReview(),
+                requestHeaderHolder.getUserUuid());
+    }
+
+    /**
+     * Every document in the store, across all employees, with the
+     * employee's name resolved — the single fetch behind the HR document
+     * console's three views (review queue, duplicates, uncategorized).
+     *
+     * <p>One endpoint rather than three because the views are three
+     * questions about the same corpus, and answering them from one
+     * snapshot is what keeps their counts consistent with each other.
+     * The corpus is ~2,500 rows of metadata; the BFF is ADMIN/HR-gated
+     * and strips {@code sha256} before anything reaches a browser.</p>
+     */
+    @GET
+    @Path("/admin/corpus")
+    public List<EmployeeDocumentCorpusRowDTO> corpus() {
+        Map<String, String> nameCache = new HashMap<>();
+        return EmployeeDocument.<EmployeeDocument>listAll().stream()
+                .map(d -> EmployeeDocumentCorpusRowDTO.from(d,
+                        nameCache.computeIfAbsent(d.getUserUuid(),
+                                UserEmployeeDocumentResource::resolveName)))
+                .toList();
     }
 
     /** Hard delete: all S3 versions + row + DELETE audit (spec §6.4). */

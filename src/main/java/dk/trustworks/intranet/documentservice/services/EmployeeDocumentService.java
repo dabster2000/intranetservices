@@ -512,11 +512,31 @@ public class EmployeeDocumentService {
     @Transactional
     public BulkFlagsSummary updateFlags(List<String> docUuids, Boolean hrOnly, Boolean archived,
                                         String actorUuid) {
+        return updateBulk(docUuids, hrOnly, archived, null, null, actorUuid);
+    }
+
+    /**
+     * Bulk metadata update — the HR console's one write. Every field is
+     * optional; null means "leave unchanged". Beyond the flag pair this
+     * also sets {@code category} and clears {@code needsReview}, which is
+     * what triaging the review queue and the uncategorized backlog
+     * actually consists of: one category applied to a hand-picked set,
+     * and the flag cleared in the same click.
+     *
+     * <p>Callers must have already verified they may write these
+     * documents (the BFF does — HR/ADMIN for the console, per-employee
+     * ownership for the employee tab).</p>
+     */
+    @Transactional
+    public BulkFlagsSummary updateBulk(List<String> docUuids, Boolean hrOnly, Boolean archived,
+                                       EmployeeDocumentCategory category, Boolean needsReview,
+                                       String actorUuid) {
         if (docUuids == null || docUuids.isEmpty()) {
             throw badRequest("NO_DOCUMENTS", "Select at least one document.");
         }
-        if (hrOnly == null && archived == null) {
-            throw badRequest("NO_CHANGES", "Nothing to change — set hrOnly and/or archived.");
+        if (hrOnly == null && archived == null && category == null && needsReview == null) {
+            throw badRequest("NO_CHANGES",
+                    "Nothing to change — set at least one of category, needsReview, hrOnly, archived.");
         }
 
         int updated = 0;
@@ -530,6 +550,8 @@ public class EmployeeDocumentService {
             boolean archiving = archived != null && archived && !doc.isArchived();
             if (hrOnly != null) doc.setHrOnly(hrOnly);
             if (archived != null) doc.setArchived(archived);
+            if (category != null) doc.setCategory(category);
+            if (needsReview != null) doc.setNeedsReview(needsReview);
             doc.persist();
             new EmployeeDocumentAudit(doc.getUuid(), doc.getUserUuid(), actorUuid,
                     archiving ? EmployeeDocumentAuditAction.ARCHIVE : EmployeeDocumentAuditAction.UPDATE,
@@ -537,8 +559,9 @@ public class EmployeeDocumentService {
             updated++;
         }
 
-        log.infof("Employee documents bulk flags: %d/%d updated hrOnly=%s archived=%s by=%s",
-                updated, docUuids.size(), hrOnly, archived, actorUuid);
+        log.infof("Employee documents bulk update: %d/%d updated category=%s needsReview=%s "
+                        + "hrOnly=%s archived=%s by=%s",
+                updated, docUuids.size(), category, needsReview, hrOnly, archived, actorUuid);
         return new BulkFlagsSummary(docUuids.size(), updated, missing.size(), missing);
     }
 
@@ -869,7 +892,13 @@ public class EmployeeDocumentService {
         return value.length() > maxLength ? value.substring(0, maxLength) : value;
     }
 
-    static String sha256Hex(byte[] bytes) {
+    /**
+     * The one hash function for this store. Public so the backfill job
+     * writes byte-identical values to the ones recorded at upload time —
+     * a second implementation that differed in case or encoding would
+     * silently split duplicate groups instead of merging them.
+     */
+    public static String sha256Hex(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException e) {
