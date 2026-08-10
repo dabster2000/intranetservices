@@ -73,9 +73,9 @@ public final class AirtableFieldMapper {
                 lastName = split.length > 1 ? split[1] : "";
             }
         }
-        String skipReason = null;
+        String namelessReason = null;
         if (isBlank(firstName) && isBlank(lastName)) {
-            skipReason = "Record has no name (Fornavn/Efternavn/Name all empty)";
+            namelessReason = "Record has no name (Fornavn/Efternavn/Name all empty)";
         }
         if (isBlank(firstName)) {
             firstName = "(ukendt)";
@@ -197,19 +197,32 @@ public final class AirtableFieldMapper {
                 source, sourceDetail.isEmpty() ? null : sourceDetail,
                 trim(referrerName), trim(teamleadEmail),
                 created, lastStatusChange,
-                skipReason != null ? AirtableMappedRecord.Disposition.SKIP : statusMapping.disposition(),
+                effectiveSkipReason(namelessReason, statusMapping) != null
+                        ? AirtableMappedRecord.Disposition.SKIP : statusMapping.disposition(),
                 statusMapping.stage(), statusMapping.needsReview(),
                 trim(status), expectedStart,
                 trim(faglighed), practiceUuid, consent,
                 interviews, answers, notes, attachments,
-                List.copyOf(warnings), List.copyOf(blockers), skipReason,
+                List.copyOf(warnings), List.copyOf(blockers),
+                effectiveSkipReason(namelessReason, statusMapping),
                 raw);
+    }
+
+    /** Nameless beats status-level skip — the more fundamental defect wins. */
+    private static String effectiveSkipReason(String namelessReason, StatusMapping statusMapping) {
+        return namelessReason != null ? namelessReason : statusMapping.skipReason();
     }
 
     // ---- Status mapping (A.2) --------------------------------------------
 
     private record StatusMapping(AirtableMappedRecord.Disposition disposition,
-                                 RecruitmentStage stage, boolean needsReview, String blocker) {
+                                 RecruitmentStage stage, boolean needsReview, String blocker,
+                                 String skipReason) {
+
+        StatusMapping(AirtableMappedRecord.Disposition disposition, RecruitmentStage stage,
+                      boolean needsReview, String blocker) {
+            this(disposition, stage, needsReview, blocker, null);
+        }
     }
 
     private static StatusMapping mapStatus(String status,
@@ -227,6 +240,13 @@ public final class AirtableFieldMapper {
                     AirtableMappedRecord.Disposition.REJECTED, null, false, null);
             case "backlog" -> new StatusMapping(
                     AirtableMappedRecord.Disposition.POOLED, null, false, null);
+            // A deletion instruction, not a status — honoring it means NOT
+            // importing the record. Listed skipped-with-reason so the
+            // recruiter sees it at sign-off; deletion itself happens with
+            // Airtable's retirement (DPA delete-or-anonymize clause).
+            case "to be deleted", "slettes" -> new StatusMapping(
+                    AirtableMappedRecord.Disposition.SKIP, null, false,
+                    null, "Marked '" + status + "' in Airtable — deliberately not imported");
             default -> {
                 if (REVIEW_PSEUDO_STATUSES.contains(normalized)) {
                     // Pseudo-status dissolves into an open recruiter task; the
