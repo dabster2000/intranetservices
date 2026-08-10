@@ -117,6 +117,9 @@ public class AirtableImportService {
     RecruitmentEventRecorder eventRecorder;
 
     @Inject
+    AirtableReferrerMatcher referrerMatcher;
+
+    @Inject
     ObjectMapper objectMapper;
 
     private final AtomicBoolean importRunning = new AtomicBoolean(false);
@@ -219,9 +222,15 @@ public class AirtableImportService {
         List<AirtableReconciliationReport.RecordIssue> attachmentFailures = new ArrayList<>();
         try {
             Map<String, String> positionCache = new HashMap<>();
+            // One directory load per run — the referrer matcher runs per record.
+            List<AirtableReferrerMatcher.DirectoryUser> directory = inTx(() ->
+                    User.<User>listAll().stream()
+                            .map(user -> new AirtableReferrerMatcher.DirectoryUser(
+                                    user.getUuid(), user.getFirstname(), user.getLastname()))
+                            .toList());
             for (AirtableMappedRecord record : mapped) {
                 try {
-                    if (importOne(record, run.getUuid(), positionCache, attachmentFailures)) {
+                    if (importOne(record, run.getUuid(), positionCache, attachmentFailures, directory)) {
                         imported++;
                     }
                 } catch (Exception e) {
@@ -274,7 +283,8 @@ public class AirtableImportService {
     /** @return true when the record was imported by THIS call. */
     private boolean importOne(AirtableMappedRecord record, String runUuid,
                               Map<String, String> positionCache,
-                              List<AirtableReconciliationReport.RecordIssue> attachmentFailures) {
+                              List<AirtableReconciliationReport.RecordIssue> attachmentFailures,
+                              List<AirtableReferrerMatcher.DirectoryUser> directory) {
         // A previously FAILED record retries (its ledger row is removed);
         // imported records and deliberate skips stay settled.
         boolean settled = inTx(() -> {
@@ -316,8 +326,13 @@ public class AirtableImportService {
             }
         }
 
+        // Referrer resolution BEFORE the transaction — the AI tier calls
+        // OpenAI, and OpenAI calls never run inside a transaction (M1 rule).
+        AirtableReferrerMatcher.Resolution referrer =
+                referrerMatcher.resolve(record.referrerName(), directory, true);
+
         QuarkusTransaction.requiringNew().run(() ->
-                persistRecord(record, runUuid, positionCache, attachments));
+                persistRecord(record, runUuid, positionCache, attachments, referrer));
         return true;
     }
 
@@ -327,13 +342,14 @@ public class AirtableImportService {
 
     private void persistRecord(AirtableMappedRecord record, String runUuid,
                                Map<String, String> positionCache,
-                               List<DownloadedAttachment> attachments) {
+                               List<DownloadedAttachment> attachments,
+                               AirtableReferrerMatcher.Resolution referrer) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
         // ---- candidate ----
-        RecruitmentCandidate candidate = buildCandidate(record, now);
+        RecruitmentCandidate candidate = buildCandidate(record, now, referrer);
         RecruitmentCandidate.persist(candidate);
-        recordCandidateCreated(candidate, record);
+        recordCandidateCreated(candidate, record, referrer);
 
         // ---- consent (Airtable GDPR checkbox → dated pool-retention consent) ----
         if (record.consentGranted()) {
@@ -376,7 +392,8 @@ public class AirtableImportService {
 
     // ---- candidate assembly ----------------------------------------------
 
-    private RecruitmentCandidate buildCandidate(AirtableMappedRecord record, LocalDateTime now) {
+    private RecruitmentCandidate buildCandidate(AirtableMappedRecord record, LocalDateTime now,
+                                                AirtableReferrerMatcher.Resolution referrer) {
         RecruitmentCandidate candidate = new RecruitmentCandidate();
         candidate.setUuid(UUID.randomUUID().toString());
         candidate.setFirstName(record.firstName());
@@ -398,7 +415,12 @@ public class AirtableImportService {
             candidate.setCreatedAt(record.createdDate().atStartOfDay());
         }
 
-        resolveReferrer(candidate, record);
+        if (referrer.userUuid() != null) {
+            candidate.setReferredByUserUuid(referrer.userUuid());
+        } else if (record.referrerName() != null && !record.referrerName().isBlank()) {
+            // Real Airtable data: references are often not employees (spec §4.1).
+            candidate.setExternalReferrerName(record.referrerName().trim());
+        }
         resolveTeamlead(candidate, record);
 
         LocalDate activityDate = lastActivity(record);
@@ -468,22 +490,6 @@ public class AirtableImportService {
             return record.createdDate();
         }
         return LocalDate.now(ZoneOffset.UTC);
-    }
-
-    private void resolveReferrer(RecruitmentCandidate candidate, AirtableMappedRecord record) {
-        String name = record.referrerName();
-        if (name == null || name.isBlank()) {
-            return;
-        }
-        List<User> matches = User.list(
-                "lower(concat(firstname, ' ', lastname)) = ?1",
-                name.trim().toLowerCase(Locale.ROOT));
-        if (matches.size() == 1) {
-            candidate.setReferredByUserUuid(matches.get(0).getUuid());
-        } else {
-            // Real Airtable data: references are often not employees (spec §4.1).
-            candidate.setExternalReferrerName(name.trim());
-        }
     }
 
     private void resolveTeamlead(RecruitmentCandidate candidate, AirtableMappedRecord record) {
@@ -640,7 +646,8 @@ public class AirtableImportService {
     // ---- events ----------------------------------------------------------
 
     private void recordCandidateCreated(RecruitmentCandidate candidate,
-                                        AirtableMappedRecord record) {
+                                        AirtableMappedRecord record,
+                                        AirtableReferrerMatcher.Resolution referrer) {
         RecruitmentEventBuilder event = RecruitmentEventBuilder
                 .event(RecruitmentEventType.CANDIDATE_CREATED)
                 .candidate(candidate.getUuid())
@@ -656,6 +663,10 @@ public class AirtableImportService {
                 .payload("lawful_basis", name(candidate.getLawfulBasis()))
                 .pii("first_name", candidate.getFirstName())
                 .pii("last_name", candidate.getLastName());
+        if (referrer.matchMethod() != null) {
+            // Structural audit fact: how the referrer link was made (name | ai_extraction).
+            event.payload("referrer_match", referrer.matchMethod());
+        }
         piiIfPresent(event, "email", candidate.getEmail());
         piiIfPresent(event, "phone", candidate.getPhone());
         piiIfPresent(event, "linkedin_url", candidate.getLinkedinUrl());
