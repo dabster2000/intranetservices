@@ -28,8 +28,16 @@ public class StringListConverter implements AttributeConverter<List<String>, Str
 
     @Override
     public String convertToDatabaseColumn(List<String> attribute) {
-        if (attribute == null || attribute.isEmpty()) {
+        if (attribute == null) {
             return null;
+        }
+        if (attribute.isEmpty()) {
+            // '[]', not NULL: an empty-but-present list must satisfy NOT NULL
+            // columns — recruitment_interviews.interviewer_uuids rejects NULL,
+            // and the P21 importer legitimately creates interviews with no
+            // interviewers (Airtable never recorded who held them). Readers
+            // treat '[]' and NULL identically (convertToEntityAttribute).
+            return "[]";
         }
         try {
             return MAPPER.writeValueAsString(attribute);
