@@ -93,7 +93,9 @@ public class AirtableImportResource {
         if (request.practiceUuid() == null || request.practiceUuid().isBlank()) {
             throw new BadRequestException("practiceUuid is required");
         }
-        Practice practice = Practice.findById(request.practiceUuid().trim());
+        // Practice's JPA @Id is `code`; uuid is the canonical UNIQUE attribute
+        // (Part 2 Phase 1) — findById would silently look up by code.
+        Practice practice = Practice.<Practice>find("uuid", request.practiceUuid().trim()).firstResult();
         if (practice == null) {
             throw new BadRequestException("Unknown practice uuid: " + request.practiceUuid());
         }
@@ -197,7 +199,7 @@ public class AirtableImportResource {
     }
 
     private static String practiceName(String practiceUuid) {
-        Practice practice = Practice.findById(practiceUuid);
+        Practice practice = Practice.<Practice>find("uuid", practiceUuid).firstResult();
         return practice == null ? null : practice.getName();
     }
 
