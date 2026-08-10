@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.airtable;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.List;
 import java.util.Map;
 
@@ -13,6 +15,7 @@ import java.util.Map;
  * is a working document for the recruiter/DPO, both of whom hold
  * candidate-level access anyway; it never leaves the admin surface.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record AirtableReconciliationReport(
         String runUuid,
         String mode,
@@ -33,8 +36,8 @@ public record AirtableReconciliationReport(
         List<RecordIssue> needsReview,
         /** Migrated candidates headed for the DPO retention-triage queue. */
         List<RecordIssue> retentionTriage,
-        /** Pipeline table → position uuid used (existing on re-run, else created at import). */
-        Map<String, String> positionsPerTable,
+        /** Synthetic-position title (per practice) → position uuid (existing on re-run, else created at import). */
+        Map<String, String> positionsPerPractice,
         /** Records already imported by an earlier run (idempotent skip). */
         int alreadyImported,
         /** IMPORT mode only: how many candidates were actually created this run. */
