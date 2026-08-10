@@ -145,12 +145,21 @@ public class AirtableImportService {
                               AirtableReconciliationReport report) {
     }
 
+    public ImportStart startImport(String startedBy) {
+        return startImport(startedBy, null);
+    }
+
     /**
      * Pre-flight (export, map, blocker check) synchronously; the actual
      * record import continues on a background thread. Poll the run via the
      * resource — the ledger shows live progress.
+     *
+     * @param onlyRecordId when non-null, import ONLY this Airtable record
+     *        (the runbook's one-candidate spot check). Blockers are
+     *        evaluated on the filtered set, so a sample import works even
+     *        while unrelated records still lack mappings.
      */
-    public ImportStart startImport(String startedBy) {
+    public ImportStart startImport(String startedBy, String onlyRecordId) {
         if (!importRunning.compareAndSet(false, true)) {
             throw new IllegalStateException("An Airtable import is already running");
         }
@@ -164,15 +173,26 @@ public class AirtableImportService {
         }
         try {
             mapped = exportAndMap();
+            if (onlyRecordId != null && !onlyRecordId.isBlank()) {
+                String wanted = onlyRecordId.trim();
+                mapped = mapped.stream()
+                        .filter(record -> wanted.equals(record.airtableRecordId()))
+                        .toList();
+                if (mapped.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "No Airtable record with id '" + wanted + "' in the export");
+                }
+            }
+            List<AirtableMappedRecord> preflightSet = mapped;
             AirtableReconciliationReport preflight = inTx(() ->
-                    buildReport(run.getUuid(), "IMPORT", mapped, 0, List.of()));
+                    buildReport(run.getUuid(), "IMPORT", preflightSet, 0, List.of()));
             if (!preflight.unmappedPracticeValues().isEmpty()
                     || !preflight.unknownStatuses().isEmpty()) {
                 finishRun(run, AirtableImportRun.Status.BLOCKED, preflight, null);
                 importRunning.set(false);
                 return new ImportStart(run.getUuid(), AirtableImportRun.Status.BLOCKED, preflight);
             }
-            Thread worker = new Thread(() -> executeImport(run, mapped),
+            Thread worker = new Thread(() -> executeImport(run, preflightSet),
                     "airtable-import-" + run.getUuid().substring(0, 8));
             worker.setDaemon(true);
             worker.start();

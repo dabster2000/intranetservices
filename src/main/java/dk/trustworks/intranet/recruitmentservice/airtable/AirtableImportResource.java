@@ -136,14 +136,21 @@ public class AirtableImportResource {
         return importService.dryRun(requestHeaderHolder.getUserUuid());
     }
 
+    /**
+     * @param recordId optional Airtable record id — imports ONLY that
+     *        record (the runbook's one-candidate spot check).
+     */
     @POST
     @Path("/import")
-    public AirtableImportService.ImportStart startImport() {
+    public AirtableImportService.ImportStart startImport(
+            @jakarta.ws.rs.QueryParam("recordId") String recordId) {
         requireConfigured();
         try {
-            return importService.startImport(requestHeaderHolder.getUserUuid());
+            return importService.startImport(requestHeaderHolder.getUserUuid(), recordId);
         } catch (IllegalStateException e) {
             throw new WebApplicationException(e.getMessage(), Response.Status.CONFLICT);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException(e.getMessage());
         }
     }
 
