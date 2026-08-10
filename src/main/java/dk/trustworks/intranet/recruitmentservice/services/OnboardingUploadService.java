@@ -26,6 +26,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
@@ -253,7 +254,13 @@ public class OnboardingUploadService {
                             dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory.IDENTITY,
                             humanDocumentTypeLabel(type),
                             dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.ONBOARDING,
-                            null, null, false, false, null, null, false));
+                            // hrOnly=true: a driver's licence, sundhedskort or
+                            // straffeattest is HR-only by nature. Onboarding used
+                            // to write these with hr_only=0, which was only safe
+                            // while employee_documents.ui.self-service stayed off
+                            // — an accident waiting on a feature flag. Applies to
+                            // new uploads only; rows already stored keep hr_only=0.
+                            null, null, true, false, null, null, false));
             row.setUserUuid(token.getUserUuid());
             row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.S3);
             row.setEmployeeDocumentUuid(doc.getUuid());
@@ -440,6 +447,80 @@ public class OnboardingUploadService {
             log.debugf(e, "Could not resolve user name for uuid=%s", userUuid);
         }
         return new NotificationContext(displayName, "");
+    }
+
+    /**
+     * Masked name of the token owner, for the public upload page's
+     * "you are uploading for …" check. {@code null} when the owner row is
+     * gone or carries no name — the page then renders as it did before the
+     * check existed rather than showing an empty confirmation.
+     *
+     * <p>Never throws: {@code /validate} answers 200 for every valid token
+     * today, and a name lookup is not a reason to start failing it.</p>
+     *
+     * <p>PII boundary (see class Javadoc): the resolved name is returned but
+     * never logged.</p>
+     */
+    public String resolveMaskedOwnerName(OnboardingUploadToken token) {
+        if (token == null) return null;
+        try {
+            if (token.getCandidateUuid() != null) {
+                RecruitmentCandidate c = RecruitmentCandidate.findById(token.getCandidateUuid());
+                return c == null ? null : maskDisplayName(c.getFirstName(), c.getLastName());
+            }
+            if (token.getUserUuid() != null) {
+                User u = User.findById(token.getUserUuid());
+                return u == null ? null : maskDisplayName(u.getFirstname(), u.getLastname());
+            }
+        } catch (RuntimeException e) {
+            log.debugf(e, "Could not resolve masked owner name for token=%s", token.getUuid());
+        }
+        return null;
+    }
+
+    /**
+     * Given name plus the initial of the surname — "Henrik Falch Midtgaard"
+     * becomes "Henrik F.".
+     *
+     * <p>The initial comes from the <i>first</i> token of the surname field.
+     * Danish records commonly carry middle names there ("Falch Midtgaard"),
+     * and the first token is what a recipient recognises from their own
+     * paperwork.</p>
+     *
+     * <p>Degrades rather than emitting something meaningless: a record with
+     * no given name yields the first surname token in full (a bare initial
+     * would tell the visitor nothing), a record with no surname yields the
+     * given name alone, and an empty record yields {@code null}.</p>
+     */
+    static String maskDisplayName(String firstname, String lastname) {
+        String first = nullSafe(firstname).trim();
+        String last = nullSafe(lastname).trim();
+        if (first.isEmpty() && last.isEmpty()) return null;
+        if (first.isEmpty()) return firstNameToken(last);
+        if (last.isEmpty()) return first;
+        String initial = letterInitialOf(firstNameToken(last));
+        return initial.isEmpty() ? first : first + " " + initial + ".";
+    }
+
+    /** First whitespace-delimited token of a name field, or "" if there is none. */
+    private static String firstNameToken(String name) {
+        for (String part : name.split("\\s+")) {
+            if (!part.isEmpty()) return part;
+        }
+        return "";
+    }
+
+    /**
+     * Uppercased first character of {@code token}, or "" when it does not
+     * start with a letter. Reads a full code point so a surrogate pair is
+     * never split in half, and folds with {@link Locale#ROOT} so a Turkish
+     * locale on the server cannot turn "I" into "ı".
+     */
+    private static String letterInitialOf(String token) {
+        if (token.isEmpty()) return "";
+        int cp = token.codePointAt(0);
+        if (!Character.isLetter(cp)) return "";
+        return new String(Character.toChars(cp)).toUpperCase(Locale.ROOT);
     }
 
     /** Human label for the identity-document type (used as the document label). */
@@ -643,6 +724,7 @@ public class OnboardingUploadService {
                         token.isShowDriversLicense(),
                         token.isShowHealthInsurance(),
                         token.isShowCriminalRecord()),
-                new OnboardingValidateResponse.Submitted(dl, hi, cr));
+                new OnboardingValidateResponse.Submitted(dl, hi, cr),
+                resolveMaskedOwnerName(token));
     }
 }
