@@ -222,15 +222,24 @@ public class AirtableImportService {
         List<AirtableReconciliationReport.RecordIssue> attachmentFailures = new ArrayList<>();
         try {
             Map<String, String> positionCache = new HashMap<>();
-            // One directory load per run — the referrer matcher runs per record.
-            List<AirtableReferrerMatcher.DirectoryUser> directory = inTx(() ->
-                    User.<User>listAll().stream()
-                            .map(user -> new AirtableReferrerMatcher.DirectoryUser(
-                                    user.getUuid(), user.getFirstname(), user.getLastname()))
-                            .toList());
+            // One directory load per run — referrer matching (by name) and
+            // comment-author resolution (by email) share it.
+            List<User> users = inTx(User::listAll);
+            List<AirtableReferrerMatcher.DirectoryUser> directory = users.stream()
+                    .map(user -> new AirtableReferrerMatcher.DirectoryUser(
+                            user.getUuid(), user.getFirstname(), user.getLastname()))
+                    .toList();
+            Map<String, String> emailToUser = new HashMap<>();
+            for (User user : users) {
+                if (user.getEmail() != null && !user.getEmail().isBlank()) {
+                    emailToUser.putIfAbsent(
+                            user.getEmail().trim().toLowerCase(Locale.ROOT), user.getUuid());
+                }
+            }
             for (AirtableMappedRecord record : mapped) {
                 try {
-                    if (importOne(record, run.getUuid(), positionCache, attachmentFailures, directory)) {
+                    if (importOne(record, run.getUuid(), positionCache, attachmentFailures,
+                            directory, emailToUser)) {
                         imported++;
                     }
                 } catch (Exception e) {
@@ -284,7 +293,8 @@ public class AirtableImportService {
     private boolean importOne(AirtableMappedRecord record, String runUuid,
                               Map<String, String> positionCache,
                               List<AirtableReconciliationReport.RecordIssue> attachmentFailures,
-                              List<AirtableReferrerMatcher.DirectoryUser> directory) {
+                              List<AirtableReferrerMatcher.DirectoryUser> directory,
+                              Map<String, String> emailToUser) {
         // A previously FAILED record retries (its ledger row is removed);
         // imported records and deliberate skips stay settled.
         boolean settled = inTx(() -> {
@@ -331,8 +341,22 @@ public class AirtableImportService {
         AirtableReferrerMatcher.Resolution referrer =
                 referrerMatcher.resolve(record.referrerName(), directory, true);
 
+        // Record comments (the collaboration thread) — a separate Airtable
+        // API, fetched outside the transaction like the attachments. A
+        // failure never blocks the record; it is listed in the report.
+        List<AirtableClient.AirtableComment> comments = List.of();
+        try {
+            comments = exportService.fetchComments(record.airtableTable(), record.airtableRecordId());
+        } catch (Exception e) {
+            attachmentFailures.add(new AirtableReconciliationReport.RecordIssue(
+                    record.airtableRecordId(), record.airtableTable(), "comments",
+                    "Comment fetch failed: " + truncate(e.getMessage(), 150)));
+        }
+        List<AirtableClient.AirtableComment> commentsFinal = comments;
+
         QuarkusTransaction.requiringNew().run(() ->
-                persistRecord(record, runUuid, positionCache, attachments, referrer));
+                persistRecord(record, runUuid, positionCache, attachments, referrer,
+                        commentsFinal, emailToUser));
         return true;
     }
 
@@ -343,7 +367,9 @@ public class AirtableImportService {
     private void persistRecord(AirtableMappedRecord record, String runUuid,
                                Map<String, String> positionCache,
                                List<DownloadedAttachment> attachments,
-                               AirtableReferrerMatcher.Resolution referrer) {
+                               AirtableReferrerMatcher.Resolution referrer,
+                               List<AirtableClient.AirtableComment> comments,
+                               Map<String, String> emailToUser) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
         // ---- candidate ----
@@ -367,11 +393,12 @@ public class AirtableImportService {
         }
         persistAnswers(record, candidate, application);
 
-        // ---- snapshot + review-task notes ----
+        // ---- snapshot + review-task + comment notes ----
         recordSnapshotNote(candidate, record);
         if (record.needsReviewTask()) {
             recordReviewTaskNote(candidate, record);
         }
+        persistCommentNotes(candidate, comments, emailToUser);
 
         // ---- attachments to S3 (+ DOCUMENT_UPLOADED events) ----
         for (DownloadedAttachment downloaded : attachments) {
@@ -715,6 +742,60 @@ public class AirtableImportService {
                 .payload("needs_review", true)
                 .pii("text", "Airtable-status var '" + record.airtableStatus()
                         + "' — kræver manuel opfølgning af recruiter (P21-migrering)."));
+    }
+
+    /**
+     * Airtable record comments → one {@code NOTE_ADDED} each, oldest
+     * first so the timeline reads chronologically. The author's
+     * trustworks email resolves to the real user (the timeline shows WHO
+     * wrote the comment); unresolvable authors fall back to SYSTEM with
+     * the name in the text. The event recorder stamps {@code occurred_at}
+     * at import time, so the ORIGINAL timestamp is part of the note text.
+     */
+    private void persistCommentNotes(RecruitmentCandidate candidate,
+                                     List<AirtableClient.AirtableComment> comments,
+                                     Map<String, String> emailToUser) {
+        comments.stream()
+                .sorted(java.util.Comparator.comparing(
+                        AirtableClient.AirtableComment::createdTime,
+                        java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())))
+                .forEach(comment -> {
+                    RecruitmentEventBuilder event = RecruitmentEventBuilder
+                            .event(RecruitmentEventType.NOTE_ADDED)
+                            .candidate(candidate.getUuid())
+                            .payload("private", false)
+                            .payload("origin", ORIGIN_AIRTABLE)
+                            .payload("migrated_from", "airtable")
+                            .payload("airtable_comment_id", comment.id())
+                            .pii("text", formatCommentNote(comment));
+                    String authorEmail = comment.author() == null || comment.author().email() == null
+                            ? null : comment.author().email().trim().toLowerCase(Locale.ROOT);
+                    String authorUuid = authorEmail == null ? null : emailToUser.get(authorEmail);
+                    if (authorUuid != null) {
+                        event.actorUser(authorUuid);
+                    } else {
+                        event.actorSystem();
+                    }
+                    eventRecorder.record(event);
+                });
+    }
+
+    /** Author + original timestamp header, @[usrXXX] mentions humanized. */
+    static String formatCommentNote(AirtableClient.AirtableComment comment) {
+        String text = comment.text() == null ? "" : comment.text();
+        if (comment.mentioned() != null) {
+            for (Map.Entry<String, AirtableClient.CommentMention> entry : comment.mentioned().entrySet()) {
+                String display = entry.getValue() == null || entry.getValue().displayName() == null
+                        ? "?" : entry.getValue().displayName();
+                text = text.replace("@[" + entry.getKey() + "]", "@" + display);
+            }
+        }
+        String author = comment.author() != null && comment.author().name() != null
+                ? comment.author().name() : "Ukendt";
+        String when = comment.createdTime() != null && comment.createdTime().length() >= 16
+                ? comment.createdTime().substring(0, 16).replace("T", " ") + " UTC" : "";
+        return "Airtable-kommentar fra " + author + (when.isEmpty() ? "" : " (" + when + ")")
+                + ":\n" + text;
     }
 
     private void grantPoolConsent(RecruitmentCandidate candidate, LocalDateTime now) {
