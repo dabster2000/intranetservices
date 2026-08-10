@@ -18,6 +18,15 @@ import java.util.Set;
  * Service for searching across CV data stored in cv_tool_employee_cv.
  * Uses LIKE on the JSON text blob for broad matching, then parses JSON
  * to extract which specific fields matched and a contextual snippet.
+ * <p>
+ * <b>Only currently employed people are returned.</b> The sync never deletes
+ * rows — {@code CvToolSyncService} skips employees the CV Tool marks deleted
+ * but leaves anything already stored in place — so this table accumulates
+ * leavers indefinitely. Without the employment filter the Organization page
+ * showed people who had been gone for close to a year, but only while
+ * searching: the team cards get their members from
+ * {@code UserService.filterForActiveTeamMembers}, which excludes them. The
+ * status set below is that method's set, so the two agree.
  */
 @JBossLog
 @ApplicationScoped
@@ -32,7 +41,7 @@ public class CvSearchService {
      * Search CVs by query string across all fields.
      *
      * @param query Search term (case-insensitive, minimum 2 chars)
-     * @return List of matching CVs with match context
+     * @return List of matching CVs with match context, currently employed people only
      */
     @SuppressWarnings("unchecked")
     public List<CvSearchResultDTO> searchCvs(String query) {
@@ -46,15 +55,26 @@ public class CvSearchService {
                 .replace("_", "\\_");
         String searchPattern = "%" + searchTerm + "%";
 
+        // The employment filter lives in SQL, before the LIMIT, on purpose. Filtering
+        // the result list in Java afterwards would let 50 rows of ex-employees crowd
+        // out live ones on a broad query, so the page would silently lose people.
         String sql = """
-            SELECT useruuid, employee_name, employee_title,
-                   employee_profile, cv_data_json
-            FROM cv_tool_employee_cv
-            WHERE LOWER(employee_name) LIKE :pattern ESCAPE '\\\\'
-               OR LOWER(employee_title) LIKE :pattern ESCAPE '\\\\'
-               OR LOWER(employee_profile) LIKE :pattern ESCAPE '\\\\'
-               OR LOWER(cv_data_json) LIKE :pattern ESCAPE '\\\\'
-            ORDER BY employee_name
+            SELECT cv.useruuid, cv.employee_name, cv.employee_title,
+                   cv.employee_profile, cv.cv_data_json
+            FROM cv_tool_employee_cv cv
+            WHERE (LOWER(cv.employee_name) LIKE :pattern ESCAPE '\\\\'
+                OR LOWER(cv.employee_title) LIKE :pattern ESCAPE '\\\\'
+                OR LOWER(cv.employee_profile) LIKE :pattern ESCAPE '\\\\'
+                OR LOWER(cv.cv_data_json) LIKE :pattern ESCAPE '\\\\')
+              AND EXISTS (
+                  SELECT 1 FROM userstatus us
+                  WHERE us.useruuid = cv.useruuid
+                    AND us.statusdate = (SELECT MAX(us2.statusdate) FROM userstatus us2
+                                         WHERE us2.useruuid = cv.useruuid
+                                           AND us2.statusdate <= CURDATE())
+                    AND us.status IN ('ACTIVE', 'PAID_LEAVE', 'MATERNITY_LEAVE', 'NON_PAY_LEAVE')
+              )
+            ORDER BY cv.employee_name
             LIMIT 50
             """;
 
