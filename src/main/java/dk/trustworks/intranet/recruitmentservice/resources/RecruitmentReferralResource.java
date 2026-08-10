@@ -138,8 +138,8 @@ public class RecruitmentReferralResource {
 
     /**
      * The intake queues are recruiter-tier surfaces (spec §7.2): ADMIN, HR
-     * or CXO role — a teamlead's pipeline involvement does not include the
-     * raw referral facts.
+     * or RECRUITMENT role — a teamlead's pipeline involvement does not
+     * include the raw referral facts.
      */
     private void requireRecruiterTier(UUID actor) {
         if (!visibility.isRecruiterTier(actor.toString())) {

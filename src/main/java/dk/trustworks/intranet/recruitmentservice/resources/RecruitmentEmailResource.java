@@ -68,7 +68,7 @@ import java.util.stream.Collectors;
  * <h3>Security</h3>
  * <ul>
  *   <li>Every endpoint is recruiter-tier ({@code ADMIN}/{@code HR}/
- *       {@code CXO} via {@link RecruitmentVisibility#isRecruiterTier}) —
+ *       {@code RECRUITMENT} via {@link RecruitmentVisibility#isRecruiterTier}) —
  *       candidate communication is a recruiter surface (plan §P15;
  *       teamleads' review-first rejections land in this queue for a
  *       recruiter to approve).</li>

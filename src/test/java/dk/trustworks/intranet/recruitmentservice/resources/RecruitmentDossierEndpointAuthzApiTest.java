@@ -46,6 +46,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
 
     private String hrUser;
     private String techPartnerUser;
+    private String teamleadRoleUser;
     private String circleHr;
     private String adminUser;
     private String plainUser;
@@ -65,6 +66,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
         teamA = UUID.randomUUID().toString();
         hrUser = UUID.randomUUID().toString();
         techPartnerUser = UUID.randomUUID().toString();
+        teamleadRoleUser = UUID.randomUUID().toString();
         circleHr = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
@@ -77,11 +79,13 @@ class RecruitmentDossierEndpointAuthzApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, hrUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, techPartnerUser, "Tino", "Techpartner");
+            P8ProfileFixtures.insertUser(em, teamleadRoleUser, "Tilde", "Teamlead");
             P8ProfileFixtures.insertUser(em, circleHr, "Cirkel", "Recruiter");
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
             P8ProfileFixtures.insertRole(em, techPartnerUser, "TECHPARTNER");
+            P8ProfileFixtures.insertRole(em, teamleadRoleUser, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
@@ -125,7 +129,8 @@ class RecruitmentDossierEndpointAuthzApiTest {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(normalCandidate, partnerOnlyCandidate, legacyDossierCandidate),
                     List.of(teamPosition, partnerPosition),
-                    List.of(hrUser, techPartnerUser, circleHr, adminUser, plainUser),
+                    List.of(hrUser, techPartnerUser, teamleadRoleUser, circleHr,
+                            adminUser, plainUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, DOSSIER_FLAG, previousFlag);
         });
@@ -141,19 +146,29 @@ class RecruitmentDossierEndpointAuthzApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void techPartner_readsPlainCandidate_ok() {
-        // TECHPARTNER is in the profile-read tier — the dossier flow's
-        // existing production audience must keep working.
-        getCandidate(techPartnerUser, normalCandidate, 200);
+    void techPartner_readsPlainCandidate_404() {
+        // TECHPARTNER was removed from the recruitment module at go-live
+        // (2026-08-10, decision D7): it is no longer in the profile-read
+        // tier and holds no involvement, so the candidate is invisible —
+        // 404, not 403, per the no-leak rule.
+        getCandidate(techPartnerUser, normalCandidate, 404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void teamlead_readsPlainCandidate_ok() {
+        // TEAMLEAD joined the profile-read tier at go-live (D3): a team lead
+        // reads the whole non-partner candidate population.
+        getCandidate(teamleadRoleUser, normalCandidate, 200);
     }
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
     void legacyDossierOnlyCandidate_zeroApplications_visibleToProfileTier() {
         // A pre-ATS dossier candidate has no applications and so is never
-        // "partner-track-only" — it must stay visible to HR and TECHPARTNER.
+        // "partner-track-only" — it stays visible to the profile-read tier.
         getCandidate(hrUser, legacyDossierCandidate, 200);
-        getCandidate(techPartnerUser, legacyDossierCandidate, 200);
+        getCandidate(teamleadRoleUser, legacyDossierCandidate, 200);
     }
 
     // ---- Partner-track hard filter --------------------------------------------
@@ -162,7 +177,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
     void hr_onPartnerTrackOnlyCandidateOutsideCircle_404() {
         getCandidate(hrUser, partnerOnlyCandidate, 404);
-        getCandidate(techPartnerUser, partnerOnlyCandidate, 404);
+        getCandidate(teamleadRoleUser, partnerOnlyCandidate, 404);
     }
 
     @Test

@@ -12,7 +12,8 @@ import java.util.List;
  *
  * <h3>Viewer shapes</h3>
  * <ul>
- *   <li>{@code RECRUITER} — recruiter tier (ADMIN/HR/CXO): the world.</li>
+ *   <li>{@code RECRUITER} — recruiter tier (ADMIN/HR/RECRUITMENT): the
+ *       world.</li>
  *   <li>{@code INVOLVED} — owns/leads/reads at least one position
  *       (hiring owner, current team lead, current practice lead, circle
  *       member): their positions' slice.</li>

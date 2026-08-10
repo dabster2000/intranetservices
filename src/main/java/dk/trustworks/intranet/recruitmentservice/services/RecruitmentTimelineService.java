@@ -40,10 +40,10 @@ import java.util.stream.Collectors;
  *       event's position ({@code canReadPosition} semantics, batched) — or
  *       ADMIN;</li>
  *   <li>{@code NOTE_ADDED} with {@code payload.private=true}: only the
- *       author, the recruiter tier (HR/CXO) and ADMIN — omitted entirely
- *       otherwise;</li>
+ *       author, the recruiter tier (HR/RECRUITMENT) and ADMIN — omitted
+ *       entirely otherwise;</li>
  *   <li>{@code NOTE_ADDED} with {@code payload.field=SALARY_EXPECTATION}:
- *       {@code pii} only for the comp tier (ADMIN, HR, CXO, or
+ *       {@code pii} only for the comp tier (ADMIN, HR, RECRUITMENT, or
  *       teamlead/hiring-owner of one of the candidate's positions) —
  *       otherwise the event stays, {@code pii} is withheld and
  *       {@code piiRedacted=true};</li>
@@ -122,7 +122,7 @@ public class RecruitmentTimelineService {
 
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
-        boolean noteTier = admin || roles.contains("HR") || roles.contains("CXO");
+        boolean noteTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
 
         // Positions once: the candidate's application positions (comp tier)
         // plus any position an event references (CIRCLE filter + names).

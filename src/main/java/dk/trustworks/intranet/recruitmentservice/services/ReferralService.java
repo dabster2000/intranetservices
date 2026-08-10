@@ -762,7 +762,7 @@ public class ReferralService {
     // ---- Guards ----------------------------------------------------------------
 
     /**
-     * The recruiter-tier gate (spec §7.2: ADMIN, HR or CXO), enforced at
+     * The recruiter-tier gate (spec §7.2: ADMIN, HR or RECRUITMENT), enforced at
      * the service so no future caller (the P14 Slack twin included) can
      * reach a recruiter surface without it. The resource keeps its own
      * check — it answers first with the friendlier message.

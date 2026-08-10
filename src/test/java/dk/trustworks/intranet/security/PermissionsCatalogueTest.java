@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Guards the permission catalogue extracted in Phase 4 (task 4.1).
  *
- * <p>The catalogue is the promotion of the 85 scope strings that already existed in
+ * <p>The catalogue began as the promotion of the 85 scope strings that already existed in
  * {@code AdminScopeAugmentor.ALL_SCOPES}. These tests pin (a) that the augmentor and
  * the catalogue can never diverge, and (b) that every key keeps the {@code domain:action}
  * colon-scope shape — task 4.2 removed the single non-scope value ({@code "ADMIN"}),
@@ -23,12 +23,22 @@ class PermissionsCatalogueTest {
 
     private static final Pattern SCOPE_SHAPE = Pattern.compile("^[a-z_-]+:[a-z*_-]+$");
 
+    /**
+     * 85 at extraction from {@code AdminScopeAugmentor.ALL_SCOPES};
+     * 86 since the recruitment go-live added {@code recruitment:manage}
+     * (2026-08-10) to separate the recruiter tier from {@code
+     * recruitment:write}, which every team lead holds.
+     */
+    private static final int EXPECTED_PERMISSIONS = 86;
+
     @Test
-    void catalogueHolds85Permissions() {
-        assertEquals(85, Permissions.CATALOGUE.size(),
-                "The catalogue was extracted from AdminScopeAugmentor.ALL_SCOPES with exactly 85 scopes. "
-                        + "If this changed deliberately, regenerate V464 (see PermissionSeedSql) and update this number.");
-        assertEquals(85, Permissions.allKeys().size(), "Duplicate keys would collapse in the key set");
+    void catalogueHoldsExpectedNumberOfPermissions() {
+        assertEquals(EXPECTED_PERMISSIONS, Permissions.CATALOGUE.size(),
+                "The catalogue size changed. If that was deliberate, regenerate V464 "
+                        + "(see PermissionSeedSql) and the vendored artifact (see "
+                        + "PermissionCatalogueJson), then update this number.");
+        assertEquals(EXPECTED_PERMISSIONS, Permissions.allKeys().size(),
+                "Duplicate keys would collapse in the key set");
     }
 
     @Test

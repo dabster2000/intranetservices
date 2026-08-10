@@ -127,7 +127,7 @@ public class RecruitmentLandingService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
-        boolean recruiterTier = admin || roles.contains("HR") || roles.contains("CXO");
+        boolean recruiterTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
 
         // The viewer's whole visible position slice (any status) — one
         // query-level filtered fetch reused by tasks, pipelines and feed.
@@ -242,13 +242,16 @@ public class RecruitmentLandingService {
      * The visible positions the viewer may decide on — mirrors
      * {@link RecruitmentVisibility#canDecideOnApplication} with per-call
      * (not per-row) lookups: admin/recruiter everywhere; partner track only
-     * for circle OWNER/RECRUITER members; otherwise hiring owner or current
-     * team lead. Change the two together.
+     * for circle OWNER/RECRUITER members; otherwise hiring owner, current
+     * team lead, or a TEAMLEAD who is in the position's circle (go-live
+     * decision D4 — a teamlead <em>reads</em> every non-partner position
+     * but <em>decides</em> only on their own). Change the two together.
      */
     private Set<String> decidablePositionUuids(String viewerUuid, Set<String> roles,
                                                List<RecruitmentPosition> visiblePositions) {
         boolean admin = roles.contains("ADMIN");
-        boolean recruiterTier = admin || roles.contains("HR") || roles.contains("CXO");
+        boolean recruiterTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
+        boolean teamlead = roles.contains("TEAMLEAD");
         Set<String> ledTeams = recruiterTier ? Set.of()
                 : new HashSet<>(visibility.currentlyLedTeams(viewerUuid));
         Map<String, RecruitmentCircleRole> circleRoles = admin ? Map.of()
@@ -276,7 +279,8 @@ public class RecruitmentLandingService {
                 return true;
             }
             return viewerUuid.equals(position.getHiringOwnerUuid())
-                    || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()));
+                    || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
+                    || (teamlead && circleRoles.containsKey(position.getUuid()));
         }).map(RecruitmentPosition::getUuid).collect(Collectors.toSet());
     }
 

@@ -45,7 +45,7 @@ public class SlackTriagePingSupport {
     public Actionable resolveActionable(User actor, SlackInboundRequest request) {
         if (!visibility.isRecruiterTier(actor.getUuid())) {
             return new Actionable(null, SlackInboundResponse.handled(
-                    "Referral triage is reserved for the recruitment team (HR, CXO or admin)."));
+                    "Referral triage is reserved for the recruitment team (HR, Recruitment or admin)."));
         }
         String referralUuid = request.actionValue();
         RecruitmentReferral referral = referralUuid == null ? null

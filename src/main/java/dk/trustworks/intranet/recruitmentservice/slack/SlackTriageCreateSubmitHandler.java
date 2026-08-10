@@ -109,7 +109,7 @@ public class SlackTriageCreateSubmitHandler implements SlackInboundHandler {
                 return SlackInboundResponse.handledWithAction(SlackResponseActions.update(
                         SlackRecruitmentViews.outcomeView("No permission",
                                 "Referral triage is reserved for the recruitment team "
-                                        + "(HR, CXO or admin).")));
+                                        + "(HR, Recruitment or admin).")));
             }
             throw e;
         }

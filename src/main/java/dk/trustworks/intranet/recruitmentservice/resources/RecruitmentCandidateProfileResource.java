@@ -1,11 +1,13 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
+import dk.trustworks.intranet.recruitmentservice.dto.CandidateBriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateConsentsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateDocumentsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateTimelineResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.FormAnswersResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.CandidateBriefService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService.DocumentDownload;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
@@ -40,11 +42,14 @@ import java.util.UUID;
  *       scope; the BFF holds {@code admin:*}.</li>
  *   <li>Per-user profile access via
  *       {@link RecruitmentVisibility#canReadCandidateProfile} on EVERY
- *       endpoint: ADMIN always; the profile-read tier (HR/CXO/TECHPARTNER)
- *       minus partner-track-only candidates; involvement (teamlead/hiring
- *       owner/practice lead/circle) via a readable application; hired files
- *       narrowed to ADMIN+HR+CXO+TECHPARTNER+DPO. Invisible candidates
- *       answer 404, never 403 — existence must not leak.</li>
+ *       endpoint: ADMIN always; the profile-read tier
+ *       (HR/RECRUITMENT/TEAMLEAD) minus partner-track-only candidates;
+ *       otherwise ownership or current leadership (hiring owner, team lead,
+ *       practice lead) of a non-partner position the candidate applied to;
+ *       hired files narrowed to ADMIN+HR+RECRUITMENT+DPO. Interviewers and
+ *       circle-only viewers get the restricted brief instead
+ *       ({@code /brief}), never this profile. Invisible candidates answer
+ *       404, never 403 — existence must not leak.</li>
  *   <li>Event-level filtering (CIRCLE events, private notes, salary pii)
  *       lives in {@link RecruitmentTimelineService}, applied AFTER profile
  *       access.</li>
@@ -82,6 +87,36 @@ public class RecruitmentCandidateProfileResource {
 
     @Inject
     CandidateProfileReadService profileReadService;
+
+    @Inject
+    CandidateBriefService briefService;
+
+    // ---- Restricted brief ----------------------------------------------------------
+
+    /**
+     * The <b>restricted candidate brief</b> (go-live decisions D10–D12) —
+     * the only recruitment surface reachable without a recruitment role.
+     * Granted to an assigned interviewer or a member of one of the
+     * candidate's positions' circles, while the candidate is ACTIVE.
+     * <p>
+     * Deliberately narrower than every other endpoint on this resource: no
+     * stage, no status, no timeline, no comp data, no notes, no other
+     * people's scorecards — see {@link CandidateBriefResponse}. A viewer
+     * who can read the full profile may also call this (it is additive,
+     * never a downgrade), but the frontend routes them to the profile.
+     * <p>
+     * No access → 404, never 403: existence must not leak, exactly as for
+     * the full profile.
+     */
+    @GET
+    @Path("/candidates/{uuid}/brief")
+    @RolesAllowed({"recruitment:interview"})
+    public CandidateBriefResponse brief(@PathParam("uuid") UUID candidateUuid) {
+        enforcePipelineFlag();
+        UUID viewer = currentActor();
+        RecruitmentCandidate candidate = requireBriefableCandidate(candidateUuid, viewer);
+        return briefService.brief(viewer.toString(), candidate);
+    }
 
     // ---- Timeline ----------------------------------------------------------------
 
@@ -139,9 +174,17 @@ public class RecruitmentCandidateProfileResource {
     }
 
     /**
-     * Stream one document's bytes. Same profile authz as the list; the
-     * IDOR guard (file's {@code relateduuid} must match the candidate in
-     * the URL) answers 404 inside the read service.
+     * Stream one document's bytes. Two authz shapes meet here:
+     * <ul>
+     *   <li>full-profile viewers get any of the candidate's files;</li>
+     *   <li>restricted viewers (assigned interviewer / circle member) get
+     *       only the files that appear on their brief — CV, cover letter
+     *       and unclassified uploads. A contract draft, signed document,
+     *       appendix or identity document answers 404 even when its uuid
+     *       is known, so guessing a uuid buys nothing.</li>
+     * </ul>
+     * The IDOR guard (file's {@code relateduuid} must match the candidate
+     * in the URL) still runs inside the read service.
      */
     @GET
     @Path("/candidates/{uuid}/documents/{fileUuid}")
@@ -153,7 +196,11 @@ public class RecruitmentCandidateProfileResource {
         if (fileUuid == null || fileUuid.isBlank()) {
             throw badRequest("fileUuid is required");
         }
-        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, viewer);
+        RecruitmentCandidate candidate = requireBriefableCandidate(candidateUuid, viewer);
+        if (!visibility.canReadCandidateProfile(viewer.toString(), candidate)
+                && !briefService.downloadableFileUuids(candidate.getUuid()).contains(fileUuid)) {
+            throw new NotFoundException("Document not found: " + fileUuid);
+        }
         DocumentDownload download = profileReadService.download(candidate.getUuid(), fileUuid);
         return Response.ok(download.bytes(), download.contentType())
                 .header("Content-Disposition",
@@ -185,6 +232,23 @@ public class RecruitmentCandidateProfileResource {
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
         if (candidate == null
                 || !visibility.canReadCandidateProfile(viewer.toString(), candidate)) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        return candidate;
+    }
+
+    /**
+     * The looser gate of the two: the viewer may read the full profile
+     * <em>or</em> holds the restricted grant (assigned interviewer / circle
+     * member on an ACTIVE candidate). Used by the brief and by the document
+     * download — everything else on this resource stays profile-only.
+     * Same 404-on-invisible convention.
+     */
+    private RecruitmentCandidate requireBriefableCandidate(UUID candidateUuid, UUID viewer) {
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null
+                || (!visibility.canReadCandidateProfile(viewer.toString(), candidate)
+                    && !visibility.canReadRestrictedCandidateView(viewer.toString(), candidate))) {
             throw new NotFoundException("Candidate not found: " + candidateUuid);
         }
         return candidate;
