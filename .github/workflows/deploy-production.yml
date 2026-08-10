@@ -125,7 +125,7 @@ jobs:
               {"name":"INDIVIDUAL_BONUS_MONTHLY_MATERIALIZATION_ENABLED","value":"true"},
               {"name":"INDIVIDUAL_BONUS_MONTHLY_RECONCILIATION_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ENABLED","value":"true"},
-              {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview"}
+              {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview,Hired Employees"}
             ]
           secrets: |
             [
