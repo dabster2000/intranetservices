@@ -193,11 +193,15 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             } catch (Exception e) {
                 String errorMsg = e.getMessage();
 
-                // Check if it's a 404 (case not ready yet - expected during race condition window)
-                boolean notFound = errorMsg != null && errorMsg.contains("404");
+                // "Case gone" comes in two shapes: the typed exception for
+                // NextSign's documented HTTP-200 {"message":"Case not found"}
+                // body (deleted cases, incl. auto-deletion), and an HTTP 404
+                // during the create-then-fetch race window.
+                boolean notFound = e instanceof SigningService.CaseNotFoundInNextsignException
+                    || (errorMsg != null && errorMsg.contains("404"));
                 if (notFound) {
-                    log.warnf("Case %s not available in NextSign (404), will retry later", caseKey);
-                    signingService.markCaseFetchFailed(signingCase, "Case not available in NextSign (404)");
+                    log.warnf("Case %s not available in NextSign, will retry later", caseKey);
+                    signingService.markCaseFetchFailed(signingCase, "Case not available in NextSign");
                     failed++;
 
                 } else {
@@ -209,13 +213,14 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
                 if (signingCase.getRetryCount() >= MAX_RETRIES) {
                     if (notFound) {
-                        // Consecutive 404s across the whole fast-retry window go far
-                        // beyond the create-then-fetch race this loop was built for:
-                        // the case no longer exists in NextSign (deleted, or never
-                        // durably created). Abandon it permanently — the slow retry
-                        // lane is for outages, not dead case keys.
+                        // A whole fast-retry window of consecutive not-founds goes
+                        // far beyond the create-then-fetch race this loop was built
+                        // for: the case no longer exists in NextSign (deleted, or
+                        // never durably created). Abandon it permanently — the slow
+                        // retry lane is for outages, not dead case keys. WARN, not
+                        // ERROR: this is expected lifecycle for old deleted cases.
                         signingService.markCaseMissingInNextsign(signingCase);
-                        log.errorf("Case %s abandoned: not found in NextSign after %d attempts",
+                        log.warnf("Case %s abandoned: not found in NextSign after %d attempts",
                             caseKey, signingCase.getRetryCount());
                     } else {
                         log.errorf("Case %s exceeded fast retries (%d); slow retry lane takes over",

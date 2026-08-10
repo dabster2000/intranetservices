@@ -225,6 +225,16 @@ public class NextsignSigningService {
                 response.status(),
                 response.contract() != null ? response.contract().caseStatus() : "unknown");
 
+            // NextSign reports a deleted/unknown case as HTTP 200 with
+            // {"message": "Case not found"} — no status, no case (documented
+            // contract, and the normal outcome for auto-deleted old cases).
+            // Surface it as the typed not-found, NOT as a generic API error:
+            // callers must be able to stop retrying a case that is gone.
+            if (response.isCaseNotFound()) {
+                log.warnf("Nextsign case not found (deleted or never created): %s", caseId);
+                throw new NextsignCaseNotFoundException("Case not found in NextSign: " + caseId);
+            }
+
             if (!response.isSuccess()) {
                 log.errorf("Nextsign API returned error status: %s", response.status());
                 throw new NextsignException("Nextsign API error status: " + response.status());
@@ -616,6 +626,19 @@ public class NextsignSigningService {
 
         public NextsignException(String message, Throwable cause) {
             super(message, cause);
+        }
+    }
+
+    /**
+     * The requested case does not exist in NextSign — the API answered with
+     * its documented HTTP-200 {@code {"message": "Case not found"}} body.
+     * Distinct from {@link NextsignException} so callers can tell "the case
+     * is gone" (stop polling, terminal) from "the call failed" (retry).
+     * Extends it so existing broad catches keep working.
+     */
+    public static class NextsignCaseNotFoundException extends NextsignException {
+        public NextsignCaseNotFoundException(String message) {
+            super(message);
         }
     }
 }

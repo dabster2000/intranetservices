@@ -134,7 +134,7 @@ class NextSignStatusSyncBatchletTest {
             failedCase.setProcessingStatus("FAILED");
             failedCase.setRetryCount(failedCase.getRetryCount() + 1);
             return null;
-        }).when(signingService).markCaseFetchFailed(signingCase, "Case not available in NextSign (404)");
+        }).when(signingService).markCaseFetchFailed(signingCase, "Case not available in NextSign");
 
         String result = batchlet.doProcess();
 
@@ -143,6 +143,34 @@ class NextSignStatusSyncBatchletTest {
         // A case that 404s across the whole fast-retry window no longer
         // exists in NextSign — it must be permanently abandoned, not left
         // to drip through the slow retry lane forever.
+        verify(signingService).markCaseMissingInNextsign(signingCase);
+        verifyNoInteractions(sharePointService, slackService);
+    }
+
+    @Test
+    void typedCaseNotFound_pastRetryBudget_isAbandonedNotSlowLaned() throws Exception {
+        // NextSign's documented "case gone" shape is HTTP 200 with
+        // {"message":"Case not found"} — surfaced as the typed exception,
+        // whose message contains no "404". Before the typed classification
+        // this fell into the generic-error path and dripped through the
+        // 6-hour slow lane forever (prod incident 2026-08-09 19:12Z).
+        SigningCase signingCase = signingCase("pending", "FAILED", 6);
+        when(signingCaseRepository.findCasesNeedingStatusFetch(5, 15))
+            .thenReturn(List.of(signingCase));
+        when(signingService.getStatus(signingCase.getCaseKey())).thenThrow(
+            new SigningService.CaseNotFoundInNextsignException(
+                "Case not found in NextSign: " + signingCase.getCaseKey(), null)
+        );
+        doAnswer(invocation -> {
+            SigningCase failedCase = invocation.getArgument(0);
+            failedCase.setProcessingStatus("FAILED");
+            failedCase.setRetryCount(failedCase.getRetryCount() + 1);
+            return null;
+        }).when(signingService).markCaseFetchFailed(signingCase, "Case not available in NextSign");
+
+        String result = batchlet.doProcess();
+
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
         verify(signingService).markCaseMissingInNextsign(signingCase);
         verifyNoInteractions(sharePointService, slackService);
     }

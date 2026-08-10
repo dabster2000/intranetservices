@@ -135,6 +135,31 @@ class SigningServiceStatusMappingTest {
     }
 
     @Test
+    void clientCaseNotFound_translatesToTypedSigningException() {
+        when(nextsignService.getCaseStatus(CASE_KEY)).thenThrow(
+            new NextsignSigningService.NextsignCaseNotFoundException(
+                "Case not found in NextSign: " + CASE_KEY));
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+            SigningService.CaseNotFoundInNextsignException.class,
+            () -> signingService.getStatus(CASE_KEY));
+    }
+
+    @Test
+    void getCaseDetail_caseNotFound_surfacesAsSigningException() {
+        // Resource layers catch SigningException and translate it to 404 —
+        // the typed not-found must be a SigningException subtype, never a raw
+        // runtime exception that would surface as a 500.
+        when(nextsignService.getCaseStatus(CASE_KEY)).thenThrow(
+            new NextsignSigningService.NextsignCaseNotFoundException(
+                "Case not found in NextSign: " + CASE_KEY));
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+            SigningService.CaseNotFoundInNextsignException.class,
+            () -> signingService.getCaseDetail(CASE_KEY));
+    }
+
+    @Test
     void getCaseDetail_cacheRefreshFailure_doesNotBreakDetailResponse() {
         when(nextsignService.getCaseStatus(CASE_KEY)).thenReturn(expiredResponse("signed"));
         when(signingCaseRepository.findByCaseKey(CASE_KEY))
