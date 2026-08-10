@@ -21,6 +21,8 @@ public record SendEmailRequest(
         String applicationUuid,
         String subject,
         String body,
+        /** PLAIN or HTML; absent means PLAIN, i.e. the pre-rich-text contract. */
+        String bodyFormat,
         List<String> copyUserUuids,
         String copyMode
 ) {

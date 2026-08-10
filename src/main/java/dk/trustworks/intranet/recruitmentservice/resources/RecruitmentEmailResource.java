@@ -20,12 +20,14 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailCopyResolver;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailHtmlSanitizer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
@@ -145,6 +147,7 @@ public class RecruitmentEmailResource {
         requireTemplateFields(request);
         RecruitmentEmailTemplate template = emailService.createTemplate(
                 request.templateKey(), request.name(), request.subject(), request.body(),
+                RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
                 request.active() == null || request.active(),
                 copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
@@ -164,6 +167,8 @@ public class RecruitmentEmailResource {
         requireTemplateFields(request);
         RecruitmentEmailTemplate template = emailService.updateTemplate(uuid.toString(),
                 request.name(), request.subject(), request.body(),
+                request.bodyFormat() == null || request.bodyFormat().isBlank()
+                        ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
                 request.active() == null || request.active(),
                 copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
@@ -191,9 +196,13 @@ public class RecruitmentEmailResource {
         if (template == null) {
             throw new NotFoundException("Resource not found");
         }
-        RecruitmentEmailRenderer.Rendered rendered = emailService.render(template, candidate,
+        // The compose dialog composes in rich text whatever the template is,
+        // so a legacy PLAIN template is up-converted here rather than forcing
+        // the dialog to carry two editing modes for an identical result.
+        RecruitmentEmailRenderer.Rendered rendered = emailService.renderAsHtml(template, candidate,
                 positionForContext(candidate, request.applicationUuid()));
         return new RenderedEmailResponse(rendered.subject(), rendered.body(),
+                RecruitmentEmailBodyFormat.HTML.name(),
                 List.copyOf(rendered.unresolvedFields()));
     }
 
@@ -205,12 +214,14 @@ public class RecruitmentEmailResource {
         UUID actor = currentActor();
         requireRecruiterTier(actor);
         Objects.requireNonNull(request, "request body must not be null");
-        requireSubjectAndBody(request.subject(), request.body());
+        RecruitmentEmailBodyFormat sendFormat =
+                RecruitmentEmailBodyFormat.parse(request.bodyFormat());
+        requireSubjectAndBody(request.subject(), request.body(), sendFormat);
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
         String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
         RecruitmentEmailService.RecruitmentPendingEmailResult result = emailService.sendManual(
                 candidate.getUuid(), blankToNull(request.templateUuid()), applicationUuid,
-                request.subject().trim(), request.body(), actor.toString(),
+                request.subject().trim(), request.body(), sendFormat, actor.toString(),
                 request.copyUserUuids(), copyModeOrNull(request.copyMode()));
         return Response.status(Response.Status.CREATED)
                 .entity(result)
@@ -339,7 +350,15 @@ public class RecruitmentEmailResource {
         try {
             AiEmailDraftService.Draft drafted = draftService.draft(candidate, template,
                     application, instruction, actor.toString());
-            return new RenderedEmailResponse(drafted.subject(), drafted.body(),
+            // Same contract as /render: the compose dialog edits in rich text
+            // whatever the source template is, so a draft written against a
+            // legacy PLAIN template is up-converted here. Without this its
+            // paragraph breaks are plain "\n" dropped into a contentEditable,
+            // where they collapse into one run-on block.
+            String draftBody = drafted.bodyFormat().isHtml() ? drafted.body()
+                    : RecruitmentEmailHtmlSanitizer.plainToHtml(drafted.body());
+            return new RenderedEmailResponse(drafted.subject(), draftBody,
+                    RecruitmentEmailBodyFormat.HTML.name(),
                     List.copyOf(drafted.unresolvedFields()));
         } catch (IllegalStateException e) {
             // OpenAI failure/refusal — a human-readable upstream error, no
@@ -397,7 +416,10 @@ public class RecruitmentEmailResource {
             throw badRequest("body exceeds " + RecruitmentEmailService.BODY_MAX_LENGTH + " characters");
         }
         RecruitmentPendingEmail approved = emailService.approve(pendingUuid.toString(),
-                subject, body, actor.toString(),
+                subject, body,
+                request == null || request.bodyFormat() == null || request.bodyFormat().isBlank()
+                        ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
+                actor.toString(),
                 request == null ? null : request.copyUserUuids(),
                 copyModeOrNull(request == null ? null : request.copyMode()));
         if (approved == null) {
@@ -576,16 +598,22 @@ public class RecruitmentEmailResource {
             throw badRequest("name is required (max "
                     + RecruitmentEmailService.NAME_MAX_LENGTH + " characters)");
         }
-        requireSubjectAndBody(request.subject(), request.body());
+        requireSubjectAndBody(request.subject(), request.body(),
+                RecruitmentEmailBodyFormat.parse(request.bodyFormat()));
     }
 
-    private void requireSubjectAndBody(String subject, String body) {
+    private void requireSubjectAndBody(String subject, String body,
+                                       RecruitmentEmailBodyFormat bodyFormat) {
         if (subject == null || subject.isBlank()
                 || subject.trim().length() > RecruitmentEmailService.SUBJECT_MAX_LENGTH) {
             throw badRequest("subject is required (max "
                     + RecruitmentEmailService.SUBJECT_MAX_LENGTH + " characters)");
         }
-        if (body == null || body.isBlank() || body.length() > RecruitmentEmailService.BODY_MAX_LENGTH) {
+        // isBlank() is not enough on the HTML path: an empty rich editor
+        // serialises to "<p><br></p>", which is blank to a reader and not to
+        // String.isBlank().
+        if (RecruitmentEmailService.isBlankBody(body, bodyFormat)
+                || body.length() > RecruitmentEmailService.BODY_MAX_LENGTH) {
             throw badRequest("body is required (max "
                     + RecruitmentEmailService.BODY_MAX_LENGTH + " characters)");
         }

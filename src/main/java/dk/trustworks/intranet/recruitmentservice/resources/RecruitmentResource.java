@@ -48,6 +48,9 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailHtmlSanitizer;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.recruitmentservice.util.PublicApplyDocuments;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -867,9 +870,22 @@ public class RecruitmentResource {
                                @Valid SendReviewRequest request) {
         enforceFlag();
         SendReviewRequest body = request != null ? request : new SendReviewRequest(null);
-        if (body.note() == null || body.note().isBlank()) {
+        RecruitmentEmailBodyFormat noteFormat =
+                RecruitmentEmailBodyFormat.parse(body.noteFormat());
+        // On the rich-text path blankness is judged on the rendered text:
+        // "<p><br></p>" is an empty email dressed up as content.
+        if (RecruitmentEmailService.isBlankBody(body.note(), noteFormat)) {
             throw new WebApplicationException(
                     "A message is required — the email body is exclusively this note.",
+                    Response.Status.BAD_REQUEST);
+        }
+        // Explicit, because @Size is inert in this repo (§P4.9) and the note is
+        // written to a TEXT column AFTER the mail has already gone out — an
+        // oversized note would leave the candidate emailed and no revision row
+        // to audit it.
+        if (body.note().length() > NOTE_MAX_LENGTH) {
+            throw new WebApplicationException(
+                    "The message is too long (max " + NOTE_MAX_LENGTH + " characters).",
                     Response.Status.BAD_REQUEST);
         }
         UUID actor = currentActor();
@@ -897,7 +913,12 @@ public class RecruitmentResource {
                 candidate.getEmail(),
                 fullName(candidate.getFirstName(), candidate.getLastName()),
                 actor,
-                body.note(),
+                // The revision row is an audit record a human reads in the
+                // dossier history, so it stores the readable projection of the
+                // note rather than its markup. The markup itself is only ever
+                // an email body, and that is what was sent.
+                RecruitmentEmailHtmlSanitizer.toPlainText(
+                        buildReviewEmailBody(body.note(), noteFormat)),
                 null,
                 pdfRefs);
         CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
@@ -914,7 +935,7 @@ public class RecruitmentResource {
                 UUID.randomUUID().toString(),
                 candidate.getEmail(),
                 "Trustworks: Dokumenter til gennemlæsning / Documents for your review",
-                buildReviewEmailBody(body.note()));
+                buildReviewEmailBody(body.note(), noteFormat));
         mail.setReplyTo(sender.getEmail());
         for (GeneratedPdf pdf : materializePdfBytes(pdfs)) {
             if (pdf.pdfBytes() == null) continue;
@@ -1537,7 +1558,15 @@ public class RecruitmentResource {
      * {@link SendReviewRequest} validation, so we never produce an empty body.
      * Newlines in the note are preserved as paragraph breaks.
      */
-    private static String buildReviewEmailBody(String note) {
+    /** Cap on the dossier review note; mirrors SendReviewRequest's @Size. */
+    private static final int NOTE_MAX_LENGTH = 4000;
+
+    private static String buildReviewEmailBody(String note, RecruitmentEmailBodyFormat format) {
+        if (format != null && format.isHtml()) {
+            // Reduced to the same allow-list every other candidate email uses —
+            // the client is never trusted with what reaches a mail client.
+            return RecruitmentEmailHtmlSanitizer.clean(note);
+        }
         StringBuilder sb = new StringBuilder();
         for (String paragraph : note.trim().split("\\R{2,}")) {
             String trimmed = paragraph.trim();

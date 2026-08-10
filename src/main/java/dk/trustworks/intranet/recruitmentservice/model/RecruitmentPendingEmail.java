@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
@@ -74,9 +75,19 @@ public class RecruitmentPendingEmail extends PanacheEntityBase implements Audita
     @Column(name = "subject", length = 300, nullable = false)
     private String subject;
 
-    /** Rendered plain-text body snapshot (personal data). */
+    /** Rendered body snapshot in {@link #bodyFormat} (personal data). */
     @Column(name = "body", columnDefinition = "TEXT", nullable = false)
     private String body;
+
+    /**
+     * Snapshot of how {@link #body} is to be read, taken at queue time. The
+     * approver edits — and the send re-renders — in this format, so a template
+     * converted to rich text after a row was queued cannot retroactively change
+     * how that row's text is escaped.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "body_format", length = 5, nullable = false)
+    private RecruitmentEmailBodyFormat bodyFormat = RecruitmentEmailBodyFormat.PLAIN;
 
     /**
      * CSV of {@code users.uuid} resolved at queue time — the internal

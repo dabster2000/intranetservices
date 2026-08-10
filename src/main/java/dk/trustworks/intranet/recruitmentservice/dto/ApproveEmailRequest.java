@@ -12,6 +12,8 @@ import java.util.List;
 public record ApproveEmailRequest(
         String subject,
         String body,
+        /** Format of an edited {@code body}; absent keeps the queued snapshot's. */
+        String bodyFormat,
         List<String> copyUserUuids,
         String copyMode
 ) {

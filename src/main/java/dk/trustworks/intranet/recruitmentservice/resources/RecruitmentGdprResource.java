@@ -167,7 +167,8 @@ public class RecruitmentGdprResource {
                     emailService.render(template, candidate, null);
             emailService.send(candidate, null, null,
                     template.getTemplateKey(), template.getUuid(),
-                    rendered.subject(), rendered.body(), "ART14_NOTICE", null,
+                    rendered.subject(), rendered.body(), template.getBodyFormat(),
+                    "ART14_NOTICE", null,
                     RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
                             .actorUser(actor),
                     emailService.visibilityFor(candidate.getUuid()),

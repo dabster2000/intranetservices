@@ -10,6 +10,8 @@ import java.util.List;
 public record RenderedEmailResponse(
         String subject,
         String body,
+        /** How to read {@code body} — the compose surfaces always get HTML. */
+        String bodyFormat,
         List<String> unresolvedFields
 ) {
 }

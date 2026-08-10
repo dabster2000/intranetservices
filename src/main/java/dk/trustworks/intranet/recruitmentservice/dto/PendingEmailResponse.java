@@ -26,6 +26,7 @@ public record PendingEmailResponse(
         String toEmail,
         String subject,
         String body,
+        String bodyFormat,
         List<CopyRecipientResponse> copyRecipients,
         String copyMode,
         LocalDateTime createdAt
@@ -51,6 +52,7 @@ public record PendingEmailResponse(
                 pending.getToEmail(),
                 pending.getSubject(),
                 pending.getBody(),
+                pending.getBodyFormat().name(),
                 copyRecipients == null ? List.of() : copyRecipients,
                 pending.getCopyMode().name(),
                 pending.getCreatedAt());
