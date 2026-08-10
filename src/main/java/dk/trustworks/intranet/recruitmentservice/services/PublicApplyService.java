@@ -20,6 +20,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentK
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -130,10 +131,19 @@ public class PublicApplyService {
      * Position-form submission: dedupe-or-create the candidate, attach an
      * application in the position's first stage, persist answers
      * (application-scoped), store documents, optionally grant pool
-     * consent. A duplicate open application (same candidate + position)
+     * consent. A reused candidate who is <em>already in a process</em>
      * creates nothing new and modifies no answers — the documents still
      * land (with {@code reason=DUPLICATE_PUBLIC_SUBMISSION} on their
      * events) and the caller gets the same generic 201.
+     * <p>
+     * "Already in a process" means ANY open application, not just one on
+     * this position: the one-open-application invariant lives in
+     * {@code RecruitmentApplicationService.createCore} and would answer 409
+     * here, which an anonymous caller must never see (it would turn the
+     * public form into a "is this person already applying?" oracle and
+     * break the uniform-201 contract). Taking the same graceful branch
+     * keeps the CV — the recruiter re-files the existing application with
+     * the move command if the new req is the better fit.
      */
     @Transactional
     public void submitForPosition(String slug, PublicApplySubmission submission) {
@@ -142,8 +152,8 @@ public class PublicApplyService {
         RecruitmentCandidate candidate = resolution.candidate();
 
         boolean duplicateOpen = resolution.reused() && RecruitmentApplication.count(
-                "candidateUuid = ?1 and positionUuid = ?2 and terminal is null",
-                candidate.getUuid(), position.getUuid()) > 0;
+                "candidateUuid = ?1 and terminal is null and stage <> ?2",
+                candidate.getUuid(), RecruitmentStage.HIRED) > 0;
 
         RecruitmentApplication application = null;
         if (duplicateOpen) {

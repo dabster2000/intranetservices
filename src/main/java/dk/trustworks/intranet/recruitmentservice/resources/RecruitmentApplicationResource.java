@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationListResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.ApplicationMovePositionRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationRejectRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationStageRequest;
@@ -178,6 +179,47 @@ public class RecruitmentApplicationResource {
         RecruitmentApplication updated =
                 applicationService.changeStage(application, position, request.stage(), mayFastTrack, actor);
         return applicationService.toResponse(updated, position);
+    }
+
+    // ---- Position move (re-filing) --------------------------------------------------
+
+    /**
+     * Re-file this application onto another position — the fix for a
+     * candidate attached to the wrong req. The application keeps its
+     * identity (and with it its interviews, scorecards, record checks and
+     * timeline); the stage is preserved when the target pipeline has it and
+     * clamped backwards otherwise.
+     * <p>
+     * Authorization is deliberately double-ended: decision rights are
+     * required on BOTH the source and the target position. Moving out of a
+     * pipeline is a decision on that pipeline, and moving into one is a
+     * decision on that one — checking only the source would let a teamlead
+     * park a candidate on a req they have no say over, and only the target
+     * would let them pull a candidate out of someone else's.
+     */
+    @POST
+    @Path("/applications/{uuid}/move-position")
+    @RolesAllowed({"recruitment:write"})
+    public ApplicationResponse movePosition(@PathParam("uuid") UUID applicationUuid,
+                                            @Valid ApplicationMovePositionRequest request) {
+        enforceFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        if (request.positionUuid() == null || request.positionUuid().isBlank()) {
+            throw badRequest("positionUuid is required — a move is always TO a position");
+        }
+        UUID actor = currentActor();
+        RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
+        RecruitmentPosition from = positionOf(application);
+        requireDecisionRights(from, actor);
+        // The target must exist AND be visible — an invisible partner-track
+        // position answers the same 404 as a nonexistent one, so a move can
+        // never be used to probe for confidential reqs.
+        RecruitmentPosition target = requireVisiblePosition(request.positionUuid(), actor);
+        requireDecisionRights(target, actor);
+
+        RecruitmentApplication updated =
+                applicationService.moveToPosition(application, from, target, actor);
+        return applicationService.toResponse(updated, target);
     }
 
     // ---- Terminals -----------------------------------------------------------------

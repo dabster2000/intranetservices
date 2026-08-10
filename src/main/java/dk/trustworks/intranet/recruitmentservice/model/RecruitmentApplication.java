@@ -66,8 +66,13 @@ public class RecruitmentApplication extends PanacheEntityBase implements Auditab
     @Column(name = "candidate_uuid", length = 36, nullable = false, updatable = false)
     private String candidateUuid;
 
-    /** FK to {@code recruitment_positions.uuid}. */
-    @Column(name = "position_uuid", length = 36, nullable = false, updatable = false)
+    /**
+     * FK to {@code recruitment_positions.uuid}. Mutable through exactly one
+     * path — {@link #moveToPosition(String, List)}, the re-filing command
+     * that corrects a wrong req without splitting the pipeline run. Every
+     * other caller treats it as write-once.
+     */
+    @Column(name = "position_uuid", length = 36, nullable = false)
     private String positionUuid;
 
     @Enumerated(EnumType.STRING)
@@ -203,6 +208,91 @@ public class RecruitmentApplication extends PanacheEntityBase implements Auditab
         this.stage = target;
         this.stageEnteredAt = LocalDateTime.now(ZoneOffset.UTC);
         return new StageMove(from, target, direction, skipped);
+    }
+
+    /** Result of a {@link #moveToPosition} call — what the event needs to record. */
+    public record PositionMove(String fromPositionUuid, String toPositionUuid,
+                               RecruitmentStage fromStage, RecruitmentStage toStage,
+                               boolean stageClamped) {
+    }
+
+    /**
+     * Re-file this application onto another position — the SAME pipeline
+     * run continues under a new req. Everything that hangs off the
+     * application uuid (interviews, scorecards, record checks, form
+     * answers, the Slack card, the timeline) follows automatically; no row
+     * is closed and none is created. This is the ONLY sanctioned writer of
+     * {@link #positionUuid} after creation.
+     * <p>
+     * The landing stage is preserved whenever the target position's stage
+     * set contains it — a candidate mid-way through Interview 1 does not
+     * restart because the req was wrong. When the target pipeline is
+     * shorter and has no such stage, the stage is <em>clamped backwards</em>
+     * to the latest target stage at or before the current one (never
+     * forward — a move must not silently advance anyone), falling back to
+     * the target's first stage. A clamp restarts
+     * {@link #stageEnteredAt}, because the application genuinely entered a
+     * different stage; an unchanged stage keeps its original timestamp, so
+     * idle detection still measures the real wait.
+     *
+     * @param targetPositionUuid the destination position
+     * @param targetStageSet     the destination position's ordered stage codes
+     * @return the move descriptor (positions/stages/clamped)
+     * @throws BusinessRuleViolation terminal application, {@code HIRED}
+     *         application (a finished hire is never re-filed), or a no-op
+     *         move to the position it is already on
+     */
+    public PositionMove moveToPosition(String targetPositionUuid, List<String> targetStageSet) {
+        Objects.requireNonNull(targetPositionUuid, "targetPositionUuid must not be null");
+        Objects.requireNonNull(targetStageSet, "targetStageSet must not be null");
+        guardOpen("move to another position");
+        if (stage == RecruitmentStage.HIRED) {
+            throw new BusinessRuleViolation(
+                    ("Cannot move application %s to another position: the candidate is already hired — "
+                            + "a completed hire stays on the position it was made against")
+                            .formatted(uuid));
+        }
+        if (targetPositionUuid.equals(positionUuid)) {
+            throw new BusinessRuleViolation(
+                    "Application %s is already on position %s".formatted(uuid, targetPositionUuid));
+        }
+
+        RecruitmentStage fromStage = this.stage;
+        RecruitmentStage landing = landingStageIn(targetStageSet, fromStage);
+        boolean clamped = landing != fromStage;
+
+        String fromPosition = this.positionUuid;
+        this.positionUuid = targetPositionUuid;
+        this.stage = landing;
+        if (clamped) {
+            this.stageEnteredAt = LocalDateTime.now(ZoneOffset.UTC);
+        }
+        return new PositionMove(fromPosition, targetPositionUuid, fromStage, landing, clamped);
+    }
+
+    /**
+     * Where {@code current} lands in {@code targetStageSet}: itself when the
+     * set contains it, otherwise the latest set entry at or before it in the
+     * canonical {@link RecruitmentStage} order (never forward), otherwise
+     * the set's first stage. {@code HIRED} is never a landing stage — it is
+     * reachable only through conversion.
+     */
+    private static RecruitmentStage landingStageIn(List<String> targetStageSet,
+                                                   RecruitmentStage current) {
+        List<RecruitmentStage> stages = targetStageSet.stream()
+                .map(RecruitmentStage::valueOf)
+                .filter(s -> s != RecruitmentStage.HIRED)
+                .toList();
+        if (stages.isEmpty()) {
+            return RecruitmentStage.SCREENING;
+        }
+        if (stages.contains(current)) {
+            return current;
+        }
+        return stages.stream()
+                .filter(s -> s.ordinal() < current.ordinal())
+                .reduce((first, second) -> second)   // the latest one at or before `current`
+                .orElse(stages.get(0));
     }
 
     /**

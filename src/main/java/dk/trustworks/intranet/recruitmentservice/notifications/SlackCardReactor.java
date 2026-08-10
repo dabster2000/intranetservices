@@ -136,6 +136,7 @@ public class SlackCardReactor extends RecruitmentReactor {
         }
         switch (event.getEventType()) {
             case APPLICATION_CREATED, APPLICATION_STAGE_CHANGED,
+                 APPLICATION_POSITION_CHANGED,
                  APPLICATION_REJECTED, APPLICATION_WITHDRAWN, CANDIDATE_HIRED,
                  INTERVIEW_SCHEDULED, INTERVIEW_RESCHEDULED, INTERVIEW_CANCELLED,
                  SCORECARD_SUBMITTED -> {
@@ -178,6 +179,22 @@ public class SlackCardReactor extends RecruitmentReactor {
             postRootCard(channel, applicationUuid, state, event.getSeq());
             // The fresh card already shows current state — no reply needed
             // for the event that just birthed it (mid-stream toggle rule).
+            return;
+        }
+
+        // A position move can re-point the card at a CONFIDENTIAL req while
+        // the living card sits in whatever channel the OLD position routed
+        // to. Rewriting it there would publish a partner-track title in a
+        // shared channel, so fail closed: leave the stale card alone (its
+        // content is the already-public old state) and log it for cleanup.
+        // The move itself is still on the timeline and in the circle's own
+        // surfaces — only the shared-channel echo is dropped.
+        if (event.getEventType() == RecruitmentEventType.APPLICATION_POSITION_CHANGED
+                && isPartnerTrack(event, position)
+                && !thread.getChannelId().equals(resolveChannel(event, position))) {
+            log.warnf("Card reactor: application %s moved onto partner track — leaving its card in "
+                            + "channel %s untouched (seq %d)",
+                    applicationUuid, thread.getChannelId(), event.getSeq());
             return;
         }
 
@@ -408,6 +425,7 @@ public class SlackCardReactor extends RecruitmentReactor {
         return switch (event.getEventType()) {
             case APPLICATION_CREATED -> null; // the root card is the announcement
             case APPLICATION_STAGE_CHANGED -> stageChangeReply(payload);
+            case APPLICATION_POSITION_CHANGED -> positionChangeReply(payload);
             case APPLICATION_REJECTED -> {
                 String reason = str(payload, "reason_code");
                 yield ":no_entry: *Rejected*" + (reason == null ? ""
@@ -432,6 +450,28 @@ public class SlackCardReactor extends RecruitmentReactor {
         sb.append(from == null ? "?" : SlackCandidateFacts.humanizeCode(from))
                 .append(" → ")
                 .append(to == null ? "?" : SlackCandidateFacts.humanizeCode(to));
+        return sb.toString();
+    }
+
+    /**
+     * The re-filing reply. Titles come from the event payload, not live
+     * rows: the SOURCE position is no longer reachable from the application
+     * after the move, and the payload is the immutable record of what it
+     * was. Both are mrkdwn-escaped — a position title is free text.
+     */
+    private String positionChangeReply(Map<String, Object> payload) {
+        String from = str(payload, "from_position_title");
+        String to = str(payload, "to_position_title");
+        StringBuilder sb = new StringBuilder(160)
+                .append(":twisted_rightwards_arrows: *Moved to another position*: ")
+                .append(from == null ? "?" : SlackCandidateFacts.mrkdwnSafe(from))
+                .append(" → ")
+                .append(to == null ? "?" : SlackCandidateFacts.mrkdwnSafe(to));
+        if (Boolean.TRUE.equals(payload.get("stage_clamped"))) {
+            String stage = str(payload, "to_stage");
+            sb.append(" — the new pipeline has no matching stage, so the candidate is now at ")
+                    .append(stage == null ? "its first stage" : SlackCandidateFacts.humanizeCode(stage));
+        }
         return sb.toString();
     }
 
