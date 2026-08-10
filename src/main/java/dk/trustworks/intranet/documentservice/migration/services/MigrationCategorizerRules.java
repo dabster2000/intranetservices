@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  * <p>Matching is case- and diacritic-insensitive: both the input and the
  * keywords are folded to the æ→ae / ø→oe / å→aa canonical form.</p>
  */
-final class MigrationCategorizerRules {
+public final class MigrationCategorizerRules {
 
     private MigrationCategorizerRules() { }
 
@@ -109,6 +109,14 @@ final class MigrationCategorizerRules {
      * {@link EmployeeDocumentService#normalizeDisplayName}), never from
      * anything parsed here.</p>
      *
+     * <p><b>Not migration-only.</b> The conversion promotion writer
+     * ({@link dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService})
+     * names its documents through this same builder, so a hired
+     * candidate's contract reads like every migrated one instead of
+     * keeping its raw dossier filename. When the migration tooling is
+     * deleted (spec §9.8) this builder and its helpers must survive the
+     * cut — move them, do not drop them.</p>
+     *
      * @param category         the category already decided for this document
      * @param originalFilename the immutable stored filename — subject + extension source
      * @param path             relative folder path; only a fallback subject source
@@ -116,8 +124,8 @@ final class MigrationCategorizerRules {
      *                         null ⇒ parse the filename, and omit the segment if it has none
      * @return a safe display name, or null when nothing usable could be built
      */
-    static String buildDisplayName(EmployeeDocumentCategory category, String originalFilename,
-                                   String path, LocalDate dateOrNull) {
+    public static String buildDisplayName(EmployeeDocumentCategory category, String originalFilename,
+                                          String path, LocalDate dateOrNull) {
         if (category == null) return null;
 
         String dateSegment = dateOrNull != null
@@ -138,7 +146,11 @@ final class MigrationCategorizerRules {
     /** Tokens that carry no meaning in a filename and are dropped from the subject. */
     private static final Set<String> NOISE_TOKENS = Set.of(
             "final", "finalfinal", "ny", "nyt", "nye", "kopi", "copy", "version",
-            "v1", "v2", "v3", "rev", "arkiv", "archive", "underskrevet2");
+            "v1", "v2", "v3", "rev", "arkiv", "archive", "underskrevet2",
+            // Signed-ness is not part of a document's name: the store
+            // records it structurally, and the employee's file holds the
+            // signed version only (unsigned drafts are hr_only).
+            "signed", "underskrevet");
 
     private static final int SUBJECT_MAX = 60;
 

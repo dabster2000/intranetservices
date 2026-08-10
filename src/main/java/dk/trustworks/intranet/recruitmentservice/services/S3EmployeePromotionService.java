@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource;
@@ -47,6 +48,22 @@ import java.util.UUID;
  * {@code migrated_from = files:{fileUuid}}, and
  * {@link EmployeeDocumentService#storeFromS3} skips sources that already
  * have a row — a re-driven FAILED promotion completes the remainder.</p>
+ *
+ * <h3>What the employee ends up seeing</h3>
+ * <ul>
+ *   <li><b>Named</b> through
+ *       {@link MigrationCategorizerRules#buildDisplayName} — the same
+ *       builder that named the migrated corpus, so a hire's contract
+ *       reads {@code CONTRACT_ansættelseskontrakt.pdf} → "Ansættelseskontrakt"
+ *       instead of keeping the raw dossier filename.</li>
+ *   <li><b>Signed only.</b> Unsigned drafts of documents that went out
+ *       for signature are filed {@code hr_only} — HR keeps the trail,
+ *       the employee's file holds the binding version.</li>
+ *   <li><b>No state in {@code label}.</b> Signed-ness lives in
+ *       {@code signing_case_key}/{@code document_index}; {@code label}
+ *       is a human title fallback in both UIs and must not carry
+ *       {@code "signed"}/{@code "unsigned"}.</li>
+ * </ul>
  */
 @JBossLog
 @ApplicationScoped
@@ -67,14 +84,29 @@ public class S3EmployeePromotionService {
     @ConfigProperty(name = "bucket.files")
     String stagingBucket;
 
-    /** One staged file scheduled for promotion. */
+    /**
+     * One staged file scheduled for promotion.
+     *
+     * @param signed this is the signed artefact (drives the HR Slack hire
+     *               notification). Signed-ness is <em>not</em> written to
+     *               {@code label}: the store records it structurally via
+     *               {@code signing_case_key}/{@code document_index}, and
+     *               the employee-facing title falls back to {@code label}
+     *               when there is no display name — which is how every
+     *               promoted contract came to be titled "Signed".
+     * @param hrOnly withheld from the employee's own view. Set on the
+     *               unsigned drafts of documents that went out for
+     *               signature: HR keeps the full paper trail, the
+     *               employee's file shows the signed version only.
+     */
     private record PromotionItem(
             String fileUuid,
             String filename,
             EmployeeDocumentCategory category,
-            String label,
             String signingCaseKey,
-            Integer documentIndex) { }
+            Integer documentIndex,
+            boolean signed,
+            boolean hrOnly) { }
 
     /**
      * Promote every staged file of a hired candidate into the employee
@@ -112,14 +144,20 @@ public class S3EmployeePromotionService {
                         stagingBucket,
                         item.fileUuid(),
                         item.filename(),
+                        // Same builder the migration corpus was named with, so a
+                        // hire's contract reads "Ansættelseskontrakt" next to the
+                        // migrated ones rather than keeping its dossier filename.
+                        MigrationCategorizerRules.buildDisplayName(
+                                item.category(), item.filename(), null, null),
                         item.category(),
-                        item.label(),
+                        null,
                         EmployeeDocumentSource.PROMOTION,
                         item.signingCaseKey(),
                         item.documentIndex(),
+                        item.hrOnly(),
                         "files:" + item.fileUuid()));
                 promoted++;
-                if ("signed".equals(item.label())) {
+                if (item.signed()) {
                     signedFilenames.add(item.filename());
                 }
                 // Delete the staging original + files row. Idempotent — a
@@ -171,12 +209,16 @@ public class S3EmployeePromotionService {
         for (CandidateDossierRevision rev : CandidateDossierRevision.findByCandidate(candidate.getUuid())) {
             EmployeeDocumentCategory dossierCategory = resolveDossierCategory(rev.getDossierUuid());
 
-            // Generated (unsigned) dossier PDFs → CONTRACT-ish, labelled
-            // 'unsigned' when the revision went out for signature.
+            // Generated (unsigned) dossier PDFs → CONTRACT-ish. When the
+            // revision went out for signature this is the draft of a
+            // document the employee also gets signed, so it is filed
+            // HR-only: two rows for one contract, one of them not the
+            // binding one, is a worse file than no draft at all.
+            boolean wentOutForSignature = rev.getSigningCaseKey() != null;
             for (GeneratedPdfRef ref : parseRefs(rev.getGeneratedPdfsSnapshot(), candidate.getUuid(), rev.getUuid())) {
                 if (ref.fileUuid() == null) continue;
                 items.add(new PromotionItem(ref.fileUuid(), ref.filename(), dossierCategory,
-                        rev.getSigningCaseKey() != null ? "unsigned" : null, null, null));
+                        null, null, false, wentOutForSignature));
             }
 
             // Signed PDFs archived at completion (§6.5.2) → linked to the
@@ -190,23 +232,23 @@ public class S3EmployeePromotionService {
                 String slot = rev.getSigningCaseKey() + "#" + i;
                 boolean claimSlot = rev.getSigningCaseKey() != null && claimedSigningSlots.add(slot);
                 items.add(new PromotionItem(ref.fileUuid(), ref.filename(), dossierCategory,
-                        "signed",
                         claimSlot ? rev.getSigningCaseKey() : null,
-                        claimSlot ? i : null));
+                        claimSlot ? i : null,
+                        true, false));
             }
         }
 
         for (CandidateDossierAppendix appendix : CandidateDossierAppendix.findByCandidate(candidate.getUuid())) {
             if (appendix.getFileUuid() == null) continue;
             items.add(new PromotionItem(appendix.getFileUuid(), appendix.getOriginalFilename(),
-                    EmployeeDocumentCategory.OTHER, null, null, null));
+                    EmployeeDocumentCategory.OTHER, null, null, false, false));
         }
 
         for (OnboardingUploadSubmission sub : OnboardingUploadSubmission.findS3SubmissionsByCandidate(candidate.getUuid())) {
             if (sub.getS3FileUuid() == null) continue;
             items.add(new PromotionItem(sub.getS3FileUuid(),
                     onboardingFilename(sub),
-                    EmployeeDocumentCategory.IDENTITY, null, null, null));
+                    EmployeeDocumentCategory.IDENTITY, null, null, false, false));
         }
 
         return items;

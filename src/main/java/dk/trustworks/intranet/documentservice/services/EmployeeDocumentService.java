@@ -77,11 +77,21 @@ public class EmployeeDocumentService {
 
     // ── Commands / results ─────────────────────────────────────────────────
 
-    /** Byte-level store command (uploads + signing archival). */
+    /**
+     * Byte-level store command (uploads + signing archival).
+     *
+     * <p>{@code displayName} is the standardized name the caller has
+     * already built (see
+     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * it is normalized again here). Null ⇒ the row falls back to
+     * {@code original_filename}, which is what interactive uploads want:
+     * HR typed that name deliberately.</p>
+     */
     public record StoreCommand(
             String userUuid,
             byte[] bytes,
             String filename,
+            String displayName,
             String contentType,
             EmployeeDocumentCategory category,
             String label,
@@ -94,12 +104,12 @@ public class EmployeeDocumentService {
             String migratedFrom,
             boolean bypassSizeCap) {
 
-        /** Interactive upload (HR or self-service). */
+        /** Interactive upload (HR or self-service) — the typed filename stands. */
         public static StoreCommand upload(String userUuid, byte[] bytes, String filename,
                                           String contentType, EmployeeDocumentCategory category,
                                           String label, boolean hrOnly, boolean selfUpload,
                                           String actorUuid) {
-            return new StoreCommand(userUuid, bytes, filename, contentType,
+            return new StoreCommand(userUuid, bytes, filename, null, contentType,
                     category, label,
                     selfUpload ? EmployeeDocumentSource.MANUAL_SELF : EmployeeDocumentSource.MANUAL_HR,
                     null, null,
@@ -109,18 +119,43 @@ public class EmployeeDocumentService {
         }
     }
 
-    /** Server-side S3→S3 copy command (promotion / legacy re-home). */
+    /**
+     * Server-side S3→S3 copy command (promotion / legacy re-home).
+     *
+     * <p>{@code displayName} is the standardized name the caller has
+     * already built (see
+     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * it is normalized again here). Null ⇒ the row falls back to
+     * {@code original_filename}, which is what the legacy re-home path
+     * wants: those documents are named by the migration rename pass.</p>
+     */
     public record PromoteCommand(
             String userUuid,
             String srcBucket,
             String srcKey,
             String filename,
+            String displayName,
             EmployeeDocumentCategory category,
             String label,
             EmployeeDocumentSource source,
             String signingCaseKey,
             Integer documentIndex,
-            String migratedFrom) { }
+            boolean hrOnly,
+            String migratedFrom) {
+
+        /**
+         * Legacy arity — un-named, employee-visible copy. Kept so the
+         * migration re-home path reads as it did before promotion
+         * gained names and an HR-only bit.
+         */
+        public PromoteCommand(String userUuid, String srcBucket, String srcKey, String filename,
+                              EmployeeDocumentCategory category, String label,
+                              EmployeeDocumentSource source, String signingCaseKey,
+                              Integer documentIndex, String migratedFrom) {
+            this(userUuid, srcBucket, srcKey, filename, null, category, label, source,
+                    signingCaseKey, documentIndex, false, migratedFrom);
+        }
+    }
 
     /**
      * Patch command — null field = leave unchanged.
@@ -190,6 +225,10 @@ public class EmployeeDocumentService {
         doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
         doc.setLabel(trimTo(cmd.label(), 255));
         doc.setOriginalFilename(trimTo(safeFilename, 500));
+        // Normalized here too: the builder already did it, but this is the
+        // boundary a caller could bypass, and a display name reaches a
+        // Content-Disposition header.
+        doc.setDisplayName(normalizeDisplayName(cmd.displayName(), safeFilename));
         doc.setContentType(contentType);
         doc.setFileSizeBytes(cmd.bytes().length);
         doc.setSha256(sha256Hex(cmd.bytes()));
@@ -386,10 +425,15 @@ public class EmployeeDocumentService {
         doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
         doc.setLabel(trimTo(cmd.label(), 255));
         doc.setOriginalFilename(trimTo(safeFilename, 500));
+        // Normalized here too: the builder already did it, but this is the
+        // boundary a caller could bypass, and a display name reaches a
+        // Content-Disposition header.
+        doc.setDisplayName(normalizeDisplayName(cmd.displayName(), safeFilename));
         doc.setContentType(contentType);
         doc.setSource(cmd.source());
         doc.setSigningCaseKey(cmd.signingCaseKey());
         doc.setDocumentIndex(cmd.documentIndex());
+        doc.setHrOnly(cmd.hrOnly());
         doc.setMigratedFrom(trimTo(cmd.migratedFrom(), 1024));
 
         long size = storage.copyFromBucket(cmd.srcBucket(), cmd.srcKey(), key, contentType, objectMetadata(doc));
@@ -512,11 +556,31 @@ public class EmployeeDocumentService {
     @Transactional
     public BulkFlagsSummary updateFlags(List<String> docUuids, Boolean hrOnly, Boolean archived,
                                         String actorUuid) {
+        return updateBulk(docUuids, hrOnly, archived, null, null, actorUuid);
+    }
+
+    /**
+     * Bulk metadata update — the HR console's one write. Every field is
+     * optional; null means "leave unchanged". Beyond the flag pair this
+     * also sets {@code category} and clears {@code needsReview}, which is
+     * what triaging the review queue and the uncategorized backlog
+     * actually consists of: one category applied to a hand-picked set,
+     * and the flag cleared in the same click.
+     *
+     * <p>Callers must have already verified they may write these
+     * documents (the BFF does — HR/ADMIN for the console, per-employee
+     * ownership for the employee tab).</p>
+     */
+    @Transactional
+    public BulkFlagsSummary updateBulk(List<String> docUuids, Boolean hrOnly, Boolean archived,
+                                       EmployeeDocumentCategory category, Boolean needsReview,
+                                       String actorUuid) {
         if (docUuids == null || docUuids.isEmpty()) {
             throw badRequest("NO_DOCUMENTS", "Select at least one document.");
         }
-        if (hrOnly == null && archived == null) {
-            throw badRequest("NO_CHANGES", "Nothing to change — set hrOnly and/or archived.");
+        if (hrOnly == null && archived == null && category == null && needsReview == null) {
+            throw badRequest("NO_CHANGES",
+                    "Nothing to change — set at least one of category, needsReview, hrOnly, archived.");
         }
 
         int updated = 0;
@@ -530,6 +594,8 @@ public class EmployeeDocumentService {
             boolean archiving = archived != null && archived && !doc.isArchived();
             if (hrOnly != null) doc.setHrOnly(hrOnly);
             if (archived != null) doc.setArchived(archived);
+            if (category != null) doc.setCategory(category);
+            if (needsReview != null) doc.setNeedsReview(needsReview);
             doc.persist();
             new EmployeeDocumentAudit(doc.getUuid(), doc.getUserUuid(), actorUuid,
                     archiving ? EmployeeDocumentAuditAction.ARCHIVE : EmployeeDocumentAuditAction.UPDATE,
@@ -537,8 +603,9 @@ public class EmployeeDocumentService {
             updated++;
         }
 
-        log.infof("Employee documents bulk flags: %d/%d updated hrOnly=%s archived=%s by=%s",
-                updated, docUuids.size(), hrOnly, archived, actorUuid);
+        log.infof("Employee documents bulk update: %d/%d updated category=%s needsReview=%s "
+                        + "hrOnly=%s archived=%s by=%s",
+                updated, docUuids.size(), category, needsReview, hrOnly, archived, actorUuid);
         return new BulkFlagsSummary(docUuids.size(), updated, missing.size(), missing);
     }
 
@@ -869,7 +936,13 @@ public class EmployeeDocumentService {
         return value.length() > maxLength ? value.substring(0, maxLength) : value;
     }
 
-    static String sha256Hex(byte[] bytes) {
+    /**
+     * The one hash function for this store. Public so the backfill job
+     * writes byte-identical values to the ones recorded at upload time —
+     * a second implementation that differed in case or encoding would
+     * silently split duplicate groups instead of merging them.
+     */
+    public static String sha256Hex(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException e) {

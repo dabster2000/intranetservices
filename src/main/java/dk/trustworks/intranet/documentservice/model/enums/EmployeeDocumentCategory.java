@@ -31,6 +31,7 @@ public enum EmployeeDocumentCategory {
             case AMENDMENT -> ADDENDUM;
             case NDA -> DECLARATION;
             case VACATION -> VACATION;
+            case SALARY -> SALARY;
         };
     }
 }

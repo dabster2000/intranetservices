@@ -245,7 +245,11 @@ public class OnboardingUploadService {
             dk.trustworks.intranet.documentservice.model.EmployeeDocument doc =
                     employeeDocumentService.store(new dk.trustworks.intranet.documentservice.services
                             .EmployeeDocumentService.StoreCommand(
-                            token.getUserUuid(), bytes, safeFilename, normalisedContentType,
+                            // No display name on purpose: the label below is
+                            // already a human one ("Passport"), and both UIs
+                            // fall back to it. Naming from the filename would
+                            // downgrade "Passport" to "Img 3317".
+                            token.getUserUuid(), bytes, safeFilename, null, normalisedContentType,
                             dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory.IDENTITY,
                             humanDocumentTypeLabel(type),
                             dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.ONBOARDING,
