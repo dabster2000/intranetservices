@@ -115,15 +115,21 @@ public class AirtableExportService {
         requireConfigured();
         List<AirtableClient.AirtableComment> comments = new ArrayList<>();
         String offset = null;
+        int pages = 0;
         do {
             AirtableClient.CommentsPage page = airtableClient.listComments(
                     bearer(), baseId(), tableName, recordId, PAGE_SIZE, offset);
+            pages++;
             if (page == null || page.comments() == null) {
+                log.infof("Airtable comments: record %s page %d had no comments node (page null? %s)",
+                        recordId, pages, page == null);
                 break;
             }
             comments.addAll(page.comments());
             offset = page.offset();
         } while (offset != null);
+        log.infof("Airtable comments: record %s → %d comments (%d page(s))",
+                recordId, comments.size(), pages);
         return comments;
     }
 
