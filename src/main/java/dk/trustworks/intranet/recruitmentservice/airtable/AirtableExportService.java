@@ -107,6 +107,27 @@ public class AirtableExportService {
     }
 
     /**
+     * All comments on one record (the collaboration thread — interview
+     * feedback, scheduling agreements), fully paged. Table NAME works in
+     * the path (the API accepts id or name).
+     */
+    public List<AirtableClient.AirtableComment> fetchComments(String tableName, String recordId) {
+        requireConfigured();
+        List<AirtableClient.AirtableComment> comments = new ArrayList<>();
+        String offset = null;
+        do {
+            AirtableClient.CommentsPage page = airtableClient.listComments(
+                    bearer(), baseId(), tableName, recordId, PAGE_SIZE, offset);
+            if (page == null || page.comments() == null) {
+                break;
+            }
+            comments.addAll(page.comments());
+            offset = page.offset();
+        } while (offset != null);
+        return comments;
+    }
+
+    /**
      * Download one attachment (expiring Airtable URL). Never called with a
      * URL from anywhere but the just-fetched export.
      */

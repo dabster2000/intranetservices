@@ -48,6 +48,22 @@ public interface AirtableClient {
                             @QueryParam("pageSize") int pageSize,
                             @QueryParam("offset") String offset);
 
+    /**
+     * One page of a record's COMMENTS — the collaboration thread on the
+     * record (interview feedback, scheduling agreements). A separate API
+     * from the record's fields; needs the {@code data.recordComments:read}
+     * token scope.
+     */
+    @GET
+    @Path("/{baseId}/{tableId}/{recordId}/comments")
+    @Produces(MediaType.APPLICATION_JSON)
+    CommentsPage listComments(@HeaderParam("Authorization") String authorization,
+                              @PathParam("baseId") String baseId,
+                              @PathParam("tableId") String tableId,
+                              @PathParam("recordId") String recordId,
+                              @QueryParam("pageSize") int pageSize,
+                              @QueryParam("offset") String offset);
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     record TablesResponse(List<TableInfo> tables) {
     }
@@ -67,5 +83,26 @@ public interface AirtableClient {
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     record AirtableRecord(String id, String createdTime, Map<String, Object> fields) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CommentsPage(List<AirtableComment> comments, String offset) {
+    }
+
+    /**
+     * One record comment. {@code text} may contain {@code @[usrXXX]}
+     * mention placeholders resolved through {@code mentioned}.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record AirtableComment(String id, CommentAuthor author, String text, String createdTime,
+                           Map<String, CommentMention> mentioned) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CommentAuthor(String email, String name) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CommentMention(String displayName) {
     }
 }
