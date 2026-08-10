@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.airtable;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.model.Practice;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
@@ -37,10 +38,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -340,7 +344,7 @@ public class AirtableImportService {
         RecruitmentApplication application = null;
         String positionUuid = null;
         if (record.disposition() != AirtableMappedRecord.Disposition.POOLED) {
-            positionUuid = positionForTable(record, positionCache);
+            positionUuid = positionForPractice(record, positionCache);
             application = buildApplication(record, candidate, positionUuid, now);
             application.persist();
             persistInterviews(record, application);
@@ -555,28 +559,36 @@ public class AirtableImportService {
         }
     }
 
-    // ---- synthetic positions (spec §10: one per team pipeline) -----------
+    // ---- synthetic positions: one per PRACTICE -----------------------------
+    // The spec (§10) said one position per team-pipeline TABLE, assuming the
+    // base had per-team tables. The real base has ONE candidate table
+    // ("ALL DATA"), which would put every migrated candidate on a single
+    // position with one arbitrary practice — breaking the board's and the
+    // reports' practice grouping. One synthetic position per resolved
+    // practice keeps the grouping truthful; titles are human, not table
+    // names, and remain freely renamable.
 
-    private String positionForTable(AirtableMappedRecord record, Map<String, String> cache) {
-        String table = record.airtableTable();
-        String cached = cache.get(table);
+    /** No-practice sentinel cache key (defensive — blockers prevent it in practice). */
+    private static final String NO_PRACTICE_KEY = "(none)";
+
+    private String positionForPractice(AirtableMappedRecord record, Map<String, String> cache) {
+        String practiceUuid = record.practiceUuid();
+        String key = practiceUuid == null ? NO_PRACTICE_KEY : practiceUuid;
+        String cached = cache.get(key);
         if (cached != null) {
             return cached;
         }
-        // Re-runs reuse the position an earlier run created for this table.
-        AirtableImportRecord earlier = AirtableImportRecord
-                .<AirtableImportRecord>find("airtableTable = ?1 and positionUuid is not null", table)
-                .firstResult();
-        if (earlier != null && RecruitmentPosition.findById(earlier.getPositionUuid()) != null) {
-            cache.put(table, earlier.getPositionUuid());
-            return earlier.getPositionUuid();
+        String existing = findExistingPositionForPractice(practiceUuid);
+        if (existing != null) {
+            cache.put(key, existing);
+            return existing;
         }
 
         RecruitmentPosition position = new RecruitmentPosition();
         position.setUuid(UUID.randomUUID().toString());
-        position.setTitle(table);
+        position.setTitle(syntheticPositionTitle(practiceUuid));
         position.setHiringTrack(RecruitmentHiringTrack.PRACTICE_TEAM);
-        position.setPracticeUuid(record.practiceUuid());
+        position.setPracticeUuid(practiceUuid);
         position.setStageSet(RecruitmentPositionDefaults.defaultStageSet(RecruitmentHiringTrack.PRACTICE_TEAM));
         position.setScorecardTemplate(RecruitmentPositionDefaults.defaultScorecardTemplate());
         position.persist();
@@ -591,8 +603,38 @@ public class AirtableImportService {
                 .payload("migrated_from", "airtable")
                 .payload("origin", ORIGIN_AIRTABLE));
 
-        cache.put(table, position.getUuid());
+        cache.put(key, position.getUuid());
         return position.getUuid();
+    }
+
+    /**
+     * Re-runs reuse the position an earlier run created for the same
+     * practice — resolved through the ledger's position uuids (robust
+     * against title renames), never by title.
+     */
+    private static String findExistingPositionForPractice(String practiceUuid) {
+        List<AirtableImportRecord> priors = AirtableImportRecord.list("positionUuid is not null");
+        Set<String> seen = new HashSet<>();
+        for (AirtableImportRecord prior : priors) {
+            if (!seen.add(prior.getPositionUuid())) {
+                continue;
+            }
+            RecruitmentPosition position = RecruitmentPosition.findById(prior.getPositionUuid());
+            if (position != null && Objects.equals(position.getPracticeUuid(), practiceUuid)) {
+                return position.getUuid();
+            }
+        }
+        return null;
+    }
+
+    private static String syntheticPositionTitle(String practiceUuid) {
+        if (practiceUuid != null) {
+            Practice practice = Practice.<Practice>find("uuid", practiceUuid).firstResult();
+            if (practice != null) {
+                return "Migreret fra Airtable — " + practice.getName();
+            }
+        }
+        return "Migreret fra Airtable";
     }
 
     // ---- events ----------------------------------------------------------
@@ -748,20 +790,17 @@ public class AirtableImportService {
                         + ", intet samtykke → DPO-triage"))
                 .toList();
 
-        Map<String, String> positionsPerTable = new LinkedHashMap<>();
+        Map<String, String> positionsPerPractice = new LinkedHashMap<>();
         mapped.stream()
                 .filter(r -> r.disposition() == AirtableMappedRecord.Disposition.OPEN
                         || r.disposition() == AirtableMappedRecord.Disposition.HIRED
                         || r.disposition() == AirtableMappedRecord.Disposition.REJECTED)
-                .map(AirtableMappedRecord::airtableTable)
+                .map(AirtableMappedRecord::practiceUuid)
                 .distinct()
-                .forEach(table -> {
-                    AirtableImportRecord earlier = AirtableImportRecord
-                            .<AirtableImportRecord>find(
-                                    "airtableTable = ?1 and positionUuid is not null", table)
-                            .firstResult();
-                    positionsPerTable.put(table,
-                            earlier != null ? earlier.getPositionUuid() : "(oprettes ved import)");
+                .forEach(practiceUuid -> {
+                    String existing = findExistingPositionForPractice(practiceUuid);
+                    positionsPerPractice.put(syntheticPositionTitle(practiceUuid),
+                            existing != null ? existing : "(oprettes ved import)");
                 });
 
         long alreadyImported = mapped.stream()
@@ -773,7 +812,7 @@ public class AirtableImportService {
                 perTableAndStatus, perDisposition,
                 unmappedPractice, unknownStatuses,
                 skipped, warnings, needsReview, retentionTriage,
-                positionsPerTable, (int) alreadyImported, importedThisRun,
+                positionsPerPractice, (int) alreadyImported, importedThisRun,
                 List.copyOf(attachmentFailures));
     }
 
