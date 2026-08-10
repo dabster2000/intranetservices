@@ -92,11 +92,42 @@ public final class AirtableFieldMapper {
             blockers.add(statusMapping.blocker());
         }
 
-        // ---- faglighed → practice (config table, never codes) ----
+        // ---- specializations (the three per-practice role selects) ----
+        // The base's live column set (2026-08-10) names the third select
+        // "Trustworks Technology faglighed"; the spec's July review saw
+        // "IT-Management faglighed" — read both. Cells misused as status
+        // notes (prose) are filtered: they stay in the snapshot note, and
+        // must never become specialization tags — specializations survive
+        // GDPR anonymization, prose there would leak.
+        List<String> specializations = new ArrayList<>();
+        for (String rawValue : fields.strings("Trustworks Management faglighed")) {
+            addSpecialization(specializations, warnings, rawValue);
+        }
+        for (String rawValue : fields.strings("Trustworks Technology faglighed", "IT-Management faglighed")) {
+            addSpecialization(specializations, warnings, rawValue);
+        }
+        for (String rawValue : fields.strings("Trustworks Cybersecurity faglighed")) {
+            addSpecialization(specializations, warnings, rawValue);
+        }
+
+        // ---- practice (config table, never codes) ----
+        // Combination rule (owner decision, 2026-08-10): the specific ROLE
+        // wins when the mapping table recognizes it — Airtable's umbrella
+        // "Trustworks Management" spans what the registry has since split
+        // into PM / IA / BU / MC, so "Projektleder" is the truer signal.
+        // Order: mapped specialization → mapped faglighed answer → mapped
+        // pipeline/table name. Unmapped specializations never block (they
+        // are tags first); an unresolvable faglighed/table still does.
         String faglighed = fields.string("Hvilken faglighed ansøger du til?", "Faglighed");
         String practiceUuid = null;
+        for (String specialization : specializations) {
+            practiceUuid = practiceMapping.get(AirtablePracticeMapping.normalize(specialization));
+            if (practiceUuid != null) {
+                break;
+            }
+        }
         String practiceSource = !isBlank(faglighed) ? faglighed : tableName;
-        if (!isBlank(practiceSource)) {
+        if (practiceUuid == null && !isBlank(practiceSource)) {
             practiceUuid = practiceMapping.get(AirtablePracticeMapping.normalize(practiceSource));
             if (practiceUuid == null) {
                 blockers.add("Unmapped faglighed/pipeline value: '" + practiceSource
@@ -147,12 +178,6 @@ public final class AirtableFieldMapper {
             source = CandidateSource.REFERRAL;
         }
         Map<String, Object> sourceDetail = sourceDetail(fields, vej, referrerName, faglighed, practiceUuid);
-
-        // ---- specializations (three per-practice selects collapse into one list) ----
-        List<String> specializations = new ArrayList<>();
-        specializations.addAll(fields.strings("IT-Management faglighed"));
-        specializations.addAll(fields.strings("Trustworks Management faglighed"));
-        specializations.addAll(fields.strings("Trustworks Cybersecurity faglighed"));
 
         // ---- answers (stable question keys, A.1) ----
         Map<String, String> answers = new LinkedHashMap<>();
@@ -211,6 +236,27 @@ public final class AirtableFieldMapper {
     /** Nameless beats status-level skip — the more fundamental defect wins. */
     private static String effectiveSkipReason(String namelessReason, StatusMapping statusMapping) {
         return namelessReason != null ? namelessReason : statusMapping.skipReason();
+    }
+
+    /** Longest legitimate role name observed is well under this; prose is not a role. */
+    private static final int MAX_SPECIALIZATION_LENGTH = 40;
+
+    /**
+     * A select cell used as a notes field (real data: multi-line status
+     * prose with dates and initials) is NOT a specialization — warn and
+     * leave it to the snapshot note. Real role values pass through verbatim.
+     */
+    private static void addSpecialization(List<String> specializations, List<String> warnings,
+                                          String raw) {
+        if (isBlank(raw)) {
+            return;
+        }
+        String value = raw.trim();
+        if (value.length() > MAX_SPECIALIZATION_LENGTH || value.contains("\n")) {
+            warnings.add("Specialization cell contains prose, not a role — kept in the snapshot note only");
+            return;
+        }
+        specializations.add(value);
     }
 
     // ---- Status mapping (A.2) --------------------------------------------

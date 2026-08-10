@@ -223,6 +223,70 @@ class AirtableFieldMapperTest {
     }
 
     // ------------------------------------------------------------------
+    // Combination rule: role → faglighed → table (owner decision 2026-08-10)
+    // ------------------------------------------------------------------
+
+    private static final String MC = "mc-practice-uuid";
+    private static final Map<String, String> COMBI_MAPPING = Map.of(
+            AirtablePracticeMapping.normalize("Trustworks Management"), MC,
+            AirtablePracticeMapping.normalize("Projektleder"), PM_PRACTICE,
+            AirtablePracticeMapping.normalize("Seniorudvikler"), IT_PRACTICE,
+            AirtablePracticeMapping.normalize("ALL DATA"), MC);
+
+    @Test
+    void mappedRole_beatsTheUmbrellaFaglighedAnswer() {
+        AirtableMappedRecord mapped = AirtableFieldMapper.map(
+                record(Map.of("Fornavn", "A", "Efternavn", "B",
+                        "Hvilken faglighed ansøger du til?", "Trustworks Management",
+                        "Trustworks Management faglighed", "Projektleder")),
+                "ALL DATA", COMBI_MAPPING);
+        assertEquals(PM_PRACTICE, mapped.practiceUuid(),
+                "the specific role is the truer signal than the legacy umbrella");
+        assertEquals(List.of("Projektleder"), mapped.specializations());
+        assertTrue(mapped.blockers().isEmpty());
+    }
+
+    @Test
+    void unmappedRole_fallsBackToFaglighed_neverBlocks() {
+        AirtableMappedRecord mapped = AirtableFieldMapper.map(
+                record(Map.of("Fornavn", "A", "Efternavn", "B",
+                        "Hvilken faglighed ansøger du til?", "Trustworks Management",
+                        "Trustworks Management faglighed", "Ukendt Rolle")),
+                "ALL DATA", COMBI_MAPPING);
+        assertEquals(MC, mapped.practiceUuid());
+        assertEquals(List.of("Ukendt Rolle"), mapped.specializations(),
+                "an unmapped role is still a searchable tag");
+        assertTrue(mapped.blockers().isEmpty(), "specializations never block");
+    }
+
+    @Test
+    void technologyColumn_isRead_andResolvesPracticeForNoFaglighedRecords() {
+        AirtableMappedRecord mapped = AirtableFieldMapper.map(
+                record(Map.of("Fornavn", "A", "Efternavn", "B",
+                        "Trustworks Technology faglighed", "Seniorudvikler")),
+                "ALL DATA", COMBI_MAPPING);
+        assertEquals(List.of("Seniorudvikler"), mapped.specializations(),
+                "the base's live column name is read (the spec saw an older name)");
+        assertEquals(IT_PRACTICE, mapped.practiceUuid(),
+                "role refines even records with no faglighed answer");
+    }
+
+    @Test
+    void proseInASelectCell_isFilteredWithWarning_notATag() {
+        String prose = "10.6 starter 15/8 i stedet pga. kundeopg. kontrakt + aftale er rettet. /myss";
+        AirtableMappedRecord mapped = AirtableFieldMapper.map(
+                record(Map.of("Fornavn", "A", "Efternavn", "B",
+                        "Hvilken faglighed ansøger du til?", "Trustworks Management",
+                        "Trustworks Management faglighed", prose)),
+                "ALL DATA", COMBI_MAPPING);
+        assertNull(mapped.specializations(), "prose never becomes a specialization tag");
+        assertEquals(MC, mapped.practiceUuid(), "practice falls back to the faglighed answer");
+        assertTrue(mapped.warnings().stream().anyMatch(w -> w.contains("prose")));
+        // The prose still survives in the verbatim snapshot for the note.
+        assertTrue(String.valueOf(mapped.rawFields()).contains("10.6 starter"));
+    }
+
+    // ------------------------------------------------------------------
     // Skips + tolerant values
     // ------------------------------------------------------------------
 
