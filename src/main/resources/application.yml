@@ -191,6 +191,13 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 5000       # 5 seconds for connection
       read-timeout: 10000         # 10 seconds for CVR API response
+    # ATS P21: Airtable Web API (one-shot migration tooling — export the
+    # recruitment base for the Airtable → intranet cutover import).
+    airtable-api:
+      url: https://api.airtable.com
+      scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 60000
     core-threads: 10
     max-threads: 30
   log:
@@ -530,6 +537,17 @@ dk:
       # the page, excluded from its auth gate like /apply).
       consent:
         base-url: ${DK_TRUSTWORKS_RECRUITMENT_CONSENT_BASE_URL:https://intra.trustworks.dk}
+      # P21 Airtable migration tooling. Inert until token + base-id are set
+      # (the admin endpoints answer 503). The token is an Airtable personal
+      # access token scoped data.records:read + schema.bases:read on the
+      # recruitment base — one-shot credentials for the cutover, removed
+      # from the environment after Airtable retirement.
+      airtable:
+        token: ${AIRTABLE_TOKEN:}
+        base-id: ${AIRTABLE_BASE_ID:}
+        # Comma-separated table names in the base that are NOT candidate
+        # pipelines (lookup/config tables) and must not be imported.
+        excluded-tables: ${AIRTABLE_EXCLUDED_TABLES:}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,

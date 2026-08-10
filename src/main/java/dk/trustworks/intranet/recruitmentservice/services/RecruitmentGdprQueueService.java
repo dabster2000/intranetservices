@@ -72,12 +72,13 @@ public class RecruitmentGdprQueueService {
         List<GdprQueueResponse.ConsentRow> consent = consentUnanswered(now);
         List<GdprQueueResponse.DsarRow> dsars = openDsars(now);
         List<GdprQueueResponse.AnonymizationRow> log = anonymizationLog();
+        List<GdprQueueResponse.MigrationTriageRow> triage = migrationTriage(now);
         long anonymizedTotal = RecruitmentCandidate.count("status", CandidateStatus.ANONYMIZED);
         return new GdprQueueResponse(
                 featureFlag.isGdprEnabled(),
                 new GdprQueueResponse.Kpis(art14.size(), consent.size(), dsars.size(),
                         anonymizedTotal),
-                art14, consent, dsars, log);
+                art14, consent, dsars, log, triage);
     }
 
     /** Per-candidate action state for the profile GDPR tab. */
@@ -216,6 +217,59 @@ public class RecruitmentGdprQueueService {
                             ChronoUnit.DAYS.between(now, deadline));
                 })
                 .sorted(java.util.Comparator.comparing(GdprQueueResponse.DsarRow::deadline))
+                .toList();
+    }
+
+    /**
+     * P21 migration retention triage (spec §10 step 4): Airtable-imported
+     * candidates the importer deliberately left WITHOUT a retention
+     * deadline — process ended &gt; 6 months before import, no consent —
+     * so the sweep never auto-anonymizes them behind the DPO's back. A row
+     * disappears when the DPO anonymizes the candidate (status flips) or a
+     * consent lands (the grant path stamps a fresh retention deadline).
+     * Ledger-derived, read-time — no sweep bookkeeping (the module idiom).
+     */
+    private List<GdprQueueResponse.MigrationTriageRow> migrationTriage(LocalDateTime now) {
+        List<dk.trustworks.intranet.recruitmentservice.airtable.AirtableImportRecord> ledger =
+                dk.trustworks.intranet.recruitmentservice.airtable.AirtableImportRecord
+                        .list("candidateUuid is not null");
+        if (ledger.isEmpty()) {
+            return List.of();
+        }
+        Map<String, String> tableByCandidate = new HashMap<>();
+        ledger.forEach(row -> tableByCandidate.put(row.getCandidateUuid(), row.getAirtableTable()));
+
+        List<RecruitmentCandidate> candidates = RecruitmentCandidate.list(
+                "uuid in ?1 and retentionDeadline is null and status not in ?2",
+                List.copyOf(tableByCandidate.keySet()),
+                List.of(CandidateStatus.ACTIVE, CandidateStatus.HIRED, CandidateStatus.ANONYMIZED));
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        // Belt and braces: a live GRANTED consent removes the row even if
+        // no deadline was stamped yet.
+        Set<String> consented = new HashSet<>();
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentConsent
+                .<dk.trustworks.intranet.recruitmentservice.model.RecruitmentConsent>list(
+                        "candidateUuid in ?1 and status = ?2 and (expiresAt is null or expiresAt > ?3)",
+                        candidates.stream().map(RecruitmentCandidate::getUuid).toList(),
+                        dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentStatus.GRANTED,
+                        now)
+                .forEach(consent -> consented.add(consent.getCandidateUuid()));
+
+        return candidates.stream()
+                .filter(candidate -> !consented.contains(candidate.getUuid()))
+                .map(candidate -> new GdprQueueResponse.MigrationTriageRow(
+                        candidate.getUuid(),
+                        displayName(candidate),
+                        candidate.getEmail() != null && !candidate.getEmail().isBlank(),
+                        candidate.getStatus().name(),
+                        candidate.getProcessEndedAt() != null
+                                ? candidate.getProcessEndedAt() : candidate.getCreatedAt(),
+                        tableByCandidate.get(candidate.getUuid())))
+                .sorted(java.util.Comparator.comparing(
+                        GdprQueueResponse.MigrationTriageRow::processEndedAt,
+                        java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())))
                 .toList();
     }
 

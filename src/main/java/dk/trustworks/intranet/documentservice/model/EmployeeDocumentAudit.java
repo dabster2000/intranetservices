@@ -67,4 +67,23 @@ public class EmployeeDocumentAudit extends PanacheEntityBase {
     public static List<EmployeeDocumentAudit> findByUser(String userUuid) {
         return list("userUuid = ?1 ORDER BY createdAt ASC", userUuid);
     }
+
+    /**
+     * The subset of actions that describe what happened <em>to</em> a
+     * document rather than who looked at it. DOWNLOAD is excluded on
+     * purpose — a document's history is provenance, not an access log
+     * naming colleagues (the full trail stays available to the DPO via
+     * the DSAR export).
+     */
+    public static final List<EmployeeDocumentAuditAction> LIFECYCLE_ACTIONS = List.of(
+            EmployeeDocumentAuditAction.UPLOAD,
+            EmployeeDocumentAuditAction.MIGRATE,
+            EmployeeDocumentAuditAction.UPDATE,
+            EmployeeDocumentAuditAction.ARCHIVE);
+
+    /** Lifecycle events for one document, oldest first. */
+    public static List<EmployeeDocumentAudit> findLifecycleByDocument(String documentUuid) {
+        return list("documentUuid = ?1 and action in ?2 ORDER BY createdAt ASC",
+                documentUuid, LIFECYCLE_ACTIONS);
+    }
 }

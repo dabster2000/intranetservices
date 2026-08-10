@@ -286,7 +286,7 @@ class RecruitmentDpoDigestServiceTest {
     void emptyWeek_saysNothingNeedsYou() {
         GdprQueueResponse emptyQueue = new GdprQueueResponse(true,
                 new GdprQueueResponse.Kpis(0, 0, 0, 0),
-                List.of(), List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), List.of(), List.of());
         RecruitmentDpoDigestService.DriftReport cleanDrift =
                 new RecruitmentDpoDigestService.DriftReport(true, List.of());
 

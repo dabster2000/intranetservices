@@ -194,6 +194,22 @@ public record GetCaseStatusResponse(
     }
 
     /**
+     * Detects NextSign's documented "no matching case" response: HTTP 200 with
+     * body {@code {"message": "Case not found"}} — no {@code status}, no
+     * {@code case} (see docs/finalized/external-apis/nextsign-api.md). This is
+     * how NextSign reports deleted cases (incl. auto-deletion via case
+     * settings), so it is a normal long-term outcome for old cases — callers
+     * must treat it as "case gone", not as an API failure.
+     *
+     * @return true when the response carries a not-found message and no case data
+     */
+    public boolean isCaseNotFound() {
+        return caseDetails == null
+            && message != null
+            && message.toLowerCase(java.util.Locale.ROOT).contains("not found");
+    }
+
+    /**
      * Gets the case details.
      * Alias for caseDetails() for backward compatibility with code using contract().
      * @return the case details

@@ -436,6 +436,14 @@ public class SigningService {
             // Merge with DB record for SharePoint fields and update DB with fresh data
             return mergeWithDbAndUpdate(caseKey, liveStatus);
 
+        } catch (NextsignSigningService.NextsignCaseNotFoundException e) {
+            // The case is gone from NextSign (deleted, incl. auto-deletion) —
+            // a normal lifecycle outcome for old cases, not an API failure.
+            // WARN, not ERROR, and keep the type so the status-sync batchlet
+            // can stop polling instead of retrying forever.
+            log.warnf("Case not found in NextSign: %s", caseKey);
+            throw new CaseNotFoundInNextsignException("Case not found in NextSign: " + caseKey, e);
+
         } catch (NextsignSigningService.NextsignException e) {
             log.errorf(e, "NextSign API error fetching status: %s", e.getMessage());
             throw new SigningException("Failed to fetch case status: " + e.getMessage(), e);
@@ -1344,7 +1352,15 @@ public class SigningService {
     public NextSignCaseDetailDTO getCaseDetail(String caseKey) {
         log.infof("Fetching case detail from NextSign for: %s", caseKey);
 
-        GetCaseStatusResponse response = nextsignService.getCaseStatus(caseKey);
+        GetCaseStatusResponse response;
+        try {
+            response = nextsignService.getCaseStatus(caseKey);
+        } catch (NextsignSigningService.NextsignCaseNotFoundException e) {
+            // Wrap as SigningException so resource-layer catches translate it
+            // to 404 instead of letting a raw runtime exception become a 500.
+            log.warnf("Case not found in NextSign: %s", caseKey);
+            throw new CaseNotFoundInNextsignException("Case not found in NextSign: " + caseKey, e);
+        }
 
         if (!response.isSuccess() || response.caseDetails() == null) {
             throw new SigningException("Case not found or error from NextSign: " + response.message());
@@ -1487,6 +1503,20 @@ public class SigningService {
         }
 
         public SigningException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * The case does not exist in NextSign (deleted, incl. auto-deletion via
+     * case settings, or never durably created). Distinct from
+     * {@link SigningException} so the status-sync batchlet can classify
+     * "case gone" (finite retries, then abandon as SKIPPED) separately from
+     * "call failed" (retry until it succeeds). Extends it so existing broad
+     * catches keep working.
+     */
+    public static class CaseNotFoundInNextsignException extends SigningException {
+        public CaseNotFoundInNextsignException(String message, Throwable cause) {
             super(message, cause);
         }
     }
