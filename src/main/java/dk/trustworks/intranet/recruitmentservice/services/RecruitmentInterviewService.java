@@ -454,6 +454,14 @@ public class RecruitmentInterviewService {
                             .filter(uuid -> !uuid.equals(viewerUuid))
                             .map(uuid -> names.getOrDefault(uuid, "Unknown"))
                             .toList();
+                    // Pipeline stage is withheld from viewers whose only key
+                    // to this candidate is the interview assignment (go-live
+                    // decision D10): an interviewer forms a view without
+                    // knowing where the process stands. Role holders — who
+                    // can open the full profile anyway — keep it.
+                    String stage = visibility.canReadCandidateProfile(viewerUuid, candidate)
+                            ? application.getStage().name()
+                            : null;
                     return new MyInterviewRow(
                             interview.getUuid(),
                             application.getUuid(),
@@ -466,7 +474,7 @@ public class RecruitmentInterviewService {
                             interview.getScheduledAt(),
                             interview.getLocation(),
                             interview.getStatus(),
-                            application.getStage().name(),
+                            stage,
                             focusAreas(position),
                             latestCvFileUuid(candidate.getUuid()),
                             interview.getKind() == RecruitmentInterviewKind.ROUND,

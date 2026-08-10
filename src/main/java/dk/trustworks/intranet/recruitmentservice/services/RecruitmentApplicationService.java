@@ -60,7 +60,10 @@ import java.util.stream.Collectors;
  *       {@code process_ended_at} + a 6-month {@code retention_deadline}
  *       (data only — the clock reactor is P19);</li>
  *   <li>return-to-pool → candidate pooled as {@code SILVER_MEDALIST} +
- *       a {@code REQUESTED} pool-retention consent.</li>
+ *       a {@code REQUESTED} pool-retention consent;</li>
+ *   <li>one open application per candidate — a second attach is a 409 that
+ *       names {@link #moveToPosition} as the remedy, because attaching
+ *       again is how a wrong req used to become two live pipelines.</li>
  * </ul>
  * Partner-track events carry {@code visibility=CIRCLE}, mirroring the
  * position/candidate emitters (P2 carry-over).
@@ -117,7 +120,9 @@ public class RecruitmentApplicationService {
      * the process has resumed, so the 6-month clock must stop.
      *
      * @throws BusinessRuleViolation candidate terminal, position not OPEN,
-     *         or an open application for this pair already exists (409)
+     *         or the candidate already has an open application anywhere (409
+     *         — a candidate is in one process at a time; correcting a wrong
+     *         req is {@link #moveToPosition}, not a second attach)
      */
     @Transactional
     public RecruitmentApplication create(RecruitmentCandidate candidate,
@@ -149,7 +154,7 @@ public class RecruitmentApplicationService {
 
     /**
      * The shared create invariants (spec §4.2): candidate-terminal 409,
-     * position OPEN check, duplicate-open-application guard, pooled
+     * position OPEN check, one-open-application guard, pooled
      * auto-unpool, retention-clock reset, first stage of the position's
      * stage set, UTC {@code stage_entered_at}, {@code APPLICATION_CREATED}
      * in the same transaction.
@@ -170,13 +175,20 @@ public class RecruitmentApplicationService {
                     "Position %s is %s — applications can only be attached to OPEN positions"
                             .formatted(position.getUuid(), position.getStatus()));
         }
-        long openOnSamePosition = RecruitmentApplication.count(
-                "candidateUuid = ?1 and positionUuid = ?2 and terminal is null",
-                candidate.getUuid(), position.getUuid());
-        if (openOnSamePosition > 0) {
-            throw new BusinessRuleViolation(
-                    "Candidate %s already has an open application on position %s"
-                            .formatted(candidate.getUuid(), position.getUuid()));
+        // One open application per candidate, full stop (product decision,
+        // 2026-08-10): a candidate is in exactly one process at a time, and a
+        // second attach was how "I picked the wrong position" silently turned
+        // into two live pipelines. Correcting a wrong req is
+        // {@link #moveToPosition}, not a second application.
+        RecruitmentApplication openElsewhere = openApplicationOf(candidate.getUuid());
+        if (openElsewhere != null) {
+            throw new BusinessRuleViolation(openElsewhere.getPositionUuid().equals(position.getUuid())
+                    ? "Candidate %s already has an open application on position %s"
+                            .formatted(candidate.getUuid(), position.getUuid())
+                    : ("Candidate %s already has an open application on position %s — a candidate is in "
+                            + "one process at a time. Move that application to this position instead of "
+                            + "attaching a second one.")
+                            .formatted(candidate.getUuid(), openElsewhere.getPositionUuid()));
         }
 
         // Pool → pipeline: attaching a pooled candidate implies re-activation.
@@ -267,6 +279,85 @@ public class RecruitmentApplicationService {
 
         log.infof("Application %s stage %s -> %s (%s) by actor=%s",
                 application.getUuid(), move.from(), move.to(), move.direction(), actor);
+        return application;
+    }
+
+    // ---- Position move (re-filing) ----------------------------------------------
+
+    /**
+     * Re-file an open application onto another position — the fix for
+     * "I attached the candidate to the wrong req". The application row is
+     * the same row afterwards, so everything keyed on its uuid (interviews,
+     * scorecards, record checks, form answers, the Slack card, the whole
+     * timeline) follows it; nothing is closed and nothing is created.
+     * <p>
+     * Cross-aggregate rules on top of the entity's
+     * ({@link RecruitmentApplication#moveToPosition}):
+     * <ul>
+     *   <li>the target position must be {@code OPEN} — same rule as attach;</li>
+     *   <li>the candidate must not already have another open application on
+     *       the target (the one-open-application invariant, 409);</li>
+     *   <li>the emitted event is {@code CIRCLE}-visible when <em>either</em>
+     *       side is partner track — fail closed, so re-filing can never
+     *       downgrade the confidentiality of the move itself.</li>
+     * </ul>
+     * Authorization (decision rights on BOTH positions) is the resource's
+     * job — you may not move an application out of, or into, a pipeline you
+     * cannot decide on.
+     *
+     * @throws BusinessRuleViolation terminal/hired application, no-op move,
+     *         target not OPEN, or a competing open application (409)
+     */
+    @Transactional
+    public RecruitmentApplication moveToPosition(RecruitmentApplication application,
+                                                 RecruitmentPosition from,
+                                                 RecruitmentPosition target, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        Objects.requireNonNull(target, "target position must not be null");
+        application = managedApplication(application);
+        if (target.getStatus() != RecruitmentPositionStatus.OPEN) {
+            throw new BusinessRuleViolation(
+                    "Position %s is %s — an application can only be moved to an OPEN position"
+                            .formatted(target.getUuid(), target.getStatus()));
+        }
+        long competing = RecruitmentApplication.count(
+                "candidateUuid = ?1 and positionUuid = ?2 and terminal is null and uuid <> ?3",
+                application.getCandidateUuid(), target.getUuid(), application.getUuid());
+        if (competing > 0) {
+            throw new BusinessRuleViolation(
+                    "Candidate %s already has an open application on position %s"
+                            .formatted(application.getCandidateUuid(), target.getUuid()));
+        }
+
+        RecruitmentApplication.PositionMove move =
+                application.moveToPosition(target.getUuid(), stageCodesOf(target));
+
+        // Subject the event to the TARGET position (where the application
+        // lives now), but stamp CIRCLE if either side is partner track.
+        RecruitmentEventBuilder event = RecruitmentEventBuilder
+                .event(RecruitmentEventType.APPLICATION_POSITION_CHANGED)
+                .candidate(application.getCandidateUuid())
+                .application(application.getUuid())
+                .position(target.getUuid())
+                .actorUser(actor.toString())
+                .payload("from_position_uuid", move.fromPositionUuid())
+                .payload("to_position_uuid", move.toPositionUuid())
+                .payload("from_position_title", titleOf(from))
+                .payload("to_position_title", target.getTitle())
+                .payload("from_hiring_track", from != null ? from.getHiringTrack().name() : null)
+                .payload("to_hiring_track", target.getHiringTrack().name())
+                .payload("from_stage", move.fromStage().name())
+                .payload("to_stage", move.toStage().name())
+                .payload("stage_clamped", move.stageClamped());
+        if (target.getHiringTrack() == RecruitmentHiringTrack.PARTNER
+                || (from != null && from.getHiringTrack() == RecruitmentHiringTrack.PARTNER)) {
+            event.visibility(RecruitmentEventVisibility.CIRCLE);
+        }
+        eventRecorder.record(event);
+
+        log.infof("Application %s moved position %s -> %s (stage %s -> %s, clamped=%s) by actor=%s",
+                application.getUuid(), move.fromPositionUuid(), move.toPositionUuid(),
+                move.fromStage(), move.toStage(), move.stageClamped(), actor);
         return application;
     }
 
@@ -542,6 +633,23 @@ public class RecruitmentApplicationService {
         return managed;
     }
 
+    /**
+     * The candidate's single open application, or {@code null}. "Open"
+     * excludes {@code HIRED}: that stage keeps {@code terminal} NULL by
+     * design (it is a stage, not a terminal), but the process is over — a
+     * hired candidate must not look like someone still in play.
+     * <p>
+     * Not visibility-filtered on purpose: this backs the one-open-application
+     * invariant, which is a data rule, not a read. Callers that surface it to
+     * a user filter separately.
+     */
+    static RecruitmentApplication openApplicationOf(String candidateUuid) {
+        return RecruitmentApplication.find(
+                        "candidateUuid = ?1 and terminal is null and stage <> ?2",
+                        candidateUuid, RecruitmentStage.HIRED)
+                .firstResult();
+    }
+
     private void closeRetentionClockIfLastApplication(RecruitmentCandidate candidate) {
         long stillOpen = RecruitmentApplication.count(
                 "candidateUuid = ?1 and terminal is null", candidate.getUuid());
@@ -578,6 +686,14 @@ public class RecruitmentApplicationService {
             builder.visibility(RecruitmentEventVisibility.CIRCLE);
         }
         return builder;
+    }
+
+    /** The position's ordered stage codes, defaulted like {@link #firstStageOf}. */
+    private static List<String> stageCodesOf(RecruitmentPosition position) {
+        List<String> stageSet = position.getStageSet();
+        return stageSet == null || stageSet.isEmpty()
+                ? List.of(RecruitmentStage.SCREENING.name())
+                : stageSet;
     }
 
     /** The first stage of the position's stage set (SCREENING by construction). */

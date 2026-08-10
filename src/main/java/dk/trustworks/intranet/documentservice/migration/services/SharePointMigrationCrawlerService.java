@@ -22,7 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * M1 — the read-only SharePoint inventory (runbook 2a-2 / spec §9.2).
@@ -59,6 +61,12 @@ public class SharePointMigrationCrawlerService {
     @RestClient
     GraphApiClient graphClient;
 
+    /**
+     * @param itemsRepointed  files found under a different folder than the one
+     *                        they were attached to — a SharePoint move, healed
+     * @param foldersReopened VERIFIED folders set back to MAPPED because new or
+     *                        changed content arrived in them
+     */
     public record CrawlSummary(
             int sites,
             int foldersNew,
@@ -66,6 +74,8 @@ public class SharePointMigrationCrawlerService {
             int itemsNew,
             int itemsUnchanged,
             int itemsChanged,
+            int itemsRepointed,
+            int foldersReopened,
             int itemsSkipped,
             List<String> skippedReasons,
             List<String> errors) { }
@@ -85,9 +95,20 @@ public class SharePointMigrationCrawlerService {
                 counters.errors.add(location.getSiteUrl() + ": " + e.getMessage());
             }
         }
-        log.infof("Crawl done: %d sites, %d new folders, %d new items, %d changed, %d skipped, %d errors",
-                counters.sites, counters.foldersNew, counters.itemsNew,
-                counters.itemsChanged, counters.itemsSkipped, counters.errors.size());
+
+        // Aggregates last, and for every folder this run touched — including
+        // the ones that *lost* items to a move, which may live on another site
+        // and so cannot be recomputed inside a single site's pass. Doing it
+        // inline per folder made the counts depend on the order Graph happened
+        // to return folders in: a donor folder crawled before the recipient
+        // kept a count for items it no longer owned.
+        counters.touchedFolders.forEach(this::updateFolderAggregates);
+
+        log.infof("Crawl done: %d sites, %d new folders, %d new items, %d changed, "
+                        + "%d re-pointed, %d folders re-opened, %d skipped, %d errors",
+                counters.sites, counters.foldersNew, counters.itemsNew, counters.itemsChanged,
+                counters.itemsRepointed, counters.foldersReopened, counters.itemsSkipped,
+                counters.errors.size());
         return counters.toSummary();
     }
 
@@ -110,8 +131,8 @@ public class SharePointMigrationCrawlerService {
             }
             String folderPath = basePath.isBlank() ? child.name() : basePath + "/" + child.name();
             long folderId = upsertFolder(siteUrl, folderPath, child.name(), counters);
+            counters.touchedFolders.add(folderId);
             crawlPersonalFolder(driveId, child, folderId, counters);
-            updateFolderAggregates(folderId);
         }
     }
 
@@ -252,8 +273,26 @@ public class SharePointMigrationCrawlerService {
                 item.setStatus(ItemStatus.DISCOVERED);
                 item.persist();
                 counters.itemsNew++;
+                reopenIfVerified(folderId, counters);
                 return;
             }
+
+            // A drive item keeps its id when it is MOVED, so "already known"
+            // is not the same as "still in the same folder". Without this the
+            // row stays attached to wherever it was first seen: when the
+            // employee folders were lifted out of the `2. XXX - Trustworkers`
+            // container, 1,153 files kept pointing at that (SKIPPED) row and
+            // every later crawl counted them "unchanged" — the new per-person
+            // folders could never rise above file_count=0, and re-crawling
+            // could not heal it because nothing ever rewrote folder_id.
+            boolean moved = !Long.valueOf(folderId).equals(existing.getFolderId());
+            if (moved) {
+                counters.touchedFolders.add(existing.getFolderId());
+                existing.setFolderId(folderId);
+                existing.setRelativePath(relativePath);
+                counters.itemsRepointed++;
+            }
+
             if (etag != null && !etag.equals(existing.getEtag())) {
                 // Delta semantics (2b-7): the file changed since the last
                 // crawl — refresh metadata and let the copier take the new
@@ -265,10 +304,49 @@ public class SharePointMigrationCrawlerService {
                 existing.setError(null);
                 existing.persist();
                 counters.itemsChanged++;
+                reopenIfVerified(folderId, counters);
+                return;
+            }
+
+            if (moved) {
+                existing.setName(file.name());
+                existing.persist();
+                // A move alone is not new content: an item already COPIED or
+                // VERIFIED under its old folder is the same bytes here, so its
+                // status stands and the folder is not re-opened. Only the
+                // ownership was wrong.
+                if (existing.getStatus() == ItemStatus.DISCOVERED) reopenIfVerified(folderId, counters);
                 return;
             }
             counters.itemsUnchanged++;
         });
+    }
+
+    /**
+     * Give a finished folder back to the copier when new work lands in it.
+     *
+     * <p>VERIFIED is otherwise terminal — {@code findMapped()} is
+     * {@code MAPPED, COPYING} and nothing else ever writes a folder back — so
+     * a document added to an already-migrated folder was crawled into a
+     * DISCOVERED item that no copy run would ever look at. That made the
+     * migration one-shot per folder and quietly killed the delta-crawl path,
+     * which resets a changed item to DISCOVERED for a copier that had stopped
+     * listening.</p>
+     *
+     * <p>Only VERIFIED is re-opened. SKIPPED is a human decision to exclude the
+     * folder and DISCOVERED still needs a match — neither is ours to overrule.
+     * The match is preserved, so the folder returns to MAPPED, not to the
+     * matching queue, and the normal MAPPED → COPYING → VERIFIED cycle closes
+     * it again.</p>
+     */
+    private void reopenIfVerified(long folderId, Counters counters) {
+        SharePointMigrationFolder folder = SharePointMigrationFolder.findById(folderId);
+        if (folder == null || folder.getStatus() != FolderStatus.VERIFIED) return;
+        folder.setStatus(FolderStatus.MAPPED);
+        folder.persist();
+        counters.foldersReopened++;
+        log.infof("Folder %s re-opened (VERIFIED → MAPPED): new or changed content arrived",
+                folder.getFolderPath());
     }
 
     private void updateFolderAggregates(long folderId) {
@@ -306,13 +384,18 @@ public class SharePointMigrationCrawlerService {
         int itemsNew;
         int itemsUnchanged;
         int itemsChanged;
+        int itemsRepointed;
+        int foldersReopened;
         int itemsSkipped;
+        /** Every folder that gained or lost an item — aggregates recomputed at the end. */
+        final Set<Long> touchedFolders = new LinkedHashSet<>();
         final List<String> skippedReasons = new ArrayList<>();
         final List<String> errors = new ArrayList<>();
 
         CrawlSummary toSummary() {
             return new CrawlSummary(sites, foldersNew, foldersExisting, itemsNew,
-                    itemsUnchanged, itemsChanged, itemsSkipped, skippedReasons, errors);
+                    itemsUnchanged, itemsChanged, itemsRepointed, foldersReopened,
+                    itemsSkipped, skippedReasons, errors);
         }
     }
 }

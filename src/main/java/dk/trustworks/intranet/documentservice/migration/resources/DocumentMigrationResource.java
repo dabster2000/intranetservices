@@ -12,6 +12,7 @@ import dk.trustworks.intranet.documentservice.migration.services.SharePointMappi
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCategorizerService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCopyService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCrawlerService;
+import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationOwnershipRepairService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationRenameService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationReportService;
 import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationReportService.MigrationReport;
@@ -90,6 +91,9 @@ public class DocumentMigrationResource {
 
     @Inject
     EmployeeDocumentHashBackfillService hashBackfillService;
+
+    @Inject
+    SharePointMigrationOwnershipRepairService ownershipRepairService;
 
     @Inject
     EmployeeDocumentsParameters parameters;
@@ -180,6 +184,29 @@ public class DocumentMigrationResource {
     public JobStatus backfillSha256(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun) {
         return jobRunner.start(dryRun ? JobType.HASH_BACKFILL_DRY_RUN : JobType.HASH_BACKFILL,
                 () -> hashBackfillService.backfill(dryRun));
+    }
+
+    /**
+     * Reconcile {@code folder_id} against where each file actually lives in
+     * SharePoint now. A drive item keeps its id when it is moved, so items
+     * first seen inside a container folder ({@code 2. XXX - Trustworkers})
+     * stayed attached to it when the per-person folders were lifted out — and
+     * that container is SKIPPED, which the copier never walks.
+     *
+     * <p>The crawler now re-points moved items itself, so a Crawl heals most of
+     * this. Run this for the dry run first: it names every file that would
+     * change owner, and counts the orphans (file deleted in SharePoint) that no
+     * crawl will ever revisit. {@code allItems=true} widens the scan from
+     * "stranded on a SKIPPED folder" to every item, at one Graph call each.
+     */
+    @POST
+    @Path("/repair-item-ownership")
+    @RolesAllowed({"documents:write"})
+    public JobStatus repairItemOwnership(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun,
+                                         @QueryParam("allItems") @DefaultValue("false") boolean allItems) {
+        return jobRunner.start(
+                dryRun ? JobType.OWNERSHIP_REPAIR_DRY_RUN : JobType.OWNERSHIP_REPAIR,
+                () -> ownershipRepairService.repair(dryRun, allItems));
     }
 
     /** M5 — size + sha256 verification, folder promotion. */

@@ -1,7 +1,7 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 85,
+  "count": 86,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
@@ -60,6 +60,7 @@
     { "key": "recruitment:comp", "displayName": "Recruitment — compensation", "category": "Recruitment" },
     { "key": "recruitment:gdpr", "displayName": "Recruitment — GDPR", "category": "Recruitment" },
     { "key": "recruitment:interview", "displayName": "Recruitment — interview", "category": "Recruitment" },
+    { "key": "recruitment:manage", "displayName": "Recruitment — manage candidates", "category": "Recruitment" },
     { "key": "recruitment:read", "displayName": "Recruitment — read", "category": "Recruitment" },
     { "key": "recruitment:refer", "displayName": "Recruitment — refer", "category": "Recruitment" },
     { "key": "recruitment:write", "displayName": "Recruitment — write", "category": "Recruitment" },

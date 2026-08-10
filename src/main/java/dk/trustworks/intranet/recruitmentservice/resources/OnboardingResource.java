@@ -55,6 +55,11 @@ public class OnboardingResource {
     /**
      * Validate a token without requiring authentication.
      * Always returns 200 to avoid leaking token existence to unauthenticated callers.
+     *
+     * <p>A valid token additionally carries the owner's <b>masked</b> name so
+     * the visitor can tell a mis-sent link from their own before uploading
+     * identity documents. Invalid and expired responses stay nameless — see
+     * {@link OnboardingValidateResponse#displayName()}.</p>
      */
     @GET
     @PermitAll
@@ -81,7 +86,8 @@ public class OnboardingResource {
                 true,
                 false,
                 new FieldFlags(token.isShowDriversLicense(), token.isShowHealthInsurance(), token.isShowCriminalRecord()),
-                new Submitted(dl, hi, cr)
+                new Submitted(dl, hi, cr),
+                onboardingUploadService.resolveMaskedOwnerName(token)
         );
     }
 

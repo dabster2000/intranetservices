@@ -153,6 +153,147 @@ class RecruitmentApplicationServiceIntegrationTest {
     }
 
     @Test
+    void create_secondOpenApplicationOnAnotherPosition_conflicts() {
+        // The one-open-application invariant: attaching a candidate who is
+        // already in a process is how "wrong position" used to turn into two
+        // live pipelines. The remedy is moveToPosition, not a second row.
+        String candidate = insertCandidate(null);
+        create(candidate, positionUuid);
+        String otherPosition = insertOpenPosition("Other req");
+
+        BusinessRuleViolation thrown = assertThrows(BusinessRuleViolation.class,
+                () -> create(candidate, otherPosition),
+                "a candidate is in one process at a time");
+        assertTrue(thrown.getMessage().contains("Move that application"),
+                "the 409 must name the remedy, not just refuse: " + thrown.getMessage());
+        assertEquals(1, RecruitmentApplication.count("candidateUuid", candidate),
+                "the refused attach must not have created anything");
+    }
+
+    @Test
+    void create_afterTheOpenApplicationClosed_isAllowedAgain() {
+        // The invariant is about OPEN applications only — a candidate whose
+        // process ended can start a new one.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication first = create(candidate, positionUuid);
+        withdraw(first);
+
+        String otherPosition = insertOpenPosition("Later req");
+        RecruitmentApplication second = create(candidate, otherPosition);
+
+        assertEquals(otherPosition, second.getPositionUuid());
+        assertEquals(2, RecruitmentApplication.count("candidateUuid", candidate));
+    }
+
+    // ---- Position move (re-filing) -------------------------------------------------
+
+    @Test
+    void moveToPosition_repointsTheSameApplication_keepsStageAndEmitsTheEvent() {
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+        changeStage(application, RecruitmentStage.INTERVIEW_1, false);
+        String target = insertOpenPosition("Better fit");
+
+        RecruitmentApplication moved = moveToPosition(application, positionUuid, target);
+
+        assertEquals(application.getUuid(), moved.getUuid(),
+                "same row — interviews, scorecards and the timeline key on this uuid");
+        assertEquals(target, moved.getPositionUuid());
+        assertEquals(RecruitmentStage.INTERVIEW_1, moved.getStage(),
+                "the target pipeline has INTERVIEW_1, so progress is kept");
+        assertNull(moved.getTerminal(), "a move is not a terminal");
+        assertEquals(1, RecruitmentApplication.count("candidateUuid", candidate),
+                "no second application is ever created");
+
+        RecruitmentEvent event = lastEvent(candidate);
+        assertEquals(RecruitmentEventType.APPLICATION_POSITION_CHANGED, event.getEventType());
+        assertEquals(application.getUuid(), event.getApplicationUuid());
+        assertEquals(target, event.getPositionUuid(), "the event is subject to where it lives now");
+        assertTrue(event.getPayload().contains("\"from_position_uuid\":\"" + positionUuid + "\""));
+        assertTrue(event.getPayload().contains("\"to_position_uuid\":\"" + target + "\""));
+        assertTrue(event.getPayload().contains("\"stage_clamped\":false"));
+        RecruitmentEventPiiAssertions.assertNoPiiInPayload(event);
+    }
+
+    @Test
+    void moveToPosition_ontoPartnerTrack_stampsCircleVisibility() {
+        // Fail closed: the move event must never be readable outside the
+        // circle just because the SOURCE was an ordinary position.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+
+        moveToPosition(application, positionUuid, partnerPositionUuid);
+
+        RecruitmentEvent event = lastEvent(candidate);
+        assertEquals(RecruitmentEventType.APPLICATION_POSITION_CHANGED, event.getEventType());
+        assertEquals(RecruitmentEventVisibility.CIRCLE, event.getVisibility());
+    }
+
+    @Test
+    void moveToPosition_outOfPartnerTrack_alsoStampsCircleVisibility() {
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, partnerPositionUuid);
+
+        moveToPosition(application, partnerPositionUuid, positionUuid);
+
+        RecruitmentEvent event = lastEvent(candidate);
+        assertEquals(RecruitmentEventVisibility.CIRCLE, event.getVisibility(),
+                "the move OUT of a confidential req is itself confidential");
+    }
+
+    @Test
+    void moveToPosition_toNonOpenPosition_conflicts() {
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+        String target = insertOpenPosition("Closed req");
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("UPDATE recruitment_positions SET status = 'ON_HOLD' WHERE uuid = :p")
+                        .setParameter("p", target).executeUpdate());
+
+        assertThrows(BusinessRuleViolation.class,
+                () -> moveToPosition(application, positionUuid, target));
+        assertEquals(positionUuid,
+                RecruitmentApplication.<RecruitmentApplication>findById(application.getUuid())
+                        .getPositionUuid(),
+                "a refused move must leave the application where it was");
+    }
+
+    @Test
+    void moveToPosition_ontoAPositionWithACompetingOpenApplication_conflicts() {
+        // Reachable only for pre-invariant data, but the guard must hold:
+        // moving must not create the very state the create guard forbids.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+        String target = insertOpenPosition("Occupied req");
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("""
+                                INSERT INTO recruitment_applications
+                                    (uuid, candidate_uuid, position_uuid, stage, stage_entered_at,
+                                     created_at, updated_at, created_by)
+                                VALUES (:uuid, :candidate, :position, 'SCREENING', NOW(3),
+                                        NOW(), NOW(), 'test')
+                                """)
+                        .setParameter("uuid", UUID.randomUUID().toString())
+                        .setParameter("candidate", candidate)
+                        .setParameter("position", target)
+                        .executeUpdate());
+
+        assertThrows(BusinessRuleViolation.class,
+                () -> moveToPosition(application, positionUuid, target));
+    }
+
+    @Test
+    void moveToPosition_onClosedApplication_conflicts() {
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+        withdraw(application);
+        String target = insertOpenPosition("Too late");
+
+        assertThrows(BusinessRuleViolation.class,
+                () -> moveToPosition(application, positionUuid, target));
+    }
+
+    @Test
     void create_onNonOpenPosition_conflicts() {
         String candidate = insertCandidate(null);
         QuarkusTransaction.requiringNew().run(() ->
@@ -491,6 +632,39 @@ class RecruitmentApplicationServiceIntegrationTest {
                     RecruitmentPosition.findById(managed.getPositionUuid()), target,
                     mayFastTrack, actor);
         });
+    }
+
+    /** Re-file an application, re-loading both positions inside the transaction. */
+    private RecruitmentApplication moveToPosition(RecruitmentApplication application,
+                                                  String fromPositionUuid,
+                                                  String toPositionUuid) {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            em.clear();
+            return applicationService.moveToPosition(
+                    RecruitmentApplication.findById(application.getUuid()),
+                    RecruitmentPosition.findById(fromPositionUuid),
+                    RecruitmentPosition.findById(toPositionUuid), actor);
+        });
+    }
+
+    /** Close an application the short way — the terminal itself is tested elsewhere. */
+    private void withdraw(RecruitmentApplication application) {
+        mutate(() -> {
+            RecruitmentApplication managed = RecruitmentApplication.findById(application.getUuid());
+            applicationService.withdraw(managed,
+                    RecruitmentPosition.findById(managed.getPositionUuid()),
+                    RecruitmentCandidate.findById(managed.getCandidateUuid()), null, actor);
+        });
+    }
+
+    /** A fresh OPEN PRACTICE_TEAM position on practiceA with the default stage set. */
+    private String insertOpenPosition(String title) {
+        String uuid = UUID.randomUUID().toString();
+        positionUuids.add(uuid);
+        QuarkusTransaction.requiringNew().run(() ->
+                insertPosition(uuid, title, "PRACTICE_TEAM", practiceA,
+                        "[\"SCREENING\",\"INTERVIEW_1\",\"INTERVIEW_2\",\"OFFER\",\"HIRED\"]"));
+        return uuid;
     }
 
     private void reject(RecruitmentApplication application, String candidateUuid,

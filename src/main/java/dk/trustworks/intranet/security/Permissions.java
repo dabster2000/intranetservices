@@ -195,6 +195,13 @@ public final class Permissions {
             new Permission("recruitment:refer", "Recruitment — refer", "Recruitment"),
             new Permission("recruitment:comp", "Recruitment — compensation", "Recruitment"),
             new Permission("recruitment:gdpr", "Recruitment — GDPR", "Recruitment"),
+            // The recruiter tier proper (go-live 2026-08-10). recruitment:write
+            // is held by every team lead — it is what lets them move a
+            // candidate on a position they own — so it could never express
+            // "may run the candidate database": create candidates, bulk-tag,
+            // pool/decline/withdraw, e-mail candidates, manage templates and
+            // the resource library. Those are ADMIN/HR/RECRUITMENT only.
+            new Permission("recruitment:manage", "Recruitment — manage candidates", "Recruitment"),
             new Permission("recruitment:admin", "Recruitment — admin", "Recruitment"),
 
             // Admin

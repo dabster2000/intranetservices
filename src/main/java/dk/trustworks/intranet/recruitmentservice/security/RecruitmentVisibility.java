@@ -44,32 +44,55 @@ import java.util.stream.Collectors;
  * Effective tiers for positions:
  * <ol>
  *   <li>{@code ADMIN} role → everything, including partner track.</li>
- *   <li>{@code HR} / {@code CXO} role (recruiter tier) → all non-partner
- *       positions + partner positions where the viewer is in the circle.</li>
+ *   <li>{@code HR} / {@code RECRUITMENT} / {@code TEAMLEAD}
+ *       ({@link #POSITION_READ_ROLES}) → <em>read</em> all non-partner
+ *       positions + partner positions where the viewer is in the circle.
+ *       Only HR/RECRUITMENT ({@link #RECRUITER_TIER_ROLES}) also
+ *       <em>decide</em> everywhere; a teamlead decides only on positions
+ *       they own, lead the team of, or are in the circle of.</li>
  *   <li>Everyone else → positions they own ({@code hiring_owner_uuid}),
  *       positions of teams they currently lead, non-partner positions of
  *       practices they currently lead, and circle memberships.</li>
  * </ol>
+ * {@code TECHPARTNER} and {@code PARTNER} carry no recruitment access
+ * (go-live decisions D7/D9): involvement or an explicit HR/RECRUITMENT/
+ * TEAMLEAD grant is the only way in.
  */
 @ApplicationScoped
 public class RecruitmentVisibility {
 
     static final String ROLE_ADMIN = "ADMIN";
-    /** Recruiter-tier roles: see every non-partner position. */
-    static final Set<String> RECRUITER_TIER_ROLES = Set.of("HR", "CXO");
+    static final String ROLE_TEAMLEAD = "TEAMLEAD";
+    /**
+     * Recruiter-tier roles: the module-wide queues and every decision right.
+     * {@code TEAMLEAD} is deliberately NOT here — a teamlead reads widely
+     * (see {@link #POSITION_READ_ROLES}) but decides narrowly.
+     */
+    static final Set<String> RECRUITER_TIER_ROLES = Set.of("HR", "RECRUITMENT");
+    /**
+     * Roles that <em>read</em> every non-partner position without needing
+     * involvement (go-live decision D3): the recruiter tier plus
+     * {@code TEAMLEAD}. Acting on those positions is a separate, narrower
+     * question — {@link #canDecideOnApplication}.
+     */
+    static final Set<String> POSITION_READ_ROLES = Set.of("HR", "RECRUITMENT", ROLE_TEAMLEAD);
     /**
      * Profile-read tier (P8, contract §P8-Timeline): roles that read every
      * candidate profile except partner-track-only candidates outside their
-     * circles. TECHPARTNER joins HR/CXO here — it is the dossier flow's
-     * existing production audience (findings §P3 deviation 12).
+     * circles. {@code TEAMLEAD} joins HR/RECRUITMENT here (D3) — a teamlead
+     * reads the whole non-partner candidate population, including the
+     * database grid. {@code TECHPARTNER} was removed from the recruitment
+     * module entirely (D7).
      */
-    static final Set<String> PROFILE_READ_ROLES = Set.of("HR", "CXO", "TECHPARTNER");
+    static final Set<String> PROFILE_READ_ROLES = Set.of("HR", "RECRUITMENT", ROLE_TEAMLEAD);
     /**
      * Hired-file tier (spec §7.2 field gate): once a candidate is HIRED,
      * profile access narrows to these roles (+ ADMIN) — colleagues must not
      * browse a new colleague's interview file. DPO joins for GDPR duties.
+     * {@code TEAMLEAD} is deliberately absent (D6): the wide read the
+     * teamlead gets while a candidate is in play stops at the hire.
      */
-    static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "CXO", "TECHPARTNER", "DPO");
+    static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "RECRUITMENT", "DPO");
 
     @Inject
     EntityManager em;
@@ -131,9 +154,9 @@ public class RecruitmentVisibility {
 
     /**
      * Whether the viewer belongs to the recruiter tier for module-wide
-     * queues (spec §7.2): {@code ADMIN}, {@code HR} or {@code CXO}. The P6
-     * referral triage queue and the unsolicited-applicant queue gate on
-     * this — a teamlead sees their own positions' pipelines but never the
+     * queues (spec §7.2): {@code ADMIN}, {@code HR} or {@code RECRUITMENT}.
+     * The P6 referral triage queue and the unsolicited-applicant queue gate
+     * on this — a teamlead sees their own positions' pipelines but never the
      * raw intake queues.
      */
     public boolean isRecruiterTier(String userUuid) {
@@ -171,8 +194,10 @@ public class RecruitmentVisibility {
             String circleExists =
                     "exists (select 1 from RecruitmentCircleMember m"
                             + " where m.positionUuid = p.uuid and m.userUuid = :viewer)";
-            if (roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
-                // Recruiter tier: everything except partner track outside the circle.
+            if (roles.stream().anyMatch(POSITION_READ_ROLES::contains)) {
+                // Read tier (recruiter + teamlead): everything except partner
+                // track outside the circle. Decision rights are checked
+                // separately by canDecideOnApplication.
                 query.append(" and (p.hiringTrack <> :partnerTrack or ").append(circleExists).append(')');
             } else {
                 // Involvement tier: (non-partner AND owned/led-team/led-practice)
@@ -229,7 +254,7 @@ public class RecruitmentVisibility {
         if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
             return isCircleMember(viewerUuid, position.getUuid());
         }
-        if (roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+        if (roles.stream().anyMatch(POSITION_READ_ROLES::contains)) {
             return true;
         }
         return viewerUuid.equals(position.getHiringOwnerUuid())
@@ -239,12 +264,21 @@ public class RecruitmentVisibility {
 
     /**
      * May the viewer make pipeline decisions (stage moves, terminals, team
-     * assignment) on applications of this position? Spec §7.2: admin and
-     * recruiter everywhere, teamlead/hiring owner on their own positions —
-     * a practice lead has READ access but no decision rights, and on
-     * partner track "may look" never implies "may change": only circle
-     * OWNER/RECRUITER members (or HR/admin) decide, mirroring the P2
-     * position-mutation rule.
+     * assignment) on applications of this position? Spec §7.2 as amended by
+     * go-live decision D4: admin and recruiter tier everywhere; a
+     * {@code TEAMLEAD} only where they are <em>involved</em> — the named
+     * hiring owner, the current lead of the position's team, or a member of
+     * the position's circle. <b>Reading widely never implies deciding
+     * widely</b>: {@link #POSITION_READ_ROLES} shows a teamlead every
+     * non-partner position, this method is what stops them acting on one
+     * that is not theirs. A practice lead has READ access but no decision
+     * rights, and on partner track "may look" never implies "may change":
+     * only circle OWNER/RECRUITER members (or HR/admin) decide, mirroring
+     * the P2 position-mutation rule.
+     * <p>
+     * The circle grant is teamlead-gated on purpose (D11): a plain employee
+     * added to a circle gets the restricted candidate view
+     * ({@link #canReadRestrictedCandidateView}) and nothing else.
      */
     public boolean canDecideOnApplication(String viewerUuid, RecruitmentPosition position) {
         Set<String> roles = rolesOf(viewerUuid);
@@ -259,15 +293,17 @@ public class RecruitmentVisibility {
         }
         return viewerUuid.equals(position.getHiringOwnerUuid())
                 || (position.getTeamUuid() != null
-                    && currentlyLedTeams(viewerUuid).contains(position.getTeamUuid()));
+                    && currentlyLedTeams(viewerUuid).contains(position.getTeamUuid()))
+                || (roles.contains(ROLE_TEAMLEAD)
+                    && isCircleMember(viewerUuid, position.getUuid()));
     }
 
     /**
      * Is the viewer "the recruiter or the hiring owner" for this position?
      * The elevated tier two P4 rules key on (spec §4.2): forward stage
      * <em>skips</em> and rejecting a partner-referral candidate. ADMIN and
-     * the recruiter tier (HR/CXO) qualify everywhere; otherwise only the
-     * position's named hiring owner.
+     * the recruiter tier (HR/RECRUITMENT) qualify everywhere; otherwise only
+     * the position's named hiring owner.
      */
     public boolean isRecruiterOrHiringOwner(String viewerUuid, RecruitmentPosition position) {
         Set<String> roles = rolesOf(viewerUuid);
@@ -359,12 +395,12 @@ public class RecruitmentVisibility {
         }
         Set<String> roles = rolesOf(viewerUuid);
         boolean admin = roles.contains(ROLE_ADMIN);
-        boolean recruiterTier = roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+        boolean readTier = roles.stream().anyMatch(POSITION_READ_ROLES::contains);
 
         Set<String> circled = admin ? Set.of() : circledPositionUuids(viewerUuid);
-        Set<String> ledTeams = (admin || recruiterTier) ? Set.of()
+        Set<String> ledTeams = (admin || readTier) ? Set.of()
                 : new HashSet<>(currentlyLedTeams(viewerUuid));
-        Set<String> ledPractices = (admin || recruiterTier) ? Set.of()
+        Set<String> ledPractices = (admin || readTier) ? Set.of()
                 : new HashSet<>(currentlyLedPractices(viewerUuid));
 
         return positions.stream().filter(position -> {
@@ -374,7 +410,7 @@ public class RecruitmentVisibility {
             if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
                 return circled.contains(position.getUuid());
             }
-            if (recruiterTier) {
+            if (readTier) {
                 return true;
             }
             return viewerUuid != null && (viewerUuid.equals(position.getHiringOwnerUuid())
@@ -411,19 +447,20 @@ public class RecruitmentVisibility {
      *       applications sit on PARTNER positions and the viewer is in none
      *       of those circles (the spec §7.2 hard circle filter, applied to
      *       candidates).</li>
-     *   <li>Involvement tier (everyone else): at least one application on a
-     *       position the viewer can read per {@link #canReadPosition} —
-     *       covers hiring owners, current teamleads of the position's team,
-     *       current practice leads (non-partner positions of their practice)
-     *       and circle members — OR an interview assignment on one of the
-     *       candidate's applications ({@link #hasInterviewAssignment}, P11:
-     *       "Interviewer = per-candidate assignment", spec §7.2). The
-     *       interviewer grant deliberately reaches partner-track candidates
-     *       too: assignment is an explicit involvement act made by a
-     *       circle-authorized decision maker, and the assignee needs the kit
-     *       (CV, answers). It does NOT grant position/board visibility, and
-     *       CIRCLE timeline events stay circle-filtered.</li>
+     *   <li>Involvement tier (everyone else): <b>ownership or current
+     *       leadership</b> of a non-partner position the candidate applied
+     *       to — the named hiring owner, the current lead of the position's
+     *       team, or the current lead of its practice
+     *       ({@link #hasOwnershipOrLeadershipInvolvement}).</li>
      * </ol>
+     * <b>Interview assignment and circle membership do NOT open this
+     * profile</b> (go-live decisions D10/D11). They open the far narrower
+     * {@link #canReadRestrictedCandidateView} — name, links, CV, position,
+     * interview details, application answers and the viewer's own scorecard.
+     * That is a deliberate narrowing of the P11 interviewer grant: an
+     * interviewer needs the kit, not the pipeline stage, the timeline, the
+     * comp data or their colleagues' scorecards.
+     * <p>
      * The partner circle stays a hard filter in every tier except ADMIN —
      * including the hired-file tier. Callers answer 404 (never 403) when
      * this returns {@code false}: existence must not leak.
@@ -437,16 +474,46 @@ public class RecruitmentVisibility {
             return true;
         }
         if (candidate.getStatus() == CandidateStatus.HIRED) {
-            // Involvement (incl. interview assignment) never survives HIRED:
-            // colleagues must not browse a new colleague's interview file.
+            // Involvement never survives HIRED: colleagues must not browse a
+            // new colleague's interview file.
             return roles.stream().anyMatch(HIRED_FILE_ROLES::contains)
                     && !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
         if (roles.stream().anyMatch(PROFILE_READ_ROLES::contains)) {
             return !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
-        return !filterApplications(viewerUuid, candidate.getUuid()).isEmpty()
-                || hasInterviewAssignment(viewerUuid, candidate.getUuid());
+        return hasOwnershipOrLeadershipInvolvement(viewerUuid, candidate.getUuid());
+    }
+
+    /**
+     * Involvement that is strong enough for the <em>full</em> candidate
+     * profile without a recruitment role: the viewer owns, currently leads
+     * the team of, or currently leads the practice of a <b>non-partner</b>
+     * position the candidate applied to. Partner-track positions grant
+     * nothing here — the circle is their only key, and a circle member gets
+     * {@link #canReadRestrictedCandidateView}, not this.
+     */
+    private boolean hasOwnershipOrLeadershipInvolvement(String viewerUuid, String candidateUuid) {
+        List<RecruitmentApplication> applications =
+                RecruitmentApplication.list("candidateUuid", candidateUuid);
+        if (applications.isEmpty()) {
+            return false;
+        }
+        List<String> positionUuids = applications.stream()
+                .map(RecruitmentApplication::getPositionUuid)
+                .distinct()
+                .toList();
+        List<RecruitmentPosition> positions =
+                RecruitmentPosition.list("uuid in ?1", positionUuids);
+        Set<String> ledTeams = new HashSet<>(currentlyLedTeams(viewerUuid));
+        Set<String> ledPractices = new HashSet<>(currentlyLedPractices(viewerUuid));
+        return positions.stream().anyMatch(position ->
+                position.getHiringTrack() != RecruitmentHiringTrack.PARTNER
+                        && (viewerUuid.equals(position.getHiringOwnerUuid())
+                            || (position.getTeamUuid() != null
+                                && ledTeams.contains(position.getTeamUuid()))
+                            || (position.getPracticeUuid() != null
+                                && ledPractices.contains(position.getPracticeUuid()))));
     }
 
     /**
@@ -472,6 +539,60 @@ public class RecruitmentVisibility {
                 .setParameter("viewer", viewerUuid)
                 .getResultList()
                 .isEmpty();
+    }
+
+    /**
+     * Whether the viewer is a member of the circle of at least one position
+     * the candidate has applied to (one query). Circle membership is an
+     * explicit, per-hire invitation — see
+     * {@link #canReadRestrictedCandidateView}.
+     */
+    public boolean hasCircleInvolvement(String viewerUuid, String candidateUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
+            return false;
+        }
+        return !em.createNativeQuery("""
+                        SELECT 1 FROM recruitment_applications a
+                        JOIN recruitment_circle_members m ON m.position_uuid = a.position_uuid
+                        WHERE a.candidate_uuid = :candidate AND m.user_uuid = :viewer
+                        LIMIT 1
+                        """)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("viewer", viewerUuid)
+                .getResultList()
+                .isEmpty();
+    }
+
+    /**
+     * The <b>restricted candidate view</b> grant (go-live decisions D10–D12):
+     * may this viewer open the cut-down candidate page — name, links, CV,
+     * position, interview details, application answers and their own
+     * scorecard, and nothing else?
+     * <p>
+     * Granted while the candidate is {@link CandidateStatus#ACTIVE} and the
+     * viewer is either an assigned interviewer on one of the candidate's
+     * applications ({@link #hasInterviewAssignment}) or a member of one of
+     * those positions' circles ({@link #hasCircleInvolvement}). This is the
+     * <em>only</em> recruitment surface a person with no recruitment role
+     * can reach, and it is read-only: it grants no position visibility, no
+     * board, no stage, no timeline, no comp data and no other candidate.
+     * <p>
+     * The window closes with the candidate's status (D12): once they are
+     * HIRED, REJECTED, WITHDRAWN or POOLED the grant is gone, so a finished
+     * process stops being readable without any revocation step.
+     * <p>
+     * Callers answer <b>404</b> (never 403) when this returns {@code false}:
+     * existence must not leak, exactly as for the full profile.
+     */
+    public boolean canReadRestrictedCandidateView(String viewerUuid, RecruitmentCandidate candidate) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidate == null) {
+            return false;
+        }
+        if (candidate.getStatus() != CandidateStatus.ACTIVE) {
+            return false;
+        }
+        return hasInterviewAssignment(viewerUuid, candidate.getUuid())
+                || hasCircleInvolvement(viewerUuid, candidate.getUuid());
     }
 
     /** Single-candidate variant of {@link #partnerTrackOnlyCandidateUuids}. */
@@ -529,11 +650,13 @@ public class RecruitmentVisibility {
     }
 
     /**
-     * The comp tier for a candidate's salary-expectation data (P8 contract):
-     * {@code ADMIN}, recruiter tier (HR/CXO), or teamlead/hiring-owner of
-     * one of the candidate's positions. Interviewers, practice leads and
-     * profile-read TECHPARTNERs are deliberately outside — they see the
-     * event, not the amount (spec §7.2 {@code recruitment:comp} row).
+     * The comp tier for a candidate's salary-expectation data (P8 contract,
+     * widened by go-live decision D6): {@code ADMIN}, recruiter tier
+     * (HR/RECRUITMENT) and {@code TEAMLEAD} — the same population that reads
+     * the candidate profile — plus any hiring owner of one of the
+     * candidate's positions. Interviewers, circle-only viewers and practice
+     * leads are deliberately outside: they see the event, not the amount
+     * (spec §7.2 {@code recruitment:comp} row).
      *
      * @param candidatePositions the (pre-fetched) positions of the
      *                           candidate's applications — batched by the
@@ -544,7 +667,7 @@ public class RecruitmentVisibility {
             return false;
         }
         Set<String> roles = rolesOf(viewerUuid);
-        if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+        if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(PROFILE_READ_ROLES::contains)) {
             return true;
         }
         if (candidatePositions == null || candidatePositions.isEmpty()) {

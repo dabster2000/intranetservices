@@ -267,8 +267,8 @@ public class RecruitmentResource {
      * P8 database-grid bulk action: union-add tags to up to 200 candidates
      * through the existing tag path — one {@code CANDIDATE_UPDATED} per
      * actually-changed candidate, nothing for no-ops. Recruiter tier
-     * (ADMIN/HR/CXO) enforced here AND in the service (defense in depth);
-     * invisible targets answer 404 for the whole call.
+     * (ADMIN/HR/RECRUITMENT) enforced here AND in the service (defense in
+     * depth); invisible targets answer 404 for the whole call.
      */
     @POST
     @Path("/candidates/tags/bulk")
@@ -1259,10 +1259,11 @@ public class RecruitmentResource {
      * Object-level authorization gate for the dossier endpoint family:
      * resolve the candidate and apply the same profile-visibility rule as the
      * P8 read surfaces ({@link RecruitmentVisibility#canReadCandidateProfile}).
-     * ADMIN always passes; the profile-read tier (HR/CXO/TECHPARTNER) passes
-     * except for partner-track-only candidates outside their circles; everyone
-     * else needs involvement via a readable application; HIRED files narrow to
-     * HR/CXO/TECHPARTNER/DPO. An existing-but-invisible candidate answers the
+     * ADMIN always passes; the profile-read tier (HR/RECRUITMENT/TEAMLEAD)
+     * passes except for partner-track-only candidates outside their circles;
+     * everyone else needs ownership or current leadership of a non-partner
+     * position the candidate applied to; HIRED files narrow to
+     * HR/RECRUITMENT/DPO. An existing-but-invisible candidate answers the
      * same 404 as a nonexistent one — a partner-track candidate's existence
      * must not leak.
      * <p>

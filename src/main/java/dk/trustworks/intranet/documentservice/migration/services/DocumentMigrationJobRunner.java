@@ -28,7 +28,8 @@ public class DocumentMigrationJobRunner {
 
     public enum JobType {
         CRAWL, MATCH, COPY_DRY_RUN, COPY, CATEGORIZE, RENAME_DRY_RUN, RENAME, VERIFY,
-        HASH_BACKFILL_DRY_RUN, HASH_BACKFILL
+        HASH_BACKFILL_DRY_RUN, HASH_BACKFILL,
+        OWNERSHIP_REPAIR_DRY_RUN, OWNERSHIP_REPAIR
     }
 
     public record JobStatus(

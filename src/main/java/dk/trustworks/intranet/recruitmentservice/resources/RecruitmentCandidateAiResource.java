@@ -57,11 +57,11 @@ import java.util.UUID;
  *       (404 + {@code admin:*} bypass) → actor from {@code X-Requested-By}
  *       → {@code requireVisibleCandidate} (invisible candidates answer
  *       404, never 403).</li>
- *   <li>Commands additionally require the recruiter tier (ADMIN/HR/CXO)
- *       or the hiring owner of the relevant position (403 otherwise), and
- *       regenerate requires the intake-or-brief toggle (same 404-style
- *       guard; NO bypass inside the toggles themselves — the {@code
- *       admin:*} bypass is the resource convention only).</li>
+ *   <li>Commands additionally require the recruiter tier
+ *       (ADMIN/HR/RECRUITMENT) or the hiring owner of the relevant position
+ *       (403 otherwise), and regenerate requires the intake-or-brief toggle
+ *       (same 404-style guard; NO bypass inside the toggles themselves —
+ *       the {@code admin:*} bypass is the resource convention only).</li>
  *   <li>Regenerate is rate-limited to
  *       {@link CandidateAiReadService#DAILY_REGENERATION_LIMIT}/day (UTC)
  *       per candidate → 429 {@code RATE_LIMITED}.</li>
@@ -323,9 +323,9 @@ public class RecruitmentCandidateAiResource {
     // ---- Guards --------------------------------------------------------------------
 
     /**
-     * The AI command tier (contract §6.2): recruiter tier (ADMIN/HR/CXO)
-     * or the hiring owner of the relevant position. 403 — the caller can
-     * see the candidate, so existence is no secret.
+     * The AI command tier (contract §6.2): recruiter tier
+     * (ADMIN/HR/RECRUITMENT) or the hiring owner of the relevant position.
+     * 403 — the caller can see the candidate, so existence is no secret.
      */
     private void requireAiActionTier(UUID actor, RecruitmentPosition position) {
         if (visibility.isRecruiterTier(actor.toString())) {

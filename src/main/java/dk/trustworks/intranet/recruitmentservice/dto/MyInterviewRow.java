@@ -16,8 +16,14 @@ import java.util.List;
  *
  * @param focusAreas the position's scorecard template — what to probe for
  * @param cvFileUuid latest CV document, downloadable via the P8 document
- *                   endpoint (interviewer assignment grants access); null
- *                   when the candidate has no CV on file
+ *                   endpoint (the restricted-brief grant covers CVs for an
+ *                   assigned interviewer); null when the candidate has no
+ *                   CV on file
+ * @param applicationStage {@code null} for viewers whose only key to this
+ *                   candidate is the interview assignment — an interviewer
+ *                   forms a view without knowing where the process stands
+ *                   (go-live decision D10). Populated for viewers who can
+ *                   open the full profile.
  */
 public record MyInterviewRow(
         String interviewUuid,

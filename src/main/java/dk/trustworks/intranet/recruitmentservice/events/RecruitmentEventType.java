@@ -32,6 +32,22 @@ public enum RecruitmentEventType {
      */
     APPLICATION_UPDATED,
     APPLICATION_STAGE_CHANGED,
+    /**
+     * The application was re-filed onto another position — the SAME
+     * pipeline run continues under a new req, so interviews, scorecards,
+     * record checks and the timeline all follow it. Payload:
+     * {@code from_position_uuid} / {@code to_position_uuid} (+ their
+     * titles and hiring tracks), {@code from_stage} / {@code to_stage} and
+     * {@code stage_clamped} — all structural, no pii.
+     * <p>
+     * Catalog addition made for the move-position command: a recruiter who
+     * attached a candidate to the wrong position previously had no way to
+     * correct it (attaching again left BOTH applications open), and spec
+     * §6.2's rule is "every mutating endpoint = one command = ≥1 event".
+     * Deliberately NOT a terminal: the application never left a pipeline,
+     * it changed which pipeline it is in.
+     */
+    APPLICATION_POSITION_CHANGED,
     APPLICATION_REJECTED,
     APPLICATION_WITHDRAWN,
 

@@ -42,9 +42,10 @@ import java.util.Optional;
  *
  * <h3>Security</h3>
  * The card is written into the composer's <em>system</em> prompt, so the
- * write path is recruiter-tier only (ADMIN/HR/CXO + {@code recruitment:write}
- * at the resource, {@code requireRoles} at the BFF) — the same tier that
- * already authors the email templates whose bodies reach the same model.
+ * write path is recruiter-tier only (ADMIN/HR/RECRUITMENT +
+ * {@code recruitment:write} at the resource, {@code requireRoles} at the
+ * BFF) — the same tier that already authors the email templates whose
+ * bodies reach the same model.
  * {@link #sanitize} strips control characters and the composer's data
  * delimiters (a card must never be able to forge the boundary that keeps
  * candidate-supplied material quarantined as data) and caps the length so a

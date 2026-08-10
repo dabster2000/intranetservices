@@ -134,6 +134,7 @@
       "requestBodyIsEntity": false,
       "fields": {
         "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse": {
+          "displayName": "java.lang.String",
           "expired": "boolean",
           "fields": "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$FieldFlags",
           "submitted": "dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse$Submitted",

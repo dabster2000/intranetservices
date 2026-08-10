@@ -48,6 +48,13 @@ class RecruitmentEventTypeCatalogTest {
         // mutation like any other ("every mutating endpoint = one command
         // = ≥1 event", spec §6.2), and the Documents tab resolves a file's
         // kind from the newest such event.
+        // APPLICATION_POSITION_CHANGED is the move-position addition: a
+        // recruiter who filed a candidate against the wrong req previously
+        // had no way to correct it (attaching again left BOTH applications
+        // open), and the re-filing command is a mutation like any other
+        // ("every mutating endpoint = one command = >=1 event", spec §6.2).
+        // Deliberately not a terminal — the application never left a
+        // pipeline, it changed which pipeline it is in.
         // RECORD_CHECK_DRAWN and RECORD_CHECK_OUTCOME_RECORDED are the
         // V481 ISAE 3000 sampling additions: the deterministic draw on
         // first OFFER entry and the HR outcome verification are auditable
@@ -58,6 +65,7 @@ class RecruitmentEventTypeCatalogTest {
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
                 "APPLICATION_CREATED", "APPLICATION_UPDATED", "APPLICATION_STAGE_CHANGED",
+                "APPLICATION_POSITION_CHANGED",
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
@@ -81,9 +89,10 @@ class RecruitmentEventTypeCatalogTest {
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
-                        + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED and "
-                        + "V481 RECORD_CHECK_* additions exactly");
-        assertEquals(51, RecruitmentEventType.values().length);
+                        + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
+                        + "V481 RECORD_CHECK_* and APPLICATION_POSITION_CHANGED "
+                        + "additions exactly");
+        assertEquals(52, RecruitmentEventType.values().length);
     }
 
     @Test

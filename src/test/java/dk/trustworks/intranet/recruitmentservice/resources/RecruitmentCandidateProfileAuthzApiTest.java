@@ -24,18 +24,19 @@ import static io.restassured.RestAssured.given;
  *   <li>recruiter (HR) reads everything except partner-track-only
  *       candidates outside their circles (404, never 403);</li>
  *   <li>circle member and ADMIN read the partner-track-only candidate;</li>
- *   <li>teamlead involvement: the position's current team leader reads,
- *       a teamlead of another team answers 404;</li>
+ *   <li>the TEAMLEAD role reads every non-partner candidate — leading the
+ *       position's team is no longer required (go-live decision D3);</li>
  *   <li>practice lead reads candidates on non-partner positions of their
  *       practice; never partner content;</li>
  *   <li>plain employee answers 404 everywhere;</li>
  *   <li>hired-file restriction: once status is HIRED, access narrows to
- *       HR/CXO/TECHPARTNER/DPO (+ADMIN) — the involved teamlead loses
- *       access;</li>
+ *       HR/RECRUITMENT/DPO (+ADMIN) — the teamlead loses access;</li>
  *   <li>zero-application candidates stay visible to the profile-read tier
  *       but grant no involvement access;</li>
- *   <li>interviewer persona (P11 — completes the five-user matrix): an
- *       assigned interviewer reads exactly their assigned candidate's
+ *   <li>interviewer persona: an assigned interviewer is NOT admitted to
+ *       the profile surfaces any more (go-live decision D10) — they read
+ *       the restricted brief instead. Kept here because the old rule read
+ *       exactly their assigned candidate's
  *       surfaces (incl. answers — "answers only for assigned candidates"),
  *       nothing else; a cancelled assignment grants nothing; the grant
  *       reaches partner-track candidates (explicit assignment by a
@@ -192,9 +193,15 @@ class RecruitmentCandidateProfileAuthzApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void teamleadOfThePositionsTeam_reads_otherTeamleadDoesNot() {
+    void teamleadRole_readsEveryNonPartnerCandidate_regardlessOfTeam() {
+        // Go-live decision D3: the TEAMLEAD role reads the whole
+        // non-partner population. Leading the position's team no longer
+        // gates reading — it gates DECIDING (canDecideOnApplication).
         assertAllSurfaces(involvedTeamlead, normalCandidate, 200);
-        assertAllSurfaces(nonOwnerTeamlead, normalCandidate, 404);
+        assertAllSurfaces(nonOwnerTeamlead, normalCandidate, 200);
+        // The partner circle stays a hard filter for both.
+        assertAllSurfaces(involvedTeamlead, partnerOnlyCandidate, 404);
+        assertAllSurfaces(nonOwnerTeamlead, partnerOnlyCandidate, 404);
     }
 
     @Test
@@ -229,43 +236,50 @@ class RecruitmentCandidateProfileAuthzApiTest {
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
     void noApplicationCandidate_visibleToProfileTier_notThroughInvolvement() {
         assertAllSurfaces(hrUser, noAppCandidate, 200);
-        assertAllSurfaces(involvedTeamlead, noAppCandidate, 404);
+        // TEAMLEAD is in the profile-read tier since go-live, so it reaches
+        // this row by role; the plain employee still cannot.
+        assertAllSurfaces(involvedTeamlead, noAppCandidate, 200);
+        assertAllSurfaces(plainUser, noAppCandidate, 404);
     }
 
     // ---- Interviewer persona (P11 — the fifth user of the matrix) -----------------
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void interviewer_readsOnlyTheAssignedCandidate_onAllFourSurfaces() {
+    void interviewer_getsTheBriefOnly_neverTheProfileSurfaces() {
         assignInterviewer(normalApplication, "SCHEDULED");
-        // Assigned: all four surfaces open — including answers ("answers
-        // only for assigned candidates", the P8 deferral closing here).
-        assertAllSurfaces(interviewerUser, normalCandidate, 200);
-        // Every other candidate stays invisible.
-        assertAllSurfaces(interviewerUser, noAppCandidate, 404);
-        assertAllSurfaces(interviewerUser, hiredCandidate, 404);
+        // Go-live decision D10: the assignment no longer opens the profile
+        // — no timeline, no consents, no documents list.
+        assertAllSurfaces(interviewerUser, normalCandidate, 404);
+        // It opens exactly one thing: the restricted brief.
+        assertBrief(interviewerUser, normalCandidate, 200);
+        // And only for the assigned candidate.
+        assertBrief(interviewerUser, noAppCandidate, 404);
+        assertBrief(interviewerUser, hiredCandidate, 404);
     }
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
     void interviewer_withoutAssignment_orCancelledAssignment_reads404() {
-        assertAllSurfaces(interviewerUser, normalCandidate, 404);
+        assertBrief(interviewerUser, normalCandidate, 404);
         assignInterviewer(normalApplication, "CANCELLED");
-        assertAllSurfaces(interviewerUser, normalCandidate, 404);
+        assertBrief(interviewerUser, normalCandidate, 404);
     }
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void interviewer_assignmentReachesPartnerTrack_butDiesAtHired() {
+    void interviewer_briefReachesPartnerTrack_butDiesWhenTheCandidateLeavesActive() {
         // Explicit assignment by a circle-authorized decision maker admits
-        // the interviewer to the partner-track candidate's profile (kit
-        // access) — deliberate P11 rule, documented in RecruitmentVisibility.
+        // the interviewer to the partner-track candidate's BRIEF (kit
+        // access) — the profile stays shut even here.
         assignInterviewer(partnerApplication, "SCHEDULED");
-        assertAllSurfaces(interviewerUser, partnerOnlyCandidate, 200);
+        assertBrief(interviewerUser, partnerOnlyCandidate, 200);
+        assertAllSurfaces(interviewerUser, partnerOnlyCandidate, 404);
 
-        // Assignment on the hired candidate grants nothing: the hired-file
-        // narrowing runs before involvement.
+        // The window closes with the candidate's status (D12): a HIRED
+        // candidate is no longer ACTIVE, so the assignment grants nothing.
         assignInterviewer(hiredApplication, "HELD");
+        assertBrief(interviewerUser, hiredCandidate, 404);
         assertAllSurfaces(interviewerUser, hiredCandidate, 404);
     }
 
@@ -277,6 +291,13 @@ class RecruitmentCandidateProfileAuthzApiTest {
     }
 
     // ---- Helpers ------------------------------------------------------------------
+
+    /** The restricted brief — the interviewer/circle-member surface. */
+    private void assertBrief(String viewer, String candidateUuid, int expectedStatus) {
+        given().header("X-Requested-By", viewer)
+                .when().get("/recruitment/candidates/{uuid}/brief", candidateUuid)
+                .then().statusCode(expectedStatus);
+    }
 
     private void assertAllSurfaces(String viewer, String candidateUuid, int expectedStatus) {
         for (String surface : SURFACES) {

@@ -562,8 +562,9 @@ public class CandidateService {
      * All-or-nothing: one transaction; a missing target — or one that is
      * partner-track-only outside the actor's circles, i.e. invisible in the
      * actor's grid — answers 404 for the whole call ("you cannot change
-     * what you cannot see"). Recruiter tier (ADMIN/HR/CXO) is enforced here
-     * as well as in the resource — defense in depth, the P6 precedent.
+     * what you cannot see"). Recruiter tier (ADMIN/HR/RECRUITMENT) is
+     * enforced here as well as in the resource — defense in depth, the P6
+     * precedent.
      *
      * @return the number of candidates whose tag set actually changed
      */
