@@ -40,16 +40,38 @@ public class EmployeeDocumentHashBackfillService {
     @Inject
     EmployeeDocumentStorageAdapter storage;
 
+    /**
+     * @param skippedEmpty zero-byte objects deliberately left un-hashed —
+     *                     they stay candidates on every future run, and
+     *                     this is what explains {@code hashed + failed}
+     *                     falling short of {@code candidates}
+     */
     public record BackfillSummary(
             boolean dryRun,
             int candidates,
             int hashed,
             int failed,
+            int skippedEmpty,
             long bytesRead,
             List<String> errors) { }
 
     /** Cap the error list so one systemic failure cannot balloon the response. */
     private static final int MAX_REPORTED_ERRORS = 25;
+
+    /**
+     * SHA-256 of zero bytes — what an empty object hashes to.
+     *
+     * <p>Never written. The digest is real but it identifies emptiness, not
+     * a document, so storing it turns "this file has no content" into
+     * "these files are provably the same file": every empty row in one
+     * employee's file then collapses into a single hash-proven duplicate
+     * group, and hash-proven is exactly the condition under which the HR
+     * console offers an irreversible delete. The migration left 34 such
+     * objects, among them 8 contracts. Leaving {@code sha256} null keeps
+     * them un-grouped and keeps deletion disarmed.</p>
+     */
+    static final String EMPTY_FILE_SHA256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     /**
      * @param dryRun count and size only — no S3 reads, no writes
@@ -64,20 +86,34 @@ public class EmployeeDocumentHashBackfillService {
 
         if (dryRun) {
             long bytes = candidates.stream().mapToLong(Candidate::size).sum();
-            log.infof("Hash backfill dry run: %d documents, %d bytes to read", candidates.size(), bytes);
-            return new BackfillSummary(true, candidates.size(), 0, 0, bytes, List.of());
+            int empty = (int) candidates.stream().filter(c -> c.size() == 0).count();
+            log.infof("Hash backfill dry run: %d documents, %d empty (will be skipped), %d bytes to read",
+                    candidates.size(), empty, bytes);
+            return new BackfillSummary(true, candidates.size(), 0, 0, empty, bytes, List.of());
         }
 
         int hashed = 0;
         int failed = 0;
+        int skippedEmpty = 0;
         long bytesRead = 0;
         List<String> errors = new ArrayList<>();
 
         for (Candidate candidate : candidates) {
             try {
                 byte[] bytes = storage.get(candidate.s3Key()).bytes();
-                String sha256 = EmployeeDocumentService.sha256Hex(bytes);
                 bytesRead += bytes.length;
+
+                // An empty object hashes to a constant. Writing it would
+                // make every empty row in an employee's file look provably
+                // identical to every other one, which is what unlocks the
+                // console's irreversible delete. Left null on purpose.
+                if (bytes.length == 0) {
+                    skippedEmpty++;
+                    log.warnf("Hash backfill: %s is 0 bytes in S3 (key=%s) — leaving sha256 null",
+                            candidate.uuid(), candidate.s3Key());
+                    continue;
+                }
+                String sha256 = EmployeeDocumentService.sha256Hex(bytes);
 
                 QuarkusTransaction.requiringNew().run(() -> {
                     EmployeeDocument doc = EmployeeDocument.findById(candidate.uuid());
@@ -97,8 +133,8 @@ public class EmployeeDocumentHashBackfillService {
             }
         }
 
-        log.infof("Hash backfill done: %d candidates, %d hashed, %d failed, %d bytes read",
-                candidates.size(), hashed, failed, bytesRead);
-        return new BackfillSummary(false, candidates.size(), hashed, failed, bytesRead, errors);
+        log.infof("Hash backfill done: %d candidates, %d hashed, %d failed, %d empty skipped, %d bytes read",
+                candidates.size(), hashed, failed, skippedEmpty, bytesRead);
+        return new BackfillSummary(false, candidates.size(), hashed, failed, skippedEmpty, bytesRead, errors);
     }
 }
