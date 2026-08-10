@@ -227,6 +227,17 @@ class AirtableFieldMapperTest {
     // ------------------------------------------------------------------
 
     @Test
+    void toBeDeleted_isSkippedWithReason_neverBlocksNeverImports() {
+        AirtableMappedRecord mapped = AirtableFieldMapper.map(
+                record(Map.of("Fornavn", "A", "Efternavn", "B", "Status", "To be deleted")),
+                "IT-Management", MAPPING);
+        assertEquals(AirtableMappedRecord.Disposition.SKIP, mapped.disposition());
+        assertNotNull(mapped.skipReason(), "a deletion instruction is honored as an explicit skip");
+        assertTrue(mapped.skipReason().contains("To be deleted"));
+        assertTrue(mapped.blockers().isEmpty(), "a deliberate skip never blocks the run");
+    }
+
+    @Test
     void namelessRecord_isSkippedWithReason() {
         AirtableMappedRecord mapped = AirtableFieldMapper.map(
                 record(Map.of("Status", "New")), "IT-Management", MAPPING);
