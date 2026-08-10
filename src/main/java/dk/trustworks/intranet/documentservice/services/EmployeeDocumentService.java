@@ -109,18 +109,43 @@ public class EmployeeDocumentService {
         }
     }
 
-    /** Server-side S3→S3 copy command (promotion / legacy re-home). */
+    /**
+     * Server-side S3→S3 copy command (promotion / legacy re-home).
+     *
+     * <p>{@code displayName} is the standardized name the caller has
+     * already built (see
+     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * it is normalized again here). Null ⇒ the row falls back to
+     * {@code original_filename}, which is what the legacy re-home path
+     * wants: those documents are named by the migration rename pass.</p>
+     */
     public record PromoteCommand(
             String userUuid,
             String srcBucket,
             String srcKey,
             String filename,
+            String displayName,
             EmployeeDocumentCategory category,
             String label,
             EmployeeDocumentSource source,
             String signingCaseKey,
             Integer documentIndex,
-            String migratedFrom) { }
+            boolean hrOnly,
+            String migratedFrom) {
+
+        /**
+         * Legacy arity — un-named, employee-visible copy. Kept so the
+         * migration re-home path reads as it did before promotion
+         * gained names and an HR-only bit.
+         */
+        public PromoteCommand(String userUuid, String srcBucket, String srcKey, String filename,
+                              EmployeeDocumentCategory category, String label,
+                              EmployeeDocumentSource source, String signingCaseKey,
+                              Integer documentIndex, String migratedFrom) {
+            this(userUuid, srcBucket, srcKey, filename, null, category, label, source,
+                    signingCaseKey, documentIndex, false, migratedFrom);
+        }
+    }
 
     /**
      * Patch command — null field = leave unchanged.
@@ -386,10 +411,15 @@ public class EmployeeDocumentService {
         doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
         doc.setLabel(trimTo(cmd.label(), 255));
         doc.setOriginalFilename(trimTo(safeFilename, 500));
+        // Normalized here too: the builder already did it, but this is the
+        // boundary a caller could bypass, and a display name reaches a
+        // Content-Disposition header.
+        doc.setDisplayName(normalizeDisplayName(cmd.displayName(), safeFilename));
         doc.setContentType(contentType);
         doc.setSource(cmd.source());
         doc.setSigningCaseKey(cmd.signingCaseKey());
         doc.setDocumentIndex(cmd.documentIndex());
+        doc.setHrOnly(cmd.hrOnly());
         doc.setMigratedFrom(trimTo(cmd.migratedFrom(), 1024));
 
         long size = storage.copyFromBucket(cmd.srcBucket(), cmd.srcKey(), key, contentType, objectMetadata(doc));
