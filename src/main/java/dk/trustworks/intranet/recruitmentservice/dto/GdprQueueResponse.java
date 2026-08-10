@@ -17,7 +17,15 @@ public record GdprQueueResponse(
         List<Art14Row> art14Due,
         List<ConsentRow> consentUnanswered,
         List<DsarRow> openDsars,
-        List<AnonymizationRow> anonymizationLog) {
+        List<AnonymizationRow> anonymizationLog,
+        /**
+         * P21 migration retention triage: Airtable-imported candidates whose
+         * process ended more than 6 months ago with no consent. The importer
+         * leaves their retention deadline NULL, so nothing is auto-deleted —
+         * each row needs an explicit DPO anonymize-or-consent decision
+         * (spec §10 step 4; plan §P21 DoD "processed to zero").
+         */
+        List<MigrationTriageRow> migrationTriage) {
 
     public record Kpis(
             int art14DueCount,
@@ -25,6 +33,19 @@ public record GdprQueueResponse(
             int openDsarCount,
             /** All-time count of anonymized candidates. */
             long anonymizedTotal) {
+    }
+
+    /** A migrated candidate awaiting the DPO's anonymize-or-consent decision. */
+    public record MigrationTriageRow(
+            String candidateUuid,
+            String candidateName,
+            boolean hasEmail,
+            /** ACTIVE/POOLED/DECLINED/... — what the candidate maps to today. */
+            String candidateStatus,
+            /** Last recruitment activity (process end / last Airtable status change). */
+            LocalDateTime processEndedAt,
+            /** Which Airtable pipeline the candidate came from. */
+            String airtableTable) {
     }
 
     /** A candidate whose Art. 14 notice is due within the warning window (or overdue). */
