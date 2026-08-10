@@ -132,7 +132,8 @@ jobs:
               {"name":"INDIVIDUAL_BONUS_MONTHLY_AUTHORING_ENABLED","value":"true"},
               {"name":"INDIVIDUAL_BONUS_MONTHLY_MATERIALIZATION_ENABLED","value":"true"},
               {"name":"INDIVIDUAL_BONUS_MONTHLY_RECONCILIATION_ENABLED","value":"true"},
-              {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ENABLED","value":"true"}
+              {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ENABLED","value":"true"},
+              {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview"}
             ]
           secrets: |
             [
@@ -153,7 +154,9 @@ jobs:
               {"name":"AZURE_TENANT_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_TENANT_ID::"},
               {"name":"CVTOOL_SUBSCRIPTION_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_SUBSCRIPTION_KEY::"},
               {"name":"GH_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:GH_TOKEN::"},
-              {"name":"VIRKDATA_API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:VIRKDATA_API_KEY::"}
+              {"name":"VIRKDATA_API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:VIRKDATA_API_KEY::"},
+              {"name":"AIRTABLE_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AIRTABLE_TOKEN::"},
+              {"name":"AIRTABLE_BASE_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AIRTABLE_BASE_ID::"}
             ]
 
       # Gate: the ECS Express deploy action reports success even when the canary
