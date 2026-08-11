@@ -205,4 +205,55 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyHire(new RecruitmentCandidate(), null, null);
         verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
     }
+
+    // ── Hired, but nothing signed to file ──────────────────────────────────
+
+    /**
+     * A hire whose paperwork never came back signed promotes zero documents.
+     * Silence there is indistinguishable from a clean promotion, so HR gets
+     * told to file the contract by hand.
+     */
+    @Test
+    void notifyHireWithoutSignedContract_asksAHumanToFileThePaperwork() {
+        RecruitmentCandidate c = candidate();
+
+        notifier.notifyHireWithoutSignedContract(c, null);
+
+        ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+        verify(slackService, times(1)).sendMessage(anyString(), body.capture(), anyString());
+        assertTrue(body.getValue().contains("no signed contract"),
+                "the message must say what is missing: " + body.getValue());
+        assertTrue(body.getValue().contains(c.getUuid()), "dossier link must include candidate UUID");
+    }
+
+    @Test
+    void notifyHireWithoutSignedContract_sharesTheHireDedupSet() {
+        // A candidate is announced once, whichever outcome got there first —
+        // otherwise a re-drive after a deploy posts a second message.
+        RecruitmentCandidate c = candidate();
+
+        notifier.notifyHireWithoutSignedContract(c, null);
+        notifier.notifyHireWithoutSignedContract(c, null);
+        notifier.notifyHire(c, null, List.of());
+
+        verify(slackService, times(1)).sendMessage(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void notifyHireWithoutSignedContract_doesNotLeakCandidateEmail() {
+        RecruitmentCandidate c = candidate();
+        c.setEmail("PII-EMAIL@example.com");
+
+        String body = notifier.formatNoBindingDocumentsMessage(c, null);
+
+        assertFalse(body.contains("PII-EMAIL@example.com"),
+                "candidate email must not appear in Slack message");
+    }
+
+    @Test
+    void notifyHireWithoutSignedContract_noOpCalls_doNotInvokeSlack() {
+        notifier.notifyHireWithoutSignedContract(null, null);
+        notifier.notifyHireWithoutSignedContract(new RecruitmentCandidate(), null);
+        verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
+    }
 }

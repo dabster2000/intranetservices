@@ -5,6 +5,10 @@ import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCatego
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
@@ -32,12 +36,37 @@ class PromotedDocumentNamingTest {
 
     @Test
     void signedMarkersDoNotSurviveIntoTheSubject() {
-        // The employee only ever sees the signed version (drafts are
-        // hr_only), so "signed" carries no information in the title.
+        // Only signed documents promote at all, so "signed" carries no
+        // information in the title — it is the only kind of contract in the
+        // file.
         assertEquals(promoted(EmployeeDocumentCategory.CONTRACT, "Ansættelseskontrakt.pdf"),
                 promoted(EmployeeDocumentCategory.CONTRACT, "Ansættelseskontrakt_signed.pdf"));
         assertEquals("CONTRACT_ansættelseskontrakt.pdf",
                 promoted(EmployeeDocumentCategory.CONTRACT, "Ansættelseskontrakt underskrevet.pdf"));
+    }
+
+    /**
+     * The naming builder is deliberately version-blind — it drops "v2",
+     * "signed" and trailing digit runs — which is why five renders of one
+     * contract collapsed to a single title and the employee's file read as
+     * the same document six times. That is only safe because the selection
+     * rule now files one row per signed document: these are the six real
+     * filenames from the production hire that exposed the defect, and they
+     * must produce six distinct names with no dedupe layer involved.
+     */
+    @Test
+    void theSignedSetOfAHireGetsOneDistinctNamePerDocument() {
+        List<String> names = Stream.of(
+                        "Tillaeg_garantibonus_Henrik_Falch_Midtgaard_signed.pdf",
+                        "100-dages-plan_signed.pdf",
+                        "Ansættelseskontrakt_signed.pdf",
+                        "Tillæg - Ansættelsesaftale Associate Partner v2_signed.pdf",
+                        "Tillæg - Konkurrence- og Kundeklausul_signed.pdf",
+                        "Bilag til partner ansættelseskontrakt  TW_SalgsBonusModel_v2_signed.pdf")
+                .map(f -> promoted(EmployeeDocumentCategory.CONTRACT, f))
+                .toList();
+
+        assertEquals(6, Set.copyOf(names).size(), "collides in the employee's file: " + names);
     }
 
     @Test

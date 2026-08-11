@@ -105,6 +105,65 @@ public class RecruitmentHrSlackNotifier {
     }
 
     /**
+     * Notify HR that {@code candidate} has been hired but that <b>no signed
+     * document could be filed</b> — no dossier revision reached a completed
+     * signing case, so the promotion had nothing binding to promote (e.g. the
+     * contract was signed on paper outside the system).
+     *
+     * <p>This is the human-in-the-loop half of
+     * {@code PromotionStatus.NO_BINDING_DOCUMENTS}: the status makes the state
+     * queryable, this makes someone act on it. Shares the hire dedup set, so a
+     * candidate is announced once either way.</p>
+     *
+     * @param candidate     the hired candidate (must not be null)
+     * @param recruiterUuid the actor who triggered Convert; may be {@code null}
+     */
+    public void notifyHireWithoutSignedContract(RecruitmentCandidate candidate, UUID recruiterUuid) {
+        if (candidate == null || candidate.getUuid() == null) {
+            log.warn("notifyHireWithoutSignedContract: candidate or candidate UUID is null, skipping");
+            return;
+        }
+        if (!NOTIFIED_CANDIDATE_UUIDS.add(candidate.getUuid())) {
+            log.debugf("notifyHireWithoutSignedContract: already notified candidate=%s, skipping",
+                    candidate.getUuid());
+            return;
+        }
+
+        try {
+            slackService.sendMessage(channelId, formatNoBindingDocumentsMessage(candidate, recruiterUuid),
+                    botTokenKey);
+            log.infof("HR Slack no-signed-contract notification posted for candidate=%s channel=%s",
+                    candidate.getUuid(), channelId);
+        } catch (Exception e) {
+            // Never propagate — Slack failure must not affect Convert.
+            log.errorf(e, "HR Slack no-signed-contract notification failed for candidate=%s: %s",
+                    candidate.getUuid(), e.getMessage());
+        }
+    }
+
+    /**
+     * Build the no-signed-contract message body. Package-private for the same
+     * reason as {@link #formatMessage}.
+     */
+    String formatNoBindingDocumentsMessage(RecruitmentCandidate candidate, UUID recruiterUuid) {
+        String candidateName = nullSafe(candidate.getFirstName()) + " " + nullSafe(candidate.getLastName());
+        String company = resolveCompanyDisplayName(candidate.getTargetCompanyUuid());
+        String recruiter = resolveRecruiterName(recruiterUuid);
+        String dossierUrl = stripTrailingSlash(dossierBaseUrl) + "/" + candidate.getUuid();
+
+        StringBuilder sb = new StringBuilder(256);
+        sb.append("*New hire — no signed contract to file*\n");
+        sb.append("Candidate: ").append(candidateName.trim()).append('\n');
+        sb.append("Company: ").append(company).append('\n');
+        sb.append("Recruiter: ").append(recruiter).append('\n');
+        sb.append("Dossier: ").append(dossierUrl).append('\n');
+        sb.append("No dossier revision reached a completed signing case, so nothing was filed "
+                + "in the employee's documents. If the contract was signed outside the system, "
+                + "upload it to their file by hand.");
+        return sb.toString();
+    }
+
+    /**
      * Build the Slack message body. Visible (package-private) for unit tests
      * to assert PII boundaries directly without booting Slack.
      */
