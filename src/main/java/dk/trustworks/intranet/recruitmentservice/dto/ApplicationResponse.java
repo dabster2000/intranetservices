@@ -21,6 +21,14 @@ public record ApplicationResponse(
         String positionUuid,
         String positionTitle,
         RecruitmentHiringTrack positionTrack,
+        /**
+         * The position's named hiring owner, denormalized like the other
+         * position facts. The UI needs it to answer "is the viewer running
+         * this hire?" — which is what opens the read-only offer/contract
+         * view — without fetching every position just to find out.
+         * {@code null} when the position has no named owner.
+         */
+        String positionHiringOwnerUuid,
         /** The position's ordered stage codes — drives stage steppers/pickers. */
         List<String> positionStageSet,
         RecruitmentStage stage,

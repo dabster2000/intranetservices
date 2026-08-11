@@ -62,6 +62,7 @@ import java.util.stream.Collectors;
 public class RecruitmentVisibility {
 
     static final String ROLE_ADMIN = "ADMIN";
+    static final String ROLE_HR = "HR";
     static final String ROLE_TEAMLEAD = "TEAMLEAD";
     /**
      * Recruiter-tier roles: the module-wide queues and every decision right.
@@ -679,6 +680,77 @@ public class RecruitmentVisibility {
         Set<String> ledTeams = new HashSet<>(currentlyLedTeams(viewerUuid));
         return candidatePositions.stream()
                 .anyMatch(p -> p.getTeamUuid() != null && ledTeams.contains(p.getTeamUuid()));
+    }
+
+    // ---- Offer dossier / contract -------------------------------------------
+
+    /**
+     * Whether the viewer is the named hiring owner of at least one position
+     * this candidate has applied to (one query).
+     */
+    public boolean isHiringOwnerForCandidate(String viewerUuid, String candidateUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
+            return false;
+        }
+        return !em.createNativeQuery("""
+                        SELECT 1 FROM recruitment_applications a
+                        JOIN recruitment_positions p ON p.uuid = a.position_uuid
+                        WHERE a.candidate_uuid = :candidate
+                          AND p.hiring_owner_uuid = :viewer
+                        LIMIT 1
+                        """)
+                .setParameter("candidate", candidateUuid)
+                .setParameter("viewer", viewerUuid)
+                .getResultList()
+                .isEmpty();
+    }
+
+    /**
+     * May the viewer <em>read</em> the offer dossier — the contract drafts,
+     * revisions and signing status (go-live decision, 2026-08-11)?
+     * <p>
+     * {@code ADMIN} and {@code HR} only, plus the position's <b>named hiring
+     * owner</b>, who gets a read-only view of the hire they are running so
+     * they can see that the contract went out without being able to touch
+     * it. Everyone else — including {@code RECRUITMENT} and the wider
+     * {@code TEAMLEAD} population — answers 404.
+     * <p>
+     * The hiring-owner grant is composed with
+     * {@link #canReadCandidateProfile}, so it inherits that rule's two hard
+     * limits for free: a partner-track candidate stays circle-gated, and the
+     * dossier closes at {@code HIRED} along with the rest of the file (a
+     * colleague must not browse a new colleague's contract).
+     * <p>
+     * This is deliberately NOT {@code canReadCandidateProfile} on its own.
+     * That tier now includes every {@code TEAMLEAD}, so using it here — as
+     * the dossier endpoints did until 2026-08-11 — would have handed the
+     * whole contract flow to 20 people at the backend, with only the BFF's
+     * role array standing in the way.
+     */
+    public boolean canReadDossier(String viewerUuid, RecruitmentCandidate candidate) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidate == null) {
+            return false;
+        }
+        if (canWriteDossier(viewerUuid)) {
+            return true;
+        }
+        return isHiringOwnerForCandidate(viewerUuid, candidate.getUuid())
+                && canReadCandidateProfile(viewerUuid, candidate);
+    }
+
+    /**
+     * May the viewer <em>change</em> the dossier — edit it, attach
+     * appendices, branch a revision, send for review or signature, convert
+     * the candidate? {@code ADMIN} and {@code HR} only.
+     * <p>
+     * Role-only by design: unlike reading, this does not soften for the
+     * hiring owner. Sending a contract and creating an employee are HR acts
+     * (go-live decisions D1/D2), and the recruiter is excluded from them
+     * just as firmly as the team lead.
+     */
+    public boolean canWriteDossier(String viewerUuid) {
+        Set<String> roles = rolesOf(viewerUuid);
+        return roles.contains(ROLE_ADMIN) || roles.contains(ROLE_HR);
     }
 
     /**
