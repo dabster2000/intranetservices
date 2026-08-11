@@ -116,9 +116,6 @@ public class RecruitmentTimelineService {
                         candidate.getUuid(), beforeSeq)
                         .page(0, EVENT_SCAN_CAP).list();
         boolean scanTruncated = raw.size() >= EVENT_SCAN_CAP;
-        if (raw.isEmpty()) {
-            return new CandidateTimelineResponse(List.of(), false);
-        }
 
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
@@ -126,17 +123,26 @@ public class RecruitmentTimelineService {
 
         // Positions once: the candidate's application positions (comp tier)
         // plus any position an event references (CIRCLE filter + names).
+        // Resolved BEFORE the empty-page shortcut: the response reports the
+        // viewer's comp tier either way, and a candidate whose timeline is
+        // still empty is exactly the one the salary affordance has to be
+        // offered on.
         List<RecruitmentApplication> applications =
                 RecruitmentApplication.list("candidateUuid", candidate.getUuid());
         Map<String, RecruitmentPosition> positions = loadPositions(raw, applications);
-        Set<String> readablePositions = admin ? Set.of()
-                : visibility.readablePositionUuids(viewerUuid, positions.values());
 
         List<RecruitmentPosition> candidatePositions = applications.stream()
                 .map(a -> positions.get(a.getPositionUuid()))
                 .filter(Objects::nonNull)
                 .toList();
         boolean compTier = admin || visibility.isCompTierFor(viewerUuid, candidatePositions);
+
+        if (raw.isEmpty()) {
+            return new CandidateTimelineResponse(List.of(), false, compTier);
+        }
+
+        Set<String> readablePositions = admin ? Set.of()
+                : visibility.readablePositionUuids(viewerUuid, positions.values());
 
         // Event-level filtering over the full remainder, then one page.
         Map<Long, Map<String, Object>> payloads = new HashMap<>();
@@ -156,7 +162,7 @@ public class RecruitmentTimelineService {
                 .map(event -> toDto(event, payloads.get(event.getSeq()),
                         actorNames, positions, compTier, viewerUuid, admin))
                 .toList();
-        return new CandidateTimelineResponse(events, hasMore);
+        return new CandidateTimelineResponse(events, hasMore, compTier);
     }
 
     // ---- Event-level visibility -------------------------------------------------

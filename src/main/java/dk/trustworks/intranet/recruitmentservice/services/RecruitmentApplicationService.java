@@ -165,7 +165,13 @@ public class RecruitmentApplicationService {
                                               boolean dedupeReview, UUID domainActor,
                                               String actorForLog) {
         candidate = managedCandidate(candidate);
-        if (candidate.isTerminal()) {
+        // HIRED and ANONYMIZED remain hard blocks — a hire has left the
+        // recruitment regime, and anonymization is irreversible. DECLINED and
+        // WITHDRAWN are reconsiderable and handled by the reactivation leg
+        // below: now that an application terminal cascades onto the candidate
+        // row, refusing them here would make "rejected for role A" a permanent
+        // bar to role B.
+        if (candidate.isTerminal() && !candidate.isReconsiderable()) {
             throw new BusinessRuleViolation(
                     "Candidate %s is %s and cannot be attached to a position"
                             .formatted(candidate.getUuid(), candidate.getStatus()));
@@ -198,6 +204,20 @@ public class RecruitmentApplicationService {
                     RecruitmentEventBuilder.event(RecruitmentEventType.CANDIDATE_UNPOOLED)
                             .candidate(candidate.getUuid()))
                     .payload("reason", "ATTACHED_TO_POSITION")
+                    .payload("position_uuid", position.getUuid()));
+        }
+        // Closed → pipeline: the same idea one step further out. Attaching a
+        // previously declined/withdrawn candidate IS the deliberate act of
+        // reopening them, so record it rather than refuse it.
+        if (candidate.isReconsiderable()) {
+            CandidateStatus previous = candidate.getStatus();
+            candidate.reactivate(domainActor);
+            eventRecorder.record(eventActor.stamp(
+                    RecruitmentEventBuilder.event(RecruitmentEventType.CANDIDATE_UPDATED)
+                            .candidate(candidate.getUuid()))
+                    .payload("reason", "ATTACHED_TO_POSITION")
+                    .payload("previous_status", previous.name())
+                    .payload("status", CandidateStatus.ACTIVE.name())
                     .payload("position_uuid", position.getUuid()));
         }
         // The process resumed — stop any running retention clock (P19 reads these).
@@ -393,18 +413,26 @@ public class RecruitmentApplicationService {
         RecruitmentStage fromStage = application.getStage();
         application.reject(request.reasonCode());
 
+        CandidateStatus cascaded = closeOutCandidateIfLastApplication(candidate,
+                CandidateStatus.DECLINED,
+                "Not selected for the %s process (%s)"
+                        .formatted(processLabel(position), request.reasonCode().name()),
+                actor);
+
         RecruitmentEventBuilder event = applicationEvent(RecruitmentEventType.APPLICATION_REJECTED,
                 application, position, actor)
                 .payload("reason_code", request.reasonCode().name())
                 .payload("from_stage", fromStage.name());
+        if (cascaded != null) {
+            event.payload("candidate_status", cascaded.name());
+        }
         if (request.note() != null && !request.note().isBlank()) {
             event.pii("note", request.note());
         }
         eventRecorder.record(event);
 
-        closeRetentionClockIfLastApplication(candidate);
-        log.infof("Application %s rejected (%s) by actor=%s",
-                application.getUuid(), request.reasonCode(), actor);
+        log.infof("Application %s rejected (%s) by actor=%s (candidate cascade: %s)",
+                application.getUuid(), request.reasonCode(), actor, cascaded);
         return application;
     }
 
@@ -420,16 +448,24 @@ public class RecruitmentApplicationService {
         RecruitmentStage fromStage = application.getStage();
         application.withdraw();
 
+        CandidateStatus cascaded = closeOutCandidateIfLastApplication(candidate,
+                CandidateStatus.WITHDRAWN,
+                "Withdrew from the %s process".formatted(processLabel(position)),
+                actor);
+
         RecruitmentEventBuilder event = applicationEvent(RecruitmentEventType.APPLICATION_WITHDRAWN,
                 application, position, actor)
                 .payload("from_stage", fromStage.name());
+        if (cascaded != null) {
+            event.payload("candidate_status", cascaded.name());
+        }
         if (note != null && !note.isBlank()) {
             event.pii("note", note);
         }
         eventRecorder.record(event);
 
-        closeRetentionClockIfLastApplication(candidate);
-        log.infof("Application %s withdrawn by actor=%s", application.getUuid(), actor);
+        log.infof("Application %s withdrawn by actor=%s (candidate cascade: %s)",
+                application.getUuid(), actor, cascaded);
         return application;
     }
 
@@ -471,7 +507,9 @@ public class RecruitmentApplicationService {
                 .payload("kind", RecruitmentConsentKind.TALENT_POOL_RETENTION.name())
                 .payload("consent_uuid", consent.getUuid()));
 
-        closeRetentionClockIfLastApplication(candidate);
+        // No status cascade here: this terminal already moved the candidate to
+        // POOLED above, which is the correct (non-terminal) outcome.
+        closeOutCandidateIfLastApplication(candidate, null, null, actor);
         log.infof("Application %s returned to pool (candidate=%s silver medalist) by actor=%s",
                 application.getUuid(), candidate.getUuid(), actor);
         return application;
@@ -651,14 +689,51 @@ public class RecruitmentApplicationService {
                 .firstResult();
     }
 
-    private void closeRetentionClockIfLastApplication(RecruitmentCandidate candidate) {
+    /**
+     * Close out the candidate when the terminal just applied closed their
+     * LAST open application. Two effects, both conditional on that:
+     * <ol>
+     *   <li>the retention clock starts ({@code process_ended_at} +
+     *       {@code retention_deadline}) — P19 reads these;</li>
+     *   <li>the application terminal cascades onto the candidate's lifecycle
+     *       status, so the profile badge stops claiming ACTIVE for someone
+     *       who is in no process at all.</li>
+     * </ol>
+     * The cascade fires only from ACTIVE: a POOLED candidate stays pooled
+     * (return-to-pool owns that outcome), and HIRED / ANONYMIZED are never
+     * walked backwards. Re-attaching a cascaded candidate to a new position
+     * reopens them — see {@link RecruitmentCandidate#reactivate(UUID)}.
+     *
+     * @param terminalStatus the status to cascade ({@code DECLINED} or
+     *                       {@code WITHDRAWN}), or {@code null} for callers
+     *                       that already set the candidate's status
+     * @param reason         structural, PII-free provenance for
+     *                       {@code decline_reason} (free text stays in the
+     *                       event's {@code pii} block)
+     * @return the cascaded status, or {@code null} when no cascade applied
+     */
+    private CandidateStatus closeOutCandidateIfLastApplication(RecruitmentCandidate candidate,
+                                                               CandidateStatus terminalStatus,
+                                                               String reason, UUID actor) {
         long stillOpen = RecruitmentApplication.count(
                 "candidateUuid = ?1 and terminal is null", candidate.getUuid());
-        if (stillOpen == 0) {
-            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-            candidate.setProcessEndedAt(now);
-            candidate.setRetentionDeadline(now.plusMonths(RETENTION_MONTHS));
+        if (stillOpen > 0) {
+            return null;
         }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        candidate.setProcessEndedAt(now);
+        candidate.setRetentionDeadline(now.plusMonths(RETENTION_MONTHS));
+
+        if (terminalStatus == null || candidate.getStatus() != CandidateStatus.ACTIVE) {
+            return null;
+        }
+        switch (terminalStatus) {
+            case DECLINED -> candidate.decline(reason, actor);
+            case WITHDRAWN -> candidate.withdraw(reason, actor);
+            default -> throw new IllegalArgumentException(
+                    "Unsupported candidate cascade target: " + terminalStatus);
+        }
+        return terminalStatus;
     }
 
     /**
@@ -721,5 +796,14 @@ public class RecruitmentApplicationService {
 
     private static String titleOf(RecruitmentPosition position) {
         return position != null ? position.getTitle() : null;
+    }
+
+    /**
+     * Null-safe position label for the cascaded {@code decline_reason} —
+     * never interpolates a literal "null" into user-visible copy.
+     */
+    private static String processLabel(RecruitmentPosition position) {
+        String title = titleOf(position);
+        return title != null && !title.isBlank() ? title : "recruitment";
     }
 }

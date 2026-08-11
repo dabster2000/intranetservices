@@ -241,6 +241,24 @@ public class RecruitmentEmailService {
                 || key != null && key.startsWith(STAGE_KEY_PREFIX);
     }
 
+    /**
+     * Keys a scheduled job owns end to end, which a recruiter must therefore
+     * never compose by hand. Distinct from {@link #isTriggerKey}: a trigger
+     * key is one the reactor ALSO fires, and composing it manually is a
+     * legitimate "send this one again" — whereas a system key's body only
+     * renders correctly inside its job.
+     * <p>
+     * {@code CONSENT_RENEWAL} is the case: its {@code {{consent_link}}}
+     * resolves solely in {@link RecruitmentGdprService}'s sweep, which mints
+     * the token that makes the link real. Composed by hand it mails a dead
+     * placeholder. The compose picker hides these; the send gate
+     * ({@link RecruitmentEmailRenderer#unresolvedLinkTokens}) is what
+     * actually enforces it.
+     */
+    public static boolean isSystemKey(String key) {
+        return RecruitmentGdprService.KEY_CONSENT_RENEWAL.equals(key);
+    }
+
     private static void validateTemplateFields(String name, String subject, String body,
                                                RecruitmentEmailBodyFormat format) {
         if (name == null || name.isBlank() || name.trim().length() > NAME_MAX_LENGTH) {

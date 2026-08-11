@@ -226,6 +226,37 @@ public final class RecruitmentEmailRenderer {
     }
 
     /**
+     * Unresolved merge tokens that the vocabulary declares to be URLs
+     * ({@code *_link}) — the send-time gate for a finished email.
+     * <p>
+     * Every other unresolved token is cosmetic: the candidate reads
+     * {@code {{position_title}}} and understands a mail-merge went wrong. A
+     * link token is not cosmetic. {@code {{consent_link}}} resolves ONLY in
+     * the GDPR sweep's renewal send (it is the one caller that can mint a
+     * token), so a hand-composed send of that template mails a GDPR consent
+     * link that does not exist — and the candidate is deleted at the
+     * retention deadline for not clicking something unclickable. Refusing
+     * the send is the only safe answer; a warning was not enough.
+     * <p>
+     * The body is healed first on the HTML path, exactly as
+     * {@link #substitute} would: a token the rich editor split across markup
+     * is still a broken link, and must not slip past the gate because a
+     * {@code <b>} landed in the middle of it.
+     *
+     * @param format how {@code body} is to be read; null is treated as PLAIN
+     * @return the offending token names, in the order encountered; empty when
+     *         the email is safe to send
+     */
+    public static Set<String> unresolvedLinkTokens(String subject, String body,
+                                                   RecruitmentEmailBodyFormat format) {
+        boolean html = format != null && format.isHtml();
+        Set<String> tokens = new LinkedHashSet<>(tokensIn(subject));
+        tokens.addAll(tokensIn(html ? healSplitTokens(body) : body));
+        tokens.removeIf(token -> !token.endsWith("_link"));
+        return tokens;
+    }
+
+    /**
      * True when every tag inside the span opens and closes within it, so
      * deleting them all leaves the surrounding document's structure untouched.
      * A void element ({@code <br>}) counts as unbalanced — conservative, and

@@ -514,12 +514,17 @@ class RecruitmentApplicationServiceIntegrationTest {
     void terminalOnLastOpenApplication_startsTheRetentionClock_terminalOnOneOfTwoDoesNot() {
         String candidate = insertCandidate(null);
         RecruitmentApplication first = create(candidate, positionUuid);
-        RecruitmentApplication second = create(candidate, partnerPositionUuid);
+        // Direct insert: create() refuses a second open application since the
+        // 2026-08-10 one-open-application rule, but importer-written data can
+        // still hold two, which is exactly the branch under test.
+        RecruitmentApplication second = insertOpenApplication(candidate, partnerPositionUuid);
 
         reject(first, candidate, RecruitmentRejectionReason.POSITION_FILLED, null, true);
         RecruitmentCandidate afterFirst = reloadCandidate(candidate);
         assertNull(afterFirst.getProcessEndedAt(),
                 "one of two applications closed → the process is still running");
+        assertEquals(CandidateStatus.ACTIVE, afterFirst.getStatus(),
+                "a candidate still in another pipeline must not be cascaded closed");
         assertNull(afterFirst.getRetentionDeadline());
 
         reject(second, candidate, RecruitmentRejectionReason.POSITION_FILLED, null, true);
@@ -531,6 +536,98 @@ class RecruitmentApplicationServiceIntegrationTest {
         assertTrue(Math.abs(java.time.Duration.between(
                         expected, afterLast.getRetentionDeadline()).toMinutes()) < 5,
                 "retention_deadline = process end + 6 months");
+    }
+
+    // ---- Candidate status cascade --------------------------------------------------------
+
+    @Test
+    void withdraw_onTheLastOpenApplication_cascadesTheCandidateToWithdrawn() {
+        // The reported bug: the application went terminal but the candidate row
+        // stayed ACTIVE, so the profile badge still read "Active" for someone
+        // who had backed out of the only process they were in.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+
+        withdraw(application);
+
+        RecruitmentCandidate closed = reloadCandidate(candidate);
+        assertEquals(CandidateStatus.WITHDRAWN, closed.getStatus());
+        assertNotNull(closed.getProcessEndedAt(), "the retention clock still starts");
+        assertTrue(closed.getDeclineReason().contains("Withdrew"),
+                "decline_reason carries structural provenance: " + closed.getDeclineReason());
+
+        RecruitmentEvent event = lastEvent(candidate);
+        assertEquals(RecruitmentEventType.APPLICATION_WITHDRAWN, event.getEventType());
+        assertTrue(event.getPayload().contains("\"candidate_status\":\"WITHDRAWN\""),
+                "the cascade is visible in the timeline: " + event.getPayload());
+        RecruitmentEventPiiAssertions.assertNoPiiInPayload(event);
+    }
+
+    @Test
+    void reject_onTheLastOpenApplication_cascadesTheCandidateToDeclined() {
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+
+        reject(application, candidate, RecruitmentRejectionReason.EXPERIENCE_LEVEL, null, true);
+
+        RecruitmentCandidate closed = reloadCandidate(candidate);
+        assertEquals(CandidateStatus.DECLINED, closed.getStatus());
+        assertTrue(closed.getDeclineReason().contains("EXPERIENCE_LEVEL"),
+                "the coded reason survives on the candidate row: " + closed.getDeclineReason());
+
+        RecruitmentEvent event = lastEvent(candidate);
+        assertTrue(event.getPayload().contains("\"candidate_status\":\"DECLINED\""));
+        RecruitmentEventPiiAssertions.assertNoPiiInPayload(event);
+    }
+
+    @Test
+    void returnToPool_keepsThePooledStatus_theCascadeNeverOverridesIt() {
+        // POOLED is the correct non-terminal outcome for a silver medalist —
+        // the cascade must not walk it forward to DECLINED/WITHDRAWN.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication application = create(candidate, positionUuid);
+
+        mutate(() -> applicationService.returnToPool(
+                RecruitmentApplication.findById(application.getUuid()),
+                RecruitmentPosition.findById(positionUuid),
+                RecruitmentCandidate.findById(candidate), actor));
+
+        assertEquals(CandidateStatus.POOLED, reloadCandidate(candidate).getStatus());
+    }
+
+    @Test
+    void attachingACascadedCandidateToANewPosition_reopensThem() {
+        // Without this leg the cascade would be a one-way door: "not selected
+        // for role A" would permanently bar the candidate from role B.
+        String candidate = insertCandidate(null);
+        RecruitmentApplication first = create(candidate, positionUuid);
+        withdraw(first);
+        assertEquals(CandidateStatus.WITHDRAWN, reloadCandidate(candidate).getStatus());
+
+        String laterPosition = insertOpenPosition("Later req");
+        RecruitmentApplication second = create(candidate, laterPosition);
+
+        RecruitmentCandidate reopened = reloadCandidate(candidate);
+        assertEquals(CandidateStatus.ACTIVE, reopened.getStatus());
+        assertNull(reopened.getDeclineReason(), "the stale close-out reason is cleared");
+        assertNull(reopened.getProcessEndedAt(), "the retention clock is stopped again");
+        assertEquals(laterPosition, second.getPositionUuid());
+
+        List<RecruitmentEventType> types = eventTypes(candidate);
+        assertTrue(types.contains(RecruitmentEventType.CANDIDATE_UPDATED),
+                "the reopen is auditable, not silent: " + types);
+        eventsFor(candidate).forEach(RecruitmentEventPiiAssertions::assertNoPiiInPayload);
+    }
+
+    @Test
+    void attachingAHiredCandidateToANewPosition_isStillRefused() {
+        // HIRED and ANONYMIZED stay hard blocks — only the two reconsiderable
+        // terminals were relaxed.
+        String candidate = insertCandidate(null);
+        mutate(() -> RecruitmentCandidate.<RecruitmentCandidate>findById(candidate)
+                .markHired(UUID.randomUUID(), actor));
+
+        assertThrows(BusinessRuleViolation.class, () -> create(candidate, positionUuid));
     }
 
     // ---- Assign team -------------------------------------------------------------------
@@ -739,6 +836,32 @@ class RecruitmentApplicationServiceIntegrationTest {
                         .setParameter("actor", actor.toString())
                         .executeUpdate());
         return uuid;
+    }
+
+    /**
+     * Insert a second OPEN application straight into the table, bypassing
+     * {@code create}'s one-open-application guard. Only the Airtable importer
+     * writes rows this way in production, but the state is reachable in data,
+     * so the "one of two still open" branches must stay covered.
+     */
+    private RecruitmentApplication insertOpenApplication(String candidateUuid,
+                                                         String positionUuid) {
+        String uuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("""
+                                INSERT INTO recruitment_applications
+                                    (uuid, candidate_uuid, position_uuid, stage,
+                                     stage_entered_at, created_at, updated_at, created_by)
+                                VALUES (:uuid, :candidate, :position, 'SCREENING',
+                                        NOW(3), NOW(), NOW(), :actor)
+                                """)
+                        .setParameter("uuid", uuid)
+                        .setParameter("candidate", candidateUuid)
+                        .setParameter("position", positionUuid)
+                        .setParameter("actor", actor.toString())
+                        .executeUpdate());
+        em.clear();
+        return RecruitmentApplication.findById(uuid);
     }
 
     private void insertPractice(String uuid) {

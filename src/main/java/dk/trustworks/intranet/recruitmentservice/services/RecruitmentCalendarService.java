@@ -53,6 +53,12 @@ public class RecruitmentCalendarService {
     static final int GET_SCHEDULE_BATCH = 20;
 
     /**
+     * How many caller mailboxes one free/busy batch may try before it is
+     * given up as unknown (see {@link #callerCandidates}).
+     */
+    static final int CALLER_ATTEMPTS = 3;
+
+    /**
      * Interview times are wall-clock as entered by the scheduler (P11
      * findings, deviation 8): {@code scheduledAt} is a naive
      * {@code LocalDateTime} meaning Copenhagen local time. Graph must be
@@ -244,40 +250,110 @@ public class RecruitmentCalendarService {
      * A mailbox is available only when its whole availability view is
      * "0"s — tentative ("1"), busy ("2"), out-of-office ("3") and
      * working-elsewhere ("4") all count as busy.
-     * Failures return what was resolved so far (missing = unknown),
-     * logged, never thrown.
+     * Failures are contained per batch (missing = unknown), logged, never
+     * thrown.
+     * <p>
+     * The mailbox in the {@code getSchedule} URL only has to be <em>a</em>
+     * valid mailbox — the addresses actually probed ride in the body. It
+     * used to be {@code batch.get(0)}, which is how one employee whose
+     * mailbox does not exist in the tenant (Graph answers the URL with 404
+     * {@code ErrorInvalidUser}) blanked out their whole batch and — the
+     * catch sitting outside the loop — every batch after it: in production
+     * only the first 20 of ~140 interviewers came back marked. Now a
+     * failure costs at most one batch, and the first caller that answers
+     * is reused for the rest.
      */
     private Map<String, Boolean> mailboxAvailability(List<String> mailboxes,
                                                      LocalDateTime start,
                                                      int durationMinutes) {
         Map<String, Boolean> result = new HashMap<>();
-        try {
-            for (int i = 0; i < mailboxes.size(); i += GET_SCHEDULE_BATCH) {
-                List<String> batch = mailboxes.subList(i,
-                        Math.min(i + GET_SCHEDULE_BATCH, mailboxes.size()));
-                GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
-                        batch.get(0),
-                        new GraphApiClient.ScheduleRequest(
-                                batch,
-                                new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
-                                new CalendarEventRequest.DateTimeTimeZone(
-                                        start.plusMinutes(durationMinutes).toString(), EVENT_TIME_ZONE),
-                                durationMinutes));
-                if (response == null || response.value() == null) {
+        int batches = 0;
+        int failedBatches = 0;
+        String provenCaller = null;
+        for (int i = 0; i < mailboxes.size(); i += GET_SCHEDULE_BATCH) {
+            List<String> batch = mailboxes.subList(i,
+                    Math.min(i + GET_SCHEDULE_BATCH, mailboxes.size()));
+            batches++;
+            boolean resolved = false;
+            for (String caller : callerCandidates(provenCaller, batch)) {
+                Map<String, Boolean> batchResult = probeBatch(caller, batch, start, durationMinutes);
+                if (batchResult == null) {
                     continue;
                 }
-                for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
-                    if (info.scheduleId() == null || info.availabilityView() == null) {
-                        continue;
-                    }
-                    result.put(info.scheduleId(), info.availabilityView().chars().allMatch(c -> c == '0'));
-                }
+                provenCaller = caller;
+                result.putAll(batchResult);
+                resolved = true;
+                break;
             }
-        } catch (Exception e) {
-            log.warnv("Graph free/busy lookup failed: {0} — shown without availability",
-                    e.getMessage());
+            if (!resolved) {
+                failedBatches++;
+            }
+        }
+        if (failedBatches > 0) {
+            log.warnv("Graph free/busy: {0} of {1} batch(es) unresolved — those mailboxes shown without availability",
+                    failedBatches, batches);
         }
         return result;
+    }
+
+    /**
+     * Caller mailboxes to try for one batch: the one already proven to
+     * answer, then the batch's own leading addresses. Bounded by
+     * {@link #CALLER_ATTEMPTS} — a wholly broken Graph must not turn one
+     * sweep into a retry storm.
+     */
+    private List<String> callerCandidates(String provenCaller, List<String> batch) {
+        List<String> candidates = new ArrayList<>();
+        if (provenCaller != null) {
+            candidates.add(provenCaller);
+        }
+        for (String mailbox : batch) {
+            if (candidates.size() >= CALLER_ATTEMPTS) {
+                break;
+            }
+            if (!candidates.contains(mailbox)) {
+                candidates.add(mailbox);
+            }
+        }
+        return candidates;
+    }
+
+    /**
+     * One {@code getSchedule} call.
+     *
+     * @return the free/busy map for this batch, or {@code null} when Graph
+     *         failed (logged) — the caller then retries with another
+     *         caller mailbox, or leaves the batch unknown
+     */
+    private Map<String, Boolean> probeBatch(String caller,
+                                            List<String> batch,
+                                            LocalDateTime start,
+                                            int durationMinutes) {
+        try {
+            GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
+                    caller,
+                    new GraphApiClient.ScheduleRequest(
+                            batch,
+                            new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
+                            new CalendarEventRequest.DateTimeTimeZone(
+                                    start.plusMinutes(durationMinutes).toString(), EVENT_TIME_ZONE),
+                            durationMinutes));
+            if (response == null || response.value() == null) {
+                return Map.of();
+            }
+            Map<String, Boolean> batchResult = new HashMap<>();
+            for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
+                if (info.scheduleId() == null || info.availabilityView() == null) {
+                    continue;
+                }
+                batchResult.put(info.scheduleId(),
+                        info.availabilityView().chars().allMatch(c -> c == '0'));
+            }
+            return batchResult;
+        } catch (Exception e) {
+            log.warnv("Graph free/busy lookup failed asking as {0}: {1}", caller, e.getMessage());
+            return null;
+        }
     }
 
     // ---- Shaping -----------------------------------------------------------

@@ -45,7 +45,9 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierPdfGenerationSe
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService;
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService.RecipientInfo;
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
+import dk.trustworks.intranet.recruitmentservice.services.PromotionStagingRestoreService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
@@ -193,6 +195,12 @@ public class RecruitmentResource {
 
     @Inject
     CandidateConversionUseCase candidateConversionUseCase;
+
+    @Inject
+    S3EmployeePromotionService s3EmployeePromotionService;
+
+    @Inject
+    PromotionStagingRestoreService promotionStagingRestoreService;
 
     @Inject
     RecruitmentOfferBridge offerBridge;
@@ -593,6 +601,54 @@ public class RecruitmentResource {
         });
 
         return Response.ok(result).build();
+    }
+
+    /**
+     * Re-run the document promotion for an already-converted candidate,
+     * ignoring a COMPLETED status.
+     *
+     * <p>The escape hatch for a promotion written under a superseded selection
+     * rule: it re-applies the current rule without anyone hand-editing
+     * {@code promotion_status} in production. Idempotent per file — documents
+     * already promoted are skipped, nothing is deleted, and a pass that stores
+     * nothing does not re-announce the hire on Slack. It does <em>not</em>
+     * remove rows a previous pass wrote; withdrawing those is a deliberate
+     * archive through the employee-documents API.</p>
+     */
+    @POST
+    @Path("/candidates/{uuid}/promotion/redrive")
+    @RolesAllowed({"recruitment:write"})
+    public Response redrivePromotion(@PathParam("uuid") UUID uuid) {
+        enforceFlag();
+        requireVisibleCandidate(uuid);
+        s3EmployeePromotionService.runPromotion(uuid, true);
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(uuid.toString());
+        return Response.ok(Map.of(
+                "candidateUuid", uuid.toString(),
+                "promotionStatus", String.valueOf(candidate == null ? null : candidate.getPromotionStatus())
+        )).build();
+    }
+
+    /**
+     * One-off repair: rehydrate the offer-dossier files destroyed by the
+     * pre-2026-08-11 promotion writer, which deleted each staging original as
+     * it copied it. Reads the bytes back from the employee store, where the
+     * copy landed before the delete ran. Idempotent.
+     *
+     * <p>Delete this endpoint and {@link PromotionStagingRestoreService} once
+     * the affected candidates are repaired.</p>
+     */
+    @POST
+    @Path("/candidates/{uuid}/promotion/restore-staging")
+    @RolesAllowed({"recruitment:write"})
+    public Response restorePromotionStaging(@PathParam("uuid") UUID uuid) {
+        enforceFlag();
+        requireVisibleCandidate(uuid);
+        try {
+            return Response.ok(promotionStagingRestoreService.restoreStaging(uuid.toString())).build();
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException(e.getMessage(), Response.Status.BAD_REQUEST);
+        }
     }
 
     // ---- Dossier endpoints ----------------------------------------------------

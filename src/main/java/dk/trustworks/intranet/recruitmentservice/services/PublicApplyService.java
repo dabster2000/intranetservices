@@ -245,7 +245,13 @@ public class PublicApplyService {
                 continue;
             }
             RecruitmentCandidate existing = RecruitmentCandidate.findById(match.uuid());
-            if (existing != null && !existing.isTerminal()) {
+            // Reuse the row unless it is a HIRED or ANONYMIZED end state.
+            // DECLINED/WITHDRAWN are reconsiderable: an application terminal
+            // now cascades onto the candidate row, so treating those as
+            // "unknown person" would mint a duplicate candidate every time a
+            // previously-rejected applicant applies again. createCore reopens
+            // them and records a CANDIDATE_UPDATED.
+            if (existing != null && (!existing.isTerminal() || existing.isReconsiderable())) {
                 return new CandidateResolution(existing, true);
             }
         }

@@ -270,6 +270,64 @@ class RecruitmentCandidateTimelineApiTest {
                 .get("events[" + tlIndex + "].piiRedacted"));
     }
 
+    /**
+     * The envelope reports the viewer's comp tier explicitly. The profile's
+     * Facts rail needs it to decide whether to offer the salary-expectation
+     * affordance, and it cannot infer that from the events: a candidate with
+     * no salary note yet carries no redacted event to read the answer off.
+     * It must agree with the per-event redaction on the same response.
+     */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void compTier_reportedOnTheEnvelope_matchingThePerEventRedaction() {
+        given().header("X-Requested-By", recruiter)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("compTier", Matchers.equalTo(true));
+
+        given().header("X-Requested-By", teamlead)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("compTier", Matchers.equalTo(true));
+
+        given().header("X-Requested-By", adminUser)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("compTier", Matchers.equalTo(true));
+
+        // Practice lead reads the profile but not the amount — the same
+        // verdict the salary event's piiRedacted carries above.
+        given().header("X-Requested-By", practiceLead)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("compTier", Matchers.equalTo(false));
+    }
+
+    /**
+     * The empty-timeline path returns before any event filtering runs — the
+     * flag must still be resolved there, or the first salary expectation on a
+     * brand-new candidate could never be recorded from the profile.
+     */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void compTier_resolvedEvenWhenThePageIsEmpty() {
+        // A cursor below the first seq yields an empty page for any viewer.
+        given().header("X-Requested-By", recruiter)
+                .queryParam("beforeSeq", 1)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("events", Matchers.hasSize(0))
+                .body("hasMore", Matchers.equalTo(false))
+                .body("compTier", Matchers.equalTo(true));
+
+        given().header("X-Requested-By", practiceLead)
+                .queryParam("beforeSeq", 1)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(200)
+                .body("events", Matchers.hasSize(0))
+                .body("compTier", Matchers.equalTo(false));
+    }
+
     // ---- Pagination -----------------------------------------------------------------
 
     @Test

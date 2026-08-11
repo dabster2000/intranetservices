@@ -124,14 +124,32 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     protected String doProcess() throws Exception {
         log.info("NextSignStatusSyncBatchlet: Starting status fetch for pending cases");
 
+        // S3 archival catch-up + promotion re-drive (employee-documents
+        // spec §6.5.1/§6.5.3) — both no-ops while their writer toggles are
+        // OFF. Never fail the status-fetch pass over sweep errors.
+        //
+        // Hoisted above the early return deliberately: these sweeps are not
+        // conditional on there being signing cases to poll. An idle poll set
+        // is a normal state, and it is exactly when catch-up work is due —
+        // sitting below the return meant a passing pass skipped them.
+        int archived = 0;
+        int promotionsRedriven = 0;
+        try {
+            archived = runArchivalCatchupSweep();
+            promotionsRedriven = runPromotionRedriveSweep();
+        } catch (Exception e) {
+            log.errorf(e, "employee-documents sweeps failed (status fetch pass unaffected)");
+        }
+
         // Find cases needing status fetch
         List<SigningCase> pendingCases = signingCaseRepository.findCasesNeedingStatusFetch(
             MAX_RETRIES, RETRY_DELAY_MINUTES
         );
 
         if (pendingCases.isEmpty()) {
-            log.info("No pending cases found. Skipping.");
-            return "COMPLETED: 0 cases processed";
+            log.info("No pending cases found. Skipping status fetch.");
+            return String.format("COMPLETED: 0 cases processed, archived=%d, promotionsRedriven=%d",
+                    archived, promotionsRedriven);
         }
 
         log.infof("Found %d cases needing status fetch", pendingCases.size());
@@ -229,18 +247,6 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                     skipped++;
                 }
             }
-        }
-
-        // S3 archival catch-up + promotion re-drive (employee-documents
-        // spec §6.5.1/§6.5.3) — both no-ops while their writer toggles are
-        // OFF. Never fail the status-fetch pass over sweep errors.
-        int archived = 0;
-        int promotionsRedriven = 0;
-        try {
-            archived = runArchivalCatchupSweep();
-            promotionsRedriven = runPromotionRedriveSweep();
-        } catch (Exception e) {
-            log.errorf(e, "employee-documents sweeps failed (status fetch pass unaffected)");
         }
 
         // Build result summary
