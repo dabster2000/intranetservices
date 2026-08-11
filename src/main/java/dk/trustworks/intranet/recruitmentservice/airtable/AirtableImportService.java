@@ -153,7 +153,7 @@ public class AirtableImportService {
     }
 
     public ImportStart startImport(String startedBy) {
-        return startImport(startedBy, null);
+        return startImport(startedBy, null, false);
     }
 
     /**
@@ -165,8 +165,13 @@ public class AirtableImportService {
      *        (the runbook's one-candidate spot check). Blockers are
      *        evaluated on the filtered set, so a sample import works even
      *        while unrelated records still lack mappings.
+     * @param excludeHired when true, HIRED-disposition records are left
+     *        out of this round entirely — no ledger rows are written for
+     *        them, so a later run (without the flag) imports exactly the
+     *        hired backlog. Owner decision 2026-08-11: the first live
+     *        round covers the active pipeline + talent pool only.
      */
-    public ImportStart startImport(String startedBy, String onlyRecordId) {
+    public ImportStart startImport(String startedBy, String onlyRecordId, boolean excludeHired) {
         if (!importRunning.compareAndSet(false, true)) {
             throw new IllegalStateException("An Airtable import is already running");
         }
@@ -189,6 +194,14 @@ public class AirtableImportService {
                     throw new IllegalArgumentException(
                             "No Airtable record with id '" + wanted + "' in the export");
                 }
+            }
+            if (excludeHired) {
+                int before = mapped.size();
+                mapped = mapped.stream()
+                        .filter(record -> record.disposition() != AirtableMappedRecord.Disposition.HIRED)
+                        .toList();
+                log.infof("Airtable import: excludeHired left %d of %d records for this round",
+                        mapped.size(), before);
             }
             List<AirtableMappedRecord> preflightSet = mapped;
             AirtableReconciliationReport preflight = inTx(() ->
