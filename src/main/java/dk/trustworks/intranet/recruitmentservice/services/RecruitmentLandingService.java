@@ -122,8 +122,21 @@ public class RecruitmentLandingService {
     @Inject
     RecruitmentEmailService emailService;
 
-    /** Build the full landing aggregate for one viewer. */
+    /** Build the full landing aggregate for one viewer, own pipelines only. */
     public LandingResponse build(String viewerUuid) {
+        return build(viewerUuid, false);
+    }
+
+    /**
+     * Build the full landing aggregate for one viewer.
+     *
+     * @param showAll when true, "Your pipelines" and the activity feed cover
+     *                every position the viewer may read instead of only
+     *                their own. The viewer's choice, carried per request
+     *                (the frontend remembers it in the browser); it can only
+     *                ever widen back to what visibility already allows.
+     */
+    public LandingResponse build(String viewerUuid, boolean showAll) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
@@ -150,7 +163,8 @@ public class RecruitmentLandingService {
         if (LandingResponse.SHAPE_EMPLOYEE.equals(shape)) {
             // No involvement: the client redirects to /recruitment/refer.
             return new LandingResponse(shape, new LandingKpis(0, 0, 0, 0),
-                    List.of(), List.of(), List.of(), List.of());
+                    List.of(), List.of(), List.of(), List.of(),
+                    LandingResponse.PIPELINE_SCOPE_OWN, false);
         }
 
         // ---- Batched context around the visible slice --------------------
@@ -191,6 +205,11 @@ public class RecruitmentLandingService {
         tasks.addAll(idleCandidateTasks(decidableApplications, taskPositions, candidates, now));
 
         // ---- KPI row -------------------------------------------------------
+        // Always company-wide (everything the viewer may read), never scoped
+        // to the card below it — product decision 2026-08-11: these answer
+        // "how is hiring going", the card answers "what is mine". The
+        // frontend's subtitles are worded to match; re-scoping these to the
+        // card would make those labels lie.
         int activeCandidates = (int) openApplications.stream()
                 .map(RecruitmentApplication::getCandidateUuid)
                 .distinct()
@@ -203,19 +222,50 @@ public class RecruitmentLandingService {
         LandingKpis kpis = new LandingKpis(openPositions.size(), activeCandidates,
                 interviewsNext7Days, openTasks);
 
-        // ---- Pipelines + feed (not for the interviewer shape — spec §6.1:
-        // an interviewer sees interviews + scorecards only) -----------------
-        List<LandingPipeline> pipelines = LandingResponse.SHAPE_INTERVIEWER.equals(shape)
+        // ---- Pipeline scope: "yours" vs everything you may read ------------
+        // Product decision 2026-08-11. "Your pipelines" led with every
+        // non-partner position for anyone in POSITION_READ_ROLES, because it
+        // was built on filterPositions back when that call WAS the
+        // involvement set; go-live decision D3 widened the meaning underneath
+        // it. The card now leads with the viewer's own positions and offers
+        // to show the rest.
+        //
+        // The recruiter tier is never narrowed — the world is their job (spec
+        // §6.1 "the recruiter sees the world") — and the interviewer shape has
+        // no pipelines at all, so neither is offered the choice. Read access
+        // is untouched: this only reorders what the page leads with, and
+        // showAll can never reach past filterPositions.
+        boolean interviewer = LandingResponse.SHAPE_INTERVIEWER.equals(shape);
+        boolean scopeSelectable = !recruiterTier && !interviewer;
+        boolean ownOnly = scopeSelectable && !showAll;
+
+        // Any status, like positionsByUuid: the feed covers closed positions
+        // too, so narrowing it must use the same breadth it replaces.
+        Set<String> scopedPositionUuids = ownOnly
+                ? visibility.ownPositionUuids(viewerUuid, visiblePositions)
+                : positionsByUuid.keySet();
+        List<RecruitmentPosition> scopedOpenPositions = ownOnly
+                ? openPositions.stream()
+                        .filter(p -> scopedPositionUuids.contains(p.getUuid()))
+                        .toList()
+                : openPositions;
+
+        // Pipelines + feed are not built for the interviewer shape — spec
+        // §6.1: an interviewer sees interviews + scorecards only.
+        List<LandingPipeline> pipelines = interviewer
                 ? List.of()
-                : pipelines(openPositions, openByPosition, now);
-        List<LandingActivity> activity = LandingResponse.SHAPE_INTERVIEWER.equals(shape)
+                : pipelines(scopedOpenPositions, openByPosition, now);
+        List<LandingActivity> activity = interviewer
                 ? List.of()
-                : activityFeed(viewerUuid, positionsByUuid.keySet(), candidates);
+                : activityFeed(viewerUuid, scopedPositionUuids, candidates);
 
         List<LandingInterview> upcoming = upcomingInterviews(viewerUuid, ownInterviews,
                 taskApplications, taskPositions, candidates, scorecardsByInterview, now);
 
-        return new LandingResponse(shape, kpis, tasks, pipelines, upcoming, activity);
+        return new LandingResponse(shape, kpis, tasks, pipelines, upcoming, activity,
+                ownOnly ? LandingResponse.PIPELINE_SCOPE_OWN
+                        : LandingResponse.PIPELINE_SCOPE_ALL,
+                scopeSelectable);
     }
 
     // ------------------------------------------------------------------

@@ -12,6 +12,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -64,12 +65,25 @@ public class RecruitmentLandingResource {
     @Inject
     RecruitmentLandingService landingService;
 
+    /**
+     * @param scope {@code OWN} (default) leads "Your pipelines" and the
+     *              activity feed with the caller's own positions — hiring
+     *              owner, the practice of a team they lead, a practice they
+     *              lead, or a circle they were invited onto. {@code ALL}
+     *              widens both back to every position they may read; it is
+     *              the viewer's own display choice, remembered client-side,
+     *              and can never reach past {@code filterPositions}. An
+     *              unrecognized value is treated as {@code OWN} — this is a
+     *              display preference, not an instruction worth a 400.
+     *              Ignored for the recruiter tier, which is never narrowed.
+     */
     @GET
     @Path("/landing")
-    public LandingResponse landing() {
+    public LandingResponse landing(@QueryParam("scope") String scope) {
         enforceFlag();
         UUID actor = currentActor();
-        return landingService.build(actor.toString());
+        boolean showAll = LandingResponse.PIPELINE_SCOPE_ALL.equalsIgnoreCase(scope);
+        return landingService.build(actor.toString(), showAll);
     }
 
     private void enforceFlag() {

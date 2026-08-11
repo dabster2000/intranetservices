@@ -65,6 +65,9 @@ class RecruitmentLandingApiTest {
     private String referralUuid;
     private String pendingEmailUuid;
 
+    /** TEAMLEAD role, leads no team, owns nothing — reads widely, owns nothing. */
+    private String wideTeamleadUser;
+
     private String previousFlag;
 
     @BeforeEach
@@ -74,6 +77,7 @@ class RecruitmentLandingApiTest {
         teamUuid = UUID.randomUUID().toString();
         recruiterUser = UUID.randomUUID().toString();
         teamleadUser = UUID.randomUUID().toString();
+        wideTeamleadUser = UUID.randomUUID().toString();
         practiceLeadUser = UUID.randomUUID().toString();
         interviewerUser = UUID.randomUUID().toString();
         employeeUser = UUID.randomUUID().toString();
@@ -97,8 +101,14 @@ class RecruitmentLandingApiTest {
             P8ProfileFixtures.insertUser(em, employeeUser, marker, "Employee");
             P8ProfileFixtures.insertUser(em, circleOwnerUser, marker, "Circleowner");
 
+            P8ProfileFixtures.insertUser(em, wideTeamleadUser, marker, "Wideteamlead");
+            P8ProfileFixtures.insertRole(em, wideTeamleadUser, "TEAMLEAD");
+
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             P8ProfileFixtures.insertPracticeLead(em, practiceLeadUser, practiceUuid);
+            // The team belongs to the practice — the hop "Your pipelines"
+            // walks to decide that a team lead owns their practice's openings.
+            P8ProfileFixtures.insertTeam(em, teamUuid, practiceUuid);
             P8ProfileFixtures.insertTeamLeader(em, teamleadUser, teamUuid);
 
             // A practice-team position led by the teamlead's team, with an
@@ -168,11 +178,15 @@ class RecruitmentLandingApiTest {
                     .setParameter("u", pendingEmailUuid).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_referrals WHERE uuid = :u")
                     .setParameter("u", referralUuid).executeUpdate();
+            // Before cleanupRecruitmentRows: team.practice_uuid is an FK onto
+            // the practice that call drops.
+            em.createNativeQuery("DELETE FROM team WHERE uuid = :t")
+                    .setParameter("t", teamUuid).executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(idleCandidateUuid, partnerCandidateUuid),
                     List.of(teamPositionUuid, partnerPositionUuid),
-                    List.of(recruiterUser, teamleadUser, practiceLeadUser, interviewerUser,
-                            employeeUser, circleOwnerUser),
+                    List.of(recruiterUser, teamleadUser, wideTeamleadUser, practiceLeadUser,
+                            interviewerUser, employeeUser, circleOwnerUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousFlag);
         });
@@ -180,6 +194,15 @@ class RecruitmentLandingApiTest {
 
     private Response landingFor(String userUuid) {
         return given().header("X-Requested-By", userUuid)
+                .when().get("/recruitment/landing")
+                .then().statusCode(200)
+                .extract().response();
+    }
+
+    /** The landing as the viewer would see it after asking for a scope. */
+    private Response landingFor(String userUuid, String scope) {
+        return given().header("X-Requested-By", userUuid)
+                .queryParam("scope", scope)
                 .when().get("/recruitment/landing")
                 .then().statusCode(200)
                 .extract().response();
@@ -251,6 +274,78 @@ class RecruitmentLandingApiTest {
         List<Map<String, Object>> pipelines = pipelines(response);
         assertTrue(hasPipeline(pipelines, teamPositionUuid));
         assertFalse(hasPipeline(pipelines, partnerPositionUuid));
+    }
+
+    // ---- "Your pipelines" scope (2026-08-11) ------------------------------------
+    // The card leads with the viewer's OWN positions. Before this, anyone
+    // holding TEAMLEAD led with every non-partner opening in the company —
+    // in production, ten rows across six practices for a team lead who owned
+    // none of them.
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void teamleadRole_withoutInvolvement_getsAnEmptyCard_notAnEmptyPage() {
+        Response response = landingFor(wideTeamleadUser);
+
+        // Still INVOLVED — read access is untouched, so the client does NOT
+        // redirect them to /recruitment/refer. That distinction is the whole
+        // point of narrowing the card rather than the visibility filter.
+        assertEquals("INVOLVED", response.jsonPath().getString("viewerShape"));
+        assertTrue(pipelines(response).isEmpty(),
+                "owns nothing, leads nothing, invited to nothing");
+        assertEquals("OWN", response.jsonPath().getString("pipelineScope"));
+        assertTrue(response.jsonPath().getBoolean("pipelineScopeSelectable"),
+                "and is offered the way out");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void kpisStayCompanyWide_evenWhileTheCardIsNarrow() {
+        Response response = landingFor(wideTeamleadUser);
+
+        // Product decision: the numbers answer "how is hiring going", the card
+        // answers "what is mine". They are allowed to disagree — the KPI
+        // subtitles say so.
+        assertTrue(pipelines(response).isEmpty());
+        assertTrue(response.jsonPath().getInt("kpis.openPositions") >= 1,
+                "the KPI still counts the position they can read");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void scopeAll_widensTheCardBackToEverythingTheyMayRead() {
+        Response response = landingFor(wideTeamleadUser, "ALL");
+
+        assertEquals("ALL", response.jsonPath().getString("pipelineScope"));
+        assertTrue(hasPipeline(pipelines(response), teamPositionUuid),
+                "the position they read but do not own");
+        assertFalse(hasPipeline(pipelines(response), partnerPositionUuid),
+                "ALL never reaches past the partner circle — it is a display "
+                        + "choice, not an authorization one");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void teamlead_ownsThePracticeOfTheTeamTheyLead() {
+        // The hop that makes this useful: this user has no practice_lead row
+        // and owns no position — they lead a TEAM, and that team belongs to
+        // the practice the position is on.
+        Response response = landingFor(teamleadUser);
+
+        assertEquals("OWN", response.jsonPath().getString("pipelineScope"));
+        assertTrue(hasPipeline(pipelines(response), teamPositionUuid),
+                "their led team's practice is theirs");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void recruiterTier_isNeverNarrowed_andIsNotOfferedTheChoice() {
+        Response response = landingFor(recruiterUser);
+
+        assertEquals("ALL", response.jsonPath().getString("pipelineScope"));
+        assertFalse(response.jsonPath().getBoolean("pipelineScopeSelectable"),
+                "the world is their job (spec §6.1) — no toggle to offer");
+        assertTrue(hasPipeline(pipelines(response), teamPositionUuid));
     }
 
     @Test
