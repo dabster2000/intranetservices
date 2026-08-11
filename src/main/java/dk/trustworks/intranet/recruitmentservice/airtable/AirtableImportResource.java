@@ -137,16 +137,19 @@ public class AirtableImportResource {
     }
 
     /**
-     * @param recordId optional Airtable record id — imports ONLY that
-     *        record (the runbook's one-candidate spot check).
+     * @param recordId     optional Airtable record id — imports ONLY that
+     *                     record (the runbook's one-candidate spot check).
+     * @param excludeHired when true, HIRED records are left for a later
+     *                     round (no ledger rows written for them).
      */
     @POST
     @Path("/import")
     public AirtableImportService.ImportStart startImport(
-            @jakarta.ws.rs.QueryParam("recordId") String recordId) {
+            @jakarta.ws.rs.QueryParam("recordId") String recordId,
+            @jakarta.ws.rs.QueryParam("excludeHired") boolean excludeHired) {
         requireConfigured();
         try {
-            return importService.startImport(requestHeaderHolder.getUserUuid(), recordId);
+            return importService.startImport(requestHeaderHolder.getUserUuid(), recordId, excludeHired);
         } catch (IllegalStateException e) {
             throw new WebApplicationException(e.getMessage(), Response.Status.CONFLICT);
         } catch (IllegalArgumentException e) {
