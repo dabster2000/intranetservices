@@ -6,6 +6,8 @@ import com.slack.api.model.view.View;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestions;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardGuidance;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardGuidanceCatalog;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralClosedReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralRelation;
@@ -99,6 +101,13 @@ public final class SlackRecruitmentViews {
 
     /** The scorecard notes cap — matches the web form and the service rule (P11). */
     static final int SCORECARD_NOTES_MAX_LENGTH = 2000;
+
+    /**
+     * Block Kit's ceiling on an input block's hint text. Over it, Slack
+     * rejects the entire view — so subject coaching is truncated to fit
+     * rather than risking a modal that will not open.
+     */
+    static final int SLACK_HINT_MAX_LENGTH = 2000;
 
     private SlackRecruitmentViews() {
     }
@@ -440,14 +449,25 @@ public final class SlackRecruitmentViews {
                 ":lock: Scorecards are blind: your co-interviewers can't see your answers "
                         + "before submitting their own, and you can't see theirs. "
                         + "Everything unlocks in the intranet debrief once all are in.")))));
+        blocks.add(context(c -> c.elements(asContextElements(markdownText(
+                ScorecardGuidanceCatalog.USAGE_NOTE)))));
         blocks.add(divider());
         for (ScorecardAttribute attribute : template) {
-            blocks.add(input(i -> i
-                    .blockId(BLOCK_SCORE_PREFIX + attribute.code())
-                    .label(plainText(attribute.label()))
-                    .element(staticSelect(s -> s.actionId("value")
-                            .placeholder(plainText("Pick a score"))
-                            .options(scoreOptions())))));
+            String hint = scorecardHint(attribute);
+            blocks.add(input(i -> {
+                i.blockId(BLOCK_SCORE_PREFIX + attribute.code())
+                        .label(plainText(attribute.label()))
+                        .element(staticSelect(s -> s.actionId("value")
+                                .placeholder(plainText("Pick a score"))
+                                .options(scoreOptions())));
+                // Slack has no hover, so the web tooltip's content becomes the
+                // input hint — the only place an interviewer scoring from a
+                // phone can read what the subject means and what a 3 looks like.
+                if (hint != null) {
+                    i.hint(plainText(hint));
+                }
+                return i;
+            }));
         }
         blocks.add(input(i -> i
                 .blockId(BLOCK_RECOMMENDATION)
@@ -518,6 +538,38 @@ public final class SlackRecruitmentViews {
                                 .value(interviewUuid)
                                 .style("primary")
                                 .text(plainText("Fill in scorecard"))))));
+    }
+
+    /**
+     * The subject's coaching, folded into one plain-text hint: the definition
+     * followed by what each score looks like. Standard subjects resolve from
+     * {@link ScorecardGuidanceCatalog}; a custom subject falls back to the
+     * help text its position author wrote; anything else gets no hint rather
+     * than a filler one.
+     * <p>
+     * Capped at {@link #SLACK_HINT_MAX_LENGTH}: Block Kit rejects the whole
+     * view if any single text object runs over, which would take the modal
+     * down rather than degrade it.
+     */
+    private static String scorecardHint(ScorecardAttribute attribute) {
+        String text = ScorecardGuidanceCatalog.forCode(attribute.code())
+                .map(guidance -> {
+                    StringBuilder sb = new StringBuilder(guidance.whatYouAreScoring());
+                    for (int score = 1; score <= ScorecardGuidance.ANCHOR_COUNT; score++) {
+                        String anchor = guidance.anchorFor(score);
+                        if (anchor != null) {
+                            sb.append("\n").append(score).append(": ").append(anchor);
+                        }
+                    }
+                    return sb.toString();
+                })
+                .orElseGet(attribute::helpText);
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        return text.length() <= SLACK_HINT_MAX_LENGTH
+                ? text
+                : text.substring(0, SLACK_HINT_MAX_LENGTH - 1) + "…";
     }
 
     private static List<OptionObject> scoreOptions() {

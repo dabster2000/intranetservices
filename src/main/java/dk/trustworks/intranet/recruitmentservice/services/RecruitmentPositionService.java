@@ -16,6 +16,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPosition
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -50,6 +51,9 @@ public class RecruitmentPositionService {
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
+
+    @Inject
+    EntityManager em;
 
     // ---- Create --------------------------------------------------------------
 
@@ -164,6 +168,12 @@ public class RecruitmentPositionService {
         }
         if (request.scorecardTemplate() != null && !request.scorecardTemplate().isEmpty()
                 && !request.scorecardTemplate().equals(position.getScorecardTemplate())) {
+            // The lock (spec §4.1): submitted scores key on template codes with
+            // no back-reference to what was asked, so re-cutting the subjects
+            // underneath them would silently re-label history — a 3 given for
+            // "Culture fit" would read as a 3 for whatever now sits in that
+            // slot. Frozen from the first submitted scorecard onwards.
+            requireScorecardTemplateUnlocked(position);
             validateOr400(() -> RecruitmentPositionDefaults.validateScorecardTemplate(request.scorecardTemplate()));
             changes.put("scorecard_template_size", request.scorecardTemplate().size());
             position.setScorecardTemplate(new ArrayList<>(request.scorecardTemplate()));
@@ -358,6 +368,31 @@ public class RecruitmentPositionService {
             return null;
         }
         return slug.trim().toLowerCase();
+    }
+
+    /**
+     * Refuse to re-cut the scorecard subjects once anyone has scored against
+     * them. Counted live rather than read off {@code position.scorecardLocked}
+     * (the {@code @Formula} that tells the UI the same thing) so the guard
+     * holds against a scorecard submitted since the position was loaded.
+     */
+    private void requireScorecardTemplateUnlocked(RecruitmentPosition position) {
+        Number submitted = (Number) em.createNativeQuery("""
+                        SELECT COUNT(*)
+                          FROM recruitment_scorecards sc
+                          JOIN recruitment_interviews i ON i.uuid = sc.interview_uuid
+                          JOIN recruitment_applications a ON a.uuid = i.application_uuid
+                         WHERE a.position_uuid = :positionUuid
+                        """)
+                .setParameter("positionUuid", position.getUuid())
+                .getSingleResult();
+        if (submitted.intValue() > 0) {
+            throw new BusinessRuleViolation(
+                    ("The scorecard subjects are locked: %d scorecard(s) have already been "
+                            + "submitted on this position, and their scores are stored against "
+                            + "the current subjects. Create a new position to interview on a "
+                            + "different scorecard.").formatted(submitted.intValue()));
+        }
     }
 
     private static void requirePartnerTrack(RecruitmentPosition position) {

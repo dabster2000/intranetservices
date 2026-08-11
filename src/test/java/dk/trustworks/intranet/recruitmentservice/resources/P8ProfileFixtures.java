@@ -139,12 +139,32 @@ public final class P8ProfileFixtures {
                 STANDARD_SCORECARD_TEMPLATE_JSON);
     }
 
-    /** The P2 standard 4-attribute framework, as the position column stores it. */
+    /**
+     * The original 4-attribute framework, as the position column stores it.
+     * <p>
+     * This is NO LONGER what a new position gets — the framework moved to six
+     * subjects (see {@code ScorecardGuidanceCatalog}) and {@code CULTURE_FIT}
+     * became {@code CULTURE}. Because templates are snapshotted at create
+     * time, this JSON is exactly what production positions created before that
+     * change still carry, so fixtures keep using it deliberately: they are the
+     * regression net for the legacy path. Use
+     * {@link #CURRENT_SCORECARD_TEMPLATE_JSON} for a position that should look
+     * like one created today.
+     */
     public static final String STANDARD_SCORECARD_TEMPLATE_JSON = """
             [{"code":"WHY_CONSULTING","label":"Why consulting"},\
             {"code":"COMMERCIAL_DRIVE","label":"Commercial drive"},\
             {"code":"UNCERTAINTY","label":"Handling uncertainty"},\
             {"code":"CULTURE_FIT","label":"Culture fit"}]""";
+
+    /** The current 6-subject framework, in interview order. */
+    public static final String CURRENT_SCORECARD_TEMPLATE_JSON = """
+            [{"code":"WHY_CONSULTING","label":"Why consulting"},\
+            {"code":"CULTURE","label":"Culture — Good People, learning & sharing"},\
+            {"code":"SELF_LEADERSHIP","label":"Self-leadership & structure"},\
+            {"code":"UNCERTAINTY","label":"Handling uncertainty"},\
+            {"code":"FAGLIGHED","label":"Faglighed & formidling"},\
+            {"code":"COMMERCIAL_DRIVE","label":"Commercial drive"}]""";
 
     /** Full-control variant (P11: trimmed staff templates, custom stage sets). */
     public static void insertPosition(EntityManager em, String uuid, String title, String track,
