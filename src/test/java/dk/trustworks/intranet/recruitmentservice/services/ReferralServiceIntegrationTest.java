@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationRejectRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.MyReferralOrigin;
+import dk.trustworks.intranet.recruitmentservice.dto.MyReferralRow;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateResponse;
@@ -42,6 +44,7 @@ import java.util.UUID;
 import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions.PII_SENTINEL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -532,6 +535,76 @@ class ReferralServiceIntegrationTest {
                 "another employee's referral never surfaces");
     }
 
+    /**
+     * The regression: candidates whose referrer link lives only on
+     * {@code referred_by_user_uuid} — every Airtable-migrated referral, and
+     * every candidate a recruiter creates with "Referred by (colleague)" —
+     * used to be invisible here while the profile page showed the link.
+     */
+    @Test
+    void listMine_includesCandidatesLinkedOnlyByReferredByUserUuid() {
+        String candidateUuid = insertReferredCandidate(referrer, "ACTIVE");
+        String otherPersons = insertReferredCandidate(UUID.randomUUID(), "ACTIVE");
+
+        MyReferralsResponse response = referralService.listMine(referrer);
+
+        List<MyReferralRow> mine = response.referrals();
+        assertEquals(1, mine.size(), "exactly the caller's own candidate-recorded link");
+        assertEquals(1, response.totalCount());
+        MyReferralRow row = mine.get(0);
+        assertEquals(MyReferralOrigin.RECORDED_ON_CANDIDATE, row.origin());
+        assertEquals(RecruitmentReferralDerivedStatus.UNDER_REVIEW, row.derivedStatus());
+        assertNull(row.referrerRelation(), "no refer form was ever filled in");
+        assertNotEquals(candidateUuid, row.uuid(), "no handle to the candidate record");
+        assertFalse(mine.toString().contains(otherPersons),
+                "another employee's referred candidate never surfaces");
+    }
+
+    @Test
+    void listMine_candidateRecordedRow_tracksLivePipelineState() {
+        String candidateUuid = insertReferredCandidate(referrer, "ACTIVE");
+        QuarkusTransaction.requiringNew().run(() -> insertApplication(candidateUuid, openPositionUuid));
+
+        assertEquals(RecruitmentReferralDerivedStatus.IN_SCREENING,
+                referralService.listMine(referrer).referrals().get(0).derivedStatus());
+
+        update("UPDATE recruitment_candidates SET status = 'HIRED' WHERE uuid = :u", candidateUuid);
+        em.clear();
+        assertEquals(RecruitmentReferralDerivedStatus.HIRED,
+                referralService.listMine(referrer).referrals().get(0).derivedStatus());
+    }
+
+    /**
+     * A referral triaged the normal way writes BOTH sources — the referral row
+     * and the candidate's {@code referred_by_user_uuid}. The union must not
+     * turn that into two cards.
+     */
+    @Test
+    void listMine_triagedReferralIsNotDoubleCounted() {
+        String referralUuid = submitReferral(referrer);
+        triageCreate(referralUuid, null, openPositionUuid);
+        em.clear();
+
+        MyReferralsResponse response = referralService.listMine(referrer);
+
+        assertEquals(1, response.referrals().size(), "one referral, one card");
+        MyReferralRow row = response.referrals().get(0);
+        assertEquals(referralUuid, row.uuid());
+        assertEquals(MyReferralOrigin.REFERRAL_FORM, row.origin());
+        assertNotNull(row.referrerRelation(), "the richer referral-row facts are kept");
+    }
+
+    @Test
+    void listMine_excludesAnonymizedCandidates() {
+        String candidateUuid = insertReferredCandidate(referrer, "ACTIVE");
+        update("UPDATE recruitment_candidates SET status = 'ANONYMIZED', first_name = 'Anonymized', "
+                + "last_name = 'Candidate', anonymized_at = NOW(3) WHERE uuid = :u", candidateUuid);
+        em.clear();
+
+        assertTrue(referralService.listMine(referrer).referrals().isEmpty(),
+                "P19-erased PII must not resurface on the referrer's page");
+    }
+
     // ---- Unsolicited triage queue (P5 carry-over) -------------------------------------
 
     @Test
@@ -699,6 +772,32 @@ class ReferralServiceIntegrationTest {
                         .setParameter("pool", poolStatus)
                         .setParameter("detail", "{\"desiredPracticeUuid\":\"" + practiceUuid
                                 + "\",\"desiredPracticeName\":\"Queue Fixture Practice\"}")
+                        .executeUpdate());
+        return uuid;
+    }
+
+    /**
+     * A candidate whose referrer link exists ONLY on
+     * {@code referred_by_user_uuid} — the shape the Airtable migration and the
+     * recruiter's "Referred by (colleague)" field both produce, with no
+     * {@code recruitment_referrals} row anywhere.
+     */
+    private String insertReferredCandidate(UUID referredBy, String status) {
+        String uuid = UUID.randomUUID().toString();
+        candidateUuids.add(uuid);
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("""
+                                INSERT INTO recruitment_candidates
+                                    (uuid, first_name, last_name, email, status, source,
+                                     referred_by_user_uuid, created_by_useruuid, created_at, updated_at)
+                                VALUES (:uuid, :first, 'Fixture', :email, :status, 'REFERRAL',
+                                        :referredBy, 'airtable-import', NOW(), NOW())
+                                """)
+                        .setParameter("uuid", uuid)
+                        .setParameter("first", PII_SENTINEL + "-Referred")
+                        .setParameter("email", uuid + "@example.com")
+                        .setParameter("status", status)
+                        .setParameter("referredBy", referredBy.toString())
                         .executeUpdate());
         return uuid;
     }

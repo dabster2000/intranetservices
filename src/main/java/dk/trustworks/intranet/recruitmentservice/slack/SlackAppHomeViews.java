@@ -5,6 +5,7 @@ import com.slack.api.model.view.View;
 import dk.trustworks.intranet.recruitmentservice.dto.LandingResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.LandingResponse.LandingInterview;
 import dk.trustworks.intranet.recruitmentservice.dto.LandingResponse.LandingTask;
+import dk.trustworks.intranet.recruitmentservice.dto.MyReferralOrigin;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralRow;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralDerivedStatus;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCandidateFacts;
@@ -268,7 +269,12 @@ public final class SlackAppHomeViews {
                     .append("*").append(safe(row.candidateName())).append("*")
                     .append(" · ").append(statusLabel(row.derivedStatus()));
             if (row.submittedAt() != null) {
-                sb.append(" · sent ").append(row.submittedAt().format(DAY));
+                // "sent" only fits a referral the employee actually submitted;
+                // a link recorded straight on the candidate carries the
+                // registration date instead.
+                sb.append(row.origin() == MyReferralOrigin.RECORDED_ON_CANDIDATE
+                                ? " · registered " : " · sent ")
+                        .append(row.submittedAt().format(DAY));
             }
             blocks.add(section(s -> s.text(markdownText(sb.toString()))));
         }

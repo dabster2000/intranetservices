@@ -167,6 +167,7 @@ class SlackAppHomeViewsTest {
 
     private static MyReferralRow referral(String name, RecruitmentReferralDerivedStatus status) {
         return new MyReferralRow(java.util.UUID.randomUUID().toString(), name, null, null,
-                LocalDateTime.of(2026, 7, 12, 9, 0), status);
+                LocalDateTime.of(2026, 7, 12, 9, 0), status,
+                dk.trustworks.intranet.recruitmentservice.dto.MyReferralOrigin.REFERRAL_FORM);
     }
 }
