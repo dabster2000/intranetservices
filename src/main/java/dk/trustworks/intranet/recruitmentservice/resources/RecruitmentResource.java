@@ -601,7 +601,7 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}/dossier")
     public Response getDossier(@PathParam("uuid") UUID uuid) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        requireDossierReadable(uuid);
         return dossierService.loadForCandidate(uuid)
                 .map(d -> Response.ok(d).build())
                 .orElseThrow(() -> new NotFoundException("Dossier not found for candidate: " + uuid));
@@ -613,7 +613,7 @@ public class RecruitmentResource {
     public Response updateDossier(@PathParam("uuid") UUID candidateUuid,
                                   @Valid DossierRequest request) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierWritable(candidateUuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         DossierResponse updated = dossierService.update(
@@ -627,7 +627,7 @@ public class RecruitmentResource {
     public Response addAppendix(@PathParam("uuid") UUID candidateUuid,
                                 AppendixUploadRequest request) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierWritable(candidateUuid);
         if (request == null || request.originalFilename == null || request.originalFilename.isBlank()) {
             throw new WebApplicationException(
                     "originalFilename is required",
@@ -679,7 +679,7 @@ public class RecruitmentResource {
     public Response removeAppendix(@PathParam("uuid") UUID candidateUuid,
                                    @PathParam("fileUuid") String fileUuid) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierWritable(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         dossierService.removeAppendix(UUID.fromString(dossier.getUuid()), fileUuid, currentActor());
         return Response.noContent().build();
@@ -689,7 +689,7 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}/dossier/revisions")
     public Response listRevisions(@PathParam("uuid") UUID candidateUuid) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierReadable(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         List<RevisionResponse> revisions = dossierRevisionService.findByDossier(
                 UUID.fromString(dossier.getUuid()));
@@ -701,7 +701,7 @@ public class RecruitmentResource {
     public Response getRevision(@PathParam("uuid") UUID candidateUuid,
                                 @PathParam("revUuid") UUID revUuid) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierReadable(candidateUuid);
         return dossierRevisionService.findById(revUuid)
                 .filter(r -> isRevisionForCandidate(r, candidateUuid))
                 .map(r -> Response.ok(r).build())
@@ -720,7 +720,7 @@ public class RecruitmentResource {
                                              @PathParam("revUuid") UUID revUuid,
                                              @PathParam("index") int index) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierReadable(candidateUuid);
         CandidateDossierRevision revision = requireRevisionForCandidate(revUuid, candidateUuid);
         CandidateDossier dossier = requireDossierById(revision.getDossierUuid());
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(revision, dossier.getTemplateUuid());
@@ -765,7 +765,7 @@ public class RecruitmentResource {
             @PathParam("revUuid") UUID revisionUuid) {
 
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierReadable(candidateUuid);
 
         CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
         if (revision == null
@@ -816,7 +816,7 @@ public class RecruitmentResource {
             @PathParam("revUuid") UUID revisionUuid) {
 
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierReadable(candidateUuid);
 
         CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
         if (revision == null
@@ -856,7 +856,7 @@ public class RecruitmentResource {
             @PathParam("uuid") UUID candidateUuid,
             @PathParam("revUuid") UUID revisionUuid) {
         enforceFlag();
-        requireVisibleCandidate(candidateUuid);
+        requireDossierWritable(candidateUuid);
         return dossierService.branchFromRevision(candidateUuid, revisionUuid, currentActor());
     }
 
@@ -890,7 +890,7 @@ public class RecruitmentResource {
         }
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireDossierWritable(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         User sender = requireUser(actor);
 
@@ -958,7 +958,7 @@ public class RecruitmentResource {
         SendReviewRequest body = request != null ? request : new SendReviewRequest(null);
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireDossierWritable(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
         // 1) Generate PDFs from the current draft (so bytes exist before the
@@ -1022,7 +1022,7 @@ public class RecruitmentResource {
         SendSignatureRequest body = request != null ? request : new SendSignatureRequest(null);
         UUID actor = currentActor();
 
-        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid);
+        RecruitmentCandidate candidate = requireDossierWritable(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
         // P10 gate (fail-fast zone, BEFORE PDF generation and the NextSign
@@ -1281,6 +1281,52 @@ public class RecruitmentResource {
                 || viewer == null || viewer.isBlank()
                 || !visibility.canReadCandidateProfile(viewer, candidate)) {
             throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        return candidate;
+    }
+
+    /**
+     * The dossier READ gate ({@link RecruitmentVisibility#canReadDossier}):
+     * ADMIN, HR, or the named hiring owner of one of the candidate's
+     * positions. Everyone else — including RECRUITMENT and the wider
+     * TEAMLEAD population — answers 404, the same as a nonexistent
+     * candidate: whether a contract exists is not something this endpoint
+     * may reveal.
+     * <p>
+     * Until 2026-08-11 the whole dossier family shared
+     * {@link #requireVisibleCandidate}, i.e. the candidate-profile tier.
+     * Once TEAMLEAD joined that tier, only the BFF's role array stood
+     * between 20 team leads and the contract flow — a single layer where
+     * this platform's model calls for two.
+     */
+    private RecruitmentCandidate requireDossierReadable(UUID candidateUuid) {
+        String viewer = requestHeaderHolder.getUserUuid();
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null
+                || viewer == null || viewer.isBlank()
+                || !visibility.canReadDossier(viewer, candidate)) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        return candidate;
+    }
+
+    /**
+     * The dossier WRITE gate ({@link RecruitmentVisibility#canWriteDossier}):
+     * ADMIN and HR only — editing, appendices, branching, review, signature
+     * and conversion are HR acts.
+     * <p>
+     * Two different answers on purpose. A viewer who cannot even read the
+     * dossier gets the read gate's 404 (no existence leak); a viewer who can
+     * read it — the hiring owner — gets a 403 that names the reason, because
+     * to them the dossier is visibly there and a 404 would just look broken.
+     */
+    private RecruitmentCandidate requireDossierWritable(UUID candidateUuid) {
+        RecruitmentCandidate candidate = requireDossierReadable(candidateUuid);
+        if (!visibility.canWriteDossier(requestHeaderHolder.getUserUuid())) {
+            throw new WebApplicationException(
+                    "The offer and contract are handled by HR — you can follow this "
+                            + "dossier but not change it.",
+                    Response.Status.FORBIDDEN);
         }
         return candidate;
     }

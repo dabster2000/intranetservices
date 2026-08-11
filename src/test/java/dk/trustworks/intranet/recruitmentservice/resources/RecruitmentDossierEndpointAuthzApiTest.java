@@ -47,6 +47,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
     private String hrUser;
     private String techPartnerUser;
     private String teamleadRoleUser;
+    private String owningTeamlead;
     private String circleHr;
     private String adminUser;
     private String plainUser;
@@ -67,6 +68,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
         hrUser = UUID.randomUUID().toString();
         techPartnerUser = UUID.randomUUID().toString();
         teamleadRoleUser = UUID.randomUUID().toString();
+        owningTeamlead = UUID.randomUUID().toString();
         circleHr = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
@@ -80,18 +82,20 @@ class RecruitmentDossierEndpointAuthzApiTest {
             P8ProfileFixtures.insertUser(em, hrUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, techPartnerUser, "Tino", "Techpartner");
             P8ProfileFixtures.insertUser(em, teamleadRoleUser, "Tilde", "Teamlead");
+            P8ProfileFixtures.insertUser(em, owningTeamlead, "Ole", "Owner");
             P8ProfileFixtures.insertUser(em, circleHr, "Cirkel", "Recruiter");
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
             P8ProfileFixtures.insertRole(em, techPartnerUser, "TECHPARTNER");
             P8ProfileFixtures.insertRole(em, teamleadRoleUser, "TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, owningTeamlead, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
 
             P8ProfileFixtures.insertPosition(em, teamPosition, "Consultant",
-                    "PRACTICE_TEAM", practiceUuid, teamA, null);
+                    "PRACTICE_TEAM", practiceUuid, teamA, owningTeamlead);
             P8ProfileFixtures.insertPosition(em, partnerPosition, "Partner hire",
                     "PARTNER", null, null, null);
             P8ProfileFixtures.insertCircleMember(em, partnerPosition, circleHr);
@@ -129,8 +133,8 @@ class RecruitmentDossierEndpointAuthzApiTest {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(normalCandidate, partnerOnlyCandidate, legacyDossierCandidate),
                     List.of(teamPosition, partnerPosition),
-                    List.of(hrUser, techPartnerUser, teamleadRoleUser, circleHr,
-                            adminUser, plainUser),
+                    List.of(hrUser, techPartnerUser, teamleadRoleUser, owningTeamlead,
+                            circleHr, adminUser, plainUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, DOSSIER_FLAG, previousFlag);
         });
@@ -214,6 +218,61 @@ class RecruitmentDossierEndpointAuthzApiTest {
         // Invisible candidate → 404 by the gate, before the dossier lookup.
         listRevisions(hrUser, partnerOnlyCandidate, 404);
         listRevisions(plainUser, normalCandidate, 404);
+    }
+
+    // ---- Dossier access is narrower than profile access ------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void teamleadWithoutOwnership_readsProfileButNotDossier() {
+        // The whole point of the dedicated dossier gate: a TEAMLEAD is in the
+        // profile-read tier, so the candidate is visible — but the contract is
+        // not theirs, and the dossier answers 404 rather than 403 so that
+        // "there is a contract here" does not leak either.
+        getCandidate(teamleadRoleUser, normalCandidate, 200);
+        listRevisions(teamleadRoleUser, normalCandidate, 404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void namedHiringOwner_readsTheDossier() {
+        listRevisions(owningTeamlead, normalCandidate, 200);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void hrAndAdmin_readTheDossier() {
+        listRevisions(hrUser, normalCandidate, 200);
+        listRevisions(adminUser, normalCandidate, 200);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void plainEmployee_getsNothing() {
+        listRevisions(plainUser, normalCandidate, 404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void namedHiringOwner_cannotWriteTheDossier() {
+        // Readable, so the honest answer is 403 with a reason — a 404 here
+        // would just look broken to someone who can see the dossier.
+        given().header("X-Requested-By", owningTeamlead)
+                .contentType("application/json")
+                .body("{\"values\":{}}")
+                .when().put("/recruitment/candidates/{uuid}/dossier", normalCandidate)
+                .then().statusCode(403);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void teamleadWithoutOwnership_writeAnswers404NotForbidden() {
+        // Cannot read it, so must not learn it exists by getting a 403.
+        given().header("X-Requested-By", teamleadRoleUser)
+                .contentType("application/json")
+                .body("{\"values\":{}}")
+                .when().put("/recruitment/candidates/{uuid}/dossier", normalCandidate)
+                .then().statusCode(404);
     }
 
     // ---- Helpers ---------------------------------------------------------------

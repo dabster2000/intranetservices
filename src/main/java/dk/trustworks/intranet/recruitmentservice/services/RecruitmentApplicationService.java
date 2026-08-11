@@ -588,6 +588,7 @@ public class RecruitmentApplicationService {
                 application.getPositionUuid(),
                 titleOf(position),
                 position != null ? position.getHiringTrack() : null,
+                position != null ? position.getHiringOwnerUuid() : null,
                 position != null ? position.getStageSet() : List.of(),
                 application.getStage(),
                 application.getTerminal(),
