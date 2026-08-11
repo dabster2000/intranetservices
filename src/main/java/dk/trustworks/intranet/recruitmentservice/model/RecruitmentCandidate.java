@@ -337,6 +337,35 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     }
 
     /**
+     * Reopen a {@link CandidateStatus#DECLINED} or
+     * {@link CandidateStatus#WITHDRAWN} candidate back to
+     * {@link CandidateStatus#ACTIVE}, clearing the stale decline reason.
+     * <p>
+     * The counterpart of {@link #unpool(UUID)} for the two reconsiderable
+     * terminals: since an application terminal now cascades onto the
+     * candidate row (see {@code RecruitmentApplicationService}), "declined
+     * for role A" must not become a permanent bar to role B. Attaching the
+     * candidate to a position IS the deliberate act of reconsidering, so
+     * {@code createCore} calls this instead of refusing the attach.
+     * <p>
+     * {@link CandidateStatus#HIRED} and {@link CandidateStatus#ANONYMIZED}
+     * are deliberately NOT reopenable — a hire leaves the recruitment
+     * retention regime entirely, and anonymization is irreversible by design.
+     *
+     * @throws BusinessRuleViolation if the candidate is in any other state
+     */
+    public void reactivate(UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (status != CandidateStatus.DECLINED && status != CandidateStatus.WITHDRAWN) {
+            throw new BusinessRuleViolation(
+                    "Cannot reactivate candidate %s: status is %s, expected DECLINED or WITHDRAWN"
+                            .formatted(uuid, status));
+        }
+        this.status = CandidateStatus.ACTIVE;
+        this.declineReason = null;
+    }
+
+    /**
      * @return true iff this candidate is in a terminal state (HIRED, DECLINED,
      *         WITHDRAWN or ANONYMIZED). POOLED is NOT terminal — pool
      *         candidates re-enter the funnel. Useful for the application
@@ -345,6 +374,21 @@ public class RecruitmentCandidate extends PanacheEntityBase {
      */
     public boolean isTerminal() {
         return status != CandidateStatus.ACTIVE && status != CandidateStatus.POOLED;
+    }
+
+    /**
+     * @return true iff this candidate is in a terminal state that can still be
+     *         reopened — {@link CandidateStatus#DECLINED} or
+     *         {@link CandidateStatus#WITHDRAWN}. Since an application terminal
+     *         cascades onto the candidate row, these two are everyday outcomes
+     *         rather than deliberate end states, so both entry paths (recruiter
+     *         attach and the public form) reuse and reopen such a candidate
+     *         instead of refusing them or creating a duplicate row.
+     *         {@link CandidateStatus#HIRED} and
+     *         {@link CandidateStatus#ANONYMIZED} are never reconsiderable.
+     */
+    public boolean isReconsiderable() {
+        return status == CandidateStatus.DECLINED || status == CandidateStatus.WITHDRAWN;
     }
 
     /**

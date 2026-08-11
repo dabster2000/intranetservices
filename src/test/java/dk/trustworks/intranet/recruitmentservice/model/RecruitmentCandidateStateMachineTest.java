@@ -129,4 +129,46 @@ class RecruitmentCandidateStateMachineTest {
             }
         }
     }
+
+    // -- isReconsiderable / reactivate contract --
+
+    @Test
+    void isReconsiderable_isTrueOnlyForDeclinedAndWithdrawn() {
+        // The two statuses an application terminal can cascade into. Both
+        // entry paths (recruiter attach, public form) reopen these rather
+        // than refusing them or minting a duplicate candidate.
+        RecruitmentCandidate c = active();
+        for (CandidateStatus s : CandidateStatus.values()) {
+            c.setStatus(s);
+            boolean expected = s == CandidateStatus.DECLINED || s == CandidateStatus.WITHDRAWN;
+            assertEquals(expected, c.isReconsiderable(), "status=" + s);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = CandidateStatus.class, names = {"DECLINED", "WITHDRAWN"})
+    void reactivate_fromAReconsiderableTerminal_returnsToActiveAndClearsTheReason(
+            CandidateStatus from) {
+        RecruitmentCandidate c = active();
+        c.setStatus(from);
+        c.setDeclineReason("Withdrew from the Seniorudvikler process");
+
+        c.reactivate(ACTOR);
+
+        assertEquals(CandidateStatus.ACTIVE, c.getStatus());
+        assertEquals(null, c.getDeclineReason(), "the stale close-out reason must not linger");
+        assertEquals(false, c.isTerminal());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = CandidateStatus.class,
+            names = {"DECLINED", "WITHDRAWN"}, mode = Mode.EXCLUDE)
+    void reactivate_fromAnyOtherStatus_throwsBusinessRuleViolation(CandidateStatus from) {
+        // HIRED left the recruitment regime and ANONYMIZED is irreversible;
+        // ACTIVE/POOLED are not closed and have nothing to reopen.
+        RecruitmentCandidate c = active();
+        c.setStatus(from);
+
+        assertThrows(BusinessRuleViolation.class, () -> c.reactivate(ACTOR));
+    }
 }
