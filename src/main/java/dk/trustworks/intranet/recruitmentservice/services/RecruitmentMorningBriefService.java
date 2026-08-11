@@ -291,7 +291,8 @@ public class RecruitmentMorningBriefService {
         for (RecruitmentInterview interview : interviews) {
             sb.append('\n').append(interviewLine(interview, ctx));
         }
-        sb.append("\nYour kit (CV, focus areas, scorecard): ")
+        sb.append("\nEach name opens their brief — CV, answers and focus areas."
+                        + " All your interviews: ")
                 .append(baseUrl).append("/recruitment/interviews");
         return sb.toString();
     }
@@ -315,8 +316,9 @@ public class RecruitmentMorningBriefService {
         blocks.add(com.slack.api.model.block.Blocks.context(
                 com.slack.api.model.block.element.BlockElements.asContextElements(
                         com.slack.api.model.block.composition.BlockCompositions.markdownText(
-                                "Your kit (CV, focus areas, scorecard): <" + baseUrl
-                                        + "/recruitment/interviews|open the interviews page>"))));
+                                "Each name opens their brief — CV, answers and focus areas. <"
+                                        + baseUrl
+                                        + "/recruitment/interviews|All your interviews>"))));
         return blocks;
     }
 
@@ -331,7 +333,7 @@ public class RecruitmentMorningBriefService {
                 || interview.getRound() == null;
         StringBuilder sb = new StringBuilder(200)
                 .append("• ").append(interview.getScheduledAt().format(TIME))
-                .append(" — *").append(displayName(candidate)).append('*');
+                .append(" — *").append(briefLink(candidate)).append('*');
         if (position != null && position.getTitle() != null) {
             sb.append(" (*").append(SlackCandidateFacts.mrkdwnSafe(position.getTitle()))
                     .append('*');
@@ -350,6 +352,20 @@ public class RecruitmentMorningBriefService {
                     .collect(Collectors.joining(", ")));
         }
         return sb.toString();
+    }
+
+    /**
+     * The candidate's name as an mrkdwn link to their restricted brief —
+     * the recipient is an assigned interviewer for this very interview, so
+     * the brief endpoint admits them. Degrades to the bare name when the
+     * candidate leg is missing, rather than emitting a link that 404s.
+     */
+    private String briefLink(RecruitmentCandidate candidate) {
+        String name = displayName(candidate);
+        if (candidate == null || candidate.getUuid() == null) {
+            return name;
+        }
+        return "<" + baseUrl + "/recruitment/brief/" + candidate.getUuid() + "|" + name + ">";
     }
 
     private static String displayName(RecruitmentCandidate candidate) {

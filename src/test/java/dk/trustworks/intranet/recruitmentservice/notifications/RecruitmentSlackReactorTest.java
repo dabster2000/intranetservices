@@ -463,7 +463,10 @@ class RecruitmentSlackReactorTest {
             assertTrue(dm.contains("Senior Consultant"), "kit carries the position");
             assertTrue(dm.contains("round 1"), "kit states the round");
             assertTrue(dm.contains("Why consulting"), "kit lists the focus areas");
-            assertTrue(dm.contains("/recruitment/interviews"), "kit deep link");
+            assertTrue(dm.contains("/recruitment/brief/" + candidateUuid),
+                    "kit deep-links THIS candidate's brief — the assignment this DM "
+                            + "announces is what authorizes it");
+            assertTrue(dm.contains("/recruitment/interviews"), "the list page stays reachable");
         }
         // Toggle off ⇒ never the Block Kit DM overload (deep-link-only —
         // the explicit degradation chain).

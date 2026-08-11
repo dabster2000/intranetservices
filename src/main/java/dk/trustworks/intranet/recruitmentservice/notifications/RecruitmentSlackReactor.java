@@ -521,8 +521,21 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
                     .reduce((a, b) -> a + ", " + b).orElse(""))
                     .append('.');
         }
-        sb.append("\nYour kit (CV, focus areas, scorecard): ")
-                .append(baseUrl).append("/recruitment/interviews");
+        // The brief is the candidate-specific kit (CV, cover letter, what
+        // they wrote, focus areas, scorecard) and the interview assignment
+        // this DM announces is exactly what authorizes it. Falls back to the
+        // list page when the candidate leg is missing — a link that 404s is
+        // worse than a link one click further away.
+        if (facts.candidateUuid() != null) {
+            sb.append("\nYour kit (CV, answers, focus areas, scorecard): ")
+                    .append(baseUrl).append("/recruitment/brief/")
+                    .append(facts.candidateUuid());
+            sb.append("\nAll your interviews: ")
+                    .append(baseUrl).append("/recruitment/interviews");
+        } else {
+            sb.append("\nYour kit (CV, focus areas, scorecard): ")
+                    .append(baseUrl).append("/recruitment/interviews");
+        }
         return sb.toString();
     }
 

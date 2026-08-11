@@ -174,7 +174,9 @@ class RecruitmentMorningBriefServiceTest {
         assertTrue(one.contains(RecruitmentEventPiiAssertions.PII_SENTINEL + "-Cand" + marker),
                 "the DM names the candidate (moderate rule — a DM to the assigned interviewer)");
         assertTrue(one.contains("Why consulting"), "focus areas from the position template");
-        assertTrue(one.contains("/recruitment/interviews"), "the kit deep link");
+        assertTrue(one.contains("/recruitment/brief/" + candidateUuid),
+                "each line links the candidate's brief — the interviewer's own kit");
+        assertTrue(one.contains("/recruitment/interviews"), "the list page stays reachable");
 
         String two = fallbackFor(user.getAllValues(), fallback.getAllValues(), interviewerTwoUuid);
         assertTrue(two.contains("09:00"));
