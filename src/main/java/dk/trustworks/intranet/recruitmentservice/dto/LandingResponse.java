@@ -29,14 +29,32 @@ public record LandingResponse(
         List<LandingTask> tasks,
         List<LandingPipeline> pipelines,
         List<LandingInterview> upcomingInterviews,
-        List<LandingActivity> activity) {
+        List<LandingActivity> activity,
+        String pipelineScope,
+        boolean pipelineScopeSelectable) {
 
     public static final String SHAPE_RECRUITER = "RECRUITER";
     public static final String SHAPE_INVOLVED = "INVOLVED";
     public static final String SHAPE_INTERVIEWER = "INTERVIEWER";
     public static final String SHAPE_EMPLOYEE = "EMPLOYEE";
 
-    /** The KPI row, scoped to what the viewer can see. */
+    /**
+     * "Your pipelines" (and the activity feed) list only the positions that
+     * are the viewer's own — hiring owner, the practice of a team they lead,
+     * a practice they lead, or a circle they were invited onto
+     * ({@code RecruitmentVisibility.ownPositionUuids}). The default.
+     */
+    public static final String PIPELINE_SCOPE_OWN = "OWN";
+    /** The viewer asked to see every position they may read. */
+    public static final String PIPELINE_SCOPE_ALL = "ALL";
+
+    /**
+     * The KPI row. Deliberately <b>always company-wide</b> (everything the
+     * viewer may read), even when {@code pipelineScope} is {@code OWN}
+     * (product decision 2026-08-11): the numbers answer "how is hiring
+     * going", the card answers "what is mine". The frontend's subtitles say
+     * so — do not quietly re-scope these to match the card.
+     */
     public record LandingKpis(
             int openPositions,
             int activeCandidates,

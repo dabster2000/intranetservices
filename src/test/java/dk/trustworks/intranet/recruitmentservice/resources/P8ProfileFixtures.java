@@ -103,6 +103,22 @@ public final class P8ProfileFixtures {
                 .executeUpdate();
     }
 
+    /**
+     * A team row belonging to a practice. Needed whenever a test exercises
+     * {@code RecruitmentVisibility.practicesOfCurrentlyLedTeams} — the
+     * "practice you are team lead in" hop walks {@code team.practice_uuid},
+     * so a bare {@code teamroles} row leads nowhere without this.
+     */
+    public static void insertTeam(EntityManager em, String uuid, String practiceUuid) {
+        em.createNativeQuery("""
+                        INSERT INTO team (uuid, name, shortname, practice_uuid)
+                        VALUES (:uuid, 'P8 Fixture Team', 'P8F', :practice)
+                        """)
+                .setParameter("uuid", uuid)
+                .setParameter("practice", practiceUuid)
+                .executeUpdate();
+    }
+
     public static void insertTeamLeader(EntityManager em, String userUuid, String teamUuid) {
         em.createNativeQuery("""
                         INSERT INTO teamroles (uuid, teamuuid, useruuid, startdate, enddate, membertype)

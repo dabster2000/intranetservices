@@ -139,6 +139,46 @@ public class RecruitmentVisibility {
                 .getResultList();
     }
 
+    /**
+     * The practices of the teams the viewer <em>currently leads</em> — the
+     * "practice you are team lead in" hop, resolved through
+     * {@code team.practice_uuid}.
+     * <p>
+     * Deliberately NOT the same thing as {@link #currentlyLedPractices}: a
+     * team lead almost never has a {@code practice_lead} row (in production
+     * only two people do), but their team belongs to a practice, and that is
+     * what everyone means by "her practice". Also not {@code user.practice_uuid}
+     * — leads sit on the practice-less "Teamleads" org team, so their own
+     * field is unreliable.
+     * <p>
+     * Same temporal window as {@link #currentlyLedTeams} and the same
+     * {@code LEADER}-only membership: a former lead's practice drops out on
+     * its own. Teams with no practice contribute nothing.
+     * <p>
+     * This grants <b>no read access</b>. It exists for the landing page's
+     * "Your pipelines" scoping ({@link #ownPositionUuids}); position
+     * visibility is unchanged and still runs through
+     * {@link #filterPositions}.
+     */
+    @SuppressWarnings("unchecked")
+    public List<String> practicesOfCurrentlyLedTeams(String userUuid) {
+        if (userUuid == null || userUuid.isBlank()) {
+            return List.of();
+        }
+        return em.createNativeQuery("""
+                        SELECT DISTINCT t.practice_uuid
+                        FROM teamroles tr
+                        JOIN team t ON t.uuid = tr.teamuuid
+                        WHERE tr.useruuid = :user AND tr.membertype = 'LEADER'
+                          AND tr.startdate <= :today
+                          AND (tr.enddate > :today OR tr.enddate IS NULL)
+                          AND t.practice_uuid IS NOT NULL
+                        """)
+                .setParameter("user", userUuid)
+                .setParameter("today", LocalDate.now())
+                .getResultList();
+    }
+
     /** Team uuids the viewer currently leads (temporal {@code teamroles} LEADER rows). */
     @SuppressWarnings("unchecked")
     public List<String> currentlyLedTeams(String userUuid) {
@@ -300,6 +340,31 @@ public class RecruitmentVisibility {
     }
 
     /**
+     * May the viewer <em>change</em> this position — edit its fields or
+     * close it? Go-live spec §3, row "Positions — create/edit/close":
+     * ADMIN/HR/RECRUITMENT everywhere, {@code TEAMLEAD} <b>own only</b>.
+     * <p>
+     * Deliberately the same authority as
+     * {@link #canDecideOnApplication}: "may this person act on this
+     * position" is one question, whether the act is moving a candidate
+     * through its pipeline or closing the pipeline outright. Delegating
+     * rather than restating the predicate is on purpose — this class has
+     * already been bitten by mirrored rules drifting apart.
+     * <p>
+     * <b>Reading is emphatically not enough.</b> {@link #POSITION_READ_ROLES}
+     * shows every {@code TEAMLEAD} every non-partner position (go-live
+     * decision D3), and until this gate existed that read tier was the only
+     * check on {@code PUT /recruitment/positions/{uuid}} and
+     * {@code POST /{uuid}/close} — so all 20 role holders could edit or
+     * close any non-partner position in the company. On partner track this
+     * reduces to {@link #canManageCircle}, which is what the resource
+     * enforced before: a circle PARTICIPANT may look but not touch.
+     */
+    public boolean canMutatePosition(String viewerUuid, RecruitmentPosition position) {
+        return canDecideOnApplication(viewerUuid, position);
+    }
+
+    /**
      * Is the viewer "the recruiter or the hiring owner" for this position?
      * The elevated tier two P4 rules key on (spec §4.2): forward stage
      * <em>skips</em> and rejecting a partner-referral candidate. ADMIN and
@@ -418,6 +483,52 @@ public class RecruitmentVisibility {
                     || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
                     || (position.getPracticeUuid() != null && ledPractices.contains(position.getPracticeUuid())));
         }).map(RecruitmentPosition::getUuid).collect(Collectors.toSet());
+    }
+
+    /**
+     * The positions that are <b>the viewer's own</b>, as opposed to merely
+     * readable — the "Your pipelines" rule (landing page, decided
+     * 2026-08-11). A position is theirs when any of these holds:
+     * <ol>
+     *   <li>they are the named hiring owner;</li>
+     *   <li>it belongs to the practice of a team they currently lead
+     *       ({@link #practicesOfCurrentlyLedTeams}) — the route that
+     *       actually fires for real team leads;</li>
+     *   <li>they currently lead its practice outright
+     *       ({@link #currentlyLedPractices});</li>
+     *   <li>they were invited onto its circle.</li>
+     * </ol>
+     * Ownership is a <em>presentation</em> concept and grants nothing: this
+     * is only ever used to narrow what the landing page leads with. Read
+     * access stays {@link #filterPositions} / {@link #canReadPosition}, and
+     * the right to act stays {@link #canDecideOnApplication} — a viewer can
+     * own a row here and still be unable to touch it (a practice lead, for
+     * instance).
+     * <p>
+     * Because it never widens anything, it deliberately does <em>not</em>
+     * re-apply the partner-circle filter: the caller passes positions that
+     * already cleared visibility, and circle membership is itself one of the
+     * four routes.
+     * <p>
+     * One viewer-context resolution, never per row — the class's no-N+1 rule.
+     */
+    public Set<String> ownPositionUuids(String viewerUuid,
+                                        Collection<RecruitmentPosition> positions) {
+        if (viewerUuid == null || viewerUuid.isBlank()
+                || positions == null || positions.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> circled = circledPositionUuids(viewerUuid);
+        Set<String> ownPractices = new HashSet<>(practicesOfCurrentlyLedTeams(viewerUuid));
+        ownPractices.addAll(currentlyLedPractices(viewerUuid));
+
+        return positions.stream()
+                .filter(position -> viewerUuid.equals(position.getHiringOwnerUuid())
+                        || (position.getPracticeUuid() != null
+                            && ownPractices.contains(position.getPracticeUuid()))
+                        || circled.contains(position.getUuid()))
+                .map(RecruitmentPosition::getUuid)
+                .collect(Collectors.toSet());
     }
 
     /** The position uuids of every circle the viewer belongs to (one query). */

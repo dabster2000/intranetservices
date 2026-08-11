@@ -53,6 +53,11 @@ import java.util.UUID;
  *       get read access to their practice's non-partner positions. An
  *       invisible position answers 404, never 403 — a partner search must
  *       not leak that the position exists.</li>
+ *   <li>Reading a position never implies changing it: {@code update} and
+ *       {@code close} additionally require
+ *       {@link RecruitmentVisibility#canMutatePosition} and answer 403 when
+ *       it fails. A {@code TEAMLEAD} reads every non-partner position (D3)
+ *       but may only change their own (D4).</li>
  *   <li>Feature flag {@code recruitment.pipeline.enabled}: off + non-admin
  *       caller → 404 (same convention as the dossier endpoints).</li>
  * </ul>
@@ -145,7 +150,7 @@ public class RecruitmentPositionResource {
         enforceFlag();
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
-        requirePartnerMutationRights(position, actor);
+        requireMutationRights(position, actor);
         return positionService.update(position, request, actor);
     }
 
@@ -156,7 +161,7 @@ public class RecruitmentPositionResource {
         enforceFlag();
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
-        requirePartnerMutationRights(position, actor);
+        requireMutationRights(position, actor);
         return positionService.close(position, actor);
     }
 
@@ -220,18 +225,35 @@ public class RecruitmentPositionResource {
     }
 
     /**
-     * On partner-track positions, circle PARTICIPANTs may look but not
-     * touch: edits and closes require circle-management rights
-     * (OWNER/RECRUITER membership, HR or admin). Non-partner tracks pass —
-     * their visibility rules already restrict who gets this far.
+     * Editing and closing a position require <em>decision</em> rights on it
+     * ({@link RecruitmentVisibility#canMutatePosition}), not merely the
+     * ability to read it.
+     *
+     * <p>This used to check the partner track only, on the stated assumption
+     * that "non-partner tracks pass — their visibility rules already restrict
+     * who gets this far". That assumption stopped holding when go-live
+     * decision D3 put {@code TEAMLEAD} into
+     * {@link RecruitmentVisibility#POSITION_READ_ROLES}: every teamlead can
+     * now read every non-partner position, so the read tier had silently
+     * become a company-wide write tier — against the go-live spec's own
+     * "Positions — create/edit/close: TEAMLEAD own only". Partner-track
+     * behaviour is unchanged (the delegate reduces to
+     * {@code canManageCircle} there).
+     *
+     * <p>403, not 404: the caller already cleared
+     * {@link #requireVisiblePosition}, so the position's existence is not a
+     * secret from them and hiding it now would only confuse.
      */
-    private void requirePartnerMutationRights(RecruitmentPosition position, UUID actor) {
-        if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
-                && !visibility.canManageCircle(actor.toString(), position)) {
-            throw new WebApplicationException(
-                    "Only circle owners/recruiters (or HR/admin) may change a partner-track position",
-                    Response.Status.FORBIDDEN);
+    private void requireMutationRights(RecruitmentPosition position, UUID actor) {
+        if (visibility.canMutatePosition(actor.toString(), position)) {
+            return;
         }
+        throw new WebApplicationException(
+                position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
+                        ? "Only circle owners/recruiters (or HR/admin) may change a partner-track position"
+                        : "Only the hiring owner, the current lead of the position's team, "
+                                + "a team lead in its circle (or HR/admin) may change this position",
+                Response.Status.FORBIDDEN);
     }
 
     /**

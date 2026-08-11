@@ -119,7 +119,7 @@ class SlackAppHomeViewsTest {
                         new LandingInterview("int-10", "cand-9", "Nora Nord", "Consultant",
                                 "INFORMAL", null, LocalDateTime.of(2026, 7, 26, 13, 0),
                                 null, false, false)),
-                List.of());
+                List.of(), LandingResponse.PIPELINE_SCOPE_OWN, false);
         String blocks = SlackAppHomeViews
                 .appHomeView(landing, List.of(), false, BASE, NOW).getBlocks().toString();
 
@@ -143,15 +143,19 @@ class SlackAppHomeViewsTest {
 
     // ---- Fixtures ---------------------------------------------------------------
 
+    // Slack App Home reads only landing.tasks(), so the pipeline scope is
+    // irrelevant here — pinned to the defaults rather than varied.
     private static LandingResponse emptyLanding() {
         return new LandingResponse(LandingResponse.SHAPE_EMPLOYEE,
-                new LandingKpis(0, 0, 0, 0), List.of(), List.of(), List.of(), List.of());
+                new LandingKpis(0, 0, 0, 0), List.of(), List.of(), List.of(), List.of(),
+                LandingResponse.PIPELINE_SCOPE_OWN, false);
     }
 
     private static LandingResponse landingWithTasks(List<LandingTask> tasks) {
         return new LandingResponse(LandingResponse.SHAPE_RECRUITER,
                 new LandingKpis(1, 1, 0, tasks.size()), tasks,
-                List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(),
+                LandingResponse.PIPELINE_SCOPE_ALL, false);
     }
 
     private static LandingTask scorecardTask(String interviewUuid, String candidateName,
