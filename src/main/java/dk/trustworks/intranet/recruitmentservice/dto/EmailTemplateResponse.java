@@ -10,8 +10,11 @@ import java.util.List;
 /**
  * One candidate-email template (P15). {@code trigger} is true when the
  * key is a reactor-trigger key (ACKNOWLEDGEMENT, REJECTION_*, STAGE_*) —
- * the frontend renders the trigger explainer from it. {@code copyRoles}
- * and {@code copyMode} carry the template's internal-copy policy.
+ * the frontend renders the trigger explainer from it. {@code systemOwned}
+ * is true for keys a scheduled job owns (CONSENT_RENEWAL), which the
+ * compose picker hides because their merge fields only resolve inside
+ * that job. {@code copyRoles} and {@code copyMode} carry the template's
+ * internal-copy policy.
  */
 public record EmailTemplateResponse(
         String uuid,
@@ -23,6 +26,7 @@ public record EmailTemplateResponse(
         boolean autoSend,
         boolean active,
         boolean trigger,
+        boolean systemOwned,
         List<String> copyRoles,
         String copyMode,
         LocalDateTime updatedAt
@@ -38,6 +42,7 @@ public record EmailTemplateResponse(
                 template.isAutoSend(),
                 template.isActive(),
                 RecruitmentEmailService.isTriggerKey(template.getTemplateKey()),
+                RecruitmentEmailService.isSystemKey(template.getTemplateKey()),
                 RecruitmentEmailCopyRole.parseCsv(template.getCopyRoles())
                         .stream().map(Enum::name).toList(),
                 template.getCopyMode().name(),

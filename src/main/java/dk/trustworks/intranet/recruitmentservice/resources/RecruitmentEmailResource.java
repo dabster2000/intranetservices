@@ -217,6 +217,7 @@ public class RecruitmentEmailResource {
         RecruitmentEmailBodyFormat sendFormat =
                 RecruitmentEmailBodyFormat.parse(request.bodyFormat());
         requireSubjectAndBody(request.subject(), request.body(), sendFormat);
+        requireNoUnresolvedLinks(request.subject(), request.body(), sendFormat);
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
         String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
         RecruitmentEmailService.RecruitmentPendingEmailResult result = emailService.sendManual(
@@ -406,7 +407,7 @@ public class RecruitmentEmailResource {
         enforceFlag();
         UUID actor = currentActor();
         requireRecruiterTier(actor);
-        requireVisiblePendingRow(pendingUuid, actor);
+        RecruitmentPendingEmail pending = requireVisiblePendingRow(pendingUuid, actor);
         String subject = request == null ? null : request.subject();
         String body = request == null ? null : request.body();
         if (subject != null && subject.trim().length() > RecruitmentEmailService.SUBJECT_MAX_LENGTH) {
@@ -415,10 +416,18 @@ public class RecruitmentEmailResource {
         if (body != null && body.length() > RecruitmentEmailService.BODY_MAX_LENGTH) {
             throw badRequest("body exceeds " + RecruitmentEmailService.BODY_MAX_LENGTH + " characters");
         }
-        RecruitmentPendingEmail approved = emailService.approve(pendingUuid.toString(),
-                subject, body,
+        // null keeps the snapshot's stored format — the distinction is the
+        // approve() contract, so it is resolved once and passed on unchanged.
+        RecruitmentEmailBodyFormat requestFormat =
                 request == null || request.bodyFormat() == null || request.bodyFormat().isBlank()
-                        ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
+                        ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat());
+        // A null field means "approve the snapshot unedited", so the gate has
+        // to judge what will actually be sent — not only what was retyped.
+        requireNoUnresolvedLinks(subject == null ? pending.getSubject() : subject,
+                body == null ? pending.getBody() : body,
+                requestFormat == null ? pending.getBodyFormat() : requestFormat);
+        RecruitmentPendingEmail approved = emailService.approve(pendingUuid.toString(),
+                subject, body, requestFormat,
                 actor.toString(),
                 request == null ? null : request.copyUserUuids(),
                 copyModeOrNull(request == null ? null : request.copyMode()));
@@ -559,12 +568,13 @@ public class RecruitmentEmailResource {
     }
 
     /** Approve/dismiss re-check the row's candidate through the same read matrix. */
-    private void requireVisiblePendingRow(UUID pendingUuid, UUID actor) {
+    private RecruitmentPendingEmail requireVisiblePendingRow(UUID pendingUuid, UUID actor) {
         RecruitmentPendingEmail pending = RecruitmentPendingEmail.findById(pendingUuid.toString());
         if (pending == null) {
             throw new NotFoundException("Resource not found");
         }
         requireVisibleCandidate(UUID.fromString(pending.getCandidateUuid()), actor);
+        return pending;
     }
 
     /** The application context must belong to the addressed candidate. */
@@ -621,6 +631,30 @@ public class RecruitmentEmailResource {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    /**
+     * Refuse a send that still carries an unfilled link placeholder.
+     * <p>
+     * The compose dialog warns about every unresolved merge field, but a
+     * warning is advice and this is not advisable: {@code {{consent_link}}}
+     * resolves only inside the GDPR sweep, so a hand-composed renewal mails
+     * a dead GDPR consent link and the candidate is auto-deleted at the
+     * deadline for not clicking it. Cosmetic tokens
+     * ({@code {{position_title}}}) stay a warning — only {@code *_link} is
+     * fatal, and only here, at the boundary where a human pressed Send.
+     * Automatic sends never reach this method: the sweep and the candidate
+     * mailer render their own bodies with every value in hand.
+     */
+    private void requireNoUnresolvedLinks(String subject, String body,
+                                          RecruitmentEmailBodyFormat bodyFormat) {
+        Set<String> broken = RecruitmentEmailRenderer.unresolvedLinkTokens(subject, body, bodyFormat);
+        if (!broken.isEmpty()) {
+            throw badRequest("The email still contains link placeholders that were not filled in: "
+                    + broken.stream().map(token -> "{{" + token + "}}").collect(Collectors.joining(", "))
+                    + ". They would reach the candidate as text, not a working link — remove them, "
+                    + "or let the automatic job send this template.");
+        }
     }
 
     private static WebApplicationException badRequest(String message) {

@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -103,5 +104,56 @@ class RecruitmentEmailRendererTest {
                 java.util.Map.of("consent_link", "https://intra.trustworks.dk/consent/abc123"));
         assertTrue(with.body().contains("https://intra.trustworks.dk/consent/abc123"));
         assertTrue(with.unresolvedFields().isEmpty());
+    }
+
+    // ---- The send gate: an unfilled link placeholder must never go out ----
+
+    @Test
+    void unresolvedLinkTokens_findsTheConsentLinkInEitherFormat() {
+        assertEquals(Set.of("consent_link"), RecruitmentEmailRenderer.unresolvedLinkTokens(
+                "Emne", "Klik her: {{consent_link}}", RecruitmentEmailBodyFormat.PLAIN));
+        assertEquals(Set.of("consent_link"), RecruitmentEmailRenderer.unresolvedLinkTokens(
+                "Emne", "<p>Klik her: {{consent_link}}</p>", RecruitmentEmailBodyFormat.HTML));
+    }
+
+    @Test
+    void unresolvedLinkTokens_findsATokenTheRichEditorSplitAcrossMarkup() {
+        // The exact case healSplitTokens exists for: bolding half a token
+        // must not be a way past the gate.
+        assertEquals(Set.of("consent_link"), RecruitmentEmailRenderer.unresolvedLinkTokens(
+                "Emne", "<p>{{consent_<b>link</b>}}</p>", RecruitmentEmailBodyFormat.HTML));
+    }
+
+    @Test
+    void unresolvedLinkTokens_alsoScansTheSubject() {
+        assertEquals(Set.of("consent_link"), RecruitmentEmailRenderer.unresolvedLinkTokens(
+                "Dit link: {{consent_link}}", "<p>Ingen tokens her</p>",
+                RecruitmentEmailBodyFormat.HTML));
+    }
+
+    @Test
+    void unresolvedLinkTokens_ignoresCosmeticTokens() {
+        // Only *_link is fatal. A missing position title is embarrassing, not
+        // broken, and blocking on it would refuse legitimate sends.
+        assertTrue(RecruitmentEmailRenderer.unresolvedLinkTokens(
+                "Emne", "<p>Kære {{candidate_first_name}} — {{position_title}}</p>",
+                RecruitmentEmailBodyFormat.HTML).isEmpty());
+    }
+
+    @Test
+    void unresolvedLinkTokens_emptyOnceTheLinkIsResolved() {
+        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                "Emne", "<p>Klik her: {{consent_link}}</p>", null, null,
+                java.util.Map.of("consent_link", "https://intra.trustworks.dk/consent/abc123"),
+                RecruitmentEmailBodyFormat.HTML);
+        assertTrue(RecruitmentEmailRenderer.unresolvedLinkTokens(
+                        rendered.subject(), rendered.body(), RecruitmentEmailBodyFormat.HTML)
+                .isEmpty(), "the sweep's own send must pass the gate it enforces on humans");
+    }
+
+    @Test
+    void unresolvedLinkTokens_toleratesNulls() {
+        assertTrue(RecruitmentEmailRenderer
+                .unresolvedLinkTokens(null, null, null).isEmpty());
     }
 }
