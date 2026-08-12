@@ -7,6 +7,7 @@ import jakarta.persistence.LockModeType;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -62,6 +63,13 @@ public abstract class RecruitmentReactor {
     /** Hard bound per sweep — backstop against a runaway loop, far above any real backlog. */
     private static final int MAX_EVENTS_PER_SWEEP = 10_000;
 
+    /**
+     * Attempts for the one-off offset-row insert. A deadlock there is
+     * transient by definition, and the insert is idempotent (INSERT IGNORE),
+     * so re-running it is always safe.
+     */
+    static final int SEED_MAX_ATTEMPTS = 3;
+
     @Inject
     EntityManager em;
 
@@ -104,9 +112,11 @@ public abstract class RecruitmentReactor {
      * retries the event later.
      */
     public void deliverLive(long seq) {
-        // The startup guard normally seeds the offset row at boot. If a
-        // reactor is somehow live before that, the event triggering us is
-        // post-deploy by definition — seed the watermark just below it.
+        // The startup guard normally seeds the offset row at boot, so this
+        // is a keyed point read that finds it and returns. Only if a reactor
+        // is somehow live before the guard ran does it write: the event
+        // triggering us is post-deploy by definition, so the watermark is
+        // seeded just below it.
         ensureOffsetRow(seq - 1);
         DeliveryOutcome outcome = deliverOnce(seq);
         if (outcome == DeliveryOutcome.HANDLED) {
@@ -175,24 +185,106 @@ public abstract class RecruitmentReactor {
      * offset row yet — a newly deployed reactor never replays history
      * (plan §2). No-op when the row exists. Called by the startup guard and
      * defensively before every sweep.
+     * <p>
+     * <b>Why the existence check comes first (prod deadlock 2026-08-11).</b>
+     * This used to be one statement — {@code INSERT IGNORE INTO
+     * recruitment_reactor_offsets ... SELECT :name, COALESCE(MAX(seq), 0)
+     * FROM recruitment_events} — run at the top of every sweep for every
+     * reactor: ten aggregate reads over the append-only stream every five
+     * minutes, on every instance. {@code INSERT ... SELECT} is a
+     * <em>locking</em> read: under REPEATABLE READ it takes shared next-key
+     * locks on the rows it reads, and {@code MAX(seq)} on the clustered
+     * primary key means the tail record plus the supremum gap — exactly
+     * where every append lands. Because {@link RecruitmentEventRecorder}
+     * persists in the <em>caller's</em> transaction, one business
+     * transaction that records two events holds the tail record across both
+     * appends; the seeder then waits on that uncommitted record while the
+     * second append's insert-intention lock queues behind the seeder's own
+     * pending gap-lock request, and InnoDB breaks the cycle with 1213 /
+     * 40001. The victim was the whole reactor for that sweep.
+     * <p>
+     * So the contention is removed rather than retried: after the first
+     * seeding the hot path is a primary-key point read on a ten-row table,
+     * and the head read it guards is a plain {@code SELECT} — a non-locking
+     * consistent read that can neither block an append nor be blocked by
+     * one.
      */
     public void ensureOffsetRowSeededToHead() {
-        QuarkusTransaction.requiringNew().run(() ->
-                em.createNativeQuery(
-                                "INSERT IGNORE INTO recruitment_reactor_offsets (reactor_name, last_processed_seq) " +
-                                "SELECT :name, COALESCE(MAX(seq), 0) FROM recruitment_events")
-                        .setParameter("name", name())
-                        .executeUpdate());
+        if (offsetRowExists()) {
+            return;
+        }
+        // Racing appends between the two statements only mean the seed lands
+        // a few seq below the true head, so the new reactor sees a handful of
+        // events it could have skipped. At-least-once with durable dedupe
+        // makes that harmless — the reverse (seeding past an event) is not.
+        seedOffsetRow(currentStreamHead());
     }
 
-    private void ensureOffsetRow(long seedIfMissing) {
+    void ensureOffsetRow(long seedIfMissing) {
+        if (offsetRowExists()) {
+            return;
+        }
+        seedOffsetRow(Math.max(seedIfMissing, 0));
+    }
+
+    /**
+     * Does this reactor have an offset row? Keyed primary-key lookup, no
+     * locks — this is the guard that keeps the seeding statements off the
+     * hot path. Package-private so tests can drive the lifecycle without a
+     * database.
+     */
+    boolean offsetRowExists() {
+        return QuarkusTransaction.requiringNew().call(
+                () -> em.find(RecruitmentReactorOffset.class, name()) != null);
+    }
+
+    /**
+     * Highest assigned {@code seq}, 0 on an empty stream. A plain
+     * {@code SELECT} is a consistent (MVCC) read and takes no locks at all,
+     * which is the whole point — see {@link #ensureOffsetRowSeededToHead()}.
+     */
+    long currentStreamHead() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            Long head = em.createQuery("SELECT MAX(e.seq) FROM RecruitmentEvent e", Long.class)
+                    .getSingleResult();
+            return head == null ? 0L : head;
+        });
+    }
+
+    /**
+     * Insert the offset row, keyed on this reactor alone. {@code INSERT
+     * IGNORE} so a concurrent seeder on another instance wins harmlessly and
+     * an established watermark is never rolled back.
+     */
+    void insertOffsetRow(long seed) {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "INSERT IGNORE INTO recruitment_reactor_offsets (reactor_name, last_processed_seq) " +
                                 "VALUES (:name, :seed)")
                         .setParameter("name", name())
-                        .setParameter("seed", Math.max(seedIfMissing, 0))
+                        .setParameter("seed", seed)
                         .executeUpdate());
+    }
+
+    /**
+     * The insert above, with a bounded deadlock retry. It only runs once per
+     * reactor in a database's lifetime, but it runs concurrently across
+     * instances at deploy time, so the residual contention on the offsets
+     * primary key is retried rather than surfaced as a failed reactor.
+     */
+    private void seedOffsetRow(long seed) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                insertOffsetRow(seed);
+                return;
+            } catch (RuntimeException e) {
+                if (attempt >= SEED_MAX_ATTEMPTS || !isDeadlock(e)) {
+                    throw e;
+                }
+                log.warnf("Reactor %s: deadlock seeding the offset row (attempt %d/%d) — retrying",
+                        name(), attempt, SEED_MAX_ATTEMPTS);
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -312,6 +404,26 @@ public abstract class RecruitmentReactor {
                 .getResultStream()
                 .findFirst()
                 .orElse(null));
+    }
+
+    /**
+     * MariaDB deadlock — error 1213 / SQLState 40001 — anywhere in the cause
+     * chain (Hibernate wraps it in {@code LockAcquisitionException}, JPA in
+     * {@code PessimisticLockException}). Matched on the SQL code rather than
+     * on {@code "Deadlock"} in the message, so it survives a driver-wording
+     * or locale change.
+     */
+    private static boolean isDeadlock(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql
+                    && ("40001".equals(sql.getSQLState()) || sql.getErrorCode() == 1213)) {
+                return true;
+            }
+            if (t == t.getCause()) {
+                break;
+            }
+        }
+        return false;
     }
 
     private static boolean isDuplicateKey(Throwable e) {
