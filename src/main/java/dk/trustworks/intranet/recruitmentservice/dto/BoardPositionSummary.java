@@ -29,6 +29,14 @@ public record BoardPositionSummary(
         String hiringOwnerUuid,
         RecruitmentPositionStatus status,
         RecruitmentDemandRag demandRag,
-        List<String> stageSet
+        List<String> stageSet,
+        /**
+         * Whether the requesting user may move cards on this board
+         * ({@code RecruitmentVisibility.canDecideOnApplication}). A team lead
+         * reads every non-partner board but may only act on their own
+         * practice's, so the page needs this to render the rest read-only
+         * rather than letting a drag fail with a 403.
+         */
+        boolean viewerCanDecide
 ) {
 }

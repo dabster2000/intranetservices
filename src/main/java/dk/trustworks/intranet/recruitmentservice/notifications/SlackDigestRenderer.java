@@ -29,10 +29,15 @@ import java.util.Optional;
  * each delivery re-reads {@code recruitment.pipeline.enabled} AND the
  * generating kind's own {@code recruitment.ai.digest.*} toggle, so
  * disabling a digest between generation and delivery suppresses the post
- * too (silent PROCESSED advance, the P22 gating model). Routing is the
- * P12 settings-routed default channel — digests are cross-practice, so
- * the per-practice overrides never apply; a blank default channel is a
- * visible INFO skip (the standing "routing off = notifications off" rule).
+ * too (silent PROCESSED advance, the P22 gating model).
+ * <p>
+ * Routing (decided 2026-08-12): the company-wide edition goes to the
+ * <b>HR channel</b> — it is a whole-company read and belongs where HR
+ * works, not in the shared recruitment channel. An edition carrying
+ * {@code payload.practice_uuid} is that practice's own funnel and goes to
+ * that practice's channel; if the channel has since been removed the post
+ * is skipped rather than spilled into a shared channel (a practice digest
+ * is only ever generated for a practice that has one).
  * <p>
  * PII posture: the digest payload IS the message content — aggregates
  * only, by the {@code AiDigestFacts} construction — so this renderer
@@ -70,6 +75,10 @@ public class SlackDigestRenderer extends RecruitmentReactor {
             defaultValue = "https://intra.trustworks.dk")
     String baseUrl;
 
+    /** Home of the company-wide digest — the same channel the HR notices use. */
+    @ConfigProperty(name = "recruitment.hr.slack.channel-id", defaultValue = "C0B1XUB3AEB")
+    String hrChannelId;
+
     @Override
     public String name() {
         return NAME;
@@ -96,11 +105,15 @@ public class SlackDigestRenderer extends RecruitmentReactor {
         if (!kindEnabled || !featureFlag.isPipelineEnabled()) {
             return; // silent PROCESSED advance — no backfill on later enable
         }
-        Optional<String> channel = router.channelFor(null);
+        String practiceUuid = str(payload.get("practice_uuid"));
+        Optional<String> channel = practiceUuid.isEmpty()
+                ? Optional.of(hrChannelId)
+                : router.practiceChannel(practiceUuid);
         if (channel.isEmpty()) {
-            log.infof("Digest %s (%s): no default Slack channel configured — skipping post "
-                    + "(configure it under Settings → Recruitment AI & Slack)",
-                    kind, str(payload.get("period")));
+            log.infof("Digest %s (%s) for practice %s: that practice no longer has its own Slack "
+                    + "channel — skipping rather than posting a practice digest to a shared "
+                    + "channel (configure it under Settings → Recruitment AI & Slack)",
+                    kind, str(payload.get("period")), practiceUuid);
             return;
         }
         String narrative = str(payload.get("narrative"));
@@ -108,7 +121,7 @@ public class SlackDigestRenderer extends RecruitmentReactor {
             log.warnf("Digest event seq %d has no narrative — nothing to post", event.getSeq());
             return;
         }
-        String header = headerFor(kind, str(payload.get("period")));
+        String header = headerFor(kind, str(payload.get("period")), practiceName(practiceUuid));
         List<com.slack.api.model.block.LayoutBlock> blocks =
                 digestBlocks(header, narrative, kpisOf(payload));
         // Throwing post (not the best-effort channel variant): a failed
@@ -152,13 +165,28 @@ public class SlackDigestRenderer extends RecruitmentReactor {
         return blocks;
     }
 
-    static String headerFor(String kind, String period) {
-        String suffix = period.isEmpty() ? "" : " · " + period;
+    static String headerFor(String kind, String period, String practiceName) {
+        String suffix = (practiceName.isEmpty() ? "" : " · " + practiceName)
+                + (period.isEmpty() ? "" : " · " + period);
         return switch (kind) {
             case AiDigestService.KIND_WEEKLY_FUNNEL -> "Recruitment week in numbers" + suffix;
             case AiDigestService.KIND_REJECTION_PATTERNS -> "Quarterly rejection patterns" + suffix;
             default -> "Recruitment digest" + suffix;
         };
+    }
+
+    /**
+     * The practice's display name for the header, so a reader can tell a
+     * practice edition from the company-wide one at a glance. Empty for the
+     * company-wide digest and for a practice row that has since disappeared.
+     */
+    private String practiceName(String practiceUuid) {
+        if (practiceUuid.isEmpty()) {
+            return "";
+        }
+        dk.trustworks.intranet.model.Practice practice =
+                dk.trustworks.intranet.model.Practice.findById(practiceUuid);
+        return practice == null || practice.getName() == null ? "" : practice.getName();
     }
 
     /** {@code open_positions} → {@code Open positions}. */

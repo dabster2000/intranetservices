@@ -131,7 +131,7 @@ public class RecruitmentApplicationResource {
 
         RecruitmentApplication application = applicationService.create(candidate, position, actor);
         return Response.created(URI.create("/recruitment/applications/" + application.getUuid()))
-                .entity(applicationService.toResponse(application, position))
+                .entity(applicationService.toResponse(application, position, actor.toString()))
                 .build();
     }
 
@@ -178,7 +178,7 @@ public class RecruitmentApplicationResource {
         boolean mayFastTrack = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
         RecruitmentApplication updated =
                 applicationService.changeStage(application, position, request.stage(), mayFastTrack, actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     // ---- Position move (re-filing) --------------------------------------------------
@@ -219,7 +219,7 @@ public class RecruitmentApplicationResource {
 
         RecruitmentApplication updated =
                 applicationService.moveToPosition(application, from, target, actor);
-        return applicationService.toResponse(updated, target);
+        return applicationService.toResponse(updated, target, actor.toString());
     }
 
     // ---- Terminals -----------------------------------------------------------------
@@ -245,7 +245,7 @@ public class RecruitmentApplicationResource {
         boolean isRecruiterOrOwner = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
         RecruitmentApplication updated =
                 applicationService.reject(application, position, candidate, request, isRecruiterOrOwner, actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     /** The candidate backed out (optional note → event pii). */
@@ -265,7 +265,7 @@ public class RecruitmentApplicationResource {
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         RecruitmentApplication updated = applicationService.withdraw(application, position, candidate,
                 request != null ? request.note() : null, actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     /**
@@ -284,7 +284,7 @@ public class RecruitmentApplicationResource {
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         RecruitmentApplication updated =
                 applicationService.returnToPool(application, position, candidate, actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     // ---- Plain updates -------------------------------------------------------------
@@ -306,7 +306,7 @@ public class RecruitmentApplicationResource {
         requireDecisionRights(position, actor);
         RecruitmentApplication updated =
                 applicationService.assignTeam(application, position, request.teamUuid(), actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     /** Airtable's Ansættelsesdato — typically set at OFFER. */
@@ -326,7 +326,7 @@ public class RecruitmentApplicationResource {
         requireDecisionRights(position, actor);
         RecruitmentApplication updated = applicationService.setExpectedStartDate(application, position,
                 request.expectedStartDate(), actor);
-        return applicationService.toResponse(updated, position);
+        return applicationService.toResponse(updated, position, actor.toString());
     }
 
     // ---- Helpers --------------------------------------------------------------------
