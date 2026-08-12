@@ -54,6 +54,25 @@ public class CvToolSyncService {
     Optional<String> subscriptionKey;
 
     /**
+     * Attempts for a single CV Tool call, including the first. Three attempts against
+     * a 30s read-timeout bound one stalled call at ~96s including backoff, which is
+     * nothing for a job that runs at 04:00 and normally takes ~30s.
+     */
+    static final int MAX_ATTEMPTS_PER_CALL = 3;
+
+    /**
+     * Retries the whole run may spend, across every call. Without this cap a gateway
+     * that dies mid-run would have each of ~130 remaining employees burn its own full
+     * retry ladder, stretching a failed night into hours of pointless traffic. The
+     * budget is deliberately small: retrying is for the isolated blip, and anything
+     * that exhausts it is an outage that should fail fast and loudly.
+     */
+    static final int RETRY_BUDGET_PER_RUN = 8;
+
+    /** Swapped in tests so retry policy is exercised without real waiting. */
+    CvToolRetryExecutor.Sleeper sleeper = CvToolRetryExecutor.Sleeper.REAL;
+
+    /**
      * Main sync method. Called by the nightly batchlet.
      *
      * @return Summary string for batch job logging
@@ -67,13 +86,40 @@ public class CvToolSyncService {
                 "CV Tool subscription key is not configured — set CVTOOL_SUBSCRIPTION_KEY");
         }
 
-        // Step 1: Fetch employee list
+        // One executor per run: it carries the run-wide retry budget, which must
+        // reset every night. This service is @ApplicationScoped, so a field would
+        // exhaust the budget once and never retry again.
+        CvToolRetryExecutor retry =
+                new CvToolRetryExecutor(sleeper, MAX_ATTEMPTS_PER_CALL, RETRY_BUDGET_PER_RUN);
+
+        // Step 1: Fetch employee list.
+        //
+        // This single call gates every employee below it, so a transient failure here
+        // costs the entire night — 0 CVs synced, not 129. It stalled to the client's
+        // 30s read-timeout on 2026-08-07 and 2026-08-11 (30.18s and 30.26s, both from
+        // the first call of a freshly started task) while a healthy fetch returns in
+        // ~1.3s. Hence the retry: the fetch is not slow, it occasionally hangs, and a
+        // second attempt against a warm gateway succeeds.
         List<CvToolEmployeeSkinny> employees;
+        long startNanos = System.nanoTime();
         try {
-            employees = cvToolClient.getAllEmployees();
+            employees = retry.call("employee list", cvToolClient::getAllEmployees);
             log.infof("Fetched %d employees from CV Tool", employees.size());
         } catch (Exception e) {
-            throw new CvToolSyncException("Could not fetch employee list from CV Tool", e);
+            // The root cause goes in the message, not just the chain. As a bare
+            // wrapper this read "Could not fetch employee list from CV Tool" and
+            // nothing else, leaving the actual SocketTimeoutException two "Caused by:"
+            // levels down a RESTEasy stack trace — present, but not what anyone sees
+            // first in CloudWatch. The elapsed time is here for the same reason: it is
+            // what identifies a timeout as a timeout rather than an upstream error.
+            // Report the attempts actually made, not MAX_ATTEMPTS_PER_CALL. Most
+            // failures stop on the first attempt because 401/403/404/500 are
+            // deliberately not retried, and claiming "3 attempts in 0.4s" would both
+            // be false and contradict the elapsed time beside it.
+            throw new CvToolSyncException(String.format(
+                    "Could not fetch employee list from CV Tool after %d attempt(s) in %.1fs — %s",
+                    retry.attemptsOfLastCall(), elapsedSeconds(startNanos),
+                    CvToolRetryExecutor.rootCause(e)), e);
         }
 
         // Step 2: Filter and sync each employee
@@ -96,13 +142,14 @@ public class CvToolSyncService {
             }
 
             try {
-                switch (syncEmployee(employee)) {
+                switch (syncEmployee(employee, retry)) {
                     case SYNCED -> synced++;
                     case UNCHANGED -> unchanged++;
                     case SKIPPED -> skipped++;
                 }
             } catch (Exception e) {
-                log.errorf(e, "Failed to sync employee %d (%s)", employee.id(), employee.name());
+                log.errorf(e, "Failed to sync employee %d (%s): %s",
+                        employee.id(), employee.name(), CvToolRetryExecutor.rootCause(e));
                 failed++;
             }
         }
@@ -142,9 +189,14 @@ public class CvToolSyncService {
      *
      * @return what the sync accomplished; throws {@link CvToolSyncException} on failure
      */
-    private SyncOutcome syncEmployee(CvToolEmployeeSkinny employee) {
-        // Fetch full employee + CV data
-        CvToolEmployeeResponse fullEmployee = cvToolClient.getEmployee(employee.id());
+    private SyncOutcome syncEmployee(CvToolEmployeeSkinny employee, CvToolRetryExecutor retry) {
+        // Fetch full employee + CV data. Retried on the same terms as the list fetch:
+        // any single employee failure fails the whole run (see the summary check
+        // above), so one stalled socket out of ~130 is enough to turn the night red
+        // even though the other 129 CVs were written. The run-wide budget stops a
+        // genuine outage from spending a retry ladder per employee.
+        CvToolEmployeeResponse fullEmployee =
+                retry.call("employee " + employee.id(), () -> cvToolClient.getEmployee(employee.id()));
 
         if (fullEmployee.cv() == null || fullEmployee.cv().isNull()) {
             log.debugf("Employee %d (%s) has no CV data, skipping", employee.id(), employee.name());
@@ -262,6 +314,10 @@ public class CvToolSyncService {
 
         log.debugf("Synced CV for employee %d (%s)", employee.id(), fullEmployee.name());
         return SyncOutcome.SYNCED;
+    }
+
+    private static double elapsedSeconds(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000_000.0;
     }
 
     /**

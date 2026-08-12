@@ -33,6 +33,8 @@ class CvToolSyncServiceFailureTest {
         CvToolSyncService service = new CvToolSyncService();
         service.subscriptionKey = key;
         service.cvToolClient = client;
+        // Retries must never cost this suite real wall-clock time.
+        service.sleeper = millis -> { };
         return service;
     }
 
