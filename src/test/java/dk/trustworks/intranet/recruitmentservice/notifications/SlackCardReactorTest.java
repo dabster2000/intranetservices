@@ -410,6 +410,52 @@ class SlackCardReactorTest {
         assertEquals(ROOT_TS, threadRowTs());
     }
 
+    /**
+     * The state a fail-closed position move leaves behind: the application
+     * sits on a PARTNER position while its living card still lives in the
+     * shared channel it was born in. The next event must FREEZE that card —
+     * updating it there would publish the confidential position's title and
+     * stage in a channel the circle never chose.
+     */
+    @Test
+    void staleSharedCard_ofPartnerTrackApplication_isFrozenNotUpdated() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("UPDATE recruitment_positions SET hiring_track = 'PARTNER' "
+                                + "WHERE uuid = :p")
+                        .setParameter("p", positionUuid).executeUpdate());
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+
+        insertStageChanged("SCREENING", "INTERVIEW_1", "FORWARD");
+        reactor.catchUp();
+
+        verify(slackService, never()).updateMessageStrict(anyString(), anyString(), anyString(), any());
+        verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
+        verify(slackService, never()).sendMessageReturningTs(anyString(), anyString(), any());
+        assertEquals("C-DEFAULT", threadRowChannel(),
+                "the stale row stays put so the logged cleanup can still find it");
+    }
+
+    /** The freeze is scoped: a partner card in its OWN private channel keeps updating. */
+    @Test
+    void partnerCard_inItsPrivateChannel_stillUpdates() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("UPDATE recruitment_positions SET hiring_track = 'PARTNER' "
+                            + "WHERE uuid = :p")
+                    .setParameter("p", positionUuid).executeUpdate();
+            em.createNativeQuery("INSERT INTO recruitment_slack_channels "
+                            + "(position_uuid, channel_id, archived_at) VALUES (:p, 'C-PRIVATE', NULL)")
+                    .setParameter("p", positionUuid).executeUpdate();
+        });
+        insertThreadRow("C-PRIVATE", ROOT_TS);
+
+        insertStageChanged("SCREENING", "INTERVIEW_1", "FORWARD");
+        reactor.catchUp();
+
+        verify(slackService).updateMessageStrict(eq("C-PRIVATE"), eq(ROOT_TS), anyString(), any());
+    }
+
     // ---- Redaction hook (P19 carry-over) ------------------------------------------
 
     @Test

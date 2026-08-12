@@ -72,7 +72,10 @@ import java.util.Map;
  *       positions post ONLY to the position's private channel
  *       ({@link RecruitmentSlackChannel}, maintained by
  *       {@link SlackChannelReactor}); with no live channel they degrade to
- *       circle-member DMs — never a shared channel (spec §5.2).</li>
+ *       circle-member DMs — never a shared channel (spec §5.2). A card a
+ *       fail-closed position move left behind in a shared channel is
+ *       <em>frozen</em>: later events never update or reply to it there,
+ *       so it permanently shows the pre-move, already-public state.</li>
  *   <li><b>Anonymization redaction (P19 carry-over):</b>
  *       {@code CANDIDATE_ANONYMIZED} rewrites every root card of the
  *       candidate to "Anonymized candidate" — deliberately independent of
@@ -199,10 +202,12 @@ public class SlackCardReactor extends RecruitmentReactor {
                 // Moving ONTO the partner track would publish a
                 // partner-track title in a shared channel — and moving a
                 // confidential card out of its private channel is worse
-                // still. Fail closed: leave the stale card alone (its
-                // content is the already-public old state) and log it for
-                // cleanup. The move is still on the timeline and in the
-                // circle's own surfaces; only the shared-channel echo drops.
+                // still. Fail closed: leave the stale card alone and log it
+                // for cleanup. The freeze guard below keeps every LATER
+                // event off it too, so its content stays the already-public
+                // pre-move state for good. The move is still on the timeline
+                // and in the circle's own surfaces; only the shared-channel
+                // echo drops.
                 if (isPartnerTrack(event, position)) {
                     log.warnf("Card reactor: application %s moved onto partner track — leaving its "
                                     + "card in channel %s untouched (seq %d)",
@@ -221,6 +226,23 @@ public class SlackCardReactor extends RecruitmentReactor {
                     return;
                 }
             }
+        }
+
+        // FREEZE GUARD: a partner-track application may only ever touch a
+        // card in its own private circle channel. The fail-closed move above
+        // leaves the thread row pointing at the old shared channel — without
+        // this check the NEXT event (stage move, interview, scorecard) would
+        // chat.update that card with the confidential position's title and
+        // stage, and post a reply under it, in a channel the circle never
+        // chose. Freeze it instead: the shared card keeps showing the
+        // pre-move, already-public state forever, and the row stays put so
+        // the cleanup the move logged can still find it.
+        if (isPartnerTrack(event, position)
+                && !thread.getChannelId().equals(resolveChannel(event, position))) {
+            log.warnf("Card reactor: application %s is partner-track but its card lives in "
+                            + "channel %s — card frozen, %s not echoed there (seq %d)",
+                    applicationUuid, thread.getChannelId(), event.getEventType(), event.getSeq());
+            return;
         }
 
         // chat.update the living card first (idempotent — a retry of this
