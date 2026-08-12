@@ -26,6 +26,11 @@ public class ConferencePhase extends PanacheEntityBase {
     private String subject;
     private String mail;
 
+    // Editable Mailcraft EmailDocument (JSON). Sent mails always come from
+    // the pre-rendered HTML in `mail`; this column only feeds the editor.
+    @Column(name = "mail_json", columnDefinition = "LONGTEXT")
+    private String mailJson;
+
     @Column(name = "slack_channel")
     private String slackChannel;
 
