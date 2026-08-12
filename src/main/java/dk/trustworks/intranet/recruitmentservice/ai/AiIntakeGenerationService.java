@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.ai;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -50,17 +51,23 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>Every OpenAI call passes {@code store=false} (suppressed logging
  *       path — candidate PII goes to OpenAI, never to logs).</li>
- *   <li>Model output is <b>untrusted</b>: enums are valueOf-guarded,
- *       specializations must be inside the practice catalog, free-text
- *       values are trimmed/capped/control-char-stripped, evidence is
- *       mandatory. Anything invalid is silently dropped; a section with
- *       nothing valid left appends no event.</li>
+ *   <li>Model output is <b>untrusted</b>: the answer must be exactly one
+ *       JSON document (trailing scratchpad fails the parse), enums are
+ *       valueOf-guarded, specializations must be inside the practice
+ *       catalog, free-text values are trimmed/capped/control-char-stripped,
+ *       evidence is mandatory. Anything invalid is silently dropped; a
+ *       section with nothing valid left appends no event.</li>
  *   <li>AI text (values, evidence, bullets) lives exclusively in the
  *       event's pii section — payload carries structural facts only.</li>
  * </ul>
- * OpenAI failure/refusal ("{}" / blank) throws — the reactor's 2-attempt
+ * Two failure classes, both fail closed rather than persist what came back:
+ * OpenAI failure/refusal ("{}" / blank) throws from {@link #callModel}, and
+ * contaminated output — unparseable, trailing tokens, a brief that is not
+ * the promised array, or a "bullet" that is really model scratchpad —
+ * throws from {@link #validateBullets}. Either way the reactor's 2-attempt
  * posture retries once via catch-up, then skips; the regenerate endpoint
- * surfaces a 500.
+ * surfaces a 500. A merely <em>thin</em> brief (under three bullets) stays
+ * a silent no-op, as contract §4.3 requires.
  */
 @JBossLog
 @ApplicationScoped
@@ -97,6 +104,40 @@ public class AiIntakeGenerationService {
     static final int MAX_EMPLOYER_CHARS = 200;
 
     private static final String SCHEMA_NAME = "RecruitmentAiIntake";
+
+    /**
+     * The model answer is parsed as EXACTLY ONE JSON document — the injected
+     * {@link ObjectMapper} is deliberately not used here.
+     * <p>
+     * Jackson leaves {@code FAIL_ON_TRAILING_TOKENS} off by default, so
+     * {@code readTree} happily parses the leading object of
+     * {@code {"brief":[…]}<model scratchpad>} and drops the rest on the floor.
+     * That silence is what let a contaminated 2026-08 production generation
+     * (candidate 824f6d35, {@code gpt-5.6-terra}, {@code brief-v1}) reach
+     * {@code recruitment_events.pii} carrying the model's own deliberation and
+     * harmony channel markers ("assistant to=system" / "assistant to=final")
+     * behind the real bullets. Trailing tokens now fail the parse, which is
+     * the same posture {@code IndividualBonusAiService} already takes on
+     * untrusted structured output.
+     */
+    private static final ObjectMapper STRICT_JSON = new ObjectMapper()
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+
+    /**
+     * Structural tells that a "bullet" is the model talking to itself rather
+     * than describing the candidate. Deliberately STRUCTURAL, never semantic:
+     * these byte sequences cannot occur in the short descriptive Danish prose
+     * the brief is specified to be, whereas a word list ("json", "schema")
+     * would false-reject a real bullet about an IT consultant's CV. The hard
+     * guards against long scratchpad dumps are the {@link #MAX_BULLET_CHARS}
+     * cap (now a rejection, not a truncation) and the single-document parse
+     * above; this list catches the short leaks those two miss.
+     */
+    private static final List<String> SCRATCHPAD_MARKERS = List.of(
+            "assistant to=",   // harmony channel routing, e.g. "assistant to=final"
+            "<|", "|>",        // any harmony control token (<|start|>, <|channel|>, …)
+            "```",             // a code fence around the model's own JSON
+            "\"brief\":", "\"bullets\":", "\"suggestions\":"); // a re-emitted envelope
 
     /**
      * The extraction model for the TEXT path (shared with
@@ -187,7 +228,8 @@ public class AiIntakeGenerationService {
      *                          — the key is then omitted from payload)
      * @param triggerVisibility the triggering event's visibility (null for
      *                          regenerate — derived from the position's track)
-     * @throws IllegalStateException when OpenAI fails/refuses (empty output)
+     * @throws IllegalStateException when OpenAI fails/refuses (empty output) or
+     *                               returns contaminated output ({@link #validateBullets})
      */
     public void generate(RecruitmentCandidate candidate, RecruitmentApplication anchor,
                          String origin, Long sourceEventSeq,
@@ -211,8 +253,10 @@ public class AiIntakeGenerationService {
      * commit atomically. Behavior (events, errors, origins) is identical
      * to {@link #generate}.
      *
-     * @throws IllegalStateException when OpenAI fails/refuses (empty output)
-     *                               or a transaction is unexpectedly active
+     * @throws IllegalStateException when OpenAI fails/refuses (empty output),
+     *                               returns contaminated output
+     *                               ({@link #validateBullets}), or a
+     *                               transaction is unexpectedly active
      */
     public void generateUntransacted(RecruitmentCandidate candidate, RecruitmentApplication anchor,
                                      String origin, Long sourceEventSeq,
@@ -310,34 +354,54 @@ public class AiIntakeGenerationService {
                                    String origin, Long sourceEventSeq) {
         JsonNode root;
         try {
-            root = objectMapper.readTree(output.json());
+            root = parseSingleJsonDocument(output.json());
         } catch (Exception e) {
+            // Structural facts only — the body may hold candidate PII.
             throw new IllegalStateException(
                     "AI intake generation returned unparseable output for candidate "
-                            + prepared.candidate().getUuid());
+                            + prepared.candidate().getUuid()
+                            + " (model=" + output.model() + ", chars=" + output.json().length()
+                            + ", cause=" + e.getClass().getSimpleName() + ")");
         }
+
+        // BOTH sections are constraint-checked before ANYTHING is appended: a
+        // contaminated brief must not leave a half-written generation behind
+        // (the suggestions event used to be appended first, so a brief that
+        // blew up mid-append relied on the transaction rolling back).
+        List<Suggestion> suggestions = prepared.intakeOn()
+                ? validateSuggestions(root.path("suggestions"), prepared.catalog())
+                : List.of();
+        List<String> bullets = prepared.briefOn()
+                ? validateBullets(root.path("brief"))
+                : List.of();
 
         String generationId = UUID.randomUUID().toString();
-
-        if (prepared.intakeOn()) {
-            List<Suggestion> suggestions = validateSuggestions(root.path("suggestions"), prepared.catalog());
-            if (!suggestions.isEmpty()) {
-                appendSuggestionsEvent(prepared.candidate(), prepared.anchor(), prepared.position(),
-                        prepared.visibility(), generationId, origin, sourceEventSeq,
-                        output.model(), suggestions);
-            }
+        if (!suggestions.isEmpty()) {
+            appendSuggestionsEvent(prepared.candidate(), prepared.anchor(), prepared.position(),
+                    prepared.visibility(), generationId, origin, sourceEventSeq,
+                    output.model(), suggestions);
         }
-        if (prepared.briefOn()) {
-            List<String> bullets = validateBullets(root.path("brief"));
-            if (!bullets.isEmpty()) {
-                appendBriefEvent(prepared.candidate(), prepared.anchor(), prepared.position(),
-                        prepared.visibility(), generationId, origin, sourceEventSeq,
-                        output.model(), bullets);
-            }
+        if (!bullets.isEmpty()) {
+            appendBriefEvent(prepared.candidate(), prepared.anchor(), prepared.position(),
+                    prepared.visibility(), generationId, origin, sourceEventSeq,
+                    output.model(), bullets);
         }
     }
 
     // ---- Validation (the hard guard — model output is untrusted) ---------------
+
+    /**
+     * Parse the model answer as EXACTLY one JSON document. Anything after the
+     * closing brace — the model's scratchpad, a second harmony channel, a
+     * trailing code fence — is a parse failure, not something to ignore.
+     *
+     * @throws com.fasterxml.jackson.core.JsonProcessingException on malformed
+     *         input OR on trailing tokens after the first complete value
+     */
+    static JsonNode parseSingleJsonDocument(String json)
+            throws com.fasterxml.jackson.core.JsonProcessingException {
+        return STRICT_JSON.readTree(json);
+    }
 
     /**
      * Constraint-check the model's suggestion section (contract §5.1):
@@ -383,20 +447,99 @@ public class AiIntakeGenerationService {
     }
 
     /**
-     * Bullets: trimmed, control-char-stripped, capped in length and count.
-     * Contract §4.3 mandates 3–5 bullets — when fewer than
-     * {@link #MIN_BULLETS} non-empty bullets survive the filtering, the
-     * whole brief is treated as absent (empty list ⇒ no
-     * {@code AI_BRIEF_GENERATED} event). The schema also declares
-     * minItems/maxItems, but the model output stays untrusted.
+     * Bullets: trimmed, control-char-stripped, shape- and content-checked.
+     * The schema declares {@code brief} as a nullable array of strings with
+     * minItems/maxItems, but model output stays untrusted — a response that
+     * is <em>incomplete</em> is never schema-validated by the API at all.
+     * <p>
+     * Two outcomes, deliberately different:
+     * <ul>
+     *   <li><b>Thin</b> — the model had little to say: an explicit
+     *       {@code null} brief, or fewer than {@link #MIN_BULLETS} non-blank
+     *       bullets (contract §4.3). Returns an empty list ⇒ no
+     *       {@code AI_BRIEF_GENERATED} event, no error, watermark advances.</li>
+     *   <li><b>Contaminated</b> — the section is not the shape the schema
+     *       promised (missing, non-array, non-text item) or a "bullet" is
+     *       really model scratchpad (over the length cap, or carrying a
+     *       {@link #SCRATCHPAD_MARKERS} tell). Throws, so the reactor's
+     *       2-attempt posture retries once and the regenerate endpoint
+     *       surfaces a 500 — raw model text is never persisted.</li>
+     * </ul>
+     * The over-cap rule is a REJECTION, not the truncation it used to be:
+     * cutting a multi-thousand-character scratchpad dump at
+     * {@link #MAX_BULLET_CHARS} is exactly how deliberation prose and an
+     * unterminated JSON fragment ended up looking like a bullet in
+     * production. Real bullets run ~120 characters; 400 is already 3× that.
+     * <p>
+     * Sibling failure mode, same root cause: a reasoning model can also
+     * spend the whole {@link #MAX_OUTPUT_TOKENS} budget thinking and answer
+     * 2xx with no visible text at all (the {@code gpt-5-nano} empty
+     * structured output incidents of 2026-07-24 / 2026-08-01). That shape is
+     * caught upstream in {@link #callModel} as {@code "{}"}. Both are the
+     * hidden reasoning channel leaking into the answer channel; both must
+     * fail closed rather than persist whatever came back.
      */
     List<String> validateBullets(JsonNode node) {
-        List<String> bullets = stringList(node).stream()
-                .map(b -> sanitize(b, MAX_BULLET_CHARS))
-                .filter(b -> b != null && !b.isBlank())
-                .limit(MAX_BULLETS)
-                .toList();
-        return bullets.size() < MIN_BULLETS ? List.of() : bullets;
+        if (node == null || node.isMissingNode()) {
+            throw contaminated("brief section absent (the strict schema declares it required)");
+        }
+        if (node.isNull()) {
+            return List.of(); // nullable array — nothing to say, not a failure
+        }
+        if (!node.isArray()) {
+            throw contaminated("brief section is " + node.getNodeType() + ", expected an array");
+        }
+        List<String> bullets = new ArrayList<>();
+        for (JsonNode item : node) {
+            if (!item.isTextual()) {
+                throw contaminated("brief bullet is " + item.getNodeType() + ", expected a string");
+            }
+            String bullet = clean(item.asText());
+            if (bullet == null) {
+                continue; // blank bullet — thin, not contaminated
+            }
+            if (bullet.length() > MAX_BULLET_CHARS) {
+                throw contaminated("brief bullet is " + bullet.length() + " chars, cap is "
+                        + MAX_BULLET_CHARS);
+            }
+            if (looksLikeModelScratchpad(bullet)) {
+                throw contaminated("brief bullet carries model-scratchpad markers");
+            }
+            bullets.add(bullet);
+        }
+        if (bullets.size() < MIN_BULLETS) {
+            return List.of();
+        }
+        // Over-generation past maxItems is benign — take the first five.
+        return List.copyOf(bullets.size() > MAX_BULLETS ? bullets.subList(0, MAX_BULLETS) : bullets);
+    }
+
+    /**
+     * Whether a cleaned bullet is the model's own deliberation rather than
+     * candidate prose. One whole-brief tell is enough: when the model breaks
+     * channel discipline on one bullet, the neighbouring bullets are just as
+     * likely to be mid-thought drafts, so the caller rejects the section
+     * rather than dropping the single item.
+     */
+    static boolean looksLikeModelScratchpad(String bullet) {
+        if (bullet == null || bullet.isEmpty()) {
+            return false;
+        }
+        String probe = bullet.toLowerCase(Locale.ROOT);
+        for (String marker : SCRATCHPAD_MARKERS) {
+            if (probe.contains(marker)) {
+                return true;
+            }
+        }
+        // A bullet that opens as a JSON document is a re-emitted envelope,
+        // never a sentence about a candidate.
+        char first = probe.charAt(0);
+        return first == '{' || first == '[';
+    }
+
+    /** Contaminated-output failure — message carries structure only, never model text. */
+    private static IllegalStateException contaminated(String detail) {
+        return new IllegalStateException("AI intake generation returned contaminated output: " + detail);
     }
 
     private static void addIfEvidence(List<Suggestion> out, String field, Object value, String evidence) {
@@ -538,13 +681,19 @@ public class AiIntakeGenerationService {
         }
     }
 
-    /** Trim, strip control chars, truncate at the cap; blank ⇒ null. (Evidence/bullets.) */
-    static String sanitize(String value, int maxLength) {
+    /** Trim + strip control chars, no length policy; blank ⇒ null. */
+    private static String clean(String value) {
         if (value == null) {
             return null;
         }
         String cleaned = value.replaceAll("[\\p{Cc}\\p{Cf}]", " ").trim();
-        if (cleaned.isEmpty()) {
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    /** Trim, strip control chars, truncate at the cap; blank ⇒ null. (Evidence.) */
+    static String sanitize(String value, int maxLength) {
+        String cleaned = clean(value);
+        if (cleaned == null) {
             return null;
         }
         return cleaned.length() > maxLength ? cleaned.substring(0, maxLength).trim() : cleaned;
@@ -557,14 +706,8 @@ public class AiIntakeGenerationService {
      * test contract §8.3).
      */
     static String sanitizeStrict(String value, int maxLength) {
-        if (value == null) {
-            return null;
-        }
-        String cleaned = value.replaceAll("[\\p{Cc}\\p{Cf}]", " ").trim();
-        if (cleaned.isEmpty() || cleaned.length() > maxLength) {
-            return null;
-        }
-        return cleaned;
+        String cleaned = clean(value);
+        return cleaned == null || cleaned.length() > maxLength ? null : cleaned;
     }
 
     /**
