@@ -100,12 +100,18 @@ class RecruitmentPositionServiceIntegrationTest {
         assertNull(created.getTeamUuid(), "practice track allows null team (decided at offer)");
         assertEquals(List.of("SCREENING", "INTERVIEW_1", "INTERVIEW_2", "OFFER", "HIRED"),
                 created.getStageSet());
-        assertEquals(4, created.getScorecardTemplate().size());
+        assertEquals(RecruitmentPositionDefaults.STANDARD_SCORECARD,
+                created.getScorecardTemplate(),
+                "a new position snapshots the current standard framework");
 
         // The DTO carries the DERIVED practiceCode — reload so the @Formula runs.
         RecruitmentPosition reloaded = reload(created.getUuid());
         assertEquals(activePracticeCode, reloaded.getPracticeCode());
         assertEquals(Boolean.TRUE, reloaded.getPracticeActive());
+        // Nobody has scored yet, so the subjects are still editable. This also
+        // exercises the scorecardLocked @Formula's SQL against a real database
+        // — the DB-free tier cannot see it at all.
+        assertEquals(Boolean.FALSE, reloaded.getScorecardLocked());
 
         List<RecruitmentEvent> events = eventsFor(created.getUuid());
         assertEquals(List.of(RecruitmentEventType.POSITION_OPENED),

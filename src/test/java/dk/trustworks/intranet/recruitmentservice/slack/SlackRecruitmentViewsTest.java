@@ -256,6 +256,51 @@ class SlackRecruitmentViewsTest {
                 "hostile candidate names never render as live markup");
     }
 
+    /**
+     * Slack has no hover, so the web tooltip's content has to arrive as input
+     * hints — otherwise an interviewer scoring from a phone sees six bare
+     * labels and no definition of what a 3 means.
+     */
+    @Test
+    void scorecardModal_eachSubjectCarriesItsGuidanceAsAHint() {
+        List<ScorecardAttribute> template = List.of(
+                new ScorecardAttribute("WHY_CONSULTING", "Why consulting"),
+                new ScorecardAttribute("FAGLIGHED", "Faglighed & formidling"),
+                // A custom subject: no catalog entry, so its own help text is used.
+                new ScorecardAttribute("BOOKKEEPING", "Bookkeeping", "Closes a month cleanly."),
+                // A subject the catalog has never heard of and with no help text.
+                new ScorecardAttribute("MYSTERY", "Mystery subject"));
+        View view = SlackRecruitmentViews.scorecardModal(
+                "Kim", "Senior Consultant", 1, template, "interview-1");
+
+        List<InputBlock> inputs = inputs(view.getBlocks());
+        String whyHint = inputs.get(0).getHint().getText();
+        assertTrue(whyHint.contains("Motivation for the consultant role"),
+                "the definition an interviewer reads before scoring");
+        assertTrue(whyHint.contains("1: ") && whyHint.contains("4: "),
+                "all four anchors travel with the subject");
+
+        assertTrue(inputs.get(1).getHint().getText().contains("kompetencekatalog"),
+                "Danish framework terms survive the plain-text hint");
+        assertEquals("Closes a month cleanly.", inputs.get(2).getHint().getText(),
+                "a custom subject falls back to its author's help text");
+        assertNull(inputs.get(3).getHint(),
+                "no filler hint when there is nothing to say");
+
+        // Every hint must fit Block Kit's cap — over it, Slack rejects the
+        // whole view and the modal never opens.
+        for (InputBlock input : inputs) {
+            if (input.getHint() != null) {
+                assertTrue(input.getHint().getText().length()
+                                <= SlackRecruitmentViews.SLACK_HINT_MAX_LENGTH,
+                        "hint within Slack's limit: " + input.getBlockId());
+            }
+        }
+
+        assertTrue(allMrkdwn(view.getBlocks()).contains("ceiling for one sitting"),
+                "the usage note keeps six subjects from becoming a checklist");
+    }
+
     @Test
     void scorecardSubmittedView_progressCopy_neverContent() {
         View waiting = SlackRecruitmentViews.scorecardSubmittedView(

@@ -126,6 +126,23 @@ public class RecruitmentPosition extends PanacheEntityBase implements Auditable 
     @Column(name = "scorecard_template", columnDefinition = "JSON")
     private List<ScorecardAttribute> scorecardTemplate;
 
+    /**
+     * Whether the scorecard template is frozen, DERIVED like
+     * {@link #practiceCode}: true as soon as one interviewer has submitted a
+     * scorecard on this position. Submitted scores key on the template's
+     * attribute codes with no back-reference, so swapping subjects underneath
+     * them would leave the debrief comparing scores to subjects nobody was
+     * asked about. The service rejects such an edit; this flag is what lets
+     * the position editor say so before the user types.
+     */
+    @Formula("(select case when exists("
+            + "select 1 from recruitment_scorecards sc"
+            + " join recruitment_interviews i on i.uuid = sc.interview_uuid"
+            + " join recruitment_applications a on a.uuid = i.application_uuid"
+            + " where a.position_uuid = uuid) then 1 else 0 end)")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private Boolean scorecardLocked;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "demand_rag", length = 10, nullable = false)
     private RecruitmentDemandRag demandRag = RecruitmentDemandRag.GREEN;

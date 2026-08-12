@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardGuidanceCatalog;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 
@@ -18,22 +19,36 @@ import java.util.Set;
  * <ul>
  *   <li>Default stage set: {@code SCREENING → INTERVIEW_1 → INTERVIEW_2 →
  *       OFFER → HIRED}; the partner track inserts {@code INTERVIEW_3}.</li>
- *   <li>Default scorecard: the standard 4-attribute Trustworks interview
- *       framework (spec §2.2): why consulting, commercial drive, handling
- *       uncertainty, culture fit.</li>
+ *   <li>Default scorecard: the standard 6-subject Trustworks interview
+ *       framework (spec §2.2) — why consulting, culture, self-leadership,
+ *       handling uncertainty, faglighed &amp; formidling, commercial drive —
+ *       coached by {@link ScorecardGuidanceCatalog}.</li>
  * </ul>
+ * Because the snapshot rule holds, positions created before the framework
+ * moved from four subjects to six keep their original template (including the
+ * legacy {@code CULTURE_FIT} code) until a hiring owner edits them.
  */
 public final class RecruitmentPositionDefaults {
 
     private RecruitmentPositionDefaults() {
     }
 
-    /** The standard 4-attribute interview framework (stable codes — P11 scorecards key on them). */
-    public static final List<ScorecardAttribute> STANDARD_SCORECARD = List.of(
-            new ScorecardAttribute("WHY_CONSULTING", "Why consulting"),
-            new ScorecardAttribute("COMMERCIAL_DRIVE", "Commercial drive"),
-            new ScorecardAttribute("UNCERTAINTY", "Handling uncertainty"),
-            new ScorecardAttribute("CULTURE_FIT", "Culture fit"));
+    /**
+     * The standard interview framework (stable codes — P11 scorecards key on
+     * them), derived from the guidance catalog so the subjects an interviewer
+     * is coached on and the subjects they are asked to score can never drift
+     * apart.
+     */
+    public static final List<ScorecardAttribute> STANDARD_SCORECARD =
+            ScorecardGuidanceCatalog.standardTemplate();
+
+    /**
+     * Hard ceiling on subjects per position. Six is the ceiling for one
+     * sitting; this leaves room for a tailored staff-role template while
+     * keeping the Slack modal inside Block Kit's block budget and the phone
+     * form inside one thumb-scroll.
+     */
+    public static final int MAX_SCORECARD_ATTRIBUTES = 10;
 
     /** @return the default ordered stage codes for the given track (mutable copy). */
     public static List<String> defaultStageSet(RecruitmentHiringTrack track) {
@@ -49,7 +64,7 @@ public final class RecruitmentPositionDefaults {
         return stages;
     }
 
-    /** @return the standard 4-attribute scorecard template (mutable copy). */
+    /** @return the standard scorecard template (mutable copy). */
     public static List<ScorecardAttribute> defaultScorecardTemplate() {
         return new ArrayList<>(STANDARD_SCORECARD);
     }
@@ -94,14 +109,20 @@ public final class RecruitmentPositionDefaults {
     }
 
     /**
-     * Validate a per-position scorecard-template override: non-empty, codes
-     * non-blank and unique, labels non-blank.
+     * Validate a per-position scorecard-template override: non-empty, within
+     * {@link #MAX_SCORECARD_ATTRIBUTES}, codes non-blank and unique, labels
+     * non-blank, and custom help text within its cap.
      *
      * @throws IllegalArgumentException with a user-readable message when invalid
      */
     public static void validateScorecardTemplate(List<ScorecardAttribute> template) {
         if (template == null || template.isEmpty()) {
             throw new IllegalArgumentException("Scorecard template must not be empty");
+        }
+        if (template.size() > MAX_SCORECARD_ATTRIBUTES) {
+            throw new IllegalArgumentException(
+                    "A scorecard can have at most " + MAX_SCORECARD_ATTRIBUTES
+                            + " subjects; got " + template.size());
         }
         Set<String> codes = new HashSet<>();
         for (ScorecardAttribute attribute : template) {
@@ -111,6 +132,12 @@ public final class RecruitmentPositionDefaults {
             if (attribute.label() == null || attribute.label().isBlank()) {
                 throw new IllegalArgumentException(
                         "Scorecard attribute '" + attribute.code() + "' must have a label");
+            }
+            if (attribute.helpText() != null
+                    && attribute.helpText().length() > ScorecardAttribute.HELP_TEXT_MAX_LENGTH) {
+                throw new IllegalArgumentException(
+                        "Help text for '" + attribute.code() + "' is longer than "
+                                + ScorecardAttribute.HELP_TEXT_MAX_LENGTH + " characters");
             }
             if (!codes.add(attribute.code())) {
                 throw new IllegalArgumentException(
