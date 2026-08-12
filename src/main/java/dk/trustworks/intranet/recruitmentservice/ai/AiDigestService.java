@@ -111,6 +111,16 @@ public class AiDigestService {
     @Inject
     RecruitmentEventRecorder eventRecorder;
 
+    /**
+     * Read-only here: the digest asks it which practices have a channel of
+     * their own, so a practice only gets its own edition when there is
+     * somewhere to post it. Delivery itself stays in
+     * {@code SlackDigestRenderer}.
+     */
+    @Inject
+    dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentSlackChannelRouter
+            channelRouter;
+
     @Inject
     EntityManager em;
 
@@ -138,18 +148,38 @@ public class AiDigestService {
         return runWeeklyFunnel(LocalDate.now(COPENHAGEN));
     }
 
-    /** Clock-injected variant — the batchlet passes today; tests pass fixed dates. */
+    /**
+     * Clock-injected variant — the batchlet passes today; tests pass fixed
+     * dates. Generates the company-wide digest (posted to the HR channel)
+     * and then one digest per practice that has its own Slack channel, so
+     * each practice reads its own funnel instead of the whole company's
+     * (decided 2026-08-12). The returned summary is the company-wide one;
+     * per-practice outcomes are logged.
+     */
     public DigestSummary runWeeklyFunnel(LocalDate today) {
+        DigestSummary companyWide = runWeeklyFunnel(today, null);
+        if (companyWide.enabled()) {
+            YearMonth windowTo = YearMonth.from(today);
+            for (String practiceUuid : inTx(() -> practicesWithOwnChannel(
+                    windowTo.minusMonths(WEEKLY_WINDOW_MONTHS_BACK), windowTo))) {
+                log.infof("AI digest per-practice: %s", runWeeklyFunnel(today, practiceUuid));
+            }
+        }
+        return companyWide;
+    }
+
+    /** One weekly digest: company-wide when {@code practiceUuid} is null. */
+    private DigestSummary runWeeklyFunnel(LocalDate today, String practiceUuid) {
         if (!inTx(featureFlag::isPipelineEnabled) || !inTx(aiFlags::isWeeklyFunnelDigestEnabled)) {
             return new DigestSummary(KIND_WEEKLY_FUNNEL, false, false, null);
         }
         String period = isoWeekKey(today);
-        if (inTx(() -> digestExists(KIND_WEEKLY_FUNNEL, period))) {
+        if (inTx(() -> digestExists(KIND_WEEKLY_FUNNEL, period, practiceUuid))) {
             return new DigestSummary(KIND_WEEKLY_FUNNEL, true, false, period);
         }
         YearMonth windowTo = YearMonth.from(today);
         YearMonth windowFrom = windowTo.minusMonths(WEEKLY_WINDOW_MONTHS_BACK);
-        AiDigestFacts facts = inTx(() -> loadWeeklyFacts(windowFrom, windowTo));
+        AiDigestFacts facts = inTx(() -> loadWeeklyFacts(windowFrom, windowTo, practiceUuid));
 
         String narrative = callModel(AiDigestPrompts.weeklySystemPrompt(),
                 AiDigestPrompts.weeklyUserPrompt(facts), KIND_WEEKLY_FUNNEL, period);
@@ -172,11 +202,11 @@ public class AiDigestService {
                 .mapToLong(AiDigestFacts.CodeCount::count).sum());
 
         inTx(() -> {
-            appendDigestEvent(KIND_WEEKLY_FUNNEL, period, facts, narrative, kpis);
+            appendDigestEvent(KIND_WEEKLY_FUNNEL, period, facts, narrative, kpis, practiceUuid);
             return null;
         });
-        log.infof("AI_DIGEST_GENERATED kind=%s period=%s model=%s",
-                KIND_WEEKLY_FUNNEL, period, digestModel);
+        log.infof("AI_DIGEST_GENERATED kind=%s period=%s practice=%s model=%s",
+                KIND_WEEKLY_FUNNEL, period, practiceUuid == null ? "ALL" : practiceUuid, digestModel);
         return new DigestSummary(KIND_WEEKLY_FUNNEL, true, true, period);
     }
 
@@ -192,8 +222,25 @@ public class AiDigestService {
         return runRejectionPatterns(LocalDate.now(COPENHAGEN));
     }
 
-    /** Clock-injected variant — the batchlet passes today; tests pass fixed dates. */
+    /**
+     * Clock-injected variant — the batchlet passes today; tests pass fixed
+     * dates. Like the weekly digest: one company-wide edition for the HR
+     * channel plus one per practice that has its own channel.
+     */
     public DigestSummary runRejectionPatterns(LocalDate today) {
+        DigestSummary companyWide = runRejectionPatterns(today, null);
+        if (companyWide.enabled() && companyWide.period() != null) {
+            YearMonth quarterStart = fiscalQuarterStart(YearMonth.from(today));
+            for (String practiceUuid : inTx(() -> practicesWithOwnChannel(
+                    quarterStart.minusMonths(3), quarterStart.minusMonths(1)))) {
+                log.infof("AI digest per-practice: %s", runRejectionPatterns(today, practiceUuid));
+            }
+        }
+        return companyWide;
+    }
+
+    /** One quarterly digest: company-wide when {@code practiceUuid} is null. */
+    private DigestSummary runRejectionPatterns(LocalDate today, String practiceUuid) {
         if (!inTx(featureFlag::isPipelineEnabled) || !inTx(aiFlags::isRejectionPatternsDigestEnabled)) {
             return new DigestSummary(KIND_REJECTION_PATTERNS, false, false, null);
         }
@@ -206,10 +253,11 @@ public class AiDigestService {
         YearMonth windowFrom = quarterStart.minusMonths(3);
         YearMonth windowTo = quarterStart.minusMonths(1);
         String period = fiscalQuarterLabel(windowFrom);
-        if (inTx(() -> digestExists(KIND_REJECTION_PATTERNS, period))) {
+        if (inTx(() -> digestExists(KIND_REJECTION_PATTERNS, period, practiceUuid))) {
             return new DigestSummary(KIND_REJECTION_PATTERNS, true, false, period);
         }
-        AiDigestFacts facts = inTx(() -> loadRejectionFacts(windowFrom, windowTo, period));
+        AiDigestFacts facts = inTx(() ->
+                loadRejectionFacts(windowFrom, windowTo, period, practiceUuid));
 
         String narrative = callModel(AiDigestPrompts.rejectionSystemPrompt(),
                 AiDigestPrompts.rejectionUserPrompt(facts), KIND_REJECTION_PATTERNS, period);
@@ -222,12 +270,39 @@ public class AiDigestService {
         kpis.put("applications", facts.rejectionPatterns().totalApplications());
 
         inTx(() -> {
-            appendDigestEvent(KIND_REJECTION_PATTERNS, period, facts, narrative, kpis);
+            appendDigestEvent(KIND_REJECTION_PATTERNS, period, facts, narrative, kpis, practiceUuid);
             return null;
         });
-        log.infof("AI_DIGEST_GENERATED kind=%s period=%s model=%s",
-                KIND_REJECTION_PATTERNS, period, digestModel);
+        log.infof("AI_DIGEST_GENERATED kind=%s period=%s practice=%s model=%s",
+                KIND_REJECTION_PATTERNS, period, practiceUuid == null ? "ALL" : practiceUuid,
+                digestModel);
         return new DigestSummary(KIND_REJECTION_PATTERNS, true, true, period);
+    }
+
+    /**
+     * The practices that get their own digest: those with activity in the
+     * window AND a configured Slack channel of their own. A practice with no
+     * channel is deliberately skipped rather than routed to the default —
+     * six near-identical digests in one shared channel is noise, and the
+     * company-wide edition already covers them. Partner-track rows never
+     * qualify a practice (they are excluded from per-practice digests
+     * entirely, see {@link #practiceScope}).
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> practicesWithOwnChannel(YearMonth from, YearMonth to) {
+        List<String> active = em.createNativeQuery("""
+                        SELECT DISTINCT practice_uuid
+                        FROM recruitment_fact_monthly
+                        WHERE month BETWEEN :f AND :t
+                          AND practice_uuid <> '' AND hiring_track <> 'PARTNER'
+                        ORDER BY 1
+                        """)
+                .setParameter("f", from.atDay(1))
+                .setParameter("t", to.atDay(1))
+                .getResultList();
+        return active.stream()
+                .filter(uuid -> channelRouter.practiceChannel(uuid).isPresent())
+                .toList();
     }
 
     // ------------------------------------------------------------------
@@ -269,14 +344,25 @@ public class AiDigestService {
     // Idempotency (event-derived)
     // ------------------------------------------------------------------
 
-    private boolean digestExists(String kind, String period) {
+    /**
+     * Idempotency is per (kind, period, practice): the company-wide edition
+     * and each practice's edition of the same week are separate digests, so
+     * generating one must not suppress the others. Company-wide events carry
+     * no {@code practice_uuid}, hence the COALESCE to the '' sentinel — that
+     * also keeps digests written before 2026-08-12 matching the company-wide
+     * key, so no historical week is regenerated.
+     */
+    private boolean digestExists(String kind, String period, String practiceUuid) {
         Number count = (Number) em.createNativeQuery(
                         "SELECT COUNT(*) FROM recruitment_events "
                         + "WHERE event_type = 'AI_DIGEST_GENERATED' "
                         + "AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.kind')) = :kind "
-                        + "AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.period')) = :period")
+                        + "AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.period')) = :period "
+                        + "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.practice_uuid')), '') "
+                        + "    = :practice")
                 .setParameter("kind", kind)
                 .setParameter("period", period)
+                .setParameter("practice", practiceUuid == null ? "" : practiceUuid)
                 .getSingleResult();
         return count.longValue() > 0;
     }
@@ -285,17 +371,18 @@ public class AiDigestService {
     // Projection reads (the digests' sole aggregate input — plan §P24)
     // ------------------------------------------------------------------
 
-    private AiDigestFacts loadWeeklyFacts(YearMonth from, YearMonth to) {
+    private AiDigestFacts loadWeeklyFacts(YearMonth from, YearMonth to, String practiceUuid) {
         LocalDate f = from.atDay(1);
         LocalDate t = to.atDay(1);
+        String scope = practiceScope(practiceUuid);
 
         List<AiDigestFacts.MonthCodeCount> applications = new ArrayList<>();
         for (Object[] row : rows("""
-                SELECT DATE_FORMAT(month, '%Y-%m'), source, SUM(cnt)
+                SELECT DATE_FORMAT(month, '%%Y-%%m'), source, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'APPLICATION_CREATED' AND month BETWEEN :f AND :t
+                WHERE fact = 'APPLICATION_CREATED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1, 2 ORDER BY 1, 2
-                """, f, t)) {
+                """.formatted(scope), f, t, practiceUuid)) {
             applications.add(new AiDigestFacts.MonthCodeCount(
                     (String) row[0], emptyToUnknown((String) row[1]), longOf(row[2])));
         }
@@ -304,9 +391,9 @@ public class AiDigestService {
         for (Object[] row : rows("""
                 SELECT stage_from, stage_to, outcome, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'STAGE_MOVED' AND month BETWEEN :f AND :t
+                WHERE fact = 'STAGE_MOVED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
-                """, f, t)) {
+                """.formatted(scope), f, t, practiceUuid)) {
             stageMoves.add(new AiDigestFacts.StageMove(
                     (String) row[0], (String) row[1], (String) row[2], longOf(row[3])));
         }
@@ -315,9 +402,10 @@ public class AiDigestService {
         for (Object[] row : rows("""
                 SELECT stage_from, SUM(sum_days), SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact IN ('STAGE_MOVED', 'TERMINAL') AND stage_from <> '' AND month BETWEEN :f AND :t
+                WHERE fact IN ('STAGE_MOVED', 'TERMINAL') AND stage_from <> ''
+                  AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 1
-                """, f, t)) {
+                """.formatted(scope), f, t, practiceUuid)) {
             long moves = longOf(row[2]);
             double avg = moves == 0 ? 0d : ((Number) row[1]).doubleValue() / moves;
             timeInStage.add(new AiDigestFacts.StageDays((String) row[0], avg, moves));
@@ -326,34 +414,39 @@ public class AiDigestService {
         List<AiDigestFacts.CodeCount> terminals = codeCounts("""
                 SELECT outcome, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'TERMINAL' AND month BETWEEN :f AND :t
+                WHERE fact = 'TERMINAL' AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 1
-                """, f, t);
+                """.formatted(scope), f, t, practiceUuid);
 
         long hires = singleCount("""
                 SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_monthly
-                WHERE fact = 'HIRED' AND month BETWEEN :f AND :t
-                """, f, t);
+                WHERE fact = 'HIRED' AND month BETWEEN :f AND :t%s
+                """.formatted(scope), f, t, practiceUuid);
 
         long scorecards = singleCount("""
                 SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_monthly
-                WHERE fact = 'SCORECARD_SUBMITTED' AND month BETWEEN :f AND :t
-                """, f, t);
+                WHERE fact = 'SCORECARD_SUBMITTED' AND month BETWEEN :f AND :t%s
+                """.formatted(scope), f, t, practiceUuid);
 
         List<AiDigestFacts.CodeCount> nudges = codeCounts("""
                 SELECT detail, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'NUDGE_SENT' AND month BETWEEN :f AND :t
+                WHERE fact = 'NUDGE_SENT' AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 1
-                """, f, t);
+                """.formatted(scope), f, t, practiceUuid);
 
         // Current state, not a flow: bare counts from the positions table
         // (the one sanctioned non-projection input — AiDigestFacts javadoc).
         List<AiDigestFacts.CodeCount> openPositions = new ArrayList<>();
-        for (Object row : em.createNativeQuery(
-                        "SELECT hiring_track, COUNT(*) FROM recruitment_positions "
-                        + "WHERE status = 'OPEN' GROUP BY 1 ORDER BY 1")
-                .getResultList()) {
+        var openQuery = em.createNativeQuery(
+                "SELECT hiring_track, COUNT(*) FROM recruitment_positions WHERE status = 'OPEN'"
+                        + (practiceUuid == null ? ""
+                                : " AND hiring_track <> 'PARTNER' AND practice_uuid = :practice")
+                        + " GROUP BY 1 ORDER BY 1");
+        if (practiceUuid != null) {
+            openQuery.setParameter("practice", practiceUuid);
+        }
+        for (Object row : openQuery.getResultList()) {
             Object[] cols = (Object[]) row;
             openPositions.add(new AiDigestFacts.CodeCount((String) cols[0], longOf(cols[1])));
         }
@@ -364,40 +457,56 @@ public class AiDigestService {
                 null);
     }
 
-    private AiDigestFacts loadRejectionFacts(YearMonth from, YearMonth to, String quarterLabel) {
+    /**
+     * The practice dimension of a digest query. Company-wide digests read
+     * everything; a per-practice digest is narrowed to that practice AND
+     * excludes the partner track — a practice channel is a shared channel,
+     * and confidential hiring never reaches one (Slack spec §5.2). Returns a
+     * SQL fragment appended to the WHERE clause; the {@code :practice}
+     * parameter is bound by {@link #rows}/{@link #codeCounts}/
+     * {@link #singleCount}, never interpolated.
+     */
+    private static String practiceScope(String practiceUuid) {
+        return practiceUuid == null ? ""
+                : " AND practice_uuid = :practice AND hiring_track <> 'PARTNER'";
+    }
+
+    private AiDigestFacts loadRejectionFacts(YearMonth from, YearMonth to, String quarterLabel,
+                                             String practiceUuid) {
         LocalDate f = from.atDay(1);
         LocalDate t = to.atDay(1);
+        String scope = practiceScope(practiceUuid);
 
         List<AiDigestFacts.CodeCount> byReason = codeCounts("""
                 SELECT detail, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t
+                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 2 DESC
-                """, f, t);
+                """.formatted(scope), f, t, practiceUuid);
 
         List<AiDigestFacts.CodeCount> byStage = codeCounts("""
                 SELECT stage_from, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t
+                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 2 DESC
-                """, f, t);
+                """.formatted(scope), f, t, practiceUuid);
 
         Map<String, long[]> perSource = new LinkedHashMap<>(); // source -> [rejected, applications]
         for (Object[] row : rows("""
                 SELECT source, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t
+                WHERE fact = 'TERMINAL' AND outcome = 'REJECTED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1
-                """, f, t)) {
+                """.formatted(scope), f, t, practiceUuid)) {
             perSource.computeIfAbsent(emptyToUnknown((String) row[0]), k -> new long[2])[0]
                     += longOf(row[1]);
         }
         for (Object[] row : rows("""
                 SELECT source, SUM(cnt)
                 FROM recruitment_fact_monthly
-                WHERE fact = 'APPLICATION_CREATED' AND month BETWEEN :f AND :t
+                WHERE fact = 'APPLICATION_CREATED' AND month BETWEEN :f AND :t%s
                 GROUP BY 1
-                """, f, t)) {
+                """.formatted(scope), f, t, practiceUuid)) {
             perSource.computeIfAbsent(emptyToUnknown((String) row[0]), k -> new long[2])[1]
                     += longOf(row[1]);
         }
@@ -437,12 +546,19 @@ public class AiDigestService {
      * ⇒ {@code pii_state=NONE} by the recorder.
      */
     private void appendDigestEvent(String kind, String period, AiDigestFacts facts,
-                                   String narrative, Map<String, Object> kpis) {
-        eventRecorder.record(RecruitmentEventBuilder
+                                   String narrative, Map<String, Object> kpis,
+                                   String practiceUuid) {
+        RecruitmentEventBuilder builder = RecruitmentEventBuilder
                 .event(RecruitmentEventType.AI_DIGEST_GENERATED)
                 .actorScheduler()
                 .payload("kind", kind)
-                .payload("period", period)
+                .payload("period", period);
+        if (practiceUuid != null) {
+            // Present ⇒ this is a practice edition; the renderer routes it to
+            // that practice's channel instead of the HR channel.
+            builder = builder.payload("practice_uuid", practiceUuid);
+        }
+        eventRecorder.record(builder
                 .payload("window_from", facts.windowFrom())
                 .payload("window_to", facts.windowTo())
                 .payload("model", digestModel)
@@ -472,27 +588,34 @@ public class AiDigestService {
     // Small helpers
     // ------------------------------------------------------------------
 
-    private List<AiDigestFacts.CodeCount> codeCounts(String sql, LocalDate f, LocalDate t) {
+    private List<AiDigestFacts.CodeCount> codeCounts(String sql, LocalDate f, LocalDate t,
+                                                     String practiceUuid) {
         List<AiDigestFacts.CodeCount> result = new ArrayList<>();
-        for (Object[] row : rows(sql, f, t)) {
+        for (Object[] row : rows(sql, f, t, practiceUuid)) {
             result.add(new AiDigestFacts.CodeCount(emptyToUnknown((String) row[0]), longOf(row[1])));
         }
         return result;
     }
 
     @SuppressWarnings("unchecked")
-    private List<Object[]> rows(String sql, LocalDate f, LocalDate t) {
-        return em.createNativeQuery(sql)
-                .setParameter("f", f)
-                .setParameter("t", t)
-                .getResultList();
+    private List<Object[]> rows(String sql, LocalDate f, LocalDate t, String practiceUuid) {
+        return scoped(sql, f, t, practiceUuid).getResultList();
     }
 
-    private long singleCount(String sql, LocalDate f, LocalDate t) {
-        return ((Number) em.createNativeQuery(sql)
+    private long singleCount(String sql, LocalDate f, LocalDate t, String practiceUuid) {
+        return ((Number) scoped(sql, f, t, practiceUuid).getSingleResult()).longValue();
+    }
+
+    /** Window + optional practice binding — the one place {@code :practice} is bound. */
+    private jakarta.persistence.Query scoped(String sql, LocalDate f, LocalDate t,
+                                             String practiceUuid) {
+        var query = em.createNativeQuery(sql)
                 .setParameter("f", f)
-                .setParameter("t", t)
-                .getSingleResult()).longValue();
+                .setParameter("t", t);
+        if (practiceUuid != null) {
+            query.setParameter("practice", practiceUuid);
+        }
+        return query;
     }
 
     private static long longOf(Object value) {

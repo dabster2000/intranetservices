@@ -155,10 +155,11 @@ public class RecruitmentVisibility {
      * {@code LEADER}-only membership: a former lead's practice drops out on
      * its own. Teams with no practice contribute nothing.
      * <p>
-     * This grants <b>no read access</b>. It exists for the landing page's
-     * "Your pipelines" scoping ({@link #ownPositionUuids}); position
-     * visibility is unchanged and still runs through
-     * {@link #filterPositions}.
+     * This grants <b>no read access</b> on its own. It feeds
+     * {@link #ownPractices}, which scopes the landing page's "Your
+     * pipelines" and — since 2026-08-12 — decides who may act on a
+     * position. Position <em>visibility</em> is unchanged and still runs
+     * through {@link #filterPositions}.
      */
     @SuppressWarnings("unchecked")
     public List<String> practicesOfCurrentlyLedTeams(String userUuid) {
@@ -177,6 +178,42 @@ public class RecruitmentVisibility {
                 .setParameter("user", userUuid)
                 .setParameter("today", LocalDate.now())
                 .getResultList();
+    }
+
+    /**
+     * The practices the viewer <b>runs</b>: the practices of the teams they
+     * currently lead ({@link #practicesOfCurrentlyLedTeams}) plus any
+     * practice they are a registered lead of ({@link #currentlyLedPractices}).
+     * <p>
+     * One resolution shared by the landing page's "Your pipelines" scoping
+     * ({@link #ownPositionUuids}) and by the decision gate
+     * ({@link #canDecideOnApplication}) — deliberately the same set, so
+     * "the pipelines the page calls mine" and "the pipelines I may act on"
+     * can never drift apart. That equivalence is the whole point of the
+     * 2026-08-12 decision: a team lead was previously read-only on every
+     * position in their own practice unless someone had named them hiring
+     * owner, and in production no position had a {@code team_uuid} at all,
+     * so the team route never fired.
+     */
+    public Set<String> ownPractices(String userUuid) {
+        if (userUuid == null || userUuid.isBlank()) {
+            return Set.of();
+        }
+        Set<String> practices = new HashSet<>(practicesOfCurrentlyLedTeams(userUuid));
+        practices.addAll(currentlyLedPractices(userUuid));
+        return practices;
+    }
+
+    /**
+     * Whether the position sits in a practice the viewer runs. Partner-track
+     * positions are excluded on purpose: the circle is their only key, and
+     * leading a practice must never become a back door into a confidential
+     * hire.
+     */
+    private boolean runsPracticeOf(String viewerUuid, RecruitmentPosition position) {
+        return position.getHiringTrack() != RecruitmentHiringTrack.PARTNER
+                && position.getPracticeUuid() != null
+                && ownPractices(viewerUuid).contains(position.getPracticeUuid());
     }
 
     /** Team uuids the viewer currently leads (temporal {@code teamroles} LEADER rows). */
@@ -306,20 +343,34 @@ public class RecruitmentVisibility {
     /**
      * May the viewer make pipeline decisions (stage moves, terminals, team
      * assignment) on applications of this position? Spec §7.2 as amended by
-     * go-live decision D4: admin and recruiter tier everywhere; a
-     * {@code TEAMLEAD} only where they are <em>involved</em> — the named
-     * hiring owner, the current lead of the position's team, or a member of
-     * the position's circle. <b>Reading widely never implies deciding
-     * widely</b>: {@link #POSITION_READ_ROLES} shows a teamlead every
-     * non-partner position, this method is what stops them acting on one
-     * that is not theirs. A practice lead has READ access but no decision
-     * rights, and on partner track "may look" never implies "may change":
+     * go-live decision D4 and the 2026-08-12 practice decision: admin and
+     * recruiter tier everywhere; otherwise only where the viewer is
+     * <em>involved</em> —
+     * <ol>
+     *   <li>the named hiring owner;</li>
+     *   <li>the current lead of the position's team;</li>
+     *   <li><b>they run the position's practice</b> ({@link #ownPractices}):
+     *       they lead a team belonging to it, or are its registered
+     *       practice lead. This is the route that actually fires for real
+     *       team leads — production positions carry no {@code team_uuid} and
+     *       almost no named owner, which is why a team lead used to be
+     *       read-only on their own practice's pipelines;</li>
+     *   <li>a {@code TEAMLEAD} who is a member of the position's circle.</li>
+     * </ol>
+     * <b>Reading widely never implies deciding widely</b>:
+     * {@link #POSITION_READ_ROLES} shows a teamlead every non-partner
+     * position, this method is what stops them acting on one outside their
+     * practice. On partner track "may look" never implies "may change":
      * only circle OWNER/RECRUITER members (or HR/admin) decide, mirroring
-     * the P2 position-mutation rule.
+     * the P2 position-mutation rule — running a practice grants nothing
+     * there ({@link #runsPracticeOf}).
      * <p>
-     * The circle grant is teamlead-gated on purpose (D11): a plain employee
-     * added to a circle gets the restricted candidate view
-     * ({@link #canReadRestrictedCandidateView}) and nothing else.
+     * The circle grant stays teamlead-gated on purpose (D11): a plain
+     * employee invited onto a circle gets the restricted candidate view
+     * ({@link #canReadRestrictedCandidateView}) and nothing else. Note that
+     * the practice routes are deliberately NOT role-gated — currently
+     * leading a team or a practice is itself the involvement, exactly as it
+     * already was for the team route.
      */
     public boolean canDecideOnApplication(String viewerUuid, RecruitmentPosition position) {
         Set<String> roles = rolesOf(viewerUuid);
@@ -335,6 +386,7 @@ public class RecruitmentVisibility {
         return viewerUuid.equals(position.getHiringOwnerUuid())
                 || (position.getTeamUuid() != null
                     && currentlyLedTeams(viewerUuid).contains(position.getTeamUuid()))
+                || runsPracticeOf(viewerUuid, position)
                 || (roles.contains(ROLE_TEAMLEAD)
                     && isCircleMember(viewerUuid, position.getUuid()));
     }
@@ -368,15 +420,20 @@ public class RecruitmentVisibility {
      * Is the viewer "the recruiter or the hiring owner" for this position?
      * The elevated tier two P4 rules key on (spec §4.2): forward stage
      * <em>skips</em> and rejecting a partner-referral candidate. ADMIN and
-     * the recruiter tier (HR/RECRUITMENT) qualify everywhere; otherwise only
-     * the position's named hiring owner.
+     * the recruiter tier (HR/RECRUITMENT) qualify everywhere; otherwise the
+     * position's named hiring owner — or, since 2026-08-12, whoever runs
+     * its practice ({@link #runsPracticeOf}), because "the same rights as
+     * the position owner" has to include the owner's elevated moves or a
+     * team lead can advance a candidate one stage at a time but never
+     * fast-track one.
      */
     public boolean isRecruiterOrHiringOwner(String viewerUuid, RecruitmentPosition position) {
         Set<String> roles = rolesOf(viewerUuid);
         if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
             return true;
         }
-        return viewerUuid.equals(position.getHiringOwnerUuid());
+        return viewerUuid.equals(position.getHiringOwnerUuid())
+                || runsPracticeOf(viewerUuid, position);
     }
 
     // ---- Application visibility (P4) -----------------------------------------
@@ -498,12 +555,14 @@ public class RecruitmentVisibility {
      *       ({@link #currentlyLedPractices});</li>
      *   <li>they were invited onto its circle.</li>
      * </ol>
-     * Ownership is a <em>presentation</em> concept and grants nothing: this
-     * is only ever used to narrow what the landing page leads with. Read
-     * access stays {@link #filterPositions} / {@link #canReadPosition}, and
-     * the right to act stays {@link #canDecideOnApplication} — a viewer can
-     * own a row here and still be unable to touch it (a practice lead, for
-     * instance).
+     * This narrows what the landing page leads with. Read access stays
+     * {@link #filterPositions} / {@link #canReadPosition} and the right to
+     * act stays {@link #canDecideOnApplication} — but the two now share
+     * {@link #ownPractices}, so routes 1–3 line up with the decision gate by
+     * construction. Route 4 does not: a circle invitation puts a position on
+     * the landing page of a plain employee without letting them act on it
+     * (D11), and no route here opens a partner-track position that
+     * {@link #filterPositions} did not already admit.
      * <p>
      * Because it never widens anything, it deliberately does <em>not</em>
      * re-apply the partner-circle filter: the caller passes positions that
@@ -519,8 +578,7 @@ public class RecruitmentVisibility {
             return Set.of();
         }
         Set<String> circled = circledPositionUuids(viewerUuid);
-        Set<String> ownPractices = new HashSet<>(practicesOfCurrentlyLedTeams(viewerUuid));
-        ownPractices.addAll(currentlyLedPractices(viewerUuid));
+        Set<String> ownPractices = ownPractices(viewerUuid);
 
         return positions.stream()
                 .filter(position -> viewerUuid.equals(position.getHiringOwnerUuid())
@@ -529,6 +587,66 @@ public class RecruitmentVisibility {
                         || circled.contains(position.getUuid()))
                 .map(RecruitmentPosition::getUuid)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * Batched twin of {@link #canDecideOnApplication} over pre-fetched
+     * positions: the subset the viewer may act on, resolved with ONE
+     * viewer-context lookup (roles, circle memberships + their roles, led
+     * teams, own practices — each fetched once, never per row).
+     * <p>
+     * The single implementation of the batched form on purpose. The landing
+     * page grew a private copy of this predicate whose comment said "change
+     * the two together"; the moment the practice route landed, that would
+     * have been two places to remember. Callers: the landing page's decision
+     * tasks and the positions list's {@code viewerCanMutate} stamp — the
+     * latter would otherwise re-resolve the viewer for every row on the page.
+     * <p>
+     * Mirrors {@link #canDecideOnApplication} exactly; change them together.
+     */
+    public Set<String> decidablePositionUuids(String viewerUuid,
+                                              Collection<RecruitmentPosition> positions) {
+        if (positions == null || positions.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        boolean admin = roles.contains(ROLE_ADMIN);
+        boolean recruiterTier = admin || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+        boolean teamlead = roles.contains(ROLE_TEAMLEAD);
+        Set<String> ledTeams = recruiterTier ? Set.of()
+                : new HashSet<>(currentlyLedTeams(viewerUuid));
+        Set<String> practices = recruiterTier ? Set.of() : ownPractices(viewerUuid);
+        Map<String, RecruitmentCircleRole> circleRoles = admin ? Map.of()
+                : RecruitmentCircleMember.<RecruitmentCircleMember>list("userUuid", viewerUuid)
+                        .stream()
+                        .collect(Collectors.toMap(RecruitmentCircleMember::getPositionUuid,
+                                RecruitmentCircleMember::getRoleInCircle,
+                                (first, second) -> first));
+
+        return positions.stream().filter(position -> {
+            if (admin) {
+                return true;
+            }
+            if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+                // canManageCircle: plain HR always; otherwise an OWNER or
+                // RECRUITER seat in this position's circle. Running the
+                // practice grants nothing here.
+                if (roles.contains(ROLE_HR)) {
+                    return true;
+                }
+                RecruitmentCircleRole role = circleRoles.get(position.getUuid());
+                return role == RecruitmentCircleRole.OWNER
+                        || role == RecruitmentCircleRole.RECRUITER;
+            }
+            if (recruiterTier) {
+                return true;
+            }
+            return viewerUuid != null && (viewerUuid.equals(position.getHiringOwnerUuid())
+                    || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
+                    || (position.getPracticeUuid() != null
+                        && practices.contains(position.getPracticeUuid()))
+                    || (teamlead && circleRoles.containsKey(position.getUuid())));
+        }).map(RecruitmentPosition::getUuid).collect(Collectors.toSet());
     }
 
     /** The position uuids of every circle the viewer belongs to (one query). */
@@ -796,35 +914,50 @@ public class RecruitmentVisibility {
     // ---- Offer dossier / contract -------------------------------------------
 
     /**
-     * Whether the viewer is the named hiring owner of at least one position
-     * this candidate has applied to (one query).
+     * Whether the viewer <b>runs the hire</b> for this candidate: they are
+     * the named hiring owner of at least one position the candidate applied
+     * to, or (since 2026-08-12) one of those non-partner positions sits in a
+     * practice they run ({@link #ownPractices}) — the candidate-level twin
+     * of the ownership routes in {@link #canDecideOnApplication}.
+     * <p>
+     * One query. Partner-track positions never qualify through the practice
+     * route; the named-owner route keeps its existing reach, and the
+     * dossier caller composes this with {@link #canReadCandidateProfile}, so
+     * the circle filter and the HIRED cutoff still apply on top.
      */
     public boolean isHiringOwnerForCandidate(String viewerUuid, String candidateUuid) {
         if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
             return false;
         }
-        return !em.createNativeQuery("""
+        Set<String> practices = ownPractices(viewerUuid);
+        String practiceClause = practices.isEmpty() ? ""
+                : " OR (p.hiring_track <> 'PARTNER' AND p.practice_uuid IN (:practices))";
+        var query = em.createNativeQuery("""
                         SELECT 1 FROM recruitment_applications a
                         JOIN recruitment_positions p ON p.uuid = a.position_uuid
                         WHERE a.candidate_uuid = :candidate
-                          AND p.hiring_owner_uuid = :viewer
+                          AND (p.hiring_owner_uuid = :viewer%s)
                         LIMIT 1
-                        """)
+                        """.formatted(practiceClause))
                 .setParameter("candidate", candidateUuid)
-                .setParameter("viewer", viewerUuid)
-                .getResultList()
-                .isEmpty();
+                .setParameter("viewer", viewerUuid);
+        if (!practices.isEmpty()) {
+            query.setParameter("practices", practices);
+        }
+        return !query.getResultList().isEmpty();
     }
 
     /**
      * May the viewer <em>read</em> the offer dossier — the contract drafts,
      * revisions and signing status (go-live decision, 2026-08-11)?
      * <p>
-     * {@code ADMIN} and {@code HR} only, plus the position's <b>named hiring
-     * owner</b>, who gets a read-only view of the hire they are running so
-     * they can see that the contract went out without being able to touch
-     * it. Everyone else — including {@code RECRUITMENT} and the wider
-     * {@code TEAMLEAD} population — answers 404.
+     * {@code ADMIN} and {@code HR} only, plus <b>whoever runs the hire</b>
+     * ({@link #isHiringOwnerForCandidate}: the named hiring owner, or a lead
+     * of the position's practice) — a read-only view of the hire they are
+     * running, so they can see that the contract went out without being able
+     * to touch it. Everyone else — including {@code RECRUITMENT} and the
+     * wider {@code TEAMLEAD} population outside their own practice — answers
+     * 404.
      * <p>
      * The hiring-owner grant is composed with
      * {@link #canReadCandidateProfile}, so it inherits that rule's two hard

@@ -106,6 +106,10 @@ public class RecruitmentPositionResource {
         enforceFlag();
         String viewer = currentActor().toString();
         List<RecruitmentPosition> positions = visibility.filterPositions(viewer, practice, track, status);
+        // One viewer resolution for the whole page, not one per row.
+        java.util.Set<String> mutable = visibility.decidablePositionUuids(viewer, positions);
+        positions.forEach(position ->
+                position.setViewerCanMutate(mutable.contains(position.getUuid())));
         return new PositionListResponse(positions, positions.size());
     }
 
@@ -113,7 +117,20 @@ public class RecruitmentPositionResource {
     @Path("/{uuid}")
     public RecruitmentPosition get(@PathParam("uuid") UUID uuid) {
         enforceFlag();
-        return requireVisiblePosition(uuid, currentActor());
+        UUID actor = currentActor();
+        RecruitmentPosition position = requireVisiblePosition(uuid, actor);
+        stampMutationRight(position, actor.toString());
+        return position;
+    }
+
+    /**
+     * Answer "may you change this one?" on the way out, so the UI can hide
+     * Edit/Close instead of offering a button that 403s. Read-only and
+     * transient — the same {@link RecruitmentVisibility#canMutatePosition}
+     * the mutations themselves enforce, never a substitute for it.
+     */
+    private void stampMutationRight(RecruitmentPosition position, String viewer) {
+        position.setViewerCanMutate(visibility.canMutatePosition(viewer, position));
     }
 
     /**
@@ -128,7 +145,7 @@ public class RecruitmentPositionResource {
     public PositionBoardResponse board(@PathParam("uuid") UUID uuid) {
         enforceFlag();
         RecruitmentPosition position = requireVisiblePosition(uuid, currentActor());
-        return boardService.board(position);
+        return boardService.board(position, currentActor().toString());
     }
 
     // ---- Mutations ---------------------------------------------------------------
@@ -137,7 +154,9 @@ public class RecruitmentPositionResource {
     @RolesAllowed({"recruitment:write"})
     public Response create(@Valid PositionRequest request) {
         enforceFlag();
-        RecruitmentPosition position = positionService.create(request, currentActor());
+        UUID actor = currentActor();
+        RecruitmentPosition position = positionService.create(request, actor);
+        stampMutationRight(position, actor.toString());
         return Response.created(URI.create("/recruitment/positions/" + position.getUuid()))
                 .entity(position)
                 .build();
@@ -151,7 +170,9 @@ public class RecruitmentPositionResource {
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
         requireMutationRights(position, actor);
-        return positionService.update(position, request, actor);
+        RecruitmentPosition updated = positionService.update(position, request, actor);
+        stampMutationRight(updated, actor.toString());
+        return updated;
     }
 
     @POST
@@ -162,7 +183,9 @@ public class RecruitmentPositionResource {
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
         requireMutationRights(position, actor);
-        return positionService.close(position, actor);
+        RecruitmentPosition closed = positionService.close(position, actor);
+        stampMutationRight(closed, actor.toString());
+        return closed;
     }
 
     // ---- Circle (partner track) -----------------------------------------------------

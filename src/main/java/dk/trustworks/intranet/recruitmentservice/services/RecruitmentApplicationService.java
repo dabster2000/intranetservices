@@ -591,7 +591,7 @@ public class RecruitmentApplicationService {
                 visibility.filterApplications(viewerUuid, candidateUuid);
         Map<String, RecruitmentPosition> positions = positionsOf(applications);
         return applications.stream()
-                .map(a -> toResponse(a, positions.get(a.getPositionUuid())))
+                .map(a -> toResponse(a, positions.get(a.getPositionUuid()), viewerUuid))
                 .toList();
     }
 
@@ -617,9 +617,15 @@ public class RecruitmentApplicationService {
                         .toList()));
     }
 
-    /** Wire mapping with the position facts denormalized in. */
+    /**
+     * Wire mapping with the position facts denormalized in, plus the two
+     * viewer-rights answers the UI needs to decide what to render. The
+     * viewer is required: a response that claimed no rights because nobody
+     * passed a viewer would silently hide every button.
+     */
     public ApplicationResponse toResponse(RecruitmentApplication application,
-                                          RecruitmentPosition position) {
+                                          RecruitmentPosition position,
+                                          String viewerUuid) {
         return new ApplicationResponse(
                 application.getUuid(),
                 application.getCandidateUuid(),
@@ -634,7 +640,11 @@ public class RecruitmentApplicationService {
                 application.getAssignedTeamUuid(),
                 application.getExpectedStartDate(),
                 application.getStageEnteredAt(),
-                application.getCreatedAt());
+                application.getCreatedAt(),
+                position != null && visibility.canDecideOnApplication(viewerUuid, position),
+                position != null
+                        && visibility.isHiringOwnerForCandidate(viewerUuid,
+                                application.getCandidateUuid()));
     }
 
     // ---- Helpers ---------------------------------------------------------------

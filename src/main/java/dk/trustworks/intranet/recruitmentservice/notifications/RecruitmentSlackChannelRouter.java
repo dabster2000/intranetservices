@@ -37,12 +37,29 @@ public class RecruitmentSlackChannelRouter {
      * empty when nothing is configured — the caller skips posting.
      */
     public Optional<String> channelFor(String practiceUuid) {
-        if (practiceUuid != null && !practiceUuid.isBlank()) {
-            Optional<String> override = read(PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid);
-            if (override.isPresent()) {
-                return override;
-            }
+        return practiceChannel(practiceUuid).or(this::defaultChannel);
+    }
+
+    /**
+     * The practice's OWN channel — the override only, with no fall back to
+     * the default. Callers that need to tell "this practice has a channel"
+     * apart from "everything lands in the shared channel" use this:
+     * the per-practice AI digest only runs for practices that have one, and
+     * the discussion notifier lets a practice channel win over its own
+     * {@code recruitment.slack.channel.discussion} setting.
+     */
+    public Optional<String> practiceChannel(String practiceUuid) {
+        if (practiceUuid == null || practiceUuid.isBlank()
+                // Practice keys are uuids; refuse the two reserved suffixes so
+                // a malformed caller can never read the shared channels here.
+                || "default".equals(practiceUuid) || "discussion".equals(practiceUuid)) {
+            return Optional.empty();
         }
+        return read(PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid);
+    }
+
+    /** The shared fallback channel; empty ⇒ notifications are off. */
+    public Optional<String> defaultChannel() {
         return read(DEFAULT_CHANNEL_KEY);
     }
 

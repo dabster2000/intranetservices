@@ -16,6 +16,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -150,6 +151,22 @@ public class RecruitmentPosition extends PanacheEntityBase implements Auditable 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 10, nullable = false)
     private RecruitmentPositionStatus status = RecruitmentPositionStatus.OPEN;
+
+    /**
+     * Whether the <em>requesting</em> user may edit or close this position —
+     * {@code RecruitmentVisibility.canMutatePosition}, computed per response
+     * by the resource and never persisted or read from a request body
+     * ({@code READ_ONLY}).
+     * <p>
+     * Exists because the position list is TEAMLEAD-reachable and used to
+     * render Edit/Close on every row: since a team lead may only change
+     * positions in their own practice, the page needs the server's answer to
+     * hide the rest instead of letting people click into a 403. Null when
+     * nobody asked (an internal caller); the UI treats null as "not allowed".
+     */
+    @Transient
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private Boolean viewerCanMutate;
 
     @Column(name = "opened_at", nullable = false, updatable = false)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)

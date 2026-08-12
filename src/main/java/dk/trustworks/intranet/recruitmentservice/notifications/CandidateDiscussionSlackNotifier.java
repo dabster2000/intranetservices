@@ -6,6 +6,7 @@ import dk.trustworks.intranet.model.AppSetting;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentDiscussionThread;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.services.AppSettingService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -15,16 +16,18 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Slack notifications for candidate discussions (the timeline notes):
  * <ul>
  *   <li><b>Channel thread</b> — one root message per candidate in the
- *       recruitment channel; each new note lands as a thread reply. The
- *       reply carries author + candidate + deep link — NEVER the note
- *       body (opinions about people stay in the intranet, GDPR-lean by
- *       design).</li>
+ *       channel of the practice they are being hired into; each new note
+ *       lands as a thread reply. The reply carries author + candidate +
+ *       deep link — NEVER the note body (opinions about people stay in the
+ *       intranet, GDPR-lean by design).</li>
  *   <li><b>Mention DMs</b> — every mentioned colleague gets a direct
  *       message with the deep link.</li>
  *   <li><b>Confidential candidates</b> (partner-track application or a
@@ -44,7 +47,11 @@ public class CandidateDiscussionSlackNotifier {
 
     /** app_settings toggle — the surface stays dark until flipped. */
     public static final String ENABLED_SETTING_KEY = "recruitment.slack.discussion.enabled";
-    /** app_settings override for the discussion channel; falls back to the HR channel. */
+    /**
+     * app_settings channel for notes that cannot be routed by practice.
+     * Consulted only when the candidate's position has no practice channel;
+     * falls back to the shared default channel, then the HR channel.
+     */
     public static final String CHANNEL_SETTING_KEY = "recruitment.slack.channel.discussion";
 
     @Inject
@@ -52,6 +59,9 @@ public class CandidateDiscussionSlackNotifier {
 
     @Inject
     AppSettingService appSettingService;
+
+    @Inject
+    RecruitmentSlackChannelRouter router;
 
     @ConfigProperty(name = "recruitment.hr.slack.channel-id", defaultValue = "C0B1XUB3AEB")
     String fallbackChannelId;
@@ -101,7 +111,7 @@ public class CandidateDiscussionSlackNotifier {
 
     private void postThreadReply(RecruitmentCandidate candidate, String authorName,
                                  String candidateName, String link) {
-        String channel = channelId();
+        String channel = channelFor(candidate);
         try {
             String rootTs = threadRootTs(candidate, channel, candidateName, link);
             slackService.sendThreadReply(channel, rootTs,
@@ -184,11 +194,59 @@ public class CandidateDiscussionSlackNotifier {
                 .orElse(false);
     }
 
-    private String channelId() {
+    /**
+     * Where this candidate's discussion thread lives: the channel of the
+     * practice they are being hired into, so a note about a Technology
+     * candidate reaches the Technology channel rather than one shared HR
+     * channel for the whole company.
+     * <p>
+     * The chain degrades rather than losing a note: practice channel → the
+     * explicit {@link #CHANNEL_SETTING_KEY} discussion channel → the shared
+     * {@code recruitment.slack.channel.default} → the HR channel. Note that
+     * the thread bookkeeping is keyed on (candidate, channel), so a
+     * candidate who moves to another practice's position simply starts a
+     * fresh thread in the new channel — the old one stays where it is.
+     */
+    private String channelFor(RecruitmentCandidate candidate) {
+        return router.practiceChannel(practiceOf(candidate))
+                .or(this::discussionChannelOverride)
+                .or(router::defaultChannel)
+                .orElse(fallbackChannelId);
+    }
+
+    private Optional<String> discussionChannelOverride() {
         return appSettingService.findByKey(CHANNEL_SETTING_KEY)
                 .map(AppSetting::getSettingValue)
-                .filter(value -> !value.isBlank())
-                .orElse(fallbackChannelId);
+                .map(String::trim)
+                .filter(value -> !value.isEmpty());
+    }
+
+    /**
+     * The practice the candidate is being hired into: the practice of their
+     * newest still-open application's position, falling back to the newest
+     * application of any kind so a note on a closed process still lands
+     * with the practice that ran it. Null when the candidate has no
+     * application (an unsolicited applicant) or the position carries no
+     * practice.
+     */
+    private String practiceOf(RecruitmentCandidate candidate) {
+        List<RecruitmentApplication> applications = RecruitmentApplication.list(
+                "candidateUuid = ?1 order by createdAt desc", candidate.getUuid());
+        return applications.stream()
+                .filter(a -> a.getTerminal() == null)
+                .map(this::practiceOfPosition)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElseGet(() -> applications.stream()
+                        .map(this::practiceOfPosition)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null));
+    }
+
+    private String practiceOfPosition(RecruitmentApplication application) {
+        RecruitmentPosition position = RecruitmentPosition.findById(application.getPositionUuid());
+        return position == null ? null : position.getPracticeUuid();
     }
 
     private static String resolveUserName(UUID actor) {

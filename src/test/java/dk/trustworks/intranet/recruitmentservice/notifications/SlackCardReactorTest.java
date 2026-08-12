@@ -69,6 +69,9 @@ class SlackCardReactorTest {
     private String previousPipeline;
     private String previousCards;
     private String previousDefault;
+    private String previousOtherPractice;
+    private String otherPracticeUuid;
+    private String otherPositionUuid;
 
     @BeforeEach
     void seed() throws Exception {
@@ -78,6 +81,8 @@ class SlackCardReactorTest {
         positionUuid = UUID.randomUUID().toString();
         candidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
+        otherPracticeUuid = UUID.randomUUID().toString();
+        otherPositionUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, actorUser, "Rina", "Recruiter");
@@ -94,7 +99,11 @@ class SlackCardReactorTest {
                     candidateUuid, positionUuid, "SCREENING");
             previousPipeline = P8ProfileFixtures.setFlag(em, PIPELINE_FLAG, "false");
             previousCards = P8ProfileFixtures.setFlag(em, CARDS_FLAG, "false");
+            P8ProfileFixtures.insertPractice(em, otherPracticeUuid);
+            P8ProfileFixtures.insertPosition(em, otherPositionUuid, "Business Consultant",
+                    "PRACTICE_TEAM", otherPracticeUuid, null, null);
             previousDefault = P8ProfileFixtures.setFlag(em, DEFAULT_KEY, "");
+            previousOtherPractice = P8ProfileFixtures.setFlag(em, otherPracticeChannelKey(), "");
         });
         // Drain any backlog with the flags OFF so each test's sweep only
         // reflects its own trigger events.
@@ -111,11 +120,14 @@ class SlackCardReactorTest {
             em.createNativeQuery("DELETE FROM recruitment_slack_channels WHERE position_uuid = :p")
                     .setParameter("p", positionUuid).executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
-                    List.of(candidateUuid), List.of(positionUuid),
+                    List.of(candidateUuid), List.of(positionUuid, otherPositionUuid),
                     List.of(actorUser, circleMember), practiceUuid);
+            em.createNativeQuery("DELETE FROM practice WHERE uuid = :p")
+                    .setParameter("p", otherPracticeUuid).executeUpdate();
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousPipeline);
             P8ProfileFixtures.restoreFlag(em, CARDS_FLAG, previousCards);
             P8ProfileFixtures.restoreFlag(em, DEFAULT_KEY, previousDefault);
+            P8ProfileFixtures.restoreFlag(em, otherPracticeChannelKey(), previousOtherPractice);
         });
         // Advance past everything this test appended so the next test's
         // pre-sweep starts clean.
@@ -146,6 +158,36 @@ class SlackCardReactorTest {
                         applicationUuid, positionUuid, "USER", actorUser, "NORMAL",
                         "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"direction\":\""
                                 + direction + "\",\"skipped_stages\":false}", null));
+    }
+
+    private String otherPracticeChannelKey() {
+        return RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + otherPracticeUuid;
+    }
+
+    /** Re-file the application onto the other practice's position and announce it. */
+    private long insertPositionChanged() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            em.createNativeQuery(
+                            "UPDATE recruitment_applications SET position_uuid = :p WHERE uuid = :a")
+                    .setParameter("p", otherPositionUuid)
+                    .setParameter("a", applicationUuid)
+                    .executeUpdate();
+            return P8ProfileFixtures.insertEvent(em, "APPLICATION_POSITION_CHANGED", candidateUuid,
+                    applicationUuid, otherPositionUuid, "USER", actorUser, "NORMAL",
+                    "{\"from_position_title\":\"Senior Consultant\","
+                            + "\"to_position_title\":\"Business Consultant\","
+                            + "\"stage_clamped\":false}", null);
+        });
+    }
+
+    private String threadRowChannel() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            List<?> rows = em.createNativeQuery(
+                            "SELECT channel_id FROM recruitment_slack_threads "
+                            + "WHERE application_uuid = :a")
+                    .setParameter("a", applicationUuid).getResultList();
+            return rows.isEmpty() ? null : rows.get(0).toString();
+        });
     }
 
     private String threadRowTs() {
@@ -451,5 +493,80 @@ class SlackCardReactorTest {
         ArgumentCaptor<String> reply = ArgumentCaptor.forClass(String.class);
         verify(slackService).sendThreadReply(anyString(), anyString(), reply.capture());
         assertFalse(reply.getValue().contains(PII_SENTINEL), "replies are structural only");
+    }
+
+    // ---- Re-homing on a practice change (decided 2026-08-12) --------------------
+
+    /**
+     * Slack cannot move a message, so a candidate re-filed onto another
+     * practice's position gets a pointer in the old channel and a fresh card
+     * in the new one — and the thread row follows, so every later event
+     * updates the new card.
+     */
+    @Test
+    void positionMoveIntoAnotherPractice_rehomesTheCard() throws Exception {
+        cardsOnWithChannel("C-CARD-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, otherPracticeChannelKey(), "C-CARD-BUSINESS"));
+        insertThreadRow("C-CARD-DEFAULT", ROOT_TS);
+        when(slackService.sendMessageReturningTs(eq("C-CARD-BUSINESS"), anyString(), any()))
+                .thenReturn("1700000000.000999");
+
+        insertPositionChanged();
+        reactor.catchUp();
+
+        // The old card is brought up to date and told where to look next.
+        verify(slackService).updateMessageStrict(eq("C-CARD-DEFAULT"), eq(ROOT_TS),
+                anyString(), any());
+        ArgumentCaptor<String> farewell = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendThreadReply(eq("C-CARD-DEFAULT"), eq(ROOT_TS),
+                farewell.capture());
+        assertTrue(farewell.getValue().contains("<#C-CARD-BUSINESS>"),
+                "the old thread must point at the new channel: " + farewell.getValue());
+
+        // ...and the conversation continues in the new practice's channel.
+        verify(slackService).sendMessageReturningTs(eq("C-CARD-BUSINESS"), anyString(), any());
+        assertEquals("C-CARD-BUSINESS", threadRowChannel());
+        assertEquals("1700000000.000999", threadRowTs());
+    }
+
+    /** A move that does not change the channel leaves the card exactly where it is. */
+    @Test
+    void positionMoveWithinTheSameChannel_updatesInPlace_noSecondCard() throws Exception {
+        cardsOnWithChannel("C-CARD-DEFAULT"); // the new practice has no override → same channel
+        insertThreadRow("C-CARD-DEFAULT", ROOT_TS);
+
+        insertPositionChanged();
+        reactor.catchUp();
+
+        verify(slackService, org.mockito.Mockito.never())
+                .sendMessageReturningTs(anyString(), anyString(), any());
+        assertEquals("C-CARD-DEFAULT", threadRowChannel());
+        assertEquals(ROOT_TS, threadRowTs());
+    }
+
+    /**
+     * Configuring a practice channel does NOT retro-move cards that already
+     * exist ("leave old, fix new"): only a real position move re-homes one.
+     */
+    @Test
+    void newPracticeChannel_aloneDoesNotMoveAnExistingCard() throws Exception {
+        cardsOnWithChannel("C-CARD-DEFAULT");
+        QuarkusTransaction.requiringNew().run(() -> P8ProfileFixtures.setFlag(em,
+                RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid,
+                "C-CARD-TECH"));
+        insertThreadRow("C-CARD-DEFAULT", ROOT_TS);
+
+        insertStageChanged("SCREENING", "INTERVIEW_1", "FORWARD");
+        reactor.catchUp();
+
+        verify(slackService).updateMessageStrict(eq("C-CARD-DEFAULT"), eq(ROOT_TS),
+                anyString(), any());
+        verify(slackService, org.mockito.Mockito.never())
+                .sendMessageReturningTs(anyString(), anyString(), any());
+        assertEquals("C-CARD-DEFAULT", threadRowChannel());
+
+        QuarkusTransaction.requiringNew().run(() -> P8ProfileFixtures.setFlag(em,
+                RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid, ""));
     }
 }

@@ -324,18 +324,23 @@ public class RecruitmentCandidateAiResource {
 
     /**
      * The AI command tier (contract §6.2): recruiter tier
-     * (ADMIN/HR/RECRUITMENT) or the hiring owner of the relevant position.
+     * (ADMIN/HR/RECRUITMENT) or whoever runs the relevant position — its
+     * named hiring owner, the lead of its team, or (since 2026-08-12) a lead
+     * of its practice. Delegated to
+     * {@link RecruitmentVisibility#canDecideOnApplication} rather than
+     * re-testing {@code hiringOwnerUuid} here: "may act on this position" is
+     * one question, and a copy of the predicate is a copy that drifts.
      * 403 — the caller can see the candidate, so existence is no secret.
      */
     private void requireAiActionTier(UUID actor, RecruitmentPosition position) {
         if (visibility.isRecruiterTier(actor.toString())) {
             return;
         }
-        if (position != null && actor.toString().equals(position.getHiringOwnerUuid())) {
+        if (position != null && visibility.canDecideOnApplication(actor.toString(), position)) {
             return;
         }
         throw new WebApplicationException(
-                "AI actions are reserved for the recruiter tier or the position's hiring owner",
+                "AI actions are reserved for the recruiter tier or the people running the position",
                 Response.Status.FORBIDDEN);
     }
 

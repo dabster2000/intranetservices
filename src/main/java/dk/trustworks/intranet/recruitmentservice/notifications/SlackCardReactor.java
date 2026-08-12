@@ -50,11 +50,16 @@ import java.util.Map;
  *   <li><b>No retroactive cards:</b> an application that predates the
  *       toggle gets its root card on its NEXT event (the card then already
  *       shows current state, so that first delivery posts no reply).</li>
- *   <li><b>One root card per application, ever:</b> the
+ *   <li><b>One root card per application per channel:</b> the
  *       {@link RecruitmentSlackThread} projection row is the durable
  *       guard — persisted in its own committed transaction immediately
  *       after the Slack post, so a redelivered or replayed event finds the
- *       row and {@code chat.update}s instead of reposting.</li>
+ *       row and {@code chat.update}s instead of reposting. The single
+ *       exception is a position move into another practice: Slack cannot
+ *       move a message, so the card is re-homed ({@link #rehome}) — old
+ *       card closed off with a pointer, fresh card in the new channel, row
+ *       re-pointed. A practice channel configured <em>after</em> a card
+ *       exists deliberately does NOT move it: only a real move does.</li>
  *   <li><b>PII boundary:</b> builders consume {@link SlackCandidateFacts}
  *       plus structural columns/payload facts only — stage codes, enum
  *       reasons, counts, dates. Free text can never appear; deliberately
@@ -183,20 +188,39 @@ public class SlackCardReactor extends RecruitmentReactor {
             return;
         }
 
-        // A position move can re-point the card at a CONFIDENTIAL req while
-        // the living card sits in whatever channel the OLD position routed
-        // to. Rewriting it there would publish a partner-track title in a
-        // shared channel, so fail closed: leave the stale card alone (its
-        // content is the already-public old state) and log it for cleanup.
-        // The move itself is still on the timeline and in the circle's own
-        // surfaces — only the shared-channel echo is dropped.
-        if (event.getEventType() == RecruitmentEventType.APPLICATION_POSITION_CHANGED
-                && isPartnerTrack(event, position)
-                && !thread.getChannelId().equals(resolveChannel(event, position))) {
-            log.warnf("Card reactor: application %s moved onto partner track — leaving its card in "
-                            + "channel %s untouched (seq %d)",
-                    applicationUuid, thread.getChannelId(), event.getSeq());
-            return;
+        // A position move can send the application into another practice —
+        // and the living card is a single message that cannot be edited
+        // into a different channel. So the card follows the candidate: the
+        // old card is closed off with a pointer reply and a fresh root card
+        // opens in the new practice's channel (decided 2026-08-12).
+        if (event.getEventType() == RecruitmentEventType.APPLICATION_POSITION_CHANGED) {
+            String target = resolveChannel(event, position);
+            if (!thread.getChannelId().equals(target)) {
+                // Moving ONTO the partner track would publish a
+                // partner-track title in a shared channel — and moving a
+                // confidential card out of its private channel is worse
+                // still. Fail closed: leave the stale card alone (its
+                // content is the already-public old state) and log it for
+                // cleanup. The move is still on the timeline and in the
+                // circle's own surfaces; only the shared-channel echo drops.
+                if (isPartnerTrack(event, position)) {
+                    log.warnf("Card reactor: application %s moved onto partner track — leaving its "
+                                    + "card in channel %s untouched (seq %d)",
+                            applicationUuid, thread.getChannelId(), event.getSeq());
+                    return;
+                }
+                if (target == null) {
+                    // Nothing configured for the new practice AND no default
+                    // channel: keep updating where the card already lives
+                    // rather than going silent mid-pipeline.
+                    log.warnf("Card reactor: application %s moved but the new position routes to no "
+                                    + "channel — its card stays in %s (seq %d)",
+                            applicationUuid, thread.getChannelId(), event.getSeq());
+                } else {
+                    rehome(thread, target, state, event);
+                    return;
+                }
+            }
         }
 
         // chat.update the living card first (idempotent — a retry of this
@@ -239,6 +263,58 @@ public class SlackCardReactor extends RecruitmentReactor {
             log.warnf("Card reactor: lost root-card claim race for application %s "
                     + "(event seq %d) — an orphan card was posted to %s", applicationUuid, seq, channel);
         }
+    }
+
+    /**
+     * Move an application's living card to another channel after a position
+     * move. Slack cannot move a message, so this closes the old card off and
+     * opens a new one:
+     * <ol>
+     *   <li>the old root card is updated one last time, so whoever was
+     *       following it sees the final state rather than a stale stage;</li>
+     *   <li>a reply in the old thread says where the conversation continues
+     *       (a channel mention, so it is one click away);</li>
+     *   <li>a fresh root card is posted in the new channel and the thread
+     *       row is re-pointed at it — every later event updates there.</li>
+     * </ol>
+     * The row update is conditional on the old channel, so two deliveries
+     * racing on the same move cannot leapfrog each other; a lost race logs
+     * an orphan card exactly like {@link #postRootCard}.
+     */
+    private void rehome(RecruitmentSlackThread thread, String target, CardState state,
+                        RecruitmentEvent event) throws Exception {
+        String previousChannel = thread.getChannelId();
+        // Idempotent: a retry of this delivery re-runs it harmlessly.
+        slackService.updateMessageStrict(previousChannel, thread.getRootTs(),
+                state.fallbackText(), state.blocks(baseUrl));
+        String farewell = replyText(event, state);
+        slackService.sendThreadReply(previousChannel, thread.getRootTs(),
+                (farewell == null ? ":twisted_rightwards_arrows: *Moved to another position*"
+                        : farewell)
+                        + "\nFollowing on in <#" + target + ">.");
+        // Throws on failure — the row still points at the old channel, so
+        // the retry repeats the whole move rather than losing the card.
+        String ts = slackService.sendMessageReturningTs(target, state.fallbackText(),
+                state.blocks(baseUrl));
+        int moved = QuarkusTransaction.requiringNew().call(() ->
+                entityManager.createNativeQuery(
+                                "UPDATE recruitment_slack_threads "
+                                + "SET channel_id = :channel, root_ts = :ts, "
+                                + "    updated_at = UTC_TIMESTAMP(3) "
+                                + "WHERE application_uuid = :app AND channel_id = :previous")
+                        .setParameter("channel", target)
+                        .setParameter("ts", ts)
+                        .setParameter("app", thread.getApplicationUuid())
+                        .setParameter("previous", previousChannel)
+                        .executeUpdate());
+        if (moved == 0) {
+            log.warnf("Card reactor: lost the re-home race for application %s (event seq %d) — "
+                            + "an orphan card was posted to %s",
+                    thread.getApplicationUuid(), event.getSeq(), target);
+            return;
+        }
+        log.infof("Card reactor: application %s card moved from %s to %s (event seq %d)",
+                thread.getApplicationUuid(), previousChannel, target, event.getSeq());
     }
 
     private void touch(RecruitmentSlackThread thread) {
