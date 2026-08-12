@@ -55,6 +55,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * poison events (AI spec §3.3: "one in-JVM try + one catch-up retry, then
  * swallow and advance") override {@link #maxDeliveryAttempts()}; skipped
  * events get a durable {@code SKIPPED} marker and the sweep moves on.
+ * <p>
+ * Skipping is not discarding (V490). Every skipped event also gets a
+ * {@link RecruitmentReactorDeadLetter} row, which the watermark never
+ * prunes, which keeps the {@code RECRUITMENT_REACTOR_DEAD_LETTER} alarm red
+ * while it is OPEN, and which an operator resolves by
+ * {@link #redeliver(long) replaying} it once the cause is fixed or by
+ * abandoning it. This exists because it did not: on 2026-08-11 a partner
+ * channel the card bot could not see made {@code chat.postMessage} answer
+ * {@code channel_not_found}, and three recruitment cards were skipped into
+ * nothing but an ERROR line — no marker (the watermark advance deleted it),
+ * no alarm, no way back.
  */
 @JBossLog
 public abstract class RecruitmentReactor {
@@ -64,6 +75,9 @@ public abstract class RecruitmentReactor {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    RecruitmentReactorDeadLetterService deadLetters;
 
     @ConfigProperty(name = "dk.trustworks.recruitment.catchup.grace-seconds", defaultValue = "300")
     long catchupGraceSeconds;
@@ -150,9 +164,10 @@ public abstract class RecruitmentReactor {
             } catch (Exception e) {
                 int attemptCount = attempts.getOrDefault(next, 0);
                 if (attemptCount >= maxDeliveryAttempts()) {
-                    log.errorf(e, "Reactor %s: event seq %d failed %d attempts — skipping (poison event)",
+                    log.errorf(e, "Reactor %s: event seq %d failed %d attempts — skipping (poison event); "
+                                    + "dead-lettered for replay via /recruitment/reactors/dead-letters",
                             name(), next, attemptCount);
-                    markSkipped(next);
+                    markSkipped(next, attemptCount, e);
                     skippedPoison++;
                 } else {
                     log.warnf(e, "Reactor %s: event seq %d failed delivery (attempt %d) — sweep stops, retrying next cycle",
@@ -251,8 +266,19 @@ public abstract class RecruitmentReactor {
         return outcome;
     }
 
-    /** Durable poison-skip marker + nothing else (no handler work in this transaction). */
-    private void markSkipped(long seq) {
+    /**
+     * Durable poison-skip marker + the dead letter that makes it
+     * recoverable. No handler work in either transaction.
+     * <p>
+     * Both writes matter and neither replaces the other: the {@code SKIPPED}
+     * delivery row stops a later sweep from re-handling the event, while the
+     * {@link RecruitmentReactorDeadLetter} row is what an operator sees and
+     * acts on. Before V490 only the first existed — and
+     * {@link #advanceWatermarkTo(long)} deleted it milliseconds later, which
+     * is how three production Slack cards vanished on 2026-08-11 leaving
+     * nothing but a log line.
+     */
+    private void markSkipped(long seq, int attemptCount, Throwable failure) {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "INSERT IGNORE INTO recruitment_reactor_deliveries (reactor_name, event_seq, status, processed_at) " +
@@ -261,6 +287,18 @@ public abstract class RecruitmentReactor {
                         .setParameter("seq", seq)
                         .setParameter("now", LocalDateTime.now(ZoneOffset.UTC))
                         .executeUpdate());
+        if (deadLetters != null) {
+            deadLetters.record(name(), seq, attemptCount, failure);
+        } else {
+            // Only reachable for a hand-instantiated reactor (the
+            // RecruitmentReactorIntegrationTest.ProbeReactor idiom); every
+            // deployed reactor is a CDI bean. Degrade loudly rather than
+            // throw: an NPE here escapes catchUp(), so the event would never
+            // advance and the reactor would block on it forever — strictly
+            // worse than the missing dead letter.
+            log.errorf("Reactor %s: no dead-letter service bound — seq %d was skipped with NO durable record",
+                    name(), seq);
+        }
         attempts.remove(seq);
     }
 
@@ -268,6 +306,15 @@ public abstract class RecruitmentReactor {
      * Monotonically advance the watermark and prune dedupe rows it has
      * passed. The pessimistic lock serializes concurrent sweeps (two JVM
      * instances during ECS cutover).
+     * <p>
+     * {@code SKIPPED} rows are deliberately exempt from the prune. They are
+     * poison markers, not dedupe cache: this method runs immediately after
+     * {@link #markSkipped} for the very same seq, so pruning by seq alone
+     * deleted the marker the line above had just written — the bug that made
+     * the "durable SKIPPED marker" in this class's javadoc a fiction until
+     * V490. Poison events are rare, so the exemption cannot grow the table
+     * meaningfully; {@code PROCESSED} rows still get pruned exactly as
+     * before.
      */
     private void advanceWatermarkTo(long seq) {
         QuarkusTransaction.requiringNew().run(() -> {
@@ -280,10 +327,50 @@ public abstract class RecruitmentReactor {
                 offset.setLastProcessedSeq(seq);
             }
             em.createQuery("DELETE FROM RecruitmentReactorDelivery d " +
-                            "WHERE d.reactorName = :name AND d.eventSeq <= :seq")
+                            "WHERE d.reactorName = :name AND d.eventSeq <= :seq " +
+                            "AND d.status <> :skipped")
                     .setParameter("name", name())
                     .setParameter("seq", offset.getLastProcessedSeq())
+                    .setParameter("skipped", RecruitmentReactorDelivery.STATUS_SKIPPED)
                     .executeUpdate();
+        });
+    }
+
+    /**
+     * Re-run the handler for one dead-lettered event (V490 ops path).
+     * <p>
+     * Deliberately bypasses BOTH guards that {@link #deliverOnce} applies:
+     * the watermark has long since passed this seq, and the {@code SKIPPED}
+     * marker is precisely what is being undone. That is safe only because
+     * this is operator-triggered and one-at-a-time — never call it from a
+     * sweep, or a permanently broken event becomes an infinite retry loop.
+     * <p>
+     * The {@code SKIPPED} row is replaced with {@code PROCESSED} inside the
+     * same transaction as the handler, so a failed replay rolls the marker
+     * back to {@code SKIPPED} and the event stays exactly as skipped as it
+     * was.
+     *
+     * @return false when the event no longer exists in the stream
+     * @throws RuntimeException when the handler fails again — the caller
+     *         records it against the still-OPEN dead letter
+     */
+    public boolean redeliver(long seq) {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            RecruitmentEvent event = em.find(RecruitmentEvent.class, seq);
+            if (event == null) {
+                return false;
+            }
+            em.createNativeQuery("DELETE FROM recruitment_reactor_deliveries "
+                            + "WHERE reactor_name = :name AND event_seq = :seq")
+                    .setParameter("name", name())
+                    .setParameter("seq", seq)
+                    .executeUpdate();
+            em.persist(new RecruitmentReactorDelivery(
+                    name(), seq, RecruitmentReactorDelivery.STATUS_PROCESSED,
+                    LocalDateTime.now(ZoneOffset.UTC)));
+            em.flush();
+            handle(event);
+            return true;
         });
     }
 
