@@ -33,7 +33,16 @@ public interface AuthorizationService {
     ScopeResolution resolveReach(String actorUuid, String permissionKey,
                                  LocalDate asOf, Set<DataScope> disabledScopes);
 
-    /** Whether the actor may touch one subject under the permission, with trace data. */
+    /**
+     * Whether the actor may touch one subject under the permission, with trace data.
+     *
+     * <p>An actor asking about <em>themselves</em> is always allowed at scope
+     * {@code OWN}, without consulting any grant — self-access is intrinsic, so a
+     * missing or unresolvable OWN grant cannot lock a person out of their own record.
+     * The one exception is a caller that excluded the OWN tier via
+     * {@code disabledScopes} ({@code allowSelf: false}, the mutation surfaces).
+     * Foreign subjects are unaffected and resolve through {@link #resolveReach}.
+     */
     AccessDecision decideSubjectAccess(String actorUuid, String permissionKey, String subjectUuid,
                                        LocalDate asOf, Set<DataScope> disabledScopes);
 

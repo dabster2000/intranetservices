@@ -174,4 +174,90 @@ class AuthorizationServiceImplTest {
         assertFalse(decision.allowed());
         assertNull(decision.widestScope());
     }
+
+    // ------------------------------------------------------------------
+    // Self-access — the prod regression of 2026-08-09..12
+    // ------------------------------------------------------------------
+
+    /**
+     * The exact production state: a plain employee holds no {@code roles} row at all,
+     * so V470's {@code USER → salaries:read @ OWN} grant has nothing to resolve from
+     * and the reach is legitimately empty. Reading your own record must still be
+     * allowed — this is what 403'd five distinct employees on their own payslip.
+     */
+    @Test
+    void selfReadIsAllowedEvenWhenNoGrantResolves() {
+        when(permissions.effectiveScopes(ANNA)).thenReturn(Map.of());
+
+        AuthorizationService.AccessDecision decision =
+                service.decideSubjectAccess(ANNA, SALARIES_READ, ANNA, AS_OF, Set.of());
+
+        assertTrue(decision.allowed(), "an employee must always reach their own salary data");
+        assertEquals(DataScope.OWN, decision.widestScope());
+        assertFalse(decision.unbounded(), "self-access is the narrowest tier, not a wildcard");
+        assertEquals(1, decision.subjectCount());
+        verifyNoInteractions(resolver);
+    }
+
+    /**
+     * The other half of the same fix: the empty reach that lets a self-read through
+     * must still deny every foreign subject. Same actor, same missing grant, different
+     * subject — 403.
+     */
+    @Test
+    void foreignReadIsStillDeniedWhenNoGrantResolves() {
+        when(permissions.effectiveScopes(ANNA)).thenReturn(Map.of());
+
+        AuthorizationService.AccessDecision decision =
+                service.decideSubjectAccess(ANNA, SALARIES_READ, BO, AS_OF, Set.of());
+
+        assertFalse(decision.allowed(), "self-access must not widen to anyone else");
+        assertNull(decision.widestScope());
+        assertFalse(decision.unbounded());
+    }
+
+    /** A bounded grant that excludes the actor still cannot be used to reach a stranger. */
+    @Test
+    void selfBypassDoesNotLeakIntoABoundedForeignRead() {
+        grant(DataScope.TEAM);
+        when(resolver.resolveTeam(ANNA, AS_OF)).thenReturn(Set.of(ANNA, "member-1"));
+
+        assertTrue(service.decideSubjectAccess(ANNA, SALARIES_READ, ANNA, AS_OF, Set.of()).allowed());
+        assertTrue(service.decideSubjectAccess(ANNA, SALARIES_READ, "member-1", AS_OF, Set.of()).allowed());
+        assertFalse(service.decideSubjectAccess(ANNA, SALARIES_READ, BO, AS_OF, Set.of()).allowed(),
+                "Bo is not among them");
+    }
+
+    /**
+     * {@code allowSelf: false} — the mutation surfaces, where self-service stays
+     * read-only. Excluding the OWN tier must still exclude the actor themselves,
+     * or the fix would hand every employee write access to their own salary.
+     */
+    @Test
+    void disablingOwnStillExcludesTheActorThemselves() {
+        when(permissions.effectiveScopes(ANNA)).thenReturn(Map.of());
+
+        AuthorizationService.AccessDecision decision = service.decideSubjectAccess(
+                ANNA, "salaries:write", ANNA, AS_OF, Set.of(DataScope.OWN));
+
+        assertFalse(decision.allowed(), "allowSelf:false must keep meaning allowSelf:false");
+    }
+
+    /** An OWN grant that resolves normally is unchanged — the bypass is not the only route. */
+    @Test
+    void resolvedOwnGrantStillAllowsSelf() {
+        grant(DataScope.OWN);
+        when(resolver.resolveOwn(ANNA)).thenReturn(Set.of(ANNA));
+
+        assertTrue(service.decideSubjectAccess(ANNA, SALARIES_READ, ANNA, AS_OF, Set.of()).allowed());
+        assertFalse(service.decideSubjectAccess(ANNA, SALARIES_READ, BO, AS_OF, Set.of()).allowed());
+    }
+
+    /** No actor (blank/null) is not "self" — an unidentified caller reaches nothing. */
+    @Test
+    void blankActorIsNeverItsOwnSubject() {
+        assertFalse(service.decideSubjectAccess(null, SALARIES_READ, BO, AS_OF, Set.of()).allowed());
+        assertFalse(service.decideSubjectAccess("  ", SALARIES_READ, "  ", AS_OF, Set.of()).allowed(),
+                "a blank subject is rejected before anything else");
+    }
 }

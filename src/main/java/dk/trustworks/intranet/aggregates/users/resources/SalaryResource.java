@@ -98,8 +98,16 @@ public class SalaryResource {
     @GET
     @Path("/{useruuid}/salaries")
     public List<Salary> listAll(@PathParam("useruuid") String useruuid) {
-        ScopeResolution reach = actorReachOrNull();
-        if (reach == null || reach.unbounded()) {
+        String actor = actorOrNull();
+        // No actor: batch job or API client — Phase 12 (see actorOrNull).
+        // Self-read: your own salary history is yours whatever your grants resolve to,
+        // and findByUseruuid(useruuid) is already bounded to exactly that one subject.
+        if (actor == null || isSelfRead(actor, useruuid)) {
+            return salaryService.findByUseruuid(useruuid);
+        }
+        ScopeResolution reach = authorizationService.resolveReach(
+                actor, "salaries:read", LocalDate.now(), Set.of());
+        if (reach.unbounded()) {
             return salaryService.findByUseruuid(useruuid);
         }
         if (!reach.permits(useruuid)) {
@@ -486,22 +494,13 @@ public class SalaryResource {
     // ------------------------------------------------------------------
 
     /**
-     * The acting human's salaries:read reach, or {@code null} when the caller
-     * carries no {@code X-Requested-By} actor. The BFF always sends the header,
-     * so BFF traffic is scoped; batch jobs and API clients keep pre-Phase-8
-     * behaviour until Phase 12 — a deliberate, findings-recorded fail-open.
-     * Anonymous flows never reach this resource: no session, no actor header,
-     * and no salaries:read-scoped client credential.
+     * 403 unless the acting human (when present) may reach the target's salary data.
+     *
+     * <p>A self-read is never denied here: {@code decideSubjectAccess} allows an actor
+     * their own subject at scope OWN without consulting a grant, which is what keeps an
+     * employee's own Paycheck tab working when the implicit {@code USER} role leaves
+     * V470's {@code salaries:read @ OWN} grant with no row to resolve from.
      */
-    private ScopeResolution actorReachOrNull() {
-        String actor = actorOrNull();
-        if (actor == null) {
-            return null;
-        }
-        return authorizationService.resolveReach(actor, "salaries:read", LocalDate.now(), Set.of());
-    }
-
-    /** 403 unless the acting human (when present) may reach the target's salary data. */
     private void enforceSalariesReadScope(String targetUseruuid) {
         String actor = actorOrNull();
         if (actor == null) {
@@ -514,6 +513,19 @@ public class SalaryResource {
         }
     }
 
+    /** Whether the acting human is asking about their own salary records. */
+    private static boolean isSelfRead(String actor, String targetUseruuid) {
+        return actor != null && targetUseruuid != null && actor.trim().equals(targetUseruuid.trim());
+    }
+
+    /**
+     * The acting human, or {@code null} when the caller carries no
+     * {@code X-Requested-By} actor. The BFF always sends the header, so BFF traffic is
+     * scoped; batch jobs and API clients keep pre-Phase-8 behaviour until Phase 12 — a
+     * deliberate, findings-recorded fail-open. Anonymous flows never reach this
+     * resource: no session, no actor header, and no salaries:read-scoped client
+     * credential.
+     */
     private String actorOrNull() {
         try {
             String actor = requestHeaderHolder.getUserUuid();

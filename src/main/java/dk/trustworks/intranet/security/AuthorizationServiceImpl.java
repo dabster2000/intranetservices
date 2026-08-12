@@ -78,6 +78,10 @@ public class AuthorizationServiceImpl implements AuthorizationService {
         if (subjectUuid == null || subjectUuid.isBlank()) {
             return new AccessDecision(false, null, false, 0, "No subject given — denied");
         }
+        if (isSelfAccess(actorUuid, subjectUuid, disabledScopes)) {
+            return new AccessDecision(true, DataScope.OWN, false, 1,
+                    "Subject is the actor — OWN access, which no missing grant can withhold");
+        }
         ScopeResolution reach = resolveReach(actorUuid, permissionKey, asOf, disabledScopes);
         if (reach.unbounded()) {
             return new AccessDecision(true, DataScope.ALL, true, 0,
@@ -92,5 +96,30 @@ public class AuthorizationServiceImpl implements AuthorizationService {
                 + " (" + reach.subjects().size() + " subjects as of " + asOf + ") — subject "
                 + (allowed ? "is among them" : "is not among them");
         return new AccessDecision(allowed, reach.widestScope(), false, reach.subjects().size(), reason);
+    }
+
+    /**
+     * Asking about yourself is intrinsic, not role-conferred. Decided <em>before</em>
+     * {@link #resolveReach} so that a missing, mis-seeded or unresolvable OWN grant
+     * can never lock a person out of their own record.
+     *
+     * <p>Why this is not belt-and-braces: the {@code USER} role is implicit in this
+     * system — a plain employee has no {@code roles} row at all, so V470's
+     * {@code USER → salaries:read @ OWN} grant has nothing to resolve from and
+     * {@link #resolveReach} correctly returns {@link ScopeResolution#none()}. That is
+     * what 403'd employees on their own payslip in production from 2026-08-09 onward,
+     * through both doors that reach this method: {@code SalaryResource}'s row-level
+     * check and the BFF's {@code POST /authz/check}. HR/ADMIN were unaffected because
+     * they hold explicit role rows at scope {@code ALL}.
+     *
+     * <p>Widens nothing. It only ever fires when the subject <em>is</em> the actor, and
+     * never when the caller excluded the OWN tier ({@code allowSelf: false} — the
+     * mutation surfaces, where self-service stays read-only). Every foreign subject
+     * still goes through the full grant resolution.
+     */
+    private static boolean isSelfAccess(String actorUuid, String subjectUuid, Set<DataScope> disabledScopes) {
+        return actorUuid != null && !actorUuid.isBlank()
+                && actorUuid.trim().equals(subjectUuid.trim())
+                && (disabledScopes == null || !disabledScopes.contains(DataScope.OWN));
     }
 }
