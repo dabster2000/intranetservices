@@ -4,7 +4,6 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
-import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventRequest;
@@ -41,7 +40,9 @@ import java.util.Optional;
  * Event shape: created in the FIRST interviewer's calendar (they act as
  * organizer); remaining interviewers and the candidate (external, when an
  * email exists) are invited as required attendees. Duration is the
- * interview row's {@code duration_minutes} (V474), default 60.
+ * interview row's {@code duration_minutes} (V474), default 60. The body is
+ * written to the candidate whenever they are on the invitation — see
+ * {@link #invitationBody}.
  */
 @JBossLog
 @ApplicationScoped
@@ -103,8 +104,7 @@ public class RecruitmentCalendarService {
      *         fails (logged, never thrown)
      */
     public Optional<String> createEvent(RecruitmentInterview interview,
-                                        RecruitmentCandidate candidate,
-                                        RecruitmentPosition position) {
+                                        RecruitmentCandidate candidate) {
         if (!calendarEnabled) {
             return Optional.empty();
         }
@@ -116,7 +116,7 @@ public class RecruitmentCalendarService {
                 return Optional.empty();
             }
             GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
-                    organizer, buildEvent(interview, candidate, position));
+                    organizer, buildEvent(interview, candidate));
             return Optional.ofNullable(created != null ? created.id() : null);
         } catch (Exception e) {
             log.warnv("Graph calendar create failed for interview {0}: {1} — proceeding without calendar event",
@@ -127,8 +127,7 @@ public class RecruitmentCalendarService {
 
     /** Push a reschedule (new time/location/attendees) to the existing Outlook event. */
     public void updateEvent(RecruitmentInterview interview,
-                            RecruitmentCandidate candidate,
-                            RecruitmentPosition position) {
+                            RecruitmentCandidate candidate) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
             return;
         }
@@ -138,7 +137,7 @@ public class RecruitmentCalendarService {
                 return;
             }
             graph().updateCalendarEvent(organizer, interview.getGraphEventId(),
-                    buildEvent(interview, candidate, position));
+                    buildEvent(interview, candidate));
         } catch (Exception e) {
             log.warnv("Graph calendar update failed for interview {0}: {1} — calendar may be stale",
                     interview.getUuid(), e.getMessage());
@@ -359,23 +358,29 @@ public class RecruitmentCalendarService {
     // ---- Shaping -----------------------------------------------------------
 
     private CalendarEventRequest buildEvent(RecruitmentInterview interview,
-                                            RecruitmentCandidate candidate,
-                                            RecruitmentPosition position) {
+                                            RecruitmentCandidate candidate) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
+        // The position is named nowhere on the invitation — not here and
+        // not in the body: the candidate is an attendee, and what they are
+        // being seen for is not the invitation's business.
         String subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
-                ? "Uformel snak: %s — %s".formatted(candidateName(candidate), position.getTitle())
-                : "Interview %d: %s — %s".formatted(interview.getRound(),
-                        candidateName(candidate), position.getTitle());
+                ? "Uformel snak: %s".formatted(candidateName(candidate))
+                : "Interview %d: %s".formatted(interview.getRound(), candidateName(candidate));
 
         List<CalendarEventRequest.Attendee> attendees = new ArrayList<>();
         List<String> interviewers = interview.getInterviewerUuids();
         for (int i = 1; i < interviewers.size(); i++) {
-            String email = userEmail(interviewers.get(i));
+            // Name as well as address: the candidate's mail client cannot
+            // resolve a Trustworks address against our directory, so a
+            // nameless attendee shows up as a raw firstname.lastname@… .
+            User user = User.findById(interviewers.get(i));
+            String email = mailboxOf(user);
             if (email != null) {
-                attendees.add(required(email, null));
+                attendees.add(required(email, displayName(user)));
             }
         }
-        if (candidate.getEmail() != null && !candidate.getEmail().isBlank()) {
+        boolean candidateInvited = candidate.getEmail() != null && !candidate.getEmail().isBlank();
+        if (candidateInvited) {
             attendees.add(required(candidate.getEmail(), candidateName(candidate)));
         }
         if (interview.getRoomEmail() != null && !interview.getRoomEmail().isBlank()) {
@@ -390,7 +395,7 @@ public class RecruitmentCalendarService {
         return new CalendarEventRequest(
                 subject,
                 new CalendarEventRequest.ItemBody("text",
-                        "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit."),
+                        invitationBody(interview, candidate, candidateInvited)),
                 new CalendarEventRequest.DateTimeTimeZone(
                         interview.getScheduledAt().toString(), EVENT_TIME_ZONE),
                 new CalendarEventRequest.DateTimeTimeZone(
@@ -400,6 +405,57 @@ public class RecruitmentCalendarService {
                         ? new CalendarEventRequest.EventLocation(interview.getLocation())
                         : null,
                 attendees);
+    }
+
+    /**
+     * The invitation body. Whenever the candidate has an email they are a
+     * required attendee, so this text is read by someone outside the
+     * company: it is addressed to them, in Danish like every other
+     * candidate-facing template (V446), and carries no internal links. It
+     * used to be the internal note "Scheduled via the Trustworks intranet —
+     * see /recruitment/interviews for the interview kit", which named a
+     * path no candidate can open.
+     * <p>
+     * The position is deliberately NOT named here — the body greets and
+     * sets expectations, nothing more.
+     * <p>
+     * Interviewers read the same body — one event, one body — and lose
+     * nothing: the kit reaches them through "My interviews" and the Slack
+     * card, not through here.
+     * <p>
+     * With no candidate email the event is interviewers-only and the
+     * internal note is kept: nobody external can see it, and the pointer is
+     * useful there.
+     * <p>
+     * Package-private on purpose: pure text, so it is covered by a plain
+     * unit test in the DB-free tier that gates deploys, rather than only by
+     * the ungated {@code @QuarkusTest} tier.
+     */
+    static String invitationBody(RecruitmentInterview interview,
+                                 RecruitmentCandidate candidate,
+                                 boolean candidateInvited) {
+        if (!candidateInvited) {
+            return "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit.";
+        }
+        // Danish addresses people by first name; without one, greet
+        // namelessly rather than "Kære <surname>", which reads wrong.
+        String first = candidate.getFirstName() == null ? "" : candidate.getFirstName().trim();
+        String greeting = first.isEmpty() ? "Hej" : "Kære " + first;
+        String occasion = interview.getKind() == RecruitmentInterviewKind.INFORMAL
+                ? "en uformel snak med dig"
+                : "at møde dig til samtale";
+        // Time, place and participants are the invitation's own fields —
+        // repeating them here only invites drift when the event is updated.
+        return """
+                %s
+
+                Vi glæder os til %s hos Trustworks.
+
+                Er du forhindret, eller har du spørgsmål inden vi ses, er du \
+                velkommen til at svare på denne invitation.
+
+                Med venlig hilsen
+                Trustworks""".formatted(greeting, occasion);
     }
 
     private static CalendarEventRequest.Attendee required(String email, String name) {
@@ -417,10 +473,29 @@ public class RecruitmentCalendarService {
     }
 
     private String userEmail(String userUuid) {
-        User user = User.findById(userUuid);
+        return mailboxOf(User.findById(userUuid));
+    }
+
+    private static String mailboxOf(User user) {
         return user != null && user.getEmail() != null && !user.getEmail().isBlank()
                 ? user.getEmail()
                 : null;
+    }
+
+    /**
+     * The attendee's display name, or null when the user has no usable
+     * name — {@code User.getFullname()} is unguarded and would render
+     * "null null" for a half-filled row, which is worse than the bare
+     * address Outlook falls back to.
+     */
+    static String displayName(User user) {
+        if (user == null) {
+            return null;
+        }
+        String first = user.getFirstname() == null ? "" : user.getFirstname().trim();
+        String last = user.getLastname() == null ? "" : user.getLastname().trim();
+        String name = (first + " " + last).trim();
+        return name.isEmpty() ? null : name;
     }
 
     private static String candidateName(RecruitmentCandidate candidate) {

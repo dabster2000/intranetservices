@@ -2,7 +2,6 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
-import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.resources.P8ProfileFixtures;
@@ -88,7 +87,7 @@ class RecruitmentCalendarServiceTest {
     void toggleOff_neverTouchesGraph() {
         service.calendarEnabled = false;
         Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
-                service.createEvent(interview(), candidate(), position()));
+                service.createEvent(interview(), candidate()));
         assertTrue(id.isEmpty());
         verifyNoInteractions(graph);
     }
@@ -100,7 +99,7 @@ class RecruitmentCalendarServiceTest {
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-123"));
 
         Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
-                service.createEvent(interview(), candidate(), position()));
+                service.createEvent(interview(), candidate()));
 
         assertEquals(Optional.of("evt-123"), id);
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
@@ -113,7 +112,14 @@ class RecruitmentCalendarServiceTest {
                 "co-interviewer invited");
         assertTrue(attendeeEmails.contains("candidate@example.com"),
                 "candidate invited as external attendee");
-        assertTrue(body.getValue().subject().contains("Interview 1"));
+        // Candidate name and round only — the position is named nowhere on
+        // the invitation, subject included.
+        assertEquals("Interview 1: Kim Kandidat", body.getValue().subject());
+        // Named, not address-only: the candidate's mail client cannot
+        // resolve a Trustworks address against our directory.
+        assertEquals("Ib Interviewer", body.getValue().attendees().stream()
+                .filter(a -> a.emailAddress().address().equals(interviewerB + "@example.com"))
+                .findFirst().orElseThrow().emailAddress().name());
     }
 
     @Test
@@ -123,7 +129,7 @@ class RecruitmentCalendarServiceTest {
         interview.setGraphEventId("evt-123");
 
         QuarkusTransaction.requiringNew().run(() ->
-                service.updateEvent(interview, candidate(), position()));
+                service.updateEvent(interview, candidate()));
         verify(graph).updateCalendarEvent(eq(interviewerA + "@example.com"), eq("evt-123"), any());
 
         QuarkusTransaction.requiringNew().run(() -> service.cancelEvent(interview));
@@ -135,7 +141,7 @@ class RecruitmentCalendarServiceTest {
         service.calendarEnabled = true;
         RecruitmentInterview interview = interview(); // graphEventId null
         QuarkusTransaction.requiringNew().run(() -> {
-            service.updateEvent(interview, candidate(), position());
+            service.updateEvent(interview, candidate());
             service.cancelEvent(interview);
         });
         verify(graph, never()).updateCalendarEvent(anyString(), anyString(), any());
@@ -152,7 +158,7 @@ class RecruitmentCalendarServiceTest {
         // stamped Europe/Copenhagen — never "UTC" (that shifted every event
         // by the UTC offset in Outlook).
         QuarkusTransaction.requiringNew().run(() ->
-                service.createEvent(interview(), candidate(), position()));
+                service.createEvent(interview(), candidate()));
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -174,7 +180,7 @@ class RecruitmentCalendarServiceTest {
         RecruitmentInterview interview = interview();
         interview.setScheduledAt(LocalDateTime.of(2027, 1, 15, 14, 0));
         QuarkusTransaction.requiringNew().run(() ->
-                service.createEvent(interview, candidate(), position()));
+                service.createEvent(interview, candidate()));
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -194,7 +200,7 @@ class RecruitmentCalendarServiceTest {
         RecruitmentInterview interview = interview();
         interview.setRoomEmail("room-hq2@trustworks.dk");
         QuarkusTransaction.requiringNew().run(() ->
-                service.createEvent(interview, candidate(), position()));
+                service.createEvent(interview, candidate()));
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -221,7 +227,7 @@ class RecruitmentCalendarServiceTest {
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-no-room"));
 
         QuarkusTransaction.requiringNew().run(() ->
-                service.createEvent(interview(), candidate(), position()));
+                service.createEvent(interview(), candidate()));
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -335,7 +341,7 @@ class RecruitmentCalendarServiceTest {
         RecruitmentInterview interview = interview();
         interview.setDurationMinutes(90);
         QuarkusTransaction.requiringNew().run(() ->
-                service.createEvent(interview, candidate(), position()));
+                service.createEvent(interview, candidate()));
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -419,7 +425,7 @@ class RecruitmentCalendarServiceTest {
                 .thenThrow(new RuntimeException("Graph 403: missing Calendars.ReadWrite"));
 
         Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
-                service.createEvent(interview(), candidate(), position()));
+                service.createEvent(interview(), candidate()));
         assertTrue(id.isEmpty(), "a Graph failure yields empty, never an exception");
     }
 
@@ -445,11 +451,5 @@ class RecruitmentCalendarServiceTest {
         when(candidate.getLastName()).thenReturn("Kandidat");
         when(candidate.getEmail()).thenReturn("candidate@example.com");
         return candidate;
-    }
-
-    private RecruitmentPosition position() {
-        RecruitmentPosition position = Mockito.mock(RecruitmentPosition.class);
-        when(position.getTitle()).thenReturn("Consultant");
-        return position;
     }
 }
