@@ -18,6 +18,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTr
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSlackFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.slack.SlackCardViewButtonHandler;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -408,7 +409,7 @@ public class SlackCardReactor extends RecruitmentReactor {
             var actions = com.slack.api.model.block.Blocks.actions(a -> a.elements(
                     com.slack.api.model.block.element.BlockElements.asElements(
                             com.slack.api.model.block.element.BlockElements.button(b -> b
-                                    .actionId("recruitment_card_view")
+                                    .actionId(SlackCardViewButtonHandler.KEY)
                                     .url(baseUrl + "/recruitment/candidates/" + facts.candidateUuid())
                                     .text(com.slack.api.model.block.composition.BlockCompositions
                                             .plainText("View profile"))))));
