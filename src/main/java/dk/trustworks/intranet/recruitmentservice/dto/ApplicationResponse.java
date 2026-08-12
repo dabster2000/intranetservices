@@ -37,6 +37,23 @@ public record ApplicationResponse(
         String assignedTeamUuid,
         LocalDate expectedStartDate,
         LocalDateTime stageEnteredAt,
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        /**
+         * Whether the requesting user may act on this application — move its
+         * stage, reject, withdraw, schedule interviews, assign a team
+         * ({@code RecruitmentVisibility.canDecideOnApplication}). The page
+         * hides the controls when this is false rather than letting the user
+         * click into a 403; the backend still enforces the same rule on every
+         * one of those endpoints.
+         */
+        boolean viewerCanDecide,
+        /**
+         * Whether the requesting user <em>runs this hire</em> — the named
+         * hiring owner, or a lead of the position's practice. Distinct from
+         * {@link #viewerCanDecide} on purpose: it is what opens the read-only
+         * offer/contract view, and a recruiter who may decide everywhere is
+         * deliberately not in it.
+         */
+        boolean viewerRunsHire
 ) {
 }

@@ -60,13 +60,19 @@ public class RecruitmentBoardService {
     @Inject
     EntityManager em;
 
+    @Inject
+    dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility visibility;
+
     /**
      * Build the board for a position the viewer is already cleared to read.
      *
-     * @param position the resolved, visibility-checked position
+     * @param position   the resolved, visibility-checked position
+     * @param viewerUuid the requesting user — reading a board never implied
+     *                   being able to move its cards, and the summary now
+     *                   says which of the two the caller has
      * @return the full {@code IPositionBoard} shape
      */
-    public PositionBoardResponse board(RecruitmentPosition position) {
+    public PositionBoardResponse board(RecruitmentPosition position, String viewerUuid) {
         Objects.requireNonNull(position, "position must not be null");
 
         List<RecruitmentApplication> applications =
@@ -85,7 +91,10 @@ public class RecruitmentBoardService {
         List<BoardColumn> columns = buildColumns(applications, stageSet, candidates, referrerNames, now);
         BoardTerminalSummary terminal = buildTerminal(applications, candidates);
 
-        return new PositionBoardResponse(summarize(position, stageSet), columns, terminal);
+        return new PositionBoardResponse(
+                summarize(position, stageSet,
+                        visibility.canDecideOnApplication(viewerUuid, position)),
+                columns, terminal);
     }
 
     // ---- Columns (open applications) ------------------------------------------
@@ -239,7 +248,9 @@ public class RecruitmentBoardService {
         return (first + " " + last).trim();
     }
 
-    private static BoardPositionSummary summarize(RecruitmentPosition position, List<String> stageSet) {
+    private static BoardPositionSummary summarize(RecruitmentPosition position,
+                                                  List<String> stageSet,
+                                                  boolean viewerCanDecide) {
         return new BoardPositionSummary(
                 position.getUuid(),
                 position.getTitle(),
@@ -252,6 +263,7 @@ public class RecruitmentBoardService {
                 position.getHiringOwnerUuid(),
                 position.getStatus(),
                 position.getDemandRag(),
-                stageSet);
+                stageSet,
+                viewerCanDecide);
     }
 }

@@ -2,6 +2,7 @@ package dk.trustworks.intranet.communicationsservice.services;
 
 import com.slack.api.Slack;
 import com.slack.api.methods.SlackApiException;
+import com.slack.api.methods.response.auth.AuthTestResponse;
 import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 import com.slack.api.methods.response.conversations.*;
 import com.slack.api.methods.response.users.UsersLookupByEmailResponse;
@@ -56,6 +57,14 @@ public class SlackService {
      * that scales with recruitment activity.
      */
     private final AtomicBoolean homeTabDisabledReported = new AtomicBoolean();
+
+    /**
+     * The mother bot's own Slack user id, resolved once per JVM by
+     * {@link #cardBotUserId()}. It never changes for a given token, so a
+     * single successful {@code auth.test} is cached for the process
+     * lifetime; a failed one is not cached and is retried on the next call.
+     */
+    private volatile String cardBotUserId;
 
     @ConfigProperty(name = "slack.motherSlackBotToken")
     String motherSlackBotToken;
@@ -154,7 +163,11 @@ public class SlackService {
                         .text(fallbackText)
                         .blocks(blocks));
         if (!response.isOk()) {
-            throw new IOException("Slack root-card post failed: " + response.getError());
+            // The channel id belongs in the message: this exception is what a
+            // poison-skipped delivery leaves behind, and "channel_not_found"
+            // with no channel is not diagnosable after the fact.
+            throw new IOException("Slack root-card post failed for channel " + channel + ": "
+                    + response.getError());
         }
         return response.getTs();
     }
@@ -214,6 +227,59 @@ public class SlackService {
         if (!response.isOk() && !"already_in_channel".equals(response.getError())) {
             throw new IOException("Slack channel invite failed: " + response.getError());
         }
+    }
+
+    /**
+     * The mother bot's own Slack user id ({@code auth.test}), cached per JVM.
+     * Needed because the bot that <em>creates</em> partner-track private
+     * channels is the admin bot, while the bot that <em>posts</em> into them
+     * is the mother bot — see {@link #ensureCardBotInChannel(String)}.
+     * Throws on transport failure or a not-ok response so the calling reactor
+     * delivery retries rather than silently posting into a channel it cannot
+     * see.
+     */
+    public String cardBotUserId() throws IOException, SlackApiException {
+        String cached = cardBotUserId;
+        if (cached != null) {
+            return cached;
+        }
+        AuthTestResponse response = Slack.getInstance().methods(motherSlackBotToken).authTest(r -> r);
+        if (!response.isOk() || response.getUserId() == null) {
+            throw new IOException("Slack auth.test for the card bot failed: " + response.getError());
+        }
+        cardBotUserId = response.getUserId();
+        return cardBotUserId;
+    }
+
+    /**
+     * Makes the mother bot a member of {@code channelId}, using the admin
+     * token (the only bot guaranteed to be in an admin-created private
+     * channel).
+     * <p>
+     * A private Slack conversation is invisible to a token whose bot user is
+     * not a member: {@code chat.postMessage} answers {@code channel_not_found}
+     * — NOT {@code not_in_channel} — which is indistinguishable from a deleted
+     * channel and is what silently killed three recruitment cards on
+     * 2026-08-11. Public channels do not need this (the mother bot can post
+     * with {@code chat:write.public}), so callers only invoke it for private
+     * circle channels.
+     * <p>
+     * Idempotent: {@code already_in_channel} is a success, and so is
+     * {@code cant_invite_self} (a deployment where both tokens belong to the
+     * same bot user). Anything else throws, so the delivery retries.
+     */
+    public void ensureCardBotInChannel(String channelId) throws IOException, SlackApiException {
+        String botUserId = cardBotUserId();
+        ConversationsInviteResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsInvite(req -> req.channel(channelId)
+                        .users(Collections.singletonList(botUserId)));
+        if (response.isOk()
+                || "already_in_channel".equals(response.getError())
+                || "cant_invite_self".equals(response.getError())) {
+            return;
+        }
+        throw new IOException("Slack card-bot invite failed for channel " + channelId + ": "
+                + response.getError());
     }
 
     /**
@@ -465,7 +531,8 @@ public class SlackService {
                     return req;
                 });
         if (!response.isOk()) {
-            throw new IOException("Slack message update failed: " + response.getError());
+            throw new IOException("Slack message update failed for channel " + channel + ": "
+                    + response.getError());
         }
     }
 

@@ -12,6 +12,7 @@ import dk.trustworks.intranet.aggregates.conference.services.PhaseSlackNotifier;
 import dk.trustworks.intranet.communicationsservice.model.*;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
+import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.knowledgeservice.model.Conference;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.ConferencePhase;
@@ -35,6 +36,7 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -50,6 +52,11 @@ public class ConferenceResource {
     private static final int MAX_ATTACHMENT_COUNT = 10;
     private static final long MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
     private static final long MAX_TOTAL_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+
+    // Mailcraft designer images embedded in conference emails
+    private static final int MAX_EMAIL_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+    private static final String EMAIL_IMAGE_TYPE = "EMAIL_IMAGE";
+    private static final String EMAIL_IMAGE_RELATED_UUID = "CONFERENCE_EMAIL_IMAGES";
     private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
         "application/pdf",
         "application/msword",
@@ -77,6 +84,9 @@ public class ConferenceResource {
 
     @Inject
     PhaseSlackNotifier phaseSlackNotifier;
+
+    @Inject
+    PhotoService photoService;
 
     @GET
     public List<Conference> findAllConferences() {
@@ -125,8 +135,8 @@ public class ConferenceResource {
     }
 
     private void updatePhase(ConferencePhase conferencePhase) {
-        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6 where uuid = ?7",
-                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getUuid());
+        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6, mailJson = ?7 where uuid = ?8",
+                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getMailJson(), conferencePhase.getUuid());
     }
 
     @DELETE
@@ -136,6 +146,71 @@ public class ConferenceResource {
     public void deleteConferencePhase(@PathParam("conferenceuuid") String conferenceuuid, @PathParam("phaseuuid") String phaseuuid) {
         ConferencePhase.delete("uuid", phaseuuid);
     }
+
+    @POST
+    @Path("/email-images")
+    @RolesAllowed({"conference:write"})
+    public EmailImageUploadResponse uploadEmailImage(EmailImageUploadRequest request) {
+        if (request == null || request.file() == null || request.file().isBlank()) {
+            throw new WebApplicationException("file is required", Response.Status.BAD_REQUEST);
+        }
+        byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(request.file());
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
+        }
+        if (decoded.length > MAX_EMAIL_IMAGE_BYTES) {
+            throw new WebApplicationException("Image exceeds " + (MAX_EMAIL_IMAGE_BYTES / (1024 * 1024)) + " MB",
+                    Response.Status.REQUEST_ENTITY_TOO_LARGE);
+        }
+        String mimeType = photoService.detectMimeType(decoded);
+        if (!PhotoService.isStorableImageType(mimeType)) {
+            throw new WebApplicationException("Unsupported image format: " + mimeType, Response.Status.BAD_REQUEST);
+        }
+
+        dk.trustworks.intranet.fileservice.model.File image = new dk.trustworks.intranet.fileservice.model.File();
+        image.setUuid(UUID.randomUUID().toString());
+        image.setRelateduuid(EMAIL_IMAGE_RELATED_UUID);
+        image.setType(EMAIL_IMAGE_TYPE);
+        image.setName(request.filename());
+        image.setFilename(sanitizeImageFilename(request.filename())
+                + photoService.extensionFromMimeType(mimeType));
+        image.setUploaddate(LocalDate.now());
+        image.setFile(decoded);
+        photoService.storeEmailImage(image);
+
+        return new EmailImageUploadResponse(image.getUuid());
+    }
+
+    @GET
+    @Path("/email-images/{uuid}")
+    public Response getEmailImage(@PathParam("uuid") String uuid) {
+        dk.trustworks.intranet.fileservice.model.File image = photoService.findEmailImage(uuid);
+        if (image == null || image.getFile() == null || image.getFile().length == 0) {
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        // Bytes were allowlist-vetted at upload (raster formats only, never SVG), so
+        // serving the detected type is safe. Immutable: an image uuid is never reused,
+        // and sent emails reference it indefinitely.
+        return Response.ok(image.getFile(), photoService.detectMimeType(image.getFile()))
+                .header("Cache-Control", "public, max-age=31536000, immutable")
+                .header("X-Content-Type-Options", "nosniff")
+                .build();
+    }
+
+    private static String sanitizeImageFilename(String name) {
+        String base = (name == null || name.isBlank()) ? "image" : name;
+        // strip any extension; the stored one is re-derived from the detected mime type
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) base = base.substring(0, dot);
+        String sanitized = base.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return sanitized.isBlank() ? "image" : sanitized;
+    }
+
+    public record EmailImageUploadRequest(String filename, String file) {}
+
+    public record EmailImageUploadResponse(String uuid) {}
 
     @GET
     @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments")

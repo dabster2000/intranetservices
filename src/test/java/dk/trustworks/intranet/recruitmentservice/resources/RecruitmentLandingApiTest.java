@@ -348,17 +348,24 @@ class RecruitmentLandingApiTest {
         assertTrue(hasPipeline(pipelines(response), teamPositionUuid));
     }
 
+    /**
+     * Reversed on 2026-08-12 together with the decision gate: a current
+     * practice lead now acts on their practice, so the pipelines they read
+     * also produce decision-owned tasks. Before, the landing page listed a
+     * practice lead's pipelines but never asked them to do anything about
+     * them — which is precisely the gap the practice route closed.
+     */
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void practiceLead_readsPipelines_ownsNoDecisionTasks() {
+    void practiceLead_readsPipelines_andOwnsTheirDecisionTasks() {
         Response response = landingFor(practiceLeadUser);
 
         assertEquals("INVOLVED", response.jsonPath().getString("viewerShape"));
         assertTrue(hasPipeline(pipelines(response), teamPositionUuid),
                 "practice lead reads the practice's non-partner pipelines");
         List<Map<String, Object>> tasks = tasks(response);
-        assertFalse(hasTask(tasks, "IDLE_CANDIDATE", "applicationUuid", idleApplicationUuid),
-                "read access grants no decision-owned tasks (spec §7.2)");
+        assertTrue(hasTask(tasks, "IDLE_CANDIDATE", "applicationUuid", idleApplicationUuid),
+                "running the practice now carries its decision tasks too");
     }
 
     @Test

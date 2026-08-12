@@ -41,6 +41,13 @@ import java.util.Map;
  *       guard, persisted in its own committed transaction right after the
  *       channel is created — a redelivered event reconciles membership
  *       instead of creating a second channel.</li>
+ *   <li><b>The card bot is a member too:</b> the channel is created with the
+ *       ADMIN token but {@link SlackCardReactor} posts with the MOTHER token,
+ *       and a private channel is invisible to a non-member bot
+ *       ({@code chat.postMessage} → {@code channel_not_found}). Every handled
+ *       event therefore also asserts the card bot's membership
+ *       ({@code SlackService#ensureCardBotInChannel}), so the split-token
+ *       setup can never strand a position's cards.</li>
  *   <li><b>Membership ≡ circle:</b> every handled event re-invites the
  *       CURRENT circle (invite tolerates {@code already_in_channel}), so a
  *       position whose {@code POSITION_OPENED} predates the toggle gets
@@ -161,6 +168,10 @@ public class SlackChannelReactor extends RecruitmentReactor {
                         .setParameter("pos", position.getUuid())
                         .setParameter("channel", channelId)
                         .executeUpdate());
+        // BEFORE the first post: this channel is private and was created by
+        // the ADMIN bot, so the mother bot — which posts the header below and
+        // every living card afterwards — cannot even see it until invited.
+        slackService.ensureCardBotInChannel(channelId);
         // Best-effort (swallows): the header is informative, not load-bearing.
         slackService.sendMessage(channelId,
                 ":lock: *Confidential — partner-track hiring* for *"
@@ -178,6 +189,12 @@ public class SlackChannelReactor extends RecruitmentReactor {
     /** Invite every CURRENT circle member — tolerant of already-in, throws on real failure. */
     private void inviteCurrentCircle(RecruitmentPosition position, RecruitmentSlackChannel channel)
             throws Exception {
+        // Re-asserted on every handled event, not only at creation: channels
+        // created before the card bot was ever invited (and channels a human
+        // removed it from) heal on the position's next circle event, exactly
+        // like circle membership itself. Idempotent — already_in_channel is
+        // a success.
+        slackService.ensureCardBotInChannel(channel.getChannelId());
         List<RecruitmentCircleMember> members = RecruitmentCircleMember.list(
                 "positionUuid = ?1", position.getUuid());
         for (RecruitmentCircleMember member : members) {

@@ -637,4 +637,30 @@ public class PhotoService {
         File.deleteById(uuid);
         s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(uuid).build());
     }
+
+    /**
+     * Stores a conference email image immutably. Deliberately NOT routed through
+     * {@link #update}: that method supersedes (deletes) every row sharing the same
+     * (relateduuid, type) — correct for portraits, catastrophic here, where every
+     * uploaded image is referenced from already-sent emails and must stay fetchable
+     * indefinitely. No resize either: the designer controls display width, and the
+     * bytes served back must be the bytes the author approved.
+     */
+    @Transactional
+    public void storeEmailImage(File image) {
+        image.persist();
+        s3.putObject(PutObjectRequest.builder()
+                        .bucket(bucketName)
+                        .key(image.getUuid())
+                        .build(),
+                RequestBody.fromBytes(image.getFile()));
+    }
+
+    /** Loads an email image row and its bytes by uuid; null when unknown or not an EMAIL_IMAGE row. */
+    public File findEmailImage(String uuid) {
+        File image = File.<File>find("uuid = ?1 AND type = 'EMAIL_IMAGE'", uuid).firstResult();
+        if (image == null) return null;
+        image.setFile(loadFromS3(image.getUuid()));
+        return image;
+    }
 }

@@ -7,6 +7,7 @@ import jakarta.persistence.LockModeType;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -55,6 +56,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * poison events (AI spec §3.3: "one in-JVM try + one catch-up retry, then
  * swallow and advance") override {@link #maxDeliveryAttempts()}; skipped
  * events get a durable {@code SKIPPED} marker and the sweep moves on.
+ * <p>
+ * Skipping is not discarding (V490). Every skipped event also gets a
+ * {@link RecruitmentReactorDeadLetter} row, which the watermark never
+ * prunes, which keeps the {@code RECRUITMENT_REACTOR_DEAD_LETTER} alarm red
+ * while it is OPEN, and which an operator resolves by
+ * {@link #redeliver(long) replaying} it once the cause is fixed or by
+ * abandoning it. This exists because it did not: on 2026-08-11 a partner
+ * channel the card bot could not see made {@code chat.postMessage} answer
+ * {@code channel_not_found}, and three recruitment cards were skipped into
+ * nothing but an ERROR line — no marker (the watermark advance deleted it),
+ * no alarm, no way back.
  */
 @JBossLog
 public abstract class RecruitmentReactor {
@@ -62,8 +74,18 @@ public abstract class RecruitmentReactor {
     /** Hard bound per sweep — backstop against a runaway loop, far above any real backlog. */
     private static final int MAX_EVENTS_PER_SWEEP = 10_000;
 
+    /**
+     * Attempts for the one-off offset-row insert. A deadlock there is
+     * transient by definition, and the insert is idempotent (INSERT IGNORE),
+     * so re-running it is always safe.
+     */
+    static final int SEED_MAX_ATTEMPTS = 3;
+
     @Inject
     EntityManager em;
+
+    @Inject
+    RecruitmentReactorDeadLetterService deadLetters;
 
     @ConfigProperty(name = "dk.trustworks.recruitment.catchup.grace-seconds", defaultValue = "300")
     long catchupGraceSeconds;
@@ -104,9 +126,11 @@ public abstract class RecruitmentReactor {
      * retries the event later.
      */
     public void deliverLive(long seq) {
-        // The startup guard normally seeds the offset row at boot. If a
-        // reactor is somehow live before that, the event triggering us is
-        // post-deploy by definition — seed the watermark just below it.
+        // The startup guard normally seeds the offset row at boot, so this
+        // is a keyed point read that finds it and returns. Only if a reactor
+        // is somehow live before the guard ran does it write: the event
+        // triggering us is post-deploy by definition, so the watermark is
+        // seeded just below it.
         ensureOffsetRow(seq - 1);
         DeliveryOutcome outcome = deliverOnce(seq);
         if (outcome == DeliveryOutcome.HANDLED) {
@@ -150,9 +174,10 @@ public abstract class RecruitmentReactor {
             } catch (Exception e) {
                 int attemptCount = attempts.getOrDefault(next, 0);
                 if (attemptCount >= maxDeliveryAttempts()) {
-                    log.errorf(e, "Reactor %s: event seq %d failed %d attempts — skipping (poison event)",
+                    log.errorf(e, "Reactor %s: event seq %d failed %d attempts — skipping (poison event); "
+                                    + "dead-lettered for replay via /recruitment/reactors/dead-letters",
                             name(), next, attemptCount);
-                    markSkipped(next);
+                    markSkipped(next, attemptCount, e);
                     skippedPoison++;
                 } else {
                     log.warnf(e, "Reactor %s: event seq %d failed delivery (attempt %d) — sweep stops, retrying next cycle",
@@ -175,24 +200,106 @@ public abstract class RecruitmentReactor {
      * offset row yet — a newly deployed reactor never replays history
      * (plan §2). No-op when the row exists. Called by the startup guard and
      * defensively before every sweep.
+     * <p>
+     * <b>Why the existence check comes first (prod deadlock 2026-08-11).</b>
+     * This used to be one statement — {@code INSERT IGNORE INTO
+     * recruitment_reactor_offsets ... SELECT :name, COALESCE(MAX(seq), 0)
+     * FROM recruitment_events} — run at the top of every sweep for every
+     * reactor: ten aggregate reads over the append-only stream every five
+     * minutes, on every instance. {@code INSERT ... SELECT} is a
+     * <em>locking</em> read: under REPEATABLE READ it takes shared next-key
+     * locks on the rows it reads, and {@code MAX(seq)} on the clustered
+     * primary key means the tail record plus the supremum gap — exactly
+     * where every append lands. Because {@link RecruitmentEventRecorder}
+     * persists in the <em>caller's</em> transaction, one business
+     * transaction that records two events holds the tail record across both
+     * appends; the seeder then waits on that uncommitted record while the
+     * second append's insert-intention lock queues behind the seeder's own
+     * pending gap-lock request, and InnoDB breaks the cycle with 1213 /
+     * 40001. The victim was the whole reactor for that sweep.
+     * <p>
+     * So the contention is removed rather than retried: after the first
+     * seeding the hot path is a primary-key point read on a ten-row table,
+     * and the head read it guards is a plain {@code SELECT} — a non-locking
+     * consistent read that can neither block an append nor be blocked by
+     * one.
      */
     public void ensureOffsetRowSeededToHead() {
-        QuarkusTransaction.requiringNew().run(() ->
-                em.createNativeQuery(
-                                "INSERT IGNORE INTO recruitment_reactor_offsets (reactor_name, last_processed_seq) " +
-                                "SELECT :name, COALESCE(MAX(seq), 0) FROM recruitment_events")
-                        .setParameter("name", name())
-                        .executeUpdate());
+        if (offsetRowExists()) {
+            return;
+        }
+        // Racing appends between the two statements only mean the seed lands
+        // a few seq below the true head, so the new reactor sees a handful of
+        // events it could have skipped. At-least-once with durable dedupe
+        // makes that harmless — the reverse (seeding past an event) is not.
+        seedOffsetRow(currentStreamHead());
     }
 
-    private void ensureOffsetRow(long seedIfMissing) {
+    void ensureOffsetRow(long seedIfMissing) {
+        if (offsetRowExists()) {
+            return;
+        }
+        seedOffsetRow(Math.max(seedIfMissing, 0));
+    }
+
+    /**
+     * Does this reactor have an offset row? Keyed primary-key lookup, no
+     * locks — this is the guard that keeps the seeding statements off the
+     * hot path. Package-private so tests can drive the lifecycle without a
+     * database.
+     */
+    boolean offsetRowExists() {
+        return QuarkusTransaction.requiringNew().call(
+                () -> em.find(RecruitmentReactorOffset.class, name()) != null);
+    }
+
+    /**
+     * Highest assigned {@code seq}, 0 on an empty stream. A plain
+     * {@code SELECT} is a consistent (MVCC) read and takes no locks at all,
+     * which is the whole point — see {@link #ensureOffsetRowSeededToHead()}.
+     */
+    long currentStreamHead() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            Long head = em.createQuery("SELECT MAX(e.seq) FROM RecruitmentEvent e", Long.class)
+                    .getSingleResult();
+            return head == null ? 0L : head;
+        });
+    }
+
+    /**
+     * Insert the offset row, keyed on this reactor alone. {@code INSERT
+     * IGNORE} so a concurrent seeder on another instance wins harmlessly and
+     * an established watermark is never rolled back.
+     */
+    void insertOffsetRow(long seed) {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "INSERT IGNORE INTO recruitment_reactor_offsets (reactor_name, last_processed_seq) " +
                                 "VALUES (:name, :seed)")
                         .setParameter("name", name())
-                        .setParameter("seed", Math.max(seedIfMissing, 0))
+                        .setParameter("seed", seed)
                         .executeUpdate());
+    }
+
+    /**
+     * The insert above, with a bounded deadlock retry. It only runs once per
+     * reactor in a database's lifetime, but it runs concurrently across
+     * instances at deploy time, so the residual contention on the offsets
+     * primary key is retried rather than surfaced as a failed reactor.
+     */
+    private void seedOffsetRow(long seed) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                insertOffsetRow(seed);
+                return;
+            } catch (RuntimeException e) {
+                if (attempt >= SEED_MAX_ATTEMPTS || !isDeadlock(e)) {
+                    throw e;
+                }
+                log.warnf("Reactor %s: deadlock seeding the offset row (attempt %d/%d) — retrying",
+                        name(), attempt, SEED_MAX_ATTEMPTS);
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -251,8 +358,19 @@ public abstract class RecruitmentReactor {
         return outcome;
     }
 
-    /** Durable poison-skip marker + nothing else (no handler work in this transaction). */
-    private void markSkipped(long seq) {
+    /**
+     * Durable poison-skip marker + the dead letter that makes it
+     * recoverable. No handler work in either transaction.
+     * <p>
+     * Both writes matter and neither replaces the other: the {@code SKIPPED}
+     * delivery row stops a later sweep from re-handling the event, while the
+     * {@link RecruitmentReactorDeadLetter} row is what an operator sees and
+     * acts on. Before V490 only the first existed — and
+     * {@link #advanceWatermarkTo(long)} deleted it milliseconds later, which
+     * is how three production Slack cards vanished on 2026-08-11 leaving
+     * nothing but a log line.
+     */
+    private void markSkipped(long seq, int attemptCount, Throwable failure) {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "INSERT IGNORE INTO recruitment_reactor_deliveries (reactor_name, event_seq, status, processed_at) " +
@@ -261,6 +379,18 @@ public abstract class RecruitmentReactor {
                         .setParameter("seq", seq)
                         .setParameter("now", LocalDateTime.now(ZoneOffset.UTC))
                         .executeUpdate());
+        if (deadLetters != null) {
+            deadLetters.record(name(), seq, attemptCount, failure);
+        } else {
+            // Only reachable for a hand-instantiated reactor (the
+            // RecruitmentReactorIntegrationTest.ProbeReactor idiom); every
+            // deployed reactor is a CDI bean. Degrade loudly rather than
+            // throw: an NPE here escapes catchUp(), so the event would never
+            // advance and the reactor would block on it forever — strictly
+            // worse than the missing dead letter.
+            log.errorf("Reactor %s: no dead-letter service bound — seq %d was skipped with NO durable record",
+                    name(), seq);
+        }
         attempts.remove(seq);
     }
 
@@ -268,6 +398,15 @@ public abstract class RecruitmentReactor {
      * Monotonically advance the watermark and prune dedupe rows it has
      * passed. The pessimistic lock serializes concurrent sweeps (two JVM
      * instances during ECS cutover).
+     * <p>
+     * {@code SKIPPED} rows are deliberately exempt from the prune. They are
+     * poison markers, not dedupe cache: this method runs immediately after
+     * {@link #markSkipped} for the very same seq, so pruning by seq alone
+     * deleted the marker the line above had just written — the bug that made
+     * the "durable SKIPPED marker" in this class's javadoc a fiction until
+     * V490. Poison events are rare, so the exemption cannot grow the table
+     * meaningfully; {@code PROCESSED} rows still get pruned exactly as
+     * before.
      */
     private void advanceWatermarkTo(long seq) {
         QuarkusTransaction.requiringNew().run(() -> {
@@ -280,10 +419,50 @@ public abstract class RecruitmentReactor {
                 offset.setLastProcessedSeq(seq);
             }
             em.createQuery("DELETE FROM RecruitmentReactorDelivery d " +
-                            "WHERE d.reactorName = :name AND d.eventSeq <= :seq")
+                            "WHERE d.reactorName = :name AND d.eventSeq <= :seq " +
+                            "AND d.status <> :skipped")
                     .setParameter("name", name())
                     .setParameter("seq", offset.getLastProcessedSeq())
+                    .setParameter("skipped", RecruitmentReactorDelivery.STATUS_SKIPPED)
                     .executeUpdate();
+        });
+    }
+
+    /**
+     * Re-run the handler for one dead-lettered event (V490 ops path).
+     * <p>
+     * Deliberately bypasses BOTH guards that {@link #deliverOnce} applies:
+     * the watermark has long since passed this seq, and the {@code SKIPPED}
+     * marker is precisely what is being undone. That is safe only because
+     * this is operator-triggered and one-at-a-time — never call it from a
+     * sweep, or a permanently broken event becomes an infinite retry loop.
+     * <p>
+     * The {@code SKIPPED} row is replaced with {@code PROCESSED} inside the
+     * same transaction as the handler, so a failed replay rolls the marker
+     * back to {@code SKIPPED} and the event stays exactly as skipped as it
+     * was.
+     *
+     * @return false when the event no longer exists in the stream
+     * @throws RuntimeException when the handler fails again — the caller
+     *         records it against the still-OPEN dead letter
+     */
+    public boolean redeliver(long seq) {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            RecruitmentEvent event = em.find(RecruitmentEvent.class, seq);
+            if (event == null) {
+                return false;
+            }
+            em.createNativeQuery("DELETE FROM recruitment_reactor_deliveries "
+                            + "WHERE reactor_name = :name AND event_seq = :seq")
+                    .setParameter("name", name())
+                    .setParameter("seq", seq)
+                    .executeUpdate();
+            em.persist(new RecruitmentReactorDelivery(
+                    name(), seq, RecruitmentReactorDelivery.STATUS_PROCESSED,
+                    LocalDateTime.now(ZoneOffset.UTC)));
+            em.flush();
+            handle(event);
+            return true;
         });
     }
 
@@ -312,6 +491,26 @@ public abstract class RecruitmentReactor {
                 .getResultStream()
                 .findFirst()
                 .orElse(null));
+    }
+
+    /**
+     * MariaDB deadlock — error 1213 / SQLState 40001 — anywhere in the cause
+     * chain (Hibernate wraps it in {@code LockAcquisitionException}, JPA in
+     * {@code PessimisticLockException}). Matched on the SQL code rather than
+     * on {@code "Deadlock"} in the message, so it survives a driver-wording
+     * or locale change.
+     */
+    private static boolean isDeadlock(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql
+                    && ("40001".equals(sql.getSQLState()) || sql.getErrorCode() == 1213)) {
+                return true;
+            }
+            if (t == t.getCause()) {
+                break;
+            }
+        }
+        return false;
     }
 
     private static boolean isDuplicateKey(Throwable e) {

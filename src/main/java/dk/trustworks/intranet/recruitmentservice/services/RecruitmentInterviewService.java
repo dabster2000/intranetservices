@@ -154,7 +154,7 @@ public class RecruitmentInterviewService {
         interview.persist();
 
         // Outlook is best-effort: a Graph failure never fails scheduling.
-        calendarService.createEvent(interview, candidate, position)
+        calendarService.createEvent(interview, candidate)
                 .ifPresent(interview::setGraphEventId);
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_SCHEDULED,
@@ -200,7 +200,7 @@ public class RecruitmentInterviewService {
         if (request.interviewerUuids() != null) {
             interview.setInterviewerUuids(normalizeInterviewers(request.interviewerUuids()));
         }
-        calendarService.updateEvent(interview, candidate, position);
+        calendarService.updateEvent(interview, candidate);
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_RESCHEDULED,
                 interview, application, position, actor)

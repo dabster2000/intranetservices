@@ -12,12 +12,10 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
-import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
-import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
@@ -56,8 +54,9 @@ import java.util.stream.Collectors;
  * <h3>Authorization</h3>
  * Everything is derived from the {@code X-Requested-By} viewer through
  * {@link RecruitmentVisibility}: positions are query-level filtered
- * (partner circles stay a hard filter), decision-owned tasks replicate
- * {@code canDecideOnApplication} with batched lookups, and the activity
+ * (partner circles stay a hard filter), decision-owned tasks come from
+ * {@code decidablePositionUuids} (the shared batched twin of
+ * {@code canDecideOnApplication}, not a copy of it), and the activity
  * feed drops CIRCLE events outside the viewer's circles plus every event
  * of partner-track-only candidates. Feed rows carry structural facts and
  * names only — never event {@code pii}.
@@ -174,8 +173,12 @@ public class RecruitmentLandingService {
 
         // Interviews relevant to tasks: the viewer's own + the ones on
         // decidable applications (loaded together below).
+        // The decision rule lives in one place (RecruitmentVisibility): this
+        // page used to keep its own copy of the predicate, which would have
+        // gone stale on 2026-08-12 when decision rights gained the practice
+        // route.
         Set<String> decidablePositionUuids =
-                decidablePositionUuids(viewerUuid, roles, visiblePositions);
+                visibility.decidablePositionUuids(viewerUuid, visiblePositions);
         List<RecruitmentApplication> decidableApplications = openApplications.stream()
                 .filter(a -> decidablePositionUuids.contains(a.getPositionUuid()))
                 .toList();
@@ -287,52 +290,6 @@ public class RecruitmentLandingService {
     // ------------------------------------------------------------------
     // Decision-owner resolution (batched canDecideOnApplication twin)
     // ------------------------------------------------------------------
-
-    /**
-     * The visible positions the viewer may decide on — mirrors
-     * {@link RecruitmentVisibility#canDecideOnApplication} with per-call
-     * (not per-row) lookups: admin/recruiter everywhere; partner track only
-     * for circle OWNER/RECRUITER members; otherwise hiring owner, current
-     * team lead, or a TEAMLEAD who is in the position's circle (go-live
-     * decision D4 — a teamlead <em>reads</em> every non-partner position
-     * but <em>decides</em> only on their own). Change the two together.
-     */
-    private Set<String> decidablePositionUuids(String viewerUuid, Set<String> roles,
-                                               List<RecruitmentPosition> visiblePositions) {
-        boolean admin = roles.contains("ADMIN");
-        boolean recruiterTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
-        boolean teamlead = roles.contains("TEAMLEAD");
-        Set<String> ledTeams = recruiterTier ? Set.of()
-                : new HashSet<>(visibility.currentlyLedTeams(viewerUuid));
-        Map<String, RecruitmentCircleRole> circleRoles = admin ? Map.of()
-                : RecruitmentCircleMember.<RecruitmentCircleMember>list("userUuid", viewerUuid)
-                        .stream()
-                        .collect(Collectors.toMap(RecruitmentCircleMember::getPositionUuid,
-                                RecruitmentCircleMember::getRoleInCircle));
-
-        return visiblePositions.stream().filter(position -> {
-            if (admin) {
-                return true;
-            }
-            if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
-                // HR decides everywhere except outside partner circles it
-                // is not an OWNER/RECRUITER member of (canManageCircle
-                // grants plain HR; visibility already required membership).
-                if (roles.contains("HR")) {
-                    return true;
-                }
-                RecruitmentCircleRole role = circleRoles.get(position.getUuid());
-                return role == RecruitmentCircleRole.OWNER
-                        || role == RecruitmentCircleRole.RECRUITER;
-            }
-            if (recruiterTier) {
-                return true;
-            }
-            return viewerUuid.equals(position.getHiringOwnerUuid())
-                    || (position.getTeamUuid() != null && ledTeams.contains(position.getTeamUuid()))
-                    || (teamlead && circleRoles.containsKey(position.getUuid()));
-        }).map(RecruitmentPosition::getUuid).collect(Collectors.toSet());
-    }
 
     // ------------------------------------------------------------------
     // Task builders
