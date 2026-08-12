@@ -11,6 +11,21 @@ import java.time.LocalDateTime;
  * carries NO candidate uuid, NO position facts and NO stage codes. The
  * milestone-level {@link #derivedStatus} is computed server-side from the
  * candidate/application state on every read.
+ *
+ * @param uuid              the referral row's uuid for
+ *                          {@link MyReferralOrigin#REFERRAL_FORM}; for
+ *                          {@link MyReferralOrigin#RECORDED_ON_CANDIDATE}
+ *                          there is no referral row, so this is a stable
+ *                          synthetic id derived from the candidate uuid by a
+ *                          one-way hash — usable as a list key, useless as a
+ *                          handle to the candidate.
+ * @param referrerRelation  {@code null} for
+ *                          {@link MyReferralOrigin#RECORDED_ON_CANDIDATE} —
+ *                          nobody filled in the refer form, so there is no
+ *                          declared relation. Consumers must tolerate null.
+ * @param submittedAt       when the referral was submitted, or — for
+ *                          {@link MyReferralOrigin#RECORDED_ON_CANDIDATE} —
+ *                          when the candidate was registered.
  */
 public record MyReferralRow(
         String uuid,
@@ -18,6 +33,7 @@ public record MyReferralRow(
         RecruitmentReferralRelation referrerRelation,
         String externalReferrerName,
         LocalDateTime submittedAt,
-        RecruitmentReferralDerivedStatus derivedStatus
+        RecruitmentReferralDerivedStatus derivedStatus,
+        MyReferralOrigin origin
 ) {
 }

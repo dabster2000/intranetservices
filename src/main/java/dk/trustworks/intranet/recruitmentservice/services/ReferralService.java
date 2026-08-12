@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.recruitmentservice.ai.RecruitmentAiDirectory;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.MyReferralOrigin;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralRow;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestions;
@@ -46,6 +47,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -61,6 +63,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Command and query handlers for the referral channel (ATS plan §P6).
@@ -189,45 +192,146 @@ public class ReferralService {
     /**
      * The caller's own referrals, newest first, each with its milestone-level
      * {@link RecruitmentReferralDerivedStatus} computed live (plan §P6 —
-     * pipeline state is never mirrored onto the referral row). Derivation is
-     * batched: one query for the linked candidates, one for those
-     * candidates' applications — no per-row lookups.
+     * pipeline state is never mirrored onto the referral row).
+     * <p>
+     * The referrer↔candidate link lives in two places, and this read unions
+     * both (see {@link MyReferralOrigin}):
+     * <ol>
+     *   <li>{@code recruitment_referrals.referrer_uuid} — the refer form;</li>
+     *   <li>{@code recruitment_candidates.referred_by_user_uuid} — set by the
+     *       Airtable migration and by the recruiter's "Referred by
+     *       (colleague)" field, neither of which creates a referral row.</li>
+     * </ol>
+     * Reading only (1) is what made this page show nothing for every referrer
+     * of a migrated candidate, while the profile page and the referrer's own
+     * milestone DMs — {@code ReferrerNotificationReactor} has always keyed on
+     * (2) — both showed the link. Source (2) is now the same truth here.
+     * <p>
+     * Derivation stays batched: at most three queries regardless of row count
+     * — referral rows, candidates, then those candidates' applications.
      */
     public MyReferralsResponse listMine(UUID referrer) {
         Objects.requireNonNull(referrer, "referrer must not be null");
-        List<RecruitmentReferral> referrals = RecruitmentReferral.list(
-                "referrerUuid = ?1 order by submittedAt desc", referrer.toString());
+        String referrerUuid = referrer.toString();
 
-        List<String> candidateUuids = referrals.stream()
+        List<RecruitmentReferral> referrals = RecruitmentReferral.list(
+                "referrerUuid = ?1 order by submittedAt desc", referrerUuid);
+        List<RecruitmentCandidate> recordedOnCandidate = RecruitmentCandidate.list(
+                "referredByUserUuid = ?1", referrerUuid);
+
+        // One candidate map for both sources: start from the directly-recorded
+        // ones, then fetch only the referral-linked candidates still missing.
+        Map<String, RecruitmentCandidate> candidates = recordedOnCandidate.stream()
+                .collect(Collectors.toMap(RecruitmentCandidate::getUuid, Function.identity(),
+                        (first, duplicate) -> first, HashMap::new));
+        List<String> missing = referrals.stream()
                 .map(RecruitmentReferral::getCandidateUuid)
                 .filter(Objects::nonNull)
+                .filter(uuid -> !candidates.containsKey(uuid))
                 .distinct()
                 .toList();
-        Map<String, RecruitmentCandidate> candidates = candidateUuids.isEmpty() ? Map.of()
-                : RecruitmentCandidate.<RecruitmentCandidate>list("uuid in ?1", candidateUuids).stream()
-                        .collect(Collectors.toMap(RecruitmentCandidate::getUuid, Function.identity()));
-        Map<String, List<RecruitmentApplication>> applications = candidateUuids.isEmpty() ? Map.of()
-                : RecruitmentApplication.<RecruitmentApplication>list("candidateUuid in ?1", candidateUuids).stream()
+        if (!missing.isEmpty()) {
+            RecruitmentCandidate.<RecruitmentCandidate>list("uuid in ?1", missing)
+                    .forEach(candidate -> candidates.put(candidate.getUuid(), candidate));
+        }
+
+        Map<String, List<RecruitmentApplication>> applications = candidates.isEmpty() ? Map.of()
+                : RecruitmentApplication.<RecruitmentApplication>list(
+                                "candidateUuid in ?1", List.copyOf(candidates.keySet())).stream()
                         .collect(Collectors.groupingBy(RecruitmentApplication::getCandidateUuid));
 
-        List<MyReferralRow> rows = referrals.stream()
-                .map(r -> {
-                    // Untriaged/dismissed rows have no candidate uuid — and
-                    // Map.of() rejects null keys, so guard before the lookups.
-                    String candidateUuid = r.getCandidateUuid();
-                    return new MyReferralRow(
-                            r.getUuid(),
-                            r.getCandidateName(),
-                            r.getReferrerRelation(),
-                            r.getExternalReferrerName(),
-                            r.getSubmittedAt(),
-                            deriveStatus(r,
-                                    candidateUuid == null ? null : candidates.get(candidateUuid),
-                                    candidateUuid == null ? List.of()
-                                            : applications.getOrDefault(candidateUuid, List.of())));
-                })
-                .toList();
+        List<MyReferralRow> rows = mergeMyReferrals(referrals, recordedOnCandidate, candidates, applications);
         return new MyReferralsResponse(rows, rows.size());
+    }
+
+    /**
+     * Merge the two referrer↔candidate sources into one newest-first list.
+     * Pure and package-private on purpose: the whole point of this method is
+     * the dedupe/exclusion/ordering rules, and those are worth testing
+     * without a database (the {@code @QuarkusTest} tier is not in the CI
+     * deploy gate).
+     * <p>
+     * Rules, in order:
+     * <ul>
+     *   <li>every referral row renders — including untriaged and dismissed
+     *       ones, which have no candidate at all;</li>
+     *   <li>a directly-recorded candidate that one of those referral rows
+     *       already links to is skipped, so a referral triaged the normal way
+     *       (which sets BOTH sources) yields exactly one row, keeping the
+     *       richer referral-row facts;</li>
+     *   <li>{@link CandidateStatus#ANONYMIZED} candidates are skipped — P19
+     *       erasure rewrote the name to "Anonymized Candidate", and erased
+     *       PII must not resurface on a new surface;</li>
+     *   <li>newest first across the union, by submission date for referral
+     *       rows and registration date for the rest.</li>
+     * </ul>
+     */
+    static List<MyReferralRow> mergeMyReferrals(List<RecruitmentReferral> referrals,
+                                                List<RecruitmentCandidate> recordedOnCandidate,
+                                                Map<String, RecruitmentCandidate> candidates,
+                                                Map<String, List<RecruitmentApplication>> applications) {
+        Set<String> linkedByReferralRow = referrals.stream()
+                .map(RecruitmentReferral::getCandidateUuid)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        List<MyReferralRow> rows = new ArrayList<>(referrals.size() + recordedOnCandidate.size());
+
+        for (RecruitmentReferral referral : referrals) {
+            // Untriaged/dismissed rows have no candidate uuid — and Map.of()
+            // rejects null keys, so guard before the lookups.
+            String candidateUuid = referral.getCandidateUuid();
+            rows.add(new MyReferralRow(
+                    referral.getUuid(),
+                    referral.getCandidateName(),
+                    referral.getReferrerRelation(),
+                    referral.getExternalReferrerName(),
+                    referral.getSubmittedAt(),
+                    deriveStatus(referral,
+                            candidateUuid == null ? null : candidates.get(candidateUuid),
+                            candidateUuid == null ? List.of()
+                                    : applications.getOrDefault(candidateUuid, List.of())),
+                    MyReferralOrigin.REFERRAL_FORM));
+        }
+
+        for (RecruitmentCandidate candidate : recordedOnCandidate) {
+            if (linkedByReferralRow.contains(candidate.getUuid())
+                    || candidate.getStatus() == CandidateStatus.ANONYMIZED) {
+                continue;
+            }
+            rows.add(new MyReferralRow(
+                    syntheticRowId(candidate.getUuid()),
+                    displayNameOf(candidate),
+                    null, // no refer form was ever filled in — no declared relation
+                    null,
+                    candidate.getCreatedAt(),
+                    deriveCandidateMilestone(candidate,
+                            applications.getOrDefault(candidate.getUuid(), List.of())),
+                    MyReferralOrigin.RECORDED_ON_CANDIDATE));
+        }
+
+        rows.sort(Comparator.comparing(MyReferralRow::submittedAt,
+                Comparator.nullsLast(Comparator.reverseOrder())));
+        return List.copyOf(rows);
+    }
+
+    /**
+     * A stable list key for a candidate-recorded row, which has no referral
+     * row to borrow a uuid from. Name-based (type 3) UUID over the candidate
+     * uuid: identical on every read so the client keeps its list identity,
+     * one-way so the DTO keeps its "no handle to the candidate" invariant.
+     */
+    private static String syntheticRowId(String candidateUuid) {
+        return UUID.nameUUIDFromBytes(
+                ("my-referral:" + candidateUuid).getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    /** "First Last", tolerating either half being absent. */
+    private static String displayNameOf(RecruitmentCandidate candidate) {
+        return Stream.of(candidate.getFirstName(), candidate.getLastName())
+                .filter(part -> part != null && !part.isBlank())
+                .map(String::trim)
+                .collect(Collectors.joining(" "));
     }
 
     /**
