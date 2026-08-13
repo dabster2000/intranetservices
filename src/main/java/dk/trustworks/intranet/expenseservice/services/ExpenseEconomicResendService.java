@@ -56,10 +56,17 @@ public class ExpenseEconomicResendService {
         if (UserAccount.findById(e.getUseruuid()) == null)
             return new ExpenseResendPrecheckDTO(uuid, false, "no e-conomic account", false, "MISSING");
 
-        if (economicsService.verifyVoucherExists(e))
+        EconomicsService.VoucherLookupResult draft = economicsService.checkVoucherExists(e);
+        if (draft == EconomicsService.VoucherLookupResult.FOUND)
             return new ExpenseResendPrecheckDTO(uuid, true, null, true, "DRAFT");
-        if (economicsService.voucherBookedInLedger(e))
+        EconomicsService.VoucherLookupResult booked = economicsService.checkVoucherBooked(e);
+        if (booked == EconomicsService.VoucherLookupResult.FOUND)
             return new ExpenseResendPrecheckDTO(uuid, true, null, true, "BOOKED");
+        if (draft == EconomicsService.VoucherLookupResult.UNKNOWN
+                || booked == EconomicsService.VoucherLookupResult.UNKNOWN)
+            // e-conomic lookup failed — "MISSING" here would invite a duplicate re-send
+            // (2026-08-12: 503 outage made a booked voucher precheck as MISSING).
+            return new ExpenseResendPrecheckDTO(uuid, false, "e-conomic unavailable — voucher state unknown", false, "UNKNOWN");
         return new ExpenseResendPrecheckDTO(uuid, true, null, false, "MISSING");
     }
 
@@ -72,6 +79,15 @@ public class ExpenseEconomicResendService {
         }
         Expense e = requireResendable(uuid);
         UserAccount ua = UserAccount.findById(e.getUseruuid());
+
+        // Fail closed on an indeterminate voucher state: when the draft lookup itself
+        // errors (5xx/network), the voucher may well still exist, and re-sending would
+        // create a duplicate. A proven absence — or a FOUND the user knowingly
+        // duplicates (precheck warned) — proceeds as before.
+        if (economicsService.checkVoucherExists(e) == EconomicsService.VoucherLookupResult.UNKNOWN
+                && economicsService.checkVoucherBooked(e) != EconomicsService.VoucherLookupResult.FOUND) {
+            throw new BadRequestException("e-conomic unavailable — cannot verify voucher state, try again later");
+        }
 
         ExpenseFile file;
         try {

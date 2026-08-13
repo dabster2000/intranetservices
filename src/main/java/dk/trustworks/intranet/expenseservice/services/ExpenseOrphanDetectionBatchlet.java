@@ -106,10 +106,18 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
                         // the connection out of the inter-batch sleeps and releases it between
                         // expenses, instead of holding one transaction across the whole job.
                         QuarkusTransaction.requiringNew().run(() -> {
-                            boolean voucherExists = economicsService.verifyVoucherExists(expense);
+                            EconomicsService.VoucherLookupResult lookup = economicsService.checkVoucherExists(expense);
                             totalChecked.incrementAndGet();
 
-                            if (!voucherExists) {
+                            if (lookup == EconomicsService.VoucherLookupResult.UNKNOWN) {
+                                // Lookup failed (5xx/network/throttling): the voucher's state is NOT
+                                // determined. Marking it orphaned here is what flooded the flag with
+                                // false positives during the 2026-08-12 e-conomic 503 outage.
+                                log.warnf("Voucher state indeterminate (e-conomic lookup failed): expense=%s, voucher=%d, journal=%d, year=%s — NOT marking orphaned",
+                                    expense.getUuid(), expense.getVouchernumber(),
+                                    expense.getJournalnumber(), expense.getAccountingyear());
+                                errorsFound.incrementAndGet();
+                            } else if (lookup == EconomicsService.VoucherLookupResult.NOT_FOUND) {
                                 log.warnf("Orphaned voucher detected: expense=%s, voucher=%d, journal=%d, year=%s",
                                     expense.getUuid(), expense.getVouchernumber(),
                                     expense.getJournalnumber(), expense.getAccountingyear());
