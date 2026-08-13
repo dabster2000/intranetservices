@@ -139,6 +139,51 @@ public class InternalInvoiceOrchestrator {
         return finalizeAutomatically(invoiceUuid);
     }
 
+    /**
+     * Recovery entry point for an INTERNAL / INTERNAL_SERVICE invoice stranded in
+     * {@code PENDING_REVIEW}: an e-conomic draft exists but booking never ran (the
+     * distribution page's finalize historically stopped after step 1).
+     *
+     * <p>Deliberately NOT a plain {@link #bookDraft}: the debtor-side voucher reads the
+     * {@code @Transient} grandTotal set by the recalculator during {@code createDraft}, so
+     * booking in a separate request would post a 0.00 DKK supplier voucher with no error
+     * (see the single-transaction note on {@link #finalizeAutomatically}). Instead the
+     * stranded e-conomic draft is cancelled and the invoice re-finalized from scratch,
+     * which recreates the draft and books it with the grandTotal intact.
+     *
+     * <p>Failure modes: a cancel failure leaves the invoice PENDING_REVIEW, unchanged.
+     * A finalize failure after a successful cancel rolls back to DRAFT — the grid then
+     * shows the normal finalize action again.
+     *
+     * @param invoiceUuid the UUID of a PENDING_REVIEW INTERNAL / INTERNAL_SERVICE invoice
+     * @return the finalized invoice (status = CREATED, economics_status = BOOKED if the
+     *         DEBTOR side also succeeded; PARTIALLY_UPLOADED otherwise)
+     * @throws NotFoundException   when the invoice does not exist
+     * @throws BadRequestException when the invoice is not PENDING_REVIEW or not an
+     *                             INTERNAL / INTERNAL_SERVICE invoice
+     */
+    // NOT @Transactional — cancelFinalization must COMMIT before finalizeAutomatically runs.
+    // In a single transaction a finalize failure would roll the local row back to
+    // PENDING_REVIEW while the e-conomic draft it references is already deleted.
+    public Invoice refinalizePendingReview(String invoiceUuid) {
+        Invoice inv = invoices.findByUuid(invoiceUuid)
+                .orElseThrow(() -> new NotFoundException("Invoice not found: " + invoiceUuid));
+        if (inv.getType() != InvoiceType.INTERNAL
+                && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
+            throw new BadRequestException(
+                    "Only INTERNAL or INTERNAL_SERVICE invoices can be re-finalized. "
+                    + "Current type: " + inv.getType());
+        }
+        if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
+            throw new BadRequestException(
+                    "Invoice must be in PENDING_REVIEW status. Current: " + inv.getStatus());
+        }
+        log.infof("refinalizePendingReview: cancelling stranded e-conomic draft for %s "
+                + "(draftNumber=%s) and re-finalizing", invoiceUuid, inv.getEconomicsDraftNumber());
+        issuerSide.cancelFinalization(invoiceUuid); // tx1 — commits DRAFT, deletes the e-conomic draft
+        return finalizeAutomatically(invoiceUuid);  // tx2 — fresh draft + book + debtor voucher
+    }
+
     // ── private helpers ───────────────────────────────────────────────────────
 
     private void assertInternalType(String invoiceUuid) {

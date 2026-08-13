@@ -13,6 +13,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
@@ -350,12 +351,23 @@ public class InvoiceResource {
         invoiceService.deleteDraftInvoice(invoiceuuid);
     }
 
+    // NOT @Transactional: the INTERNAL_SERVICE branch books irreversibly at e-conomic, and
+    // finalizeAutomatically owns exactly the one transaction that booking is allowed to sit in
+    // (same calling shape as the internal credit-note path above). The regular branch keeps its
+    // transaction inside InvoiceService.createInvoice.
     @POST
     @RolesAllowed({"invoices:write"})
-    @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         log.debug("InvoiceResource.createInvoice");
         log.debugf("draftInvoice = " + draftInvoice);
+        // INTERNAL_SERVICE settlement invoices (distribution page) have no review surface —
+        // stopping at PENDING_REVIEW would strand them with an e-conomic draft nobody can book.
+        // Finalize them like the nightly batchlet and internal CNs do: draft + book + debtor-side
+        // voucher in one gesture. Type is read from the persisted row, not the request body.
+        Invoice persisted = draftInvoice.getUuid() == null ? null : Invoice.findById(draftInvoice.getUuid());
+        if (persisted != null && persisted.getType() == InvoiceType.INTERNAL_SERVICE) {
+            return internalInvoiceOrchestrator.finalizeAutomatically(persisted.getUuid());
+        }
         return invoiceService.createInvoice(draftInvoice);
     }
 
@@ -458,6 +470,22 @@ public class InvoiceResource {
         log.info("InvoiceResource.createInternalServiceInvoiceDraft");
         log.info("fromCompanyuuid = " + fromCompanyuuid + ", toCompanyuuid = " + toCompanyuuid + ", month = " + month);
         invoiceService.createInternalServiceInvoiceDraft(fromCompanyuuid, toCompanyuuid, dateIt(month));
+    }
+
+    /**
+     * Recovery for an INTERNAL / INTERNAL_SERVICE invoice stranded in PENDING_REVIEW (an
+     * e-conomic draft exists but booking never ran). Cancels the stranded draft and re-finalizes
+     * through the single-transaction internal path — see
+     * {@link dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator#refinalizePendingReview}
+     * for why this is not a plain book call.
+     *
+     * @param uuid invoice UUID (must be PENDING_REVIEW and INTERNAL / INTERNAL_SERVICE)
+     */
+    @POST
+    @Path("/internalservices/{invoiceuuid}/book")
+    @RolesAllowed({"invoices:write"})
+    public Invoice bookStrandedInternalService(@PathParam("invoiceuuid") String uuid) {
+        return internalInvoiceOrchestrator.refinalizePendingReview(uuid);
     }
 
     @PUT
