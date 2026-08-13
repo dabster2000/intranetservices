@@ -1838,6 +1838,16 @@ public class InvoiceService {
 
     // ── End of attribution-driven internal invoice block ───────────────────
 
+    /**
+     * Settlement convention: INTERNAL_SERVICE invoices are dated at the END of the fiscal year
+     * the settlement month belongs to (all FY2024/25 settlements carry 2025-06-30), with the
+     * due date one month later. Derived from the month parameter so the convention rolls over
+     * each fiscal year — every FY2025/26 settlement gets 2026-06-30 / 2026-07-30.
+     */
+    static LocalDate settlementInvoiceDate(LocalDate month) {
+        return DateUtils.getFiscalStartDateBasedOnDate(month).plusYears(1).minusDays(1);
+    }
+
     @Transactional
     public void createInternalServiceInvoiceDraft(String fromCompanyuuid, String toCompanyuuid, LocalDate month) {
         // Month boundaries
@@ -1902,6 +1912,8 @@ public class InvoiceService {
         // FR-2: resolve intercompany Client for the INTERNAL_SERVICE debtor BEFORE persisting; fail-closed on miss.
         Client intercompanyClient = requireIntercompanyClient(toCompanyuuid);
 
+        final LocalDate fiscalYearEnd = settlementInvoiceDate(month);
+
         // Create the invoice shell
         Invoice invoice = new Invoice(
                 InvoiceType.INTERNAL_SERVICE,
@@ -1909,10 +1921,8 @@ public class InvoiceService {
                 0.0, month.getYear(), month.getMonthValue(),
                 toCompany.getName(), toCompany.getAddress(), "",
                 toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen",
-                LocalDate.of(2025, 6, 30),
-                LocalDate.of(2025, 7, 30),
-                //month.plusMonths(1).withDayOfMonth(1).minusDays(1),
-                //month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
+                fiscalYearEnd,
+                fiscalYearEnd.plusMonths(1),
                 "", "", "PERIOD", fromCompany, "DKK",
                 "Intern faktura knyttet til " + month.getMonth().name() + " " + month.getYear() + " fra " + fromCompany.getName() + " til " + toCompany.getName());
         invoice.setDebtorCompanyuuid(toCompanyuuid);
