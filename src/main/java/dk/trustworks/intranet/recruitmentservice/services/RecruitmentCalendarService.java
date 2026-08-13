@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
@@ -23,6 +24,7 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -182,6 +184,125 @@ public class RecruitmentCalendarService {
 
     private static String joinUrlOf(GraphApiClient.CalendarEvent event) {
         return event.onlineMeeting() != null ? event.onlineMeeting().joinUrl() : null;
+    }
+
+    /**
+     * The Outlook event's live RSVP + drift status (plan Phase 5) — one
+     * on-demand Graph read, no webhooks. Unknown ({@code known=false})
+     * when the toggle is off, the interview has no event, no organizer
+     * resolves, or Graph fails (logged, never thrown).
+     */
+    public CalendarStatusResponse eventStatus(RecruitmentInterview interview,
+                                              RecruitmentCandidate candidate) {
+        CalendarStatusResponse unknown =
+                new CalendarStatusResponse(false, List.of(), false, null);
+        if (!calendarEnabled || interview.getGraphEventId() == null) {
+            return unknown;
+        }
+        try {
+            String organizer = organizerMailbox(interview);
+            if (organizer == null) {
+                return unknown;
+            }
+            GraphApiClient.CalendarEventDetails details = graph().getCalendarEventDetails(
+                    organizer, interview.getGraphEventId(), "start,attendees,onlineMeeting");
+            if (details == null) {
+                return unknown;
+            }
+            Map<String, String> emailByInterviewerUuid = new LinkedHashMap<>();
+            for (String interviewerUuid : interview.getInterviewerUuids()) {
+                String email = userEmail(interviewerUuid);
+                if (email != null) {
+                    emailByInterviewerUuid.put(interviewerUuid, email);
+                }
+            }
+            return calendarStatus(emailByInterviewerUuid,
+                    candidate != null ? candidate.getUuid() : null,
+                    candidate != null ? candidate.getEmail() : null,
+                    interview.getScheduledAt(), details);
+        } catch (Exception e) {
+            log.warnv("Graph calendar status read failed for interview {0}: {1} — status unknown",
+                    interview.getUuid(), e.getMessage());
+            return unknown;
+        }
+    }
+
+    /**
+     * The pure status mapping — package-private so the DB-free tier that
+     * gates deploys pins it. Attendee emails are matched
+     * case-insensitively; the room (and any attendee we cannot place) is
+     * ignored; the organizer's own pseudo-response counts as accepted
+     * only when the organizer IS an interviewer (shared-mailbox events
+     * never surface it because the mailbox maps to nobody).
+     */
+    static CalendarStatusResponse calendarStatus(Map<String, String> emailByInterviewerUuid,
+                                                 String candidateUuid,
+                                                 String candidateEmail,
+                                                 LocalDateTime scheduledAt,
+                                                 GraphApiClient.CalendarEventDetails details) {
+        Map<String, String> interviewerUuidByEmail = new HashMap<>();
+        emailByInterviewerUuid.forEach((uuid, email) ->
+                interviewerUuidByEmail.put(email.toLowerCase(Locale.ROOT), uuid));
+        String candidateEmailLower = candidateEmail != null && !candidateEmail.isBlank()
+                ? candidateEmail.toLowerCase(Locale.ROOT)
+                : null;
+
+        List<CalendarStatusResponse.Rsvp> rsvps = new ArrayList<>();
+        if (details.attendees() != null) {
+            for (GraphApiClient.CalendarEventDetails.EventAttendee attendee : details.attendees()) {
+                if (attendee.emailAddress() == null || attendee.emailAddress().address() == null) {
+                    continue;
+                }
+                String email = attendee.emailAddress().address().toLowerCase(Locale.ROOT);
+                String response = normalizeResponse(
+                        attendee.status() != null ? attendee.status().response() : null);
+                String interviewerUuid = interviewerUuidByEmail.get(email);
+                if (interviewerUuid != null) {
+                    rsvps.add(new CalendarStatusResponse.Rsvp(
+                            "INTERVIEWER", interviewerUuid, response));
+                } else if (candidateEmailLower != null && candidateEmailLower.equals(email)) {
+                    rsvps.add(new CalendarStatusResponse.Rsvp(
+                            "CANDIDATE", candidateUuid, response));
+                }
+                // else: the room's auto-response or an unplaceable address — ignored.
+            }
+        }
+
+        LocalDateTime outlookStart = parseGraphDateTime(
+                details.start() != null ? details.start().dateTime() : null);
+        boolean drifted = outlookStart != null && scheduledAt != null
+                && !outlookStart.equals(scheduledAt);
+        return new CalendarStatusResponse(true, List.copyOf(rsvps), drifted, outlookStart);
+    }
+
+    /** Graph responses → the four states the UI shows. */
+    private static String normalizeResponse(String graphResponse) {
+        if (graphResponse == null) {
+            return "NONE";
+        }
+        return switch (graphResponse) {
+            case "accepted", "organizer" -> "ACCEPTED";
+            case "declined" -> "DECLINED";
+            case "tentativelyAccepted" -> "TENTATIVE";
+            default -> "NONE"; // none, notResponded, unknown future values
+        };
+    }
+
+    /**
+     * Graph event datetimes carry fractional seconds
+     * ({@code 2026-08-20T10:00:00.0000000}); the interview row stores
+     * minute precision — truncate so equal wall-clock times compare equal.
+     */
+    private static LocalDateTime parseGraphDateTime(String dateTime) {
+        if (dateTime == null || dateTime.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(dateTime)
+                    .truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
     /** Cancel the Outlook event (attendees get a cancellation). 404 = already gone, fine. */

@@ -318,6 +318,46 @@ public interface GraphApiClient {
     );
 
     /**
+     * Reads one calendar event's live status: start time and per-attendee
+     * RSVP responses (interview scheduling plan Phase 5 — on-demand
+     * polling, no webhooks). The {@code Prefer} header makes Graph return
+     * the start as Europe/Copenhagen wall clock, directly comparable to
+     * the interview row's {@code scheduled_at}.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/event-get">Get event</a>
+     */
+    @GET
+    @Path("/users/{userPrincipal}/events/{eventId}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam(
+            name = "Prefer", value = "outlook.timezone=\"Europe/Copenhagen\"")
+    CalendarEventDetails getCalendarEventDetails(
+        @PathParam("userPrincipal") String userPrincipal,
+        @PathParam("eventId") String eventId,
+        @jakarta.ws.rs.QueryParam("$select") String select
+    );
+
+    /**
+     * The status subset of the Graph event resource. Attendee
+     * {@code status.response} values: {@code none}, {@code organizer},
+     * {@code tentativelyAccepted}, {@code accepted}, {@code declined},
+     * {@code notResponded}.
+     */
+    record CalendarEventDetails(
+        CalendarEventRequest.DateTimeTimeZone start,
+        java.util.List<EventAttendee> attendees,
+        CalendarEvent.OnlineMeeting onlineMeeting
+    ) {
+        public record EventAttendee(
+            CalendarEventRequest.Attendee.EmailAddress emailAddress,
+            String type,
+            AttendeeStatus status
+        ) {
+            public record AttendeeStatus(String response) { }
+        }
+    }
+
+    /**
      * Lists the tenant's bookable meeting rooms. Used by the recruitment
      * interview scheduler's room picker — requires the app-level
      * {@code Place.Read.All} permission.

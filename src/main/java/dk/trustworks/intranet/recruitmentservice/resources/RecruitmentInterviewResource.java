@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DebriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
@@ -345,6 +346,29 @@ public class RecruitmentInterviewResource {
                                 : freeByEmail.get(user.getEmail().toLowerCase(Locale.ROOT))))
                 .toList();
         return new InterviewerAvailabilityResponse(availability, availability.size());
+    }
+
+    /**
+     * The Outlook event's live RSVP + drift status (plan Phase 5): who
+     * has accepted/declined, and whether the event was moved in Outlook
+     * behind the intranet's back. On-demand only — the UI asks when a
+     * dialog opens or a row expands; there are no webhooks. Unknown
+     * ({@code known=false}, empty rsvps) when the interview has no
+     * Outlook event, the Graph toggle is off, or the read failed.
+     * Read-tier + the same per-viewer visibility rule as every other
+     * interview read surface (assigned interviewer OR position access).
+     */
+    @GET
+    @Path("/interviews/{uuid}/calendar-status")
+    @RolesAllowed({"recruitment:read", "recruitment:interview"})
+    public CalendarStatusResponse calendarStatus(@PathParam("uuid") UUID interviewUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
+        return calendarService.eventStatus(interview, candidate);
     }
 
     /**
