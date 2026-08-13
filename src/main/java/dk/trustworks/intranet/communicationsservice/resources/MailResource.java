@@ -6,7 +6,8 @@ import dk.trustworks.intranet.communicationsservice.model.enums.MailStatus;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import io.quarkus.mailer.Mail;
 import io.quarkus.mailer.Mailer;
-import io.quarkus.scheduler.Scheduled;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -15,7 +16,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 @JBossLog
@@ -41,16 +41,122 @@ public class MailResource {
         mail.persist();
     }
 
-    @Transactional
-    //@Scheduled(every = "10s") // Disabled: replaced by JBeret job 'mail-send' via BatchScheduler
+    /** Mails drained per run. At the 5-minute mail-send cadence this is
+     * up to 240 mails/hour; the old one-per-run drain managed 12. */
+    static final int DRAIN_BATCH_SIZE = 20;
+
+    /** Send tries before a mail is parked as {@link MailStatus#FAILED}. */
+    static final int MAX_ATTEMPTS = 5;
+
+    /** Width of {@code mail.last_error} (V494). */
+    static final int LAST_ERROR_MAX_LENGTH = 500;
+
+    /**
+     * Drain the outbox — driven by the JBeret {@code mail-send} job via
+     * {@code BatchScheduler} (every 5 min), NOT {@code @Scheduled}.
+     * <p>
+     * V494 rework: up to {@link #DRAIN_BATCH_SIZE} READY mails per run,
+     * oldest first, each in its own transactions so one failing mail
+     * neither rolls back nor blocks the others. The attempt is counted
+     * and committed BEFORE the send — a send that kills the JVM still
+     * burns an attempt — and at {@link #MAX_ATTEMPTS} the row is parked
+     * as FAILED (poison-pill isolation) instead of stalling the queue,
+     * which is exactly what the pre-V494 single-row drain did: the send
+     * threw, the transaction rolled back, and the same row was picked
+     * first again every run, forever.
+     * <p>
+     * Only send failures are contained per mail; an infrastructure
+     * failure (DB down) propagates and fails the monitored batchlet.
+     */
     public void sendMailJob() {
-        Optional<TrustworksMail> optMail = TrustworksMail.find("status = ?1", MailStatus.READY).firstResultOptional();
-        optMail.ifPresent(mail -> {
-            log.info("Sending delayed email uuid: " + mail.getUuid());
-            mailer.send(applyHeaders(Mail.withHtml(mail.getTo(), mail.getSubject(), mail.getBody()), mail));
-            mail.setStatus(MailStatus.SENT);
-            TrustworksMail.update("status = ?1 where uuid like ?2", mail.getStatus(), mail.getUuid());
+        List<String> readyIds = QuarkusTransaction.requiringNew().call(() ->
+                TrustworksMail.<TrustworksMail>find("status = ?1",
+                                Sort.ascending("createdAt", "uuid"), MailStatus.READY)
+                        .page(0, DRAIN_BATCH_SIZE)
+                        .list().stream()
+                        .map(TrustworksMail::getUuid)
+                        .toList());
+        for (String uuid : readyIds) {
+            drainOne(uuid);
+        }
+    }
+
+    /** What the drain does with a picked-up row — pure, pinned by the
+     * DB-free tier. */
+    enum ClaimOutcome { SEND, PARK_FAILED, SKIP }
+
+    /**
+     * The claim rule: only READY rows are touched (the row may have been
+     * sent by an overlapping run since the id was listed); a READY row
+     * that already spent {@link #MAX_ATTEMPTS} tries is parked, not
+     * retried.
+     */
+    static ClaimOutcome claimOutcome(MailStatus status, int attemptCount) {
+        if (status != MailStatus.READY) {
+            return ClaimOutcome.SKIP;
+        }
+        return attemptCount >= MAX_ATTEMPTS ? ClaimOutcome.PARK_FAILED : ClaimOutcome.SEND;
+    }
+
+    /** After a failed try: park at the attempt ceiling, else stay READY. */
+    static MailStatus statusAfterFailure(int attemptCount) {
+        return attemptCount >= MAX_ATTEMPTS ? MailStatus.FAILED : MailStatus.READY;
+    }
+
+    /**
+     * Exception class + message, truncated to the {@code last_error}
+     * column — production sql_mode is STRICT_TRANS_TABLES, so an
+     * over-long error string would 1406 the bookkeeping UPDATE and turn
+     * one failure into another.
+     */
+    static String truncatedError(Throwable failure, int maxLength) {
+        String text = failure.getClass().getSimpleName()
+                + (failure.getMessage() != null ? ": " + failure.getMessage() : "");
+        return text.length() <= maxLength ? text : text.substring(0, maxLength);
+    }
+
+    private void drainOne(String uuid) {
+        TrustworksMail claimed = QuarkusTransaction.requiringNew().call(() -> {
+            TrustworksMail mail = TrustworksMail.findById(uuid);
+            if (mail == null) {
+                return null;
+            }
+            switch (claimOutcome(mail.getStatus(), mail.getAttemptCount())) {
+                case SKIP -> {
+                    return null;
+                }
+                case PARK_FAILED -> {
+                    // Backstop for tries that never reached the failure
+                    // bookkeeping (JVM death mid-send).
+                    mail.setStatus(MailStatus.FAILED);
+                    log.errorf("Mail %s parked as FAILED after %d attempts (last error: %s)",
+                            uuid, mail.getAttemptCount(), mail.getLastError());
+                    return null;
+                }
+                case SEND -> mail.setAttemptCount(mail.getAttemptCount() + 1);
+            }
+            return mail;
         });
+        if (claimed == null) {
+            return;
+        }
+        // The entity is detached here; only already-loaded scalars are read.
+        try {
+            log.infof("Sending queued mail %s (attempt %d)", uuid, claimed.getAttemptCount());
+            mailer.send(applyHeaders(
+                    Mail.withHtml(claimed.getTo(), claimed.getSubject(), claimed.getBody()),
+                    claimed));
+            QuarkusTransaction.requiringNew().run(() ->
+                    TrustworksMail.update("status = ?1 where uuid = ?2", MailStatus.SENT, uuid));
+        } catch (Exception e) {
+            String error = truncatedError(e, LAST_ERROR_MAX_LENGTH);
+            MailStatus after = statusAfterFailure(claimed.getAttemptCount());
+            QuarkusTransaction.requiringNew().run(() ->
+                    TrustworksMail.update("lastError = ?1, status = ?2 where uuid = ?3",
+                            error, after, uuid));
+            log.warnf("Mail %s send attempt %d failed%s: %s", uuid, claimed.getAttemptCount(),
+                    after == MailStatus.FAILED ? " — parked as FAILED" : "", error);
+        }
     }
 
     /**
