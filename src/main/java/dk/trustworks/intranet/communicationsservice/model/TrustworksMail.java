@@ -27,6 +27,31 @@ public class TrustworksMail extends PanacheEntityBase {
     private MailStatus status;
 
     /**
+     * Queue-entry time (V494), filled by the database default — the
+     * drain order (oldest first). Read-only on the entity so a pre-V494
+     * row's migration-stamped value is never overwritten.
+     */
+    @JsonIgnore
+    @Column(name = "created_at", insertable = false, updatable = false)
+    private java.time.LocalDateTime createdAt;
+
+    /**
+     * Send tries so far (V494). Incremented and committed BEFORE each
+     * try — a send that kills the JVM must still burn an attempt, or a
+     * poison mail retries forever across restarts. At
+     * {@code MailResource.MAX_ATTEMPTS} the row is parked as
+     * {@link MailStatus#FAILED} instead of retried.
+     */
+    @JsonIgnore
+    @Column(name = "attempt_count")
+    private int attemptCount;
+
+    /** Last send failure (V494), truncated to 500 chars. Operator-facing only. */
+    @JsonIgnore
+    @Column(name = "last_error")
+    private String lastError;
+
+    /**
      * Transient field for email attachments - not persisted to database.
      * Emails with attachments are sent immediately rather than queued.
      */
