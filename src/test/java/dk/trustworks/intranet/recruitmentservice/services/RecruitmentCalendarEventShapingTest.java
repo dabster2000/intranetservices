@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,7 +57,7 @@ class RecruitmentCalendarEventShapingTest {
         interview.setOnlineMeeting(true);
 
         Optional<RecruitmentCalendarService.CreatedEvent> created =
-                service.createEvent(interview, candidate());
+                service.createEvent(interview, candidateWithoutEmail(), null);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -82,7 +85,7 @@ class RecruitmentCalendarEventShapingTest {
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-2", null, null));
 
         Optional<RecruitmentCalendarService.CreatedEvent> created =
-                service.createEvent(interview(), candidate());
+                service.createEvent(interview(), candidateWithoutEmail(), null);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -104,7 +107,7 @@ class RecruitmentCalendarEventShapingTest {
         interview.setGraphEventId("evt-3");
         interview.setGraphOrganizer("original.organizer@trustworks.dk");
 
-        service.updateEvent(interview, candidate());
+        service.updateEvent(interview, candidateWithoutEmail(), null);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
@@ -127,7 +130,7 @@ class RecruitmentCalendarEventShapingTest {
         interview.setGraphOrganizer("career@trustworks.dk");
         interview.setOnlineMeeting(true);
 
-        Optional<String> joinUrl = service.updateEvent(interview, candidate());
+        Optional<String> joinUrl = service.updateEvent(interview, candidateWithoutEmail(), null);
 
         assertEquals(Optional.of("https://teams.microsoft.com/l/meetup-join/y"), joinUrl);
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
@@ -146,7 +149,7 @@ class RecruitmentCalendarEventShapingTest {
         RecruitmentInterview interview = interview();
         interview.setGraphOrganizer("stored@trustworks.dk");
 
-        service.createEvent(interview, candidate());
+        service.createEvent(interview, candidateWithoutEmail(), null);
 
         verify(graph).createCalendarEvent(eq("stored@trustworks.dk"), any());
     }
@@ -155,14 +158,163 @@ class RecruitmentCalendarEventShapingTest {
     void graphFailure_stillSwallowed_neverThrows() {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
-        assertTrue(service.createEvent(interview(), candidate()).isEmpty());
+        assertTrue(service.createEvent(interview(), candidateWithoutEmail(), null).isEmpty());
 
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
         RecruitmentInterview synced = interview();
         synced.setGraphEventId("evt-6");
         synced.setGraphOrganizer("career@trustworks.dk");
-        assertTrue(service.updateEvent(synced, candidate()).isEmpty());
+        assertTrue(service.updateEvent(synced, candidateWithoutEmail(), null).isEmpty());
+    }
+
+    // ---- Two-event split (plan Phase 6) ----------------------------------------
+
+    @Test
+    void create_withCandidateEmail_splitsIntoInternalAndCandidateEvents() {
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-cand", null, null));
+        RecruitmentPosition position = position();
+
+        Optional<RecruitmentCalendarService.CreatedEvent> created =
+                service.createEvent(interview(), candidate(), position);
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> bodies =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        org.mockito.Mockito.verify(graph, org.mockito.Mockito.times(2))
+                .createCalendarEvent(eq("career@trustworks.dk"), bodies.capture());
+
+        GraphApiClient.CalendarEventRequest internal = bodies.getAllValues().get(0);
+        assertTrue(internal.attendees().stream()
+                        .noneMatch(a -> "anna@example.com".equals(a.emailAddress().address())),
+                "the candidate never rides on the internal event");
+        assertTrue(internal.subject().contains("Consultant"),
+                "interviewers-only surface may name the position again");
+        assertTrue(internal.body().content().contains("Focus areas"),
+                "internal note carries the kit pointer and focus areas");
+
+        GraphApiClient.CalendarEventRequest candidateEvent = bodies.getAllValues().get(1);
+        assertEquals(1, candidateEvent.attendees().size(), "candidate only");
+        assertEquals("anna@example.com",
+                candidateEvent.attendees().get(0).emailAddress().address());
+        assertEquals("html", candidateEvent.body().contentType());
+        assertTrue(candidateEvent.body().content().contains("Kære Anna"),
+                "fallback body greets the candidate (template unreadable in unit tests)");
+        assertNull(candidateEvent.isOnlineMeeting(),
+                "the candidate event must never mint a SECOND Teams meeting");
+        assertEquals("int-1-candidate", candidateEvent.transactionId());
+        assertTrue(candidateEvent.subject().contains("Trustworks"));
+        assertEquals("evt-cand", created.orElseThrow().candidateEventId());
+    }
+
+    @Test
+    void legacyUpdate_keepsTheCandidateOnTheSingleEvent() {
+        when(graph.updateCalendarEvent(anyString(), anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-old", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setGraphEventId("evt-old");
+        interview.setGraphOrganizer("career@trustworks.dk");
+
+        service.updateEvent(interview, candidate(), position());
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).updateCalendarEvent(anyString(), eq("evt-old"), body.capture());
+        assertTrue(body.getValue().attendees().stream()
+                        .anyMatch(a -> "anna@example.com".equals(a.emailAddress().address())),
+                "pre-split rows keep the candidate as attendee — nobody gets double-invited");
+        assertTrue(!body.getValue().subject().contains("Consultant"),
+                "candidate-visible surface keeps the position out of the subject");
+    }
+
+    @Test
+    void splitUpdate_patchesBothEvents() {
+        when(graph.updateCalendarEvent(anyString(), anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setGraphEventId("evt-int");
+        interview.setGraphCandidateEventId("evt-cand");
+        interview.setGraphOrganizer("career@trustworks.dk");
+
+        service.updateEvent(interview, candidate(), position());
+
+        verify(graph).updateCalendarEvent(eq("career@trustworks.dk"), eq("evt-int"), any());
+        verify(graph).updateCalendarEvent(eq("career@trustworks.dk"), eq("evt-cand"), any());
+    }
+
+    @Test
+    void cancel_deletesBothEventsOnSplitRows() {
+        RecruitmentInterview interview = interview();
+        interview.setGraphEventId("evt-int");
+        interview.setGraphCandidateEventId("evt-cand");
+        interview.setGraphOrganizer("career@trustworks.dk");
+
+        service.cancelEvent(interview);
+
+        verify(graph).deleteCalendarEvent(eq("career@trustworks.dk"), eq("evt-int"));
+        verify(graph).deleteCalendarEvent(eq("career@trustworks.dk"), eq("evt-cand"));
+    }
+
+    // ---- Candidate invitation rendering ----------------------------------------
+
+    @Test
+    void candidateInvitation_rendersTheTemplate_withInterviewMergeFields() {
+        RecruitmentEmailTemplate template = new RecruitmentEmailTemplate();
+        template.setSubject("Samtale hos Trustworks");
+        template.setBody("<p>Kære {{candidate_first_name}}</p>"
+                + "<p>{{interview_date}} kl. {{interview_time}} — {{interview_location}}</p>");
+        template.setBodyFormat(RecruitmentEmailBodyFormat.HTML);
+
+        RecruitmentCalendarService.CandidateInvitation invitation =
+                RecruitmentCalendarService.candidateInvitation(
+                        interviewWithLocation("HQ meeting room 2"), candidate(), position(),
+                        null, template);
+
+        assertEquals("Samtale hos Trustworks", invitation.subject());
+        assertTrue(invitation.htmlBody().contains("Kære Anna"));
+        assertTrue(invitation.htmlBody().contains("20/08/2026"));
+        assertTrue(invitation.htmlBody().contains("10:00"));
+        assertTrue(invitation.htmlBody().contains("HQ meeting room 2"));
+    }
+
+    @Test
+    void candidateInvitation_appendsTheTeamsLink_andSanitizes() {
+        RecruitmentEmailTemplate template = new RecruitmentEmailTemplate();
+        template.setSubject("Samtale hos Trustworks");
+        template.setBody("<p>Hej</p><script>alert(1)</script>");
+        template.setBodyFormat(RecruitmentEmailBodyFormat.HTML);
+
+        RecruitmentCalendarService.CandidateInvitation invitation =
+                RecruitmentCalendarService.candidateInvitation(
+                        interviewWithLocation(null), candidate(), position(),
+                        "https://teams.microsoft.com/l/meetup-join/x", template);
+
+        assertTrue(!invitation.htmlBody().contains("<script"),
+                "the sanitizer is mandatory — stored HTML goes straight to Outlook");
+        assertTrue(invitation.htmlBody().contains(
+                "href=\"https://teams.microsoft.com/l/meetup-join/x\""));
+        assertTrue(invitation.htmlBody().contains("Deltag i mødet"));
+    }
+
+    @Test
+    void candidateInvitation_withoutTemplate_fallsBackToTheBuiltInDanishBody() {
+        RecruitmentCalendarService.CandidateInvitation invitation =
+                RecruitmentCalendarService.candidateInvitation(
+                        interviewWithLocation(null), candidate(), position(), null, null);
+
+        assertEquals("Samtale hos Trustworks", invitation.subject());
+        assertTrue(invitation.htmlBody().contains("Kære Anna"));
+        assertTrue(invitation.htmlBody().contains("<br>"), "plain fallback is HTML-ified");
+    }
+
+    @Test
+    void internalBody_carriesPositionAndFocusAreas() {
+        String body = RecruitmentCalendarService.internalBody(position());
+        assertTrue(body.contains("Position: Consultant"));
+        assertTrue(body.contains("Focus areas: Why consulting, Culture fit"));
+        assertTrue(RecruitmentCalendarService.internalBody(null)
+                .contains("Scheduled via the Trustworks intranet"));
     }
 
     // ---- Fixtures --------------------------------------------------------------
@@ -186,5 +338,32 @@ class RecruitmentCalendarEventShapingTest {
         candidate.setLastName("Nielsen");
         candidate.setEmail("anna@example.com");
         return candidate;
+    }
+
+    /** Keeps the captors on the INTERNAL event: no email = no candidate
+     * event (split coverage has its own tests). */
+    private static RecruitmentCandidate candidateWithoutEmail() {
+        RecruitmentCandidate candidate = new RecruitmentCandidate();
+        candidate.setFirstName("Anna");
+        candidate.setLastName("Nielsen");
+        return candidate;
+    }
+
+    private static RecruitmentPosition position() {
+        RecruitmentPosition position = new RecruitmentPosition();
+        position.setTitle("Consultant");
+        position.setScorecardTemplate(List.of(
+                new dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute(
+                        "WHY_CONSULTING", "Why consulting"),
+                new dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute(
+                        "CULTURE_FIT", "Culture fit")));
+        return position;
+    }
+
+    private static RecruitmentInterview interviewWithLocation(String location) {
+        RecruitmentInterview interview = interview();
+        interview.setScheduledAt(LocalDateTime.of(2026, 8, 20, 10, 0));
+        interview.setLocation(location);
+        return interview;
     }
 }

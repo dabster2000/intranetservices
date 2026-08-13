@@ -349,6 +349,36 @@ public class RecruitmentInterviewResource {
     }
 
     /**
+     * The manual-mode invitation file (plan Phase 6): the interview as a
+     * downloadable iCalendar REQUEST — the fallback whenever Graph writes
+     * are off or an interview has no Outlook event. Same authz posture as
+     * every other interview read surface: the interview UUID is NOT a
+     * capability token — role + per-viewer visibility are enforced, and
+     * invisible rows answer 404. The filename derives from the UUID
+     * alone, so the Content-Disposition header cannot carry injected text.
+     */
+    @GET
+    @Path("/interviews/{uuid}/ics")
+    @Produces("text/calendar")
+    @RolesAllowed({"recruitment:read", "recruitment:interview"})
+    public Response ics(@PathParam("uuid") UUID interviewUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        if (interview.getScheduledAt() == null) {
+            throw badRequest("This interview has no time yet — nothing to invite to");
+        }
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
+        String ics = calendarService.icsFor(interview, candidate);
+        return Response.ok(ics, "text/calendar; charset=utf-8")
+                .header("Content-Disposition",
+                        "attachment; filename=\"interview-" + interview.getUuid() + ".ics\"")
+                .build();
+    }
+
+    /**
      * The Outlook event's live RSVP + drift status (plan Phase 5): who
      * has accepted/declined, and whether the event was moved in Outlook
      * behind the intranet's back. On-demand only — the UI asks when a

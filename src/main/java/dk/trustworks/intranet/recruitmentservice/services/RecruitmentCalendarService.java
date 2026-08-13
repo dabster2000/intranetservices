@@ -4,7 +4,10 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventRequest;
@@ -117,20 +120,29 @@ public class RecruitmentCalendarService {
 
     /**
      * What {@link #createEvent} handed to Graph and got back — the caller
-     * persists all three so update/cancel address the right mailbox and
-     * the UI can offer the Teams link.
+     * persists it all so update/cancel address the right mailboxes and
+     * the UI can offer the Teams link. {@code candidateEventId} is null
+     * when no candidate event was created (no email, or its create
+     * failed — the internal event stands alone, exactly the pre-split
+     * shape).
      */
-    public record CreatedEvent(String eventId, String organizer, String joinUrl) { }
+    public record CreatedEvent(String eventId, String organizer, String joinUrl,
+                               String candidateEventId) { }
 
     /**
-     * Create the Outlook event for a newly scheduled interview.
+     * Create the Outlook events for a newly scheduled interview (plan
+     * Phase 6 two-event split): the INTERNAL event for interviewers +
+     * room, and — when the candidate has an email — the candidate's OWN
+     * event with a candidate-facing HTML body, carrying only them.
      *
-     * @return the created event's linkage to store on the interview, or
-     *         empty when the toggle is off, no organizer mailbox
-     *         resolves, or Graph fails (logged, never thrown)
+     * @return the created linkage to store on the interview, or empty
+     *         when the toggle is off, no organizer mailbox resolves, or
+     *         the internal create fails (logged, never thrown). A failed
+     *         CANDIDATE create degrades to internal-only.
      */
     public Optional<CreatedEvent> createEvent(RecruitmentInterview interview,
-                                              RecruitmentCandidate candidate) {
+                                              RecruitmentCandidate candidate,
+                                              RecruitmentPosition position) {
         if (!calendarEnabled) {
             return Optional.empty();
         }
@@ -142,11 +154,15 @@ public class RecruitmentCalendarService {
                 return Optional.empty();
             }
             GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
-                    organizer, buildEvent(interview, candidate, true));
+                    organizer, buildInternalEvent(interview, candidate, position, true, false));
             if (created == null || created.id() == null) {
                 return Optional.empty();
             }
-            return Optional.of(new CreatedEvent(created.id(), organizer, joinUrlOf(created)));
+            String joinUrl = joinUrlOf(created);
+            String candidateEventId =
+                    createCandidateEvent(interview, candidate, position, organizer, joinUrl);
+            return Optional.of(new CreatedEvent(created.id(), organizer, joinUrl,
+                    candidateEventId));
         } catch (Exception e) {
             log.warnv("Graph calendar create failed for interview {0}: {1} — proceeding without calendar event",
                     interview.getUuid(), e.getMessage());
@@ -154,15 +170,40 @@ public class RecruitmentCalendarService {
         }
     }
 
+    /** Best-effort candidate event; null when not applicable or failed. */
+    private String createCandidateEvent(RecruitmentInterview interview,
+                                        RecruitmentCandidate candidate,
+                                        RecruitmentPosition position,
+                                        String internalOrganizer,
+                                        String joinUrl) {
+        if (candidate == null || candidate.getEmail() == null || candidate.getEmail().isBlank()) {
+            return null;
+        }
+        try {
+            GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
+                    candidateOrganizer(internalOrganizer),
+                    buildCandidateEvent(interview, candidate, position, joinUrl, true));
+            return created != null ? created.id() : null;
+        } catch (Exception e) {
+            log.warnv("Graph candidate-event create failed for interview {0}: {1} — internal event stands alone",
+                    interview.getUuid(), e.getMessage());
+            return null;
+        }
+    }
+
     /**
      * Push a reschedule (new time/location/attendees, possibly a newly
-     * enabled Teams meeting) to the existing Outlook event.
+     * enabled Teams meeting) to the existing Outlook event(s). Split rows
+     * ({@code graph_candidate_event_id} set) update both events; legacy
+     * single-event rows keep the candidate as an attendee of the one
+     * event, exactly as before the split.
      *
-     * @return the join link from the PATCH response when Graph included
-     *         one (it may lag — a later read backfills), else empty
+     * @return the join link from the internal PATCH response when Graph
+     *         included one (it may lag — a later read backfills), else empty
      */
     public Optional<String> updateEvent(RecruitmentInterview interview,
-                                        RecruitmentCandidate candidate) {
+                                        RecruitmentCandidate candidate,
+                                        RecruitmentPosition position) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
             return Optional.empty();
         }
@@ -171,10 +212,23 @@ public class RecruitmentCalendarService {
             if (organizer == null) {
                 return Optional.empty();
             }
+            boolean split = interview.getGraphCandidateEventId() != null;
             GraphApiClient.CalendarEvent updated = graph().updateCalendarEvent(
                     organizer, interview.getGraphEventId(),
-                    buildEvent(interview, candidate, false));
-            return Optional.ofNullable(updated != null ? joinUrlOf(updated) : null);
+                    buildInternalEvent(interview, candidate, position, false, !split));
+            String joinUrl = updated != null ? joinUrlOf(updated) : null;
+            if (split) {
+                try {
+                    graph().updateCalendarEvent(candidateOrganizer(organizer),
+                            interview.getGraphCandidateEventId(),
+                            buildCandidateEvent(interview, candidate, position,
+                                    joinUrl != null ? joinUrl : interview.getJoinUrl(), false));
+                } catch (Exception e) {
+                    log.warnv("Graph candidate-event update failed for interview {0}: {1} — candidate event may be stale",
+                            interview.getUuid(), e.getMessage());
+                }
+            }
+            return Optional.ofNullable(joinUrl);
         } catch (Exception e) {
             log.warnv("Graph calendar update failed for interview {0}: {1} — calendar may be stale",
                     interview.getUuid(), e.getMessage());
@@ -216,10 +270,33 @@ public class RecruitmentCalendarService {
                     emailByInterviewerUuid.put(interviewerUuid, email);
                 }
             }
-            return calendarStatus(emailByInterviewerUuid,
+            // Split rows: the candidate answers on THEIR event, not the
+            // internal one — map the candidate only from there.
+            boolean split = interview.getGraphCandidateEventId() != null;
+            CalendarStatusResponse status = calendarStatus(emailByInterviewerUuid,
                     candidate != null ? candidate.getUuid() : null,
-                    candidate != null ? candidate.getEmail() : null,
+                    split ? null : (candidate != null ? candidate.getEmail() : null),
                     interview.getScheduledAt(), details);
+            if (!split || candidate == null || candidate.getEmail() == null) {
+                return status;
+            }
+            try {
+                GraphApiClient.CalendarEventDetails candidateDetails =
+                        graph().getCalendarEventDetails(candidateOrganizer(organizer),
+                                interview.getGraphCandidateEventId(),
+                                "start,attendees,onlineMeeting");
+                CalendarStatusResponse candidateStatus = calendarStatus(Map.of(),
+                        candidate.getUuid(), candidate.getEmail(),
+                        interview.getScheduledAt(), candidateDetails);
+                List<CalendarStatusResponse.Rsvp> combined = new ArrayList<>(status.rsvps());
+                combined.addAll(candidateStatus.rsvps());
+                return new CalendarStatusResponse(true, List.copyOf(combined),
+                        status.drifted(), status.outlookStart());
+            } catch (Exception e) {
+                log.warnv("Graph candidate-event status read failed for interview {0}: {1} — interviewers only",
+                        interview.getUuid(), e.getMessage());
+                return status;
+            }
         } catch (Exception e) {
             log.warnv("Graph calendar status read failed for interview {0}: {1} — status unknown",
                     interview.getUuid(), e.getMessage());
@@ -305,17 +382,27 @@ public class RecruitmentCalendarService {
         }
     }
 
-    /** Cancel the Outlook event (attendees get a cancellation). 404 = already gone, fine. */
+    /** Cancel the Outlook event(s) — attendees get cancellations; the
+     * candidate event (when split) goes with the internal one. 404 =
+     * already gone, fine. */
     public void cancelEvent(RecruitmentInterview interview) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
             return;
         }
+        String organizer = organizerMailbox(interview);
+        if (organizer == null) {
+            return;
+        }
+        deleteQuietly(organizer, interview.getGraphEventId(), interview);
+        if (interview.getGraphCandidateEventId() != null) {
+            deleteQuietly(candidateOrganizer(organizer),
+                    interview.getGraphCandidateEventId(), interview);
+        }
+    }
+
+    private void deleteQuietly(String organizer, String eventId, RecruitmentInterview interview) {
         try {
-            String organizer = organizerMailbox(interview);
-            if (organizer == null) {
-                return;
-            }
-            graph().deleteCalendarEvent(organizer, interview.getGraphEventId());
+            graph().deleteCalendarEvent(organizer, eventId);
         } catch (WebApplicationException e) {
             if (e.getResponse() == null || e.getResponse().getStatus() != 404) {
                 log.warnv("Graph calendar delete failed for interview {0}: {1}",
@@ -325,6 +412,18 @@ public class RecruitmentCalendarService {
             log.warnv("Graph calendar delete failed for interview {0}: {1}",
                     interview.getUuid(), e.getMessage());
         }
+    }
+
+    /**
+     * The mailbox the CANDIDATE event lives under: the shared organizer
+     * (D1, {@code career@trustworks.dk}) — a candidate invitation should
+     * come from the company, not a person — falling back to the internal
+     * organizer while the config is empty.
+     */
+    private String candidateOrganizer(String internalOrganizer) {
+        return configuredOrganizer != null && !configuredOrganizer.isBlank()
+                ? configuredOrganizer.trim()
+                : internalOrganizer;
     }
 
     /**
@@ -668,26 +767,39 @@ public class RecruitmentCalendarService {
     // ---- Shaping -----------------------------------------------------------
 
     /**
-     * The full event body. {@code create} gates the create-only fields:
-     * {@code transactionId} (Graph rejects it on PATCH) rides only on
-     * creates — the interview UUID, so a retry-stormed create never
-     * double-books.
+     * The INTERNAL event body (interviewers + room). {@code create} gates
+     * the create-only {@code transactionId} (Graph rejects it on PATCH) —
+     * the interview UUID, so a retry-stormed create never double-books.
+     * <p>
+     * {@code includeCandidate} is the LEGACY single-event mode: updates of
+     * rows created before the split (no candidate event exists) keep the
+     * candidate as an attendee and the candidate-safe body/subject —
+     * position named nowhere. Split-mode internal events carry no
+     * candidate, so the position and focus areas return to where the
+     * interviewers can use them.
      */
-    private CalendarEventRequest buildEvent(RecruitmentInterview interview,
-                                            RecruitmentCandidate candidate,
-                                            boolean create) {
+    private CalendarEventRequest buildInternalEvent(RecruitmentInterview interview,
+                                                    RecruitmentCandidate candidate,
+                                                    RecruitmentPosition position,
+                                                    boolean create,
+                                                    boolean includeCandidate) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
-        // The position is named nowhere on the invitation — not here and
-        // not in the body: the candidate is an attendee, and what they are
-        // being seen for is not the invitation's business.
+        boolean candidateInvited = includeCandidate
+                && candidate != null
+                && candidate.getEmail() != null && !candidate.getEmail().isBlank();
         String subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
                 ? "Uformel snak: %s".formatted(candidateName(candidate))
                 : "Interview %d: %s".formatted(interview.getRound(), candidateName(candidate));
+        if (!includeCandidate && position != null && position.getTitle() != null) {
+            // Interviewers-only surface — naming the position helps them
+            // and can no longer leak to the candidate.
+            subject = subject + " — " + position.getTitle();
+        }
 
         List<CalendarEventRequest.Attendee> attendees = new ArrayList<>();
         List<String> interviewers = interview.getInterviewerUuids();
         for (int i = 1; i < interviewers.size(); i++) {
-            // Name as well as address: the candidate's mail client cannot
+            // Name as well as address: an external mail client cannot
             // resolve a Trustworks address against our directory, so a
             // nameless attendee shows up as a raw firstname.lastname@… .
             User user = User.findById(interviewers.get(i));
@@ -696,7 +808,6 @@ public class RecruitmentCalendarService {
                 attendees.add(required(email, displayName(user)));
             }
         }
-        boolean candidateInvited = candidate.getEmail() != null && !candidate.getEmail().isBlank();
         if (candidateInvited) {
             attendees.add(required(candidate.getEmail(), candidateName(candidate)));
         }
@@ -709,6 +820,10 @@ public class RecruitmentCalendarService {
                     "resource"));
         }
 
+        String body = includeCandidate
+                ? invitationBody(interview, candidate, candidateInvited)
+                : internalBody(position);
+
         // Teams fields are one-way: TRUE turns the meeting online (works on
         // both create and PATCH — verified in this tenant, Phase 0.3 spike);
         // FALSE is never sent, so an existing Teams meeting is not silently
@@ -716,8 +831,7 @@ public class RecruitmentCalendarService {
         boolean teams = interview.isOnlineMeeting();
         return new CalendarEventRequest(
                 subject,
-                new CalendarEventRequest.ItemBody("text",
-                        invitationBody(interview, candidate, candidateInvited)),
+                new CalendarEventRequest.ItemBody("text", body),
                 new CalendarEventRequest.DateTimeTimeZone(
                         interview.getScheduledAt().toString(), EVENT_TIME_ZONE),
                 new CalendarEventRequest.DateTimeTimeZone(
@@ -736,6 +850,166 @@ public class RecruitmentCalendarService {
                 "private",
                 create ? interview.getUuid() : null,
                 Boolean.TRUE);
+    }
+
+    /** The split-mode internal note: kit pointer, position, focus areas. */
+    static String internalBody(RecruitmentPosition position) {
+        StringBuilder body = new StringBuilder(
+                "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit.");
+        if (position != null && position.getTitle() != null) {
+            body.append("\n\nPosition: ").append(position.getTitle());
+            if (position.getScorecardTemplate() != null
+                    && !position.getScorecardTemplate().isEmpty()) {
+                body.append("\nFocus areas: ");
+                body.append(String.join(", ", position.getScorecardTemplate().stream()
+                        .map(attribute -> attribute.label())
+                        .toList()));
+            }
+        }
+        return body.toString();
+    }
+
+    /**
+     * The CANDIDATE event (plan Phase 6): only the candidate attends; the
+     * body is the HR-editable {@code INTERVIEW_CANDIDATE_INVITATION}
+     * template rendered per candidate/position (HTML, sanitizer-mandatory
+     * — stored HTML goes straight to Outlook) with a built-in fallback.
+     * Never a Teams meeting of its own — that would mint a SECOND meeting;
+     * the internal event's join link is appended to the body instead.
+     */
+    private CalendarEventRequest buildCandidateEvent(RecruitmentInterview interview,
+                                                     RecruitmentCandidate candidate,
+                                                     RecruitmentPosition position,
+                                                     String joinUrl,
+                                                     boolean create) {
+        Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
+        CandidateInvitation invitation =
+                candidateInvitation(interview, candidate, position, joinUrl, candidateTemplate());
+        return new CalendarEventRequest(
+                invitation.subject(),
+                new CalendarEventRequest.ItemBody("html", invitation.htmlBody()),
+                new CalendarEventRequest.DateTimeTimeZone(
+                        interview.getScheduledAt().toString(), EVENT_TIME_ZONE),
+                new CalendarEventRequest.DateTimeTimeZone(
+                        interview.getScheduledAt().plusMinutes(interview.getDurationMinutes()).toString(),
+                        EVENT_TIME_ZONE),
+                interview.getLocation() != null
+                        ? new CalendarEventRequest.EventLocation(interview.getLocation())
+                        : null,
+                List.of(required(candidate.getEmail(), candidateName(candidate))),
+                null,
+                null,
+                List.of("Recruitment"),
+                15,
+                "private",
+                create ? interview.getUuid() + "-candidate" : null,
+                Boolean.TRUE);
+    }
+
+    /** The template row, or null when missing/inactive/unreadable. */
+    RecruitmentEmailTemplate candidateTemplate() {
+        try {
+            RecruitmentEmailTemplate template = RecruitmentEmailTemplate
+                    .find("templateKey", "INTERVIEW_CANDIDATE_INVITATION").firstResult();
+            return template != null && template.isActive() ? template : null;
+        } catch (Exception e) {
+            log.warnv("Candidate invitation template unreadable: {0} — using the built-in body",
+                    e.getMessage());
+            return null;
+        }
+    }
+
+    record CandidateInvitation(String subject, String htmlBody) { }
+
+    /**
+     * Render the candidate invitation — pure given the template row, so
+     * the DB-free tier pins it. Template path: merge fields (candidate,
+     * position, and the interview extras below), sanitizer-mandatory on
+     * the way out. Fallback path: the plain invitation text, HTML-ified.
+     * A known join link is appended as a link block either way.
+     */
+    static CandidateInvitation candidateInvitation(RecruitmentInterview interview,
+                                                   RecruitmentCandidate candidate,
+                                                   RecruitmentPosition position,
+                                                   String joinUrl,
+                                                   RecruitmentEmailTemplate template) {
+        String subject;
+        String html;
+        if (template != null) {
+            Map<String, String> extras = Map.of(
+                    "interview_date", interview.getScheduledAt()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                    "interview_time", interview.getScheduledAt()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
+                    "interview_location", interview.getLocation() != null
+                            ? interview.getLocation() : "Trustworks");
+            RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                    template.getSubject(), template.getBody(), candidate, position, extras,
+                    template.getBodyFormat());
+            subject = rendered.subject();
+            html = template.getBodyFormat() == RecruitmentEmailBodyFormat.HTML
+                    ? rendered.body()
+                    : escapeHtml(rendered.body()).replace("\n", "<br>");
+        } else {
+            subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
+                    ? "Uformel snak hos Trustworks"
+                    : "Samtale hos Trustworks";
+            html = escapeHtml(invitationBody(interview, candidate, true))
+                    .replace("\n", "<br>");
+        }
+        // The sanitizer is mandatory: stored HTML goes straight to Outlook.
+        html = RecruitmentEmailHtmlSanitizer.clean(html);
+        if (joinUrl != null && !joinUrl.isBlank() && joinUrl.startsWith("https://")) {
+            // Appended AFTER sanitizing: this block is ours, and the href
+            // is attribute-escaped — the sanitizer would strip the anchor.
+            html = html + "<p><strong>Microsoft Teams:</strong> <a href=\""
+                    + escapeHtml(joinUrl) + "\">Deltag i mødet</a></p>";
+        }
+        return new CandidateInvitation(subject, html);
+    }
+
+    private static String escapeHtml(String text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    /**
+     * The manual-mode .ics fallback (plan Phase 6): the interview as an
+     * iCalendar invitation — works with the Graph toggle OFF, that being
+     * the point. Attendees are the interviewers + the candidate (when
+     * they have an email); the organizer follows the same resolution as
+     * events, so the file round-trips into the mailbox a later Graph
+     * event would live in.
+     */
+    public String icsFor(RecruitmentInterview interview, RecruitmentCandidate candidate) {
+        Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set for an invitation");
+        List<InterviewIcsWriter.IcsAttendee> attendees = new ArrayList<>();
+        for (String interviewerUuid : interview.getInterviewerUuids()) {
+            User user = User.findById(interviewerUuid);
+            String email = mailboxOf(user);
+            if (email != null) {
+                attendees.add(new InterviewIcsWriter.IcsAttendee(email, displayName(user)));
+            }
+        }
+        boolean candidateInvited = candidate != null
+                && candidate.getEmail() != null && !candidate.getEmail().isBlank();
+        if (candidateInvited) {
+            attendees.add(new InterviewIcsWriter.IcsAttendee(
+                    candidate.getEmail(), candidateName(candidate)));
+        }
+        String summary = interview.getKind() == RecruitmentInterviewKind.INFORMAL
+                ? "Uformel snak: %s".formatted(candidateName(candidate))
+                : "Interview %d: %s".formatted(interview.getRound(), candidateName(candidate));
+        return InterviewIcsWriter.write(
+                interview.getUuid() + "@trustworks.dk",
+                interview.getScheduledAt(),
+                interview.getDurationMinutes(),
+                summary,
+                interview.getLocation(),
+                invitationBody(interview, candidate, candidateInvited),
+                organizerMailbox(interview),
+                attendees,
+                LocalDateTime.now(java.time.ZoneOffset.UTC));
     }
 
     /**

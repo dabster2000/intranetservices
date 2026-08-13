@@ -161,10 +161,11 @@ public class RecruitmentInterviewService {
         interview.persist();
 
         // Outlook is best-effort: a Graph failure never fails scheduling.
-        calendarService.createEvent(interview, candidate).ifPresent(created -> {
+        calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
             interview.setGraphEventId(created.eventId());
             interview.setGraphOrganizer(created.organizer());
             interview.setJoinUrl(created.joinUrl());
+            interview.setGraphCandidateEventId(created.candidateEventId());
         });
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_SCHEDULED,
@@ -224,13 +225,14 @@ public class RecruitmentInterviewService {
                 request.createCalendarEvent(), calendarService.isEnabled())) {
             // The recovery path for pre-toggle and Airtable-migrated rows:
             // the interview exists, the Outlook invitation never did.
-            calendarService.createEvent(interview, candidate).ifPresent(created -> {
+            calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
                 interview.setGraphEventId(created.eventId());
                 interview.setGraphOrganizer(created.organizer());
                 interview.setJoinUrl(created.joinUrl());
+                interview.setGraphCandidateEventId(created.candidateEventId());
             });
         } else {
-            calendarService.updateEvent(interview, candidate)
+            calendarService.updateEvent(interview, candidate, position)
                     .ifPresent(interview::setJoinUrl);
         }
 

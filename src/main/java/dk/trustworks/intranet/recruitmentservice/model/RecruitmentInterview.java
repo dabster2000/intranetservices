@@ -91,6 +91,17 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String graphOrganizer;
 
+    /**
+     * The candidate-facing Outlook event's Graph id (V493 two-event
+     * split). {@code NULL} = single-event row: created before the split,
+     * or the candidate has no email. Update/cancel treat NULL rows
+     * exactly as before the split — nothing migrates, nobody gets
+     * double-invited.
+     */
+    @Column(name = "graph_candidate_event_id", length = 255)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String graphCandidateEventId;
+
     /** Whether the Outlook event is a Teams meeting (V492). */
     @Column(name = "online_meeting", nullable = false)
     private boolean onlineMeeting;
