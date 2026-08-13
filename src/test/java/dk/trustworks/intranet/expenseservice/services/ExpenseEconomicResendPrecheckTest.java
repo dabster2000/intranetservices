@@ -46,8 +46,8 @@ class ExpenseEconomicResendPrecheckTest {
     @Test
     void reportsMissingWhenNeitherDraftNorBooked() {
         Expense e = seedPosted();
-        when(economicsService.verifyVoucherExists(any())).thenReturn(false);
-        when(economicsService.voucherBookedInLedger(any())).thenReturn(false);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
 
         ExpenseResendPrecheckDTO dto = service.precheckOne(e.getUuid());
         assertTrue(dto.eligible());
@@ -58,12 +58,26 @@ class ExpenseEconomicResendPrecheckTest {
     @Test
     void reportsBookedWhenLedgerHasIt() {
         Expense e = seedPosted();
-        when(economicsService.verifyVoucherExists(any())).thenReturn(false);
-        when(economicsService.voucherBookedInLedger(any())).thenReturn(true);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.FOUND);
 
         ExpenseResendPrecheckDTO dto = service.precheckOne(e.getUuid());
         assertTrue(dto.voucherExists());
         assertEquals("BOOKED", dto.location());
+    }
+
+    @Test
+    void reportsUnknownWhenLookupFails() {
+        // 2026-08-12 regression guard: an e-conomic 5xx must NOT precheck as MISSING —
+        // that invited a duplicate re-send of a voucher that was merely unreachable.
+        Expense e = seedPosted();
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.UNKNOWN);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.UNKNOWN);
+
+        ExpenseResendPrecheckDTO dto = service.precheckOne(e.getUuid());
+        assertFalse(dto.eligible());
+        assertFalse(dto.voucherExists());
+        assertEquals("UNKNOWN", dto.location());
     }
 
     @Test

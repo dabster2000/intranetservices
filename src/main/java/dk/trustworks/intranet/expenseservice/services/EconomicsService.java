@@ -145,11 +145,11 @@ public class  EconomicsService {
                     response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
                 } catch (WebApplicationException e) {
                     String errorDetails = safeRead(e.getResponse());
-                    log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails);
+                    log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails, e);
                     throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, e.getResponse().getStatus(), errorDetails);
                 } catch (Exception e) {
-                    log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
-                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.getMessage());
+                    log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", voucher: " + voucher, e);
+                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.toString());
                 }
 
                 int status = response.getStatus();
@@ -159,12 +159,12 @@ public class  EconomicsService {
                 try { response.close(); } catch (Exception ignore) {}
                 response = null;
                 if (status != 400 || !isPeriodClosedError(lastBody)) {
-                    log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + status + ", details: " + lastBody);
+                    log.error("voucher not posted successfully to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + status + ", details: " + lastBody);
                     throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, status, lastBody);
                 }
             }
             if (response == null) {
-                log.error("Voucher post failed after " + (MAX_PERIOD_SHIFT_DAYS + 1) + " period-shift attempts. Expenseuuid: " + expense.getUseruuid() + ", lastStatus: " + lastStatus + ", lastBody: " + lastBody);
+                log.error("Voucher post failed after " + (MAX_PERIOD_SHIFT_DAYS + 1) + " period-shift attempts. Expense uuid: " + expense.getUuid() + ", lastStatus: " + lastStatus + ", lastBody: " + lastBody);
                 throw new ExpenseUploadException(
                         "Voucher post failed: closed period persists after " + MAX_PERIOD_SHIFT_DAYS + " day-shift retries",
                         null, lastStatus, lastBody);
@@ -200,8 +200,11 @@ public class  EconomicsService {
 
         // DEFENSIVE CHECK: Verify voucher actually exists before attempting file upload
         // This prevents attempting to upload files to non-existent vouchers
-        // (can happen if e-conomics returned cached success but voucher wasn't actually created)
-        if (expense.getVouchernumber() > 0 && !verifyVoucherExists(expense)) {
+        // (can happen if e-conomics returned cached success but voucher wasn't actually created).
+        // Only a PROVEN 404 aborts: an indeterminate lookup (5xx/network) must not fail the
+        // upload of a voucher that was just created — the attachment call itself surfaces
+        // real errors, while a false abort here leads to an orphan-retry duplicate voucher.
+        if (expense.getVouchernumber() > 0 && checkVoucherExists(expense) == VoucherLookupResult.NOT_FOUND) {
             String storedYear = expense.getAccountingyear();
             // Show the actual URL format used in verification (underscore format)
             String urlYear = DateUtils.toEconomicsUrlYear(storedYear);
@@ -575,42 +578,56 @@ public class  EconomicsService {
     }
 
     /**
-     * Verifies that a voucher actually exists in e-conomics.
-     * This is used to detect orphaned voucher references where our database
-     * has a voucher number but the voucher doesn't exist in e-conomics.
-     *
-     * @param expense The expense with voucher details to verify
-     * @return true if the voucher exists, false otherwise
+     * Outcome of a voucher lookup against e-conomic. {@code NOT_FOUND} is a PROVEN
+     * absence (HTTP 404 / empty result on a successful call); {@code UNKNOWN} means
+     * the lookup itself failed (5xx, network error, throttling) and the voucher's
+     * state could not be determined. Callers must never treat UNKNOWN as absence:
+     * doing so is what turned the 2026-08-12 e-conomic 503 outage into a wave of
+     * false "orphaned voucher" marks and "MISSING" re-send prechecks.
      */
-    public boolean verifyVoucherExists(Expense expense) {
+    public enum VoucherLookupResult { FOUND, NOT_FOUND, UNKNOWN }
+
+    /** Seam for tests: the eventual-consistency retry delay in {@link #checkVoucherExists}. */
+    long verifyRetrySleepMs = 1500L;
+
+    /**
+     * Checks whether the expense's stored voucher (journal/year/number triple) exists
+     * as a draft in e-conomic. Missing triple counts as {@code NOT_FOUND} (there is
+     * nothing to look up).
+     */
+    public VoucherLookupResult checkVoucherExists(Expense expense) {
         if (expense.getVouchernumber() <= 0 ||
             expense.getJournalnumber() == null ||
             expense.getAccountingyear() == null) {
-            return false;
+            return VoucherLookupResult.NOT_FOUND;
         }
-
         try (EconomicsAPI api = getApiForExpense(expense)) {
-            // Convert stored year to e-conomics URL format (underscore format)
-            String storedYear = expense.getAccountingyear();
-            String urlYear = DateUtils.toEconomicsUrlYear(storedYear);
+            return checkVoucherExists(expense, api);
+        } catch (Exception e) {
+            log.error("Error verifying voucher existence for expense " + expense.getUuid(), e);
+            return VoucherLookupResult.UNKNOWN;
+        }
+    }
 
-            log.debugf("Verifying voucher existence for expense %s: journal=%d, storedYear=%s -> urlYear=%s, voucher=%d",
-                expense.getUuid(), expense.getJournalnumber(), storedYear, urlYear, expense.getVouchernumber());
+    /** Lookup body of {@link #checkVoucherExists(Expense)}; package-private so tests can inject the API. */
+    VoucherLookupResult checkVoucherExists(Expense expense, EconomicsAPI api) {
+        // Convert stored year to e-conomics URL format (underscore format)
+        String storedYear = expense.getAccountingyear();
+        String urlYear = DateUtils.toEconomicsUrlYear(storedYear);
 
+        log.debugf("Verifying voucher existence for expense %s: journal=%d, storedYear=%s -> urlYear=%s, voucher=%d",
+            expense.getUuid(), expense.getJournalnumber(), storedYear, urlYear, expense.getVouchernumber());
+
+        try {
             // Retry a few times in case of eventual consistency right after creation
             int attempts = 3;
-            int lastStatus = 0;
             for (int i = 0; i < attempts; i++) {
-                log.debugf("Attempt %d: GET /journals/%d/vouchers/%s-%d",
-                    i + 1, expense.getJournalnumber(), urlYear, expense.getVouchernumber());
-
                 Response response = api.getVoucher(
                         expense.getJournalnumber(),
                         urlYear,
                         expense.getVouchernumber()
                 );
                 int status = response != null ? response.getStatus() : 0;
-                lastStatus = status;
 
                 log.debugf("Voucher verification response: status=%d for voucher %d", status, expense.getVouchernumber());
 
@@ -619,60 +636,76 @@ public class  EconomicsService {
                 }
 
                 if (status >= 200 && status < 300) {
-                    log.debugf("Voucher %d exists (status %d)", expense.getVouchernumber(), status);
-                    return true;
+                    return VoucherLookupResult.FOUND;
                 }
                 if (status == 404) {
-                    log.debugf("Voucher %d not found (404), retrying after delay...", expense.getVouchernumber());
-                    // Wait briefly and try again to allow e-conomic to persist the voucher
-                    try { Thread.sleep(1500L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    if (i < attempts - 1) {
+                        // Wait briefly and try again to allow e-conomic to persist the voucher
+                        try { Thread.sleep(verifyRetrySleepMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    }
                     continue;
                 }
 
-                // Unexpected status -> stop retrying
+                // Unexpected status (throttling, 5xx, auth) -> the voucher's state is NOT determined
                 log.warnf("Voucher verification unexpected status for expense %s: journal=%d, year=%s, voucher=%d, status=%d",
                         expense.getUuid(), expense.getJournalnumber(), urlYear, expense.getVouchernumber(), status);
-                return false;
+                return VoucherLookupResult.UNKNOWN;
             }
 
-            // After retries, still not found -> treat as orphan
-            if (lastStatus == 404) return false;
-            return false;
+            // Consistent 404 across all attempts -> proven absent
+            return VoucherLookupResult.NOT_FOUND;
         } catch (RuntimeException e) {
-            // If a provider still mapped a 404 to exception, treat as not found
+            // If a provider still mapped a 404 to exception, treat as proven absence
             String msg = e.getMessage();
             if (msg != null && (msg.contains("httpStatusCode\":404") || msg.contains("HTTP 404"))) {
-                return false;
+                return VoucherLookupResult.NOT_FOUND;
             }
             log.error("Error verifying voucher existence for expense " + expense.getUuid(), e);
-            return false;
-        } catch (Exception e) {
-            log.error("Error verifying voucher existence for expense " + expense.getUuid(), e);
-            return false;
+            return VoucherLookupResult.UNKNOWN;
         }
     }
 
     /**
-     * True if the stored voucher is present in the booked accounting-year ledger.
-     * Complements {@link #verifyVoucherExists(Expense)} (draft journal) so a BOOKED
-     * voucher is not mistaken for "missing". Returns false on missing triple / error.
+     * Checks whether the stored voucher is present in the booked accounting-year
+     * ledger. Complements {@link #checkVoucherExists(Expense)} (draft journal) so a
+     * BOOKED voucher is not mistaken for "missing". Missing triple counts as
+     * {@code NOT_FOUND}; a failed lookup is {@code UNKNOWN}, never absence.
      */
-    public boolean voucherBookedInLedger(Expense expense) {
+    public VoucherLookupResult checkVoucherBooked(Expense expense) {
         if (expense.getVouchernumber() <= 0 || expense.getJournalnumber() == null || expense.getAccountingyear() == null) {
-            return false;
+            return VoucherLookupResult.NOT_FOUND;
         }
+        try (EconomicsAPI api = getApiForExpense(expense)) {
+            return checkVoucherBooked(expense, api);
+        } catch (Exception e) {
+            log.warn("Booked-ledger lookup failed for expense " + expense.getUuid() + ": " + e);
+            return VoucherLookupResult.UNKNOWN;
+        }
+    }
+
+    /** Lookup body of {@link #checkVoucherBooked(Expense)}; package-private so tests can inject the API. */
+    VoucherLookupResult checkVoucherBooked(Expense expense, EconomicsAPI api) {
         String yearId = DateUtils.toEconomicsUrlYear(expense.getAccountingyear());
         String filter = "voucherNumber$eq:" + expense.getVouchernumber();
-        try (EconomicsAPI api = getApiForExpense(expense)) {
+        try {
             Response yr = api.getYearEntries(yearId, filter, 1000, 0);
             int status = yr != null ? yr.getStatus() : -1;
             String body = null;
             try { if (yr != null) body = yr.readEntity(String.class); }
             finally { if (yr != null) yr.close(); }
-            return status >= 200 && status < 300 && hasAnyLedgerEntries(body);
+            if (status >= 200 && status < 300) {
+                return hasAnyLedgerEntries(body) ? VoucherLookupResult.FOUND : VoucherLookupResult.NOT_FOUND;
+            }
+            if (status == 404) {
+                // Year not addressable -> nothing can be booked under it for this expense
+                return VoucherLookupResult.NOT_FOUND;
+            }
+            log.warn("Booked-ledger lookup unexpected status for expense " + expense.getUuid()
+                    + ": year=" + yearId + ", voucher=" + expense.getVouchernumber() + ", status=" + status);
+            return VoucherLookupResult.UNKNOWN;
         } catch (Exception e) {
-            log.warn("voucherBookedInLedger lookup failed for expense " + expense.getUuid() + ": " + e.getMessage());
-            return false;
+            log.warn("Booked-ledger lookup failed for expense " + expense.getUuid() + ": " + e);
+            return VoucherLookupResult.UNKNOWN;
         }
     }
 
