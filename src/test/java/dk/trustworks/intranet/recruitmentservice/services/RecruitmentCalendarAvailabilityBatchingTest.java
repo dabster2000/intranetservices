@@ -3,8 +3,12 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
+import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +23,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -117,6 +122,101 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         assertTrue(service.interviewerAvailability(mailboxes(45), SLOT, 60).isEmpty());
     }
 
+    // ---- Raw schedules (day grid + suggestions, plan Phase 1) ------------------
+
+    @Test
+    void daySchedule_returnsRawDigitsAndWorkingHours_over48CellDay() {
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
+            GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
+            return new GraphApiClient.ScheduleCollectionResponse(request.schedules().stream()
+                    .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                            mailbox, "02".repeat(24),
+                            new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours(
+                                    List.of("monday", "tuesday", "not-a-day"),
+                                    "08:30:00.0000000", "16:00:00.0000000",
+                                    new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation
+                                            .WorkingHours.TimeZoneName("Romance Standard Time"))))
+                    .toList());
+        });
+
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules =
+                service.daySchedule(List.of("u0@trustworks.dk"), LocalDate.of(2026, 8, 17));
+
+        AvailabilitySlotSuggester.MailboxWindowSchedule schedule = schedules.get("u0@trustworks.dk");
+        assertEquals("02".repeat(24), schedule.availabilityView(),
+                "digits ride raw — no Boolean collapse");
+        assertEquals(java.util.Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY),
+                schedule.workingHours().days(), "unknown day tokens are skipped, never fatal");
+        assertEquals(LocalTime.of(8, 30), schedule.workingHours().start());
+        assertEquals(LocalTime.of(16, 0), schedule.workingHours().end());
+        assertEquals("Romance Standard Time", schedule.workingHours().timeZoneName());
+
+        // The probe window is the grid contract: 07:00–19:00 on the day,
+        // 15-minute cells.
+        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        verify(graph).getSchedule(anyString(), body.capture());
+        assertEquals("2026-08-17T07:00", body.getValue().startTime().dateTime());
+        assertEquals("2026-08-17T19:00", body.getValue().endTime().dateTime());
+        assertEquals(15, body.getValue().availabilityViewInterval());
+    }
+
+    @Test
+    void daySchedule_toggleOff_returnsEmpty_neverTouchesGraph() {
+        service.calendarEnabled = false;
+        assertTrue(service.daySchedule(List.of("u0@trustworks.dk"),
+                LocalDate.of(2026, 8, 17)).isEmpty());
+        verifyNoInteractions(graph);
+    }
+
+    @Test
+    void suggestedSlots_fetchesOneMultiDayWindow_notOneCallPerDay() {
+        // The ALB idle-timeout guard: a 10-business-day scan must be ONE
+        // getSchedule window per 20-mailbox batch.
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+                new GraphApiClient.RoomCollectionResponse.Room(
+                        "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
+                echo(invocation.getArgument(1)));
+
+        // Monday 2026-08-17 → the 10th business day is Friday 2026-08-28.
+        List<AvailabilitySlotSuggester.Slot> slots = service.suggestedSlots(
+                List.of("u0@trustworks.dk", "u1@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 3, LocalDateTime.of(2026, 8, 17, 7, 0));
+
+        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        verify(graph, times(1)).getSchedule(anyString(), body.capture());
+        assertEquals("2026-08-17T07:00", body.getValue().startTime().dateTime());
+        assertEquals("2026-08-28T19:00", body.getValue().endTime().dateTime());
+        assertEquals(List.of("u0@trustworks.dk", "u1@trustworks.dk", "room-hq2@trustworks.dk"),
+                body.getValue().schedules(), "interviewers and rooms share the batch");
+
+        assertEquals(50, slots.size(), "echo marks everything free: 5/day × 10 business days");
+        assertEquals("room-hq2@trustworks.dk", slots.get(0).roomEmail(),
+                "the free 8-seat room is suggested for a headcount of 3");
+    }
+
+    @Test
+    void suggestedSlots_graphFullyDown_returnsEmpty_notBlindSuggestions() {
+        when(graph.listRooms()).thenThrow(new RuntimeException("Graph API error 503"));
+        when(graph.getSchedule(anyString(), any()))
+                .thenThrow(new RuntimeException("Graph API error 503"));
+
+        assertTrue(service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 2, LocalDateTime.of(2026, 8, 17, 7, 0)).isEmpty());
+    }
+
+    @Test
+    void lastBusinessDay_countsWeekdaysOnly() {
+        assertEquals(LocalDate.of(2026, 8, 28), RecruitmentCalendarService.lastBusinessDay(
+                LocalDate.of(2026, 8, 17), 10), "Mon + 10 business days ends Friday week 2");
+        assertEquals(LocalDate.of(2026, 8, 28), RecruitmentCalendarService.lastBusinessDay(
+                LocalDate.of(2026, 8, 15), 10), "a Saturday start rolls to the same scan");
+        assertEquals(LocalDate.of(2026, 8, 17), RecruitmentCalendarService.lastBusinessDay(
+                LocalDate.of(2026, 8, 17), 1));
+    }
+
     // ---- Helpers ---------------------------------------------------------------
 
     private static List<String> mailboxes(int count) {
@@ -144,10 +244,13 @@ class RecruitmentCalendarAvailabilityBatchingTest {
 
     private static GraphApiClient.ScheduleCollectionResponse echo(
             GraphApiClient.ScheduleRequest request) {
+        // Free everywhere, and long enough to cover any probe window this
+        // test file asks for (rooms demand known coverage — see
+        // AvailabilitySlotSuggester — so a too-short view would skew tests).
         return new GraphApiClient.ScheduleCollectionResponse(
                 request.schedules().stream()
                         .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse
-                                .ScheduleInformation(mailbox, "0"))
+                                .ScheduleInformation(mailbox, "0".repeat(15 * 24 * 4), null))
                         .toList());
     }
 }

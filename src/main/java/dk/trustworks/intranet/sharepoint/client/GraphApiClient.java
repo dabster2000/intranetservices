@@ -370,14 +370,28 @@ public interface GraphApiClient {
     /**
      * {@code getSchedule} response. {@code availabilityView} is one digit
      * per interval; "0" = free — any other digit means busy/tentative/OOF.
+     * {@code workingHours} rides along in every response (no extra
+     * permission) — start/end are wall-clock strings like
+     * {@code "08:00:00.0000000"} in the mailbox's own {@code timeZone}
+     * (a Windows zone name, e.g. "Romance Standard Time").
      */
     record ScheduleCollectionResponse(
         @JsonProperty("value") java.util.List<ScheduleInformation> value
     ) {
         public record ScheduleInformation(
             String scheduleId,
-            String availabilityView
-        ) { }
+            String availabilityView,
+            WorkingHours workingHours
+        ) {
+            public record WorkingHours(
+                java.util.List<String> daysOfWeek,
+                String startTime,
+                String endTime,
+                TimeZoneName timeZone
+            ) {
+                public record TimeZoneName(String name) { }
+            }
+        }
     }
 
     /** Graph calendar event response — only the id is needed. */

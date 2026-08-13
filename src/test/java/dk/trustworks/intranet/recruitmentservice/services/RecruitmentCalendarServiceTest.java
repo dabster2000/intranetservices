@@ -296,9 +296,9 @@ class RecruitmentCalendarServiceTest {
         when(graph.getSchedule(anyString(), any()))
                 .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "room-hq2@trustworks.dk", "0"),
+                                "room-hq2@trustworks.dk", "0", null),
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "room-hq3@trustworks.dk", "2"))));
+                                "room-hq3@trustworks.dk", "2", null))));
 
         var rooms = service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0));
 
@@ -360,7 +360,7 @@ class RecruitmentCalendarServiceTest {
         when(graph.getSchedule(anyString(), any()))
                 .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "room-hq2@trustworks.dk", "0"))));
+                                "room-hq2@trustworks.dk", "0", null))));
 
         service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0), 120);
 
@@ -387,11 +387,11 @@ class RecruitmentCalendarServiceTest {
         when(graph.getSchedule(anyString(), any()))
                 .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "free@example.com", "0"),
+                                "free@example.com", "0", null),
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "tentative@example.com", "1"),
+                                "tentative@example.com", "1", null),
                         new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
-                                "busy@example.com", "2"))));
+                                "busy@example.com", "2", null))));
 
         var result = service.interviewerAvailability(
                 List.of("free@example.com", "tentative@example.com", "busy@example.com"),

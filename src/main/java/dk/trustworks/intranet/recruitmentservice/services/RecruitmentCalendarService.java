@@ -15,13 +15,20 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Outlook calendar bridging for interview scheduling (ATS plan §P11).
@@ -244,11 +251,115 @@ public class RecruitmentCalendarService {
 
     /**
      * Free/busy per mailbox (room or person) for
-     * {@code [start, start + durationMinutes)} via Graph
-     * {@code getSchedule} (max 20 schedules per call — batched).
-     * A mailbox is available only when its whole availability view is
-     * "0"s — tentative ("1"), busy ("2"), out-of-office ("3") and
-     * working-elsewhere ("4") all count as busy.
+     * {@code [start, start + durationMinutes)} — the Boolean collapse of
+     * {@link #mailboxWindowSchedules}: a mailbox is available only when its
+     * whole availability view is "0"s — tentative ("1"), busy ("2"),
+     * out-of-office ("3") and working-elsewhere ("4") all count as busy.
+     * A mailbox whose view is unknown is absent from the map (= unknown,
+     * never busy).
+     */
+    private Map<String, Boolean> mailboxAvailability(List<String> mailboxes,
+                                                     LocalDateTime start,
+                                                     int durationMinutes) {
+        Map<String, Boolean> result = new HashMap<>();
+        mailboxWindowSchedules(mailboxes, start, start.plusMinutes(durationMinutes))
+                .forEach((mailbox, schedule) -> {
+                    if (schedule.availabilityView() != null) {
+                        result.put(mailbox,
+                                schedule.availabilityView().chars().allMatch(c -> c == '0'));
+                    }
+                });
+        return result;
+    }
+
+    /**
+     * One day's availability grid: 48 15-minute cells over the 07:00–19:00
+     * Europe/Copenhagen probe window, per mailbox (person or room), plus
+     * working hours. Strictly free/busy digits — no event details are ever
+     * requested. Empty when the toggle is off. Keys echo the probed
+     * addresses as Graph returns them — compare case-insensitively.
+     */
+    public Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> daySchedule(
+            List<String> mailboxes, LocalDate date) {
+        if (!calendarEnabled || mailboxes.isEmpty()) {
+            return Map.of();
+        }
+        return mailboxWindowSchedules(mailboxes,
+                date.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
+                date.atTime(AvailabilitySlotSuggester.DAY_WINDOW_END));
+    }
+
+    /**
+     * Ranked slot suggestions for a set of interviewers (see
+     * {@link AvailabilitySlotSuggester} for the rules). One multi-day
+     * {@code getSchedule} window per 20-mailbox batch — NEVER one call per
+     * scanned day: the 10-business-day scan must stay well inside the ALB's
+     * 60s idle timeout.
+     * <p>
+     * Empty when the toggle is off, and also when Graph answered nothing at
+     * all for a non-empty probe set — with every schedule unknown the
+     * suggester would happily propose every working-hours slot, and blind
+     * suggestions carry more trust than they have earned.
+     */
+    public List<AvailabilitySlotSuggester.Slot> suggestedSlots(List<String> interviewerEmails,
+                                                               int durationMinutes,
+                                                               LocalDate from,
+                                                               int headcount,
+                                                               LocalDateTime notBefore) {
+        if (!calendarEnabled) {
+            return List.of();
+        }
+        List<MeetingRoomsResponse.MeetingRoom> rooms = listRooms();
+        List<String> mailboxes = new ArrayList<>(interviewerEmails);
+        rooms.forEach(room -> mailboxes.add(room.emailAddress()));
+        if (mailboxes.isEmpty()) {
+            return List.of();
+        }
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules =
+                mailboxWindowSchedules(mailboxes,
+                        from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
+                        lastBusinessDay(from, AvailabilitySlotSuggester.BUSINESS_DAYS)
+                                .atTime(AvailabilitySlotSuggester.DAY_WINDOW_END));
+        if (schedules.isEmpty()) {
+            return List.of();
+        }
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> byLowercase = new HashMap<>();
+        schedules.forEach((mailbox, schedule) ->
+                byLowercase.put(mailbox.toLowerCase(Locale.ROOT), schedule));
+        return AvailabilitySlotSuggester.suggest(
+                from,
+                byLowercase,
+                interviewerEmails.stream().map(email -> email.toLowerCase(Locale.ROOT)).toList(),
+                rooms.stream()
+                        .map(room -> new AvailabilitySlotSuggester.RoomOption(
+                                room.emailAddress().toLowerCase(Locale.ROOT),
+                                room.displayName(), room.capacity()))
+                        .toList(),
+                durationMinutes, headcount, notBefore);
+    }
+
+    /** The date of the {@code businessDays}-th weekday counting from (and
+     * including) {@code from} — the far edge of the suggestion scan. */
+    static LocalDate lastBusinessDay(LocalDate from, int businessDays) {
+        LocalDate day = from;
+        int seen = 0;
+        while (true) {
+            if (day.getDayOfWeek() != DayOfWeek.SATURDAY
+                    && day.getDayOfWeek() != DayOfWeek.SUNDAY) {
+                seen++;
+                if (seen == businessDays) {
+                    return day;
+                }
+            }
+            day = day.plusDays(1);
+        }
+    }
+
+    /**
+     * Raw schedules per mailbox (room or person) for
+     * {@code [windowStart, windowEnd)} via Graph {@code getSchedule} (max
+     * 20 schedules per call — batched), at 15-minute resolution: the
+     * availability digit string plus working hours, uncollapsed.
      * Failures are contained per batch (missing = unknown), logged, never
      * thrown.
      * <p>
@@ -262,10 +373,9 @@ public class RecruitmentCalendarService {
      * failure costs at most one batch, and the first caller that answers
      * is reused for the rest.
      */
-    private Map<String, Boolean> mailboxAvailability(List<String> mailboxes,
-                                                     LocalDateTime start,
-                                                     int durationMinutes) {
-        Map<String, Boolean> result = new HashMap<>();
+    private Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> mailboxWindowSchedules(
+            List<String> mailboxes, LocalDateTime windowStart, LocalDateTime windowEnd) {
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> result = new HashMap<>();
         int batches = 0;
         int failedBatches = 0;
         String provenCaller = null;
@@ -275,7 +385,8 @@ public class RecruitmentCalendarService {
             batches++;
             boolean resolved = false;
             for (String caller : callerCandidates(provenCaller, batch)) {
-                Map<String, Boolean> batchResult = probeBatch(caller, batch, start, durationMinutes);
+                Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> batchResult =
+                        probeBatch(caller, batch, windowStart, windowEnd);
                 if (batchResult == null) {
                     continue;
                 }
@@ -318,39 +429,84 @@ public class RecruitmentCalendarService {
     }
 
     /**
-     * One {@code getSchedule} call.
+     * One {@code getSchedule} call at 15-minute resolution.
      *
-     * @return the free/busy map for this batch, or {@code null} when Graph
-     *         failed (logged) — the caller then retries with another
+     * @return the raw schedule map for this batch, or {@code null} when
+     *         Graph failed (logged) — the caller then retries with another
      *         caller mailbox, or leaves the batch unknown
      */
-    private Map<String, Boolean> probeBatch(String caller,
-                                            List<String> batch,
-                                            LocalDateTime start,
-                                            int durationMinutes) {
+    private Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> probeBatch(
+            String caller,
+            List<String> batch,
+            LocalDateTime windowStart,
+            LocalDateTime windowEnd) {
         try {
             GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
                     caller,
                     new GraphApiClient.ScheduleRequest(
                             batch,
-                            new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
                             new CalendarEventRequest.DateTimeTimeZone(
-                                    start.plusMinutes(durationMinutes).toString(), EVENT_TIME_ZONE),
-                            durationMinutes));
+                                    windowStart.toString(), EVENT_TIME_ZONE),
+                            new CalendarEventRequest.DateTimeTimeZone(
+                                    windowEnd.toString(), EVENT_TIME_ZONE),
+                            AvailabilitySlotSuggester.INTERVAL_MINUTES));
             if (response == null || response.value() == null) {
                 return Map.of();
             }
-            Map<String, Boolean> batchResult = new HashMap<>();
+            Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> batchResult = new HashMap<>();
             for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
-                if (info.scheduleId() == null || info.availabilityView() == null) {
+                if (info.scheduleId() == null) {
                     continue;
                 }
                 batchResult.put(info.scheduleId(),
-                        info.availabilityView().chars().allMatch(c -> c == '0'));
+                        new AvailabilitySlotSuggester.MailboxWindowSchedule(
+                                info.availabilityView(), toWorkingHours(info.workingHours())));
             }
             return batchResult;
         } catch (Exception e) {
             log.warnv("Graph free/busy lookup failed asking as {0}: {1}", caller, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Normalize Graph working hours ({@code "08:00:00.0000000"}, lowercase
+     * day names) into the suggester's shape. Unparseable parts degrade to
+     * null (= unconstrained) — working hours refine suggestions, they must
+     * never break availability itself.
+     */
+    static AvailabilitySlotSuggester.WorkingHours toWorkingHours(
+            GraphApiClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours workingHours) {
+        if (workingHours == null) {
+            return null;
+        }
+        Set<DayOfWeek> days = null;
+        if (workingHours.daysOfWeek() != null) {
+            days = new HashSet<>();
+            for (String day : workingHours.daysOfWeek()) {
+                try {
+                    days.add(DayOfWeek.valueOf(day.toUpperCase(Locale.ROOT)));
+                } catch (IllegalArgumentException | NullPointerException e) {
+                    // unknown token — skip, never fail the sweep
+                }
+            }
+        }
+        LocalTime start = parseGraphTime(workingHours.startTime());
+        LocalTime end = parseGraphTime(workingHours.endTime());
+        String timeZoneName = workingHours.timeZone() != null ? workingHours.timeZone().name() : null;
+        if ((days == null || days.isEmpty()) && start == null && end == null) {
+            return null;
+        }
+        return new AvailabilitySlotSuggester.WorkingHours(days, start, end, timeZoneName);
+    }
+
+    private static LocalTime parseGraphTime(String time) {
+        if (time == null || time.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalTime.parse(time);
+        } catch (DateTimeParseException e) {
             return null;
         }
     }
