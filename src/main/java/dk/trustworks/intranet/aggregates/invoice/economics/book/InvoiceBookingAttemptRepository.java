@@ -49,4 +49,18 @@ public class InvoiceBookingAttemptRepository
                 InvoiceBookingAttempt.State.PENDING,
                 InvoiceBookingAttempt.State.FAILED).list();
     }
+
+    /**
+     * Attempts whose POST went out but whose vendor outcome is not durably resolved: a booking may
+     * exist at e-conomic under this invoice's idempotency key. While any of these exist, minting a
+     * new attempt (= a different body under the same key) risks PayloadChanged inside the vendor
+     * TTL and a second booked invoice after it. FAILED is excluded — a definitive vendor 4xx means
+     * no booking was created.
+     */
+    public List<InvoiceBookingAttempt> listPostedUnresolvedByInvoice(String invoiceUuid) {
+        return find("invoiceUuid = ?1 AND postedAt IS NOT NULL AND state IN (?2, ?3)",
+                invoiceUuid,
+                InvoiceBookingAttempt.State.PENDING,
+                InvoiceBookingAttempt.State.NEEDS_RECONCILIATION).list();
+    }
 }

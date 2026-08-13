@@ -68,6 +68,20 @@ class InternalInvoiceOrchestratorTest {
     @Mock PerfMetrics                        perfMetrics;
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter attempts;
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptRepository attemptRepo;
+    @Mock jakarta.transaction.TransactionManager transactionManager;
+
+    /**
+     * These are plain unit tests with no JTA transaction, which is also what bookDraft sees on the
+     * interactive path — so the ambient-transaction split (2026-08-13 self-deadlock fix) takes the
+     * combined markBooked branch here, matching the pre-fix assertions. lenient() because the
+     * draft/cancel tests never reach the transaction-status check.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void stubNoAmbientTransaction() throws jakarta.transaction.SystemException {
+        org.mockito.Mockito.lenient()
+            .when(transactionManager.getStatus())
+            .thenReturn(jakarta.transaction.Status.STATUS_NO_TRANSACTION);
+    }
 
     /**
      * requireEditableInvoice now loads the row under a PESSIMISTIC_WRITE lock (S4), so the

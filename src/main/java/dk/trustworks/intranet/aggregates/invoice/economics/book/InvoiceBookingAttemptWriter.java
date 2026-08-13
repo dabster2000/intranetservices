@@ -153,6 +153,31 @@ public class InvoiceBookingAttemptWriter {
     }
 
     /**
+     * Tx2 variant for callers that sit inside an ambient transaction which already owns the
+     * invoice row — today that is exactly {@code InternalInvoiceOrchestrator.finalizeAutomatically},
+     * whose {@code createDraft} flushed a status update and therefore holds the row's X-lock until
+     * the outer commit.
+     *
+     * <p>Only the attempt row is written here. The invoice row is deliberately NOT touched:
+     * updating it from this {@code REQUIRES_NEW} transaction while the suspended outer transaction
+     * holds its lock is a guaranteed self-deadlock — on 2026-08-13 invoice
+     * {@code 603bdb0d} waited two full {@code innodb_lock_wait_timeout} periods on its own outer
+     * transaction and then rolled back a booking e-conomic had already accepted (50107). The outer
+     * transaction persists the booked state itself via {@code applyBookedState}'s managed-entity
+     * mutations at commit. If that commit later fails, this committed BOOKED row (with the booked
+     * number) is the durable evidence a reconciliation works from.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void markBookedAttemptOnly(String attemptUuid, int bookedNumber) {
+        InvoiceBookingAttempt a = require(attemptUuid);
+        a.setState(InvoiceBookingAttempt.State.BOOKED);
+        a.setBookedNumber(bookedNumber);
+        a.setCompletedAt(LocalDateTime.now());
+        a.setLastError(null);
+        attempts.persist(a);
+    }
+
+    /**
      * Records a <em>retryable</em> failure (409 / 5xx) without leaving {@code PENDING}.
      *
      * <p>The row must stay {@code PENDING} so the next attempt replays the same key and the same
@@ -212,6 +237,21 @@ public class InvoiceBookingAttemptWriter {
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void markSuperseded(String invoiceUuid) {
         for (InvoiceBookingAttempt a : attempts.listOpenByInvoice(invoiceUuid)) {
+            if (a.getPostedAt() != null) {
+                // The POST already went out for this attempt — the vendor may hold a booking
+                // under this invoice's idempotency key. Superseding it would hide that evidence
+                // and let a later booking POST a different body under the same key (PayloadChanged
+                // inside the vendor TTL, a SECOND booked invoice after it). Keep it visible as a
+                // reconciliation case instead.
+                a.setState(InvoiceBookingAttempt.State.NEEDS_RECONCILIATION);
+                a.setLastError("Draft cancelled after this attempt was already POSTed — "
+                        + "vendor outcome unknown; reconcile before booking again");
+                attempts.persist(a);
+                log.errorf("markSuperseded: attempt %s for invoice %s was already POSTed at %s — "
+                                + "kept as NEEDS_RECONCILIATION, not superseded",
+                        a.getUuid(), invoiceUuid, a.getPostedAt());
+                continue;
+            }
             a.setState(InvoiceBookingAttempt.State.SUPERSEDED);
             a.setCompletedAt(LocalDateTime.now());
             attempts.persist(a);

@@ -1,5 +1,10 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttempt;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptRepository;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
@@ -9,9 +14,15 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * Coordinates the two sides of an INTERNAL (or INTERNAL_SERVICE) invoice.
@@ -43,6 +54,19 @@ public class InternalInvoiceOrchestrator {
 
     @Inject
     InvoiceRepository invoices;
+
+    @Inject
+    EconomicsAgreementResolver agreements;
+
+    @Inject
+    @RestClient
+    EconomicsBookingApiClient bookApi;
+
+    @Inject
+    InvoiceBookingAttemptRepository attemptRepo;
+
+    @Inject
+    InvoiceBookingAttemptWriter attemptWriter;
 
     /**
      * Creates an e-conomic draft on the ISSUER side (step 1).
@@ -182,6 +206,110 @@ public class InternalInvoiceOrchestrator {
                 + "(draftNumber=%s) and re-finalizing", invoiceUuid, inv.getEconomicsDraftNumber());
         issuerSide.cancelFinalization(invoiceUuid); // tx1 — commits DRAFT, deletes the e-conomic draft
         return finalizeAutomatically(invoiceUuid);  // tx2 — fresh draft + book + debtor voucher
+    }
+
+    /**
+     * Adopts a booking that e-conomic accepted but a local rollback discarded — the 2026-08-13
+     * failure shape: {@code finalizeAutomatically} self-deadlocked recording Tx2, the local
+     * transaction rolled back to DRAFT, and the vendor kept booked invoice N (evidence: the
+     * outbox attempt row is PENDING with {@code posted_at} set, and the booked number is in the
+     * {@code InvoiceBookVendorAccepted} log/metric).
+     *
+     * <p>The booked number cannot be discovered automatically (the vendor client has no filtered
+     * list — see {@code InvoiceBookingAttemptWriter.markNeedsReconciliation}), so a human supplies
+     * it from the logs or the e-conomic UI, and this method verifies it before adopting: the booked
+     * invoice must exist in the issuer's agreement and its gross must match the gross derived from
+     * this invoice's persisted items (±0.05).
+     *
+     * <p>On success: the attempt and the invoice row are durably marked booked
+     * ({@code markBooked}, REQUIRES_NEW — safe here, no ambient transaction holds the row), the
+     * entity is refreshed past its stale snapshot, and the debtor-side supplier voucher is posted
+     * with the vendor-verified gross as {@code grandTotal} (failure demotes to
+     * {@code PARTIALLY_UPLOADED}, same as the inline path).
+     *
+     * <p>Deliberately NOT {@code @Transactional}: an ambient transaction would pin REPEATABLE READ
+     * snapshots that re-read the pre-adoption row state, and a failure-path persist would then
+     * clobber the just-reconciled values.
+     *
+     * @param invoiceUuid  a DRAFT or PENDING_REVIEW INTERNAL / INTERNAL_SERVICE invoice
+     * @param bookedNumber the booked invoice number at e-conomic, taken from the
+     *                     {@code InvoiceBookVendorAccepted} log line or the vendor UI
+     * @return the reconciled invoice (status CREATED)
+     */
+    public Invoice adoptVendorBooking(String invoiceUuid, int bookedNumber) {
+        if (bookedNumber <= 0) {
+            throw new BadRequestException("bookedNumber must be positive, got " + bookedNumber);
+        }
+        Invoice inv = invoices.findByUuid(invoiceUuid)
+                .orElseThrow(() -> new NotFoundException("Invoice not found: " + invoiceUuid));
+        if (inv.getType() != InvoiceType.INTERNAL
+                && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
+            throw new BadRequestException(
+                    "Only INTERNAL or INTERNAL_SERVICE invoices can adopt a vendor booking. "
+                    + "Current type: " + inv.getType());
+        }
+        if (inv.getEconomicsBookedNumber() != null) {
+            throw new BadRequestException("Invoice " + invoiceUuid
+                    + " already carries economics_booked_number " + inv.getEconomicsBookedNumber());
+        }
+
+        // Evidence gate: adopting is only legal when an outbound booking POST actually happened.
+        List<InvoiceBookingAttempt> posted = attemptRepo.listPostedUnresolvedByInvoice(invoiceUuid);
+        if (posted.isEmpty()) {
+            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                    .entity("Invoice " + invoiceUuid + " has no posted, unresolved booking attempt — "
+                            + "there is nothing to adopt. If the invoice was never booked at "
+                            + "e-conomic, finalize it normally instead.")
+                    .build());
+        }
+        InvoiceBookingAttempt attempt = posted.get(0);
+
+        // Vendor verification: the booked invoice must exist in the ISSUER's agreement and its
+        // gross must match what this invoice's persisted items would have produced.
+        EconomicsAgreementResolver.Tokens tokens = agreements.tokens(inv.getCompany().getUuid());
+        EconomicsBookedInvoice booked = bookApi.getBooked(
+                tokens.appSecret(), tokens.agreementGrant(), bookedNumber);
+        if (booked == null || booked.getGrossAmount() == null) {
+            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                    .entity("e-conomic returned no gross amount for booked invoice " + bookedNumber
+                            + " — cannot verify; not adopting.")
+                    .build());
+        }
+        double expectedGross = expectedGrossFromItems(inv);
+        if (Math.abs(booked.getGrossAmount() - expectedGross) > 0.05) {
+            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                    .entity("Booked invoice " + bookedNumber + " has gross " + booked.getGrossAmount()
+                            + " but invoice " + invoiceUuid + " expects gross " + expectedGross
+                            + " from its items — refusing to adopt a mismatched booking.")
+                    .build());
+        }
+
+        log.warnf("adoptVendorBooking: adopting bookedNumber=%d for invoiceUuid=%s "
+                        + "(attempt=%s, postedAt=%s, verified gross=%.2f)",
+                bookedNumber, invoiceUuid, attempt.getUuid(), attempt.getPostedAt(),
+                booked.getGrossAmount());
+
+        // Durable write (attempt + invoice row) in its own committed transaction, then refresh the
+        // entity past its stale pre-adoption snapshot before any further use.
+        attemptWriter.markBooked(attempt.getUuid(), invoiceUuid, bookedNumber);
+        invoices.refresh(inv);
+
+        // Debtor-side supplier voucher with the vendor-verified gross. The transient grandTotal
+        // must be set explicitly — this entity was never through createDraft's recalculation.
+        inv.setGrandTotal(booked.getGrossAmount());
+        issuerSide.postDebtorVoucherAfterReconcile(inv);
+
+        log.infof("adoptVendorBooking: invoiceUuid=%s reconciled to bookedNumber=%d, "
+                + "economicsStatus=%s", invoiceUuid, bookedNumber, inv.getEconomicsStatus());
+        return inv;
+    }
+
+    /** Gross (VAT-inclusive) derived from persisted items: Σ(rate × hours) × (1 + vat%). */
+    static double expectedGrossFromItems(Invoice inv) {
+        double net = inv.invoiceitems == null ? 0.0
+                : inv.invoiceitems.stream().mapToDouble(it -> it.rate * it.hours).sum();
+        return BigDecimal.valueOf(net * (1 + inv.vat / 100.0))
+                .setScale(2, RoundingMode.HALF_UP).doubleValue();
     }
 
     // ── private helpers ───────────────────────────────────────────────────────

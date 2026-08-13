@@ -207,7 +207,16 @@ public class EconomicsInvoiceService {
             //    must be DEBITED → post the gross POSITIVE (+grandTotal). The reversal sign is
             //    carried by the TYPE, not the amount — CN items are copied positive so grandTotal
             //    is a clean positive number (PricingEngine never clamps a positive total).
-            double grandTotal = invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0;
+            // grandTotal is @Transient — set by the recalculator (createDraft) or explicitly by a
+            // reconciliation caller. A fresh-loaded entity has null here, and the old `: 0.0`
+            // fallback would post a 0.00 DKK intercompany voucher with no error at all. Fail
+            // closed instead: the caller's PARTIALLY_UPLOADED demotion makes the miss visible.
+            if (invoice.getGrandTotal() == null) {
+                throw new IllegalStateException("Refusing to post supplier voucher for invoice "
+                        + invoice.getUuid() + ": grandTotal is not set (transient lost — caller "
+                        + "must recalculate or supply the verified gross)");
+            }
+            double grandTotal = invoice.getGrandTotal();
             double signedAmount = invoice.getType() == InvoiceType.CREDIT_NOTE
                     ? grandTotal
                     : -grandTotal;

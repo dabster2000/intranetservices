@@ -488,6 +488,23 @@ public class InvoiceResource {
         return internalInvoiceOrchestrator.refinalizePendingReview(uuid);
     }
 
+    /**
+     * Adopts a booking that e-conomic accepted but a local rollback discarded (split-brain
+     * recovery). The booked number comes from the InvoiceBookVendorAccepted log line or the
+     * e-conomic UI; the orchestrator verifies it against the vendor (existence + gross match)
+     * before recording it and posting the debtor-side voucher. See
+     * {@link dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator#adoptVendorBooking}.
+     */
+    @POST
+    @Path("/internalservices/{invoiceuuid}/reconcile-booking")
+    @RolesAllowed({"invoices:write"})
+    public Invoice reconcileInternalBooking(@PathParam("invoiceuuid") String uuid,
+                                            @QueryParam("bookedNumber") int bookedNumber) {
+        log.warnf("reconcileInternalBooking: invoice=%s bookedNumber=%d requested by %s",
+                uuid, bookedNumber, requestHeaderHolder.getUserUuid());
+        return internalInvoiceOrchestrator.adoptVendorBooking(uuid, bookedNumber);
+    }
+
     @PUT
     @Path("/{invoiceuuid}/bonusstatus/{bonusStatus}")
     @RolesAllowed({"invoices:write"})
