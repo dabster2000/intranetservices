@@ -150,12 +150,23 @@ public class RecruitmentInterviewService {
         interview.setInterviewerUuids(interviewers);
         interview.setLocation(trimToNull(request.location()));
         interview.setRoomEmail(trimToNull(request.roomEmail()));
+        interview.setOnlineMeeting(Boolean.TRUE.equals(request.onlineMeeting()));
+        if (interview.isOnlineMeeting() && interview.getRoomEmail() == null
+                && interview.getLocation() == null) {
+            // A pure Teams interview: give the location a sensible face
+            // instead of an empty field (spec §4.1 allows "Teams").
+            interview.setLocation("Microsoft Teams");
+        }
         interview.setStatus(RecruitmentInterviewStatus.SCHEDULED);
         interview.persist();
 
         // Outlook is best-effort: a Graph failure never fails scheduling.
-        calendarService.createEvent(interview, candidate)
-                .ifPresent(interview::setGraphEventId);
+        calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
+            interview.setGraphEventId(created.eventId());
+            interview.setGraphOrganizer(created.organizer());
+            interview.setJoinUrl(created.joinUrl());
+            interview.setGraphCandidateEventId(created.candidateEventId());
+        });
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_SCHEDULED,
                 interview, application, position, actor)
@@ -163,6 +174,7 @@ public class RecruitmentInterviewService {
                 .payload("interviewer_uuids", interviewers)
                 .payload("location", interview.getLocation())
                 .payload("room_email", interview.getRoomEmail())
+                .payload("online_meeting", interview.isOnlineMeeting())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
         return interview;
     }
@@ -185,6 +197,10 @@ public class RecruitmentInterviewService {
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
         LocalDateTime previous = interview.getScheduledAt();
+        List<String> previousInterviewers = List.copyOf(interview.getInterviewerUuids());
+        String previousLocation = interview.getLocation();
+        String previousRoomEmail = interview.getRoomEmail();
+        int previousDuration = interview.getDurationMinutes();
         interview.setScheduledAt(request.scheduledAt());
         if (request.durationMinutes() != null) {
             // null = keep the current length (same convention as location).
@@ -200,17 +216,56 @@ public class RecruitmentInterviewService {
         if (request.interviewerUuids() != null) {
             interview.setInterviewerUuids(normalizeInterviewers(request.interviewerUuids()));
         }
-        calendarService.updateEvent(interview, candidate);
+        if (Boolean.TRUE.equals(request.onlineMeeting())) {
+            // One-way by design: Graph cannot cleanly strip Teams from an
+            // existing event, so FALSE is treated as "keep" too.
+            interview.setOnlineMeeting(true);
+        }
+        if (shouldCreateMissingEvent(interview.getGraphEventId(),
+                request.createCalendarEvent(), calendarService.isEnabled())) {
+            // The recovery path for pre-toggle and Airtable-migrated rows:
+            // the interview exists, the Outlook invitation never did.
+            calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
+                interview.setGraphEventId(created.eventId());
+                interview.setGraphOrganizer(created.organizer());
+                interview.setJoinUrl(created.joinUrl());
+                interview.setGraphCandidateEventId(created.candidateEventId());
+            });
+        } else {
+            calendarService.updateEvent(interview, candidate, position)
+                    .ifPresent(interview::setJoinUrl);
+        }
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_RESCHEDULED,
                 interview, application, position, actor)
                 .payload("previous_scheduled_at", previous != null ? previous.toString() : null)
                 .payload("scheduled_at", interview.getScheduledAt().toString())
+                .payload("previous_interviewer_uuids", previousInterviewers)
                 .payload("interviewer_uuids", interview.getInterviewerUuids())
+                .payload("previous_location", previousLocation)
                 .payload("location", interview.getLocation())
+                .payload("previous_room_email", previousRoomEmail)
                 .payload("room_email", interview.getRoomEmail())
+                .payload("previous_duration_minutes", previousDuration)
+                .payload("duration_minutes", interview.getDurationMinutes())
+                .payload("online_meeting", interview.isOnlineMeeting())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
         return interview;
+    }
+
+    /**
+     * The reschedule branch: create the MISSING Outlook event instead of
+     * updating? Only when the caller explicitly asked
+     * ({@code createCalendarEvent: true}), the interview has no event, and
+     * the Graph toggle is on. Static and pure — the branch is the recovery
+     * path for every unsynced row, so it is pinned by a DB-free test.
+     */
+    static boolean shouldCreateMissingEvent(String graphEventId,
+                                            Boolean createCalendarEvent,
+                                            boolean calendarEnabled) {
+        return graphEventId == null
+                && Boolean.TRUE.equals(createCalendarEvent)
+                && calendarEnabled;
     }
 
     /** Cancel — terminal for the interview; the Outlook event is cancelled too. */
@@ -346,6 +401,8 @@ public class RecruitmentInterviewService {
         scorecardsByInterview.values().forEach(list ->
                 list.forEach(s -> nameUuids.add(s.getInterviewerUuid())));
         Map<String, String> names = resolveNames(nameUuids);
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
 
         List<DebriefResponse.DebriefEntry> entries = rounds.stream()
                 .map(interview -> {
@@ -354,7 +411,8 @@ public class RecruitmentInterviewService {
                     InterviewScorecardsResponse filtered = blindFiltered(
                             viewerUuid, interview, application, position, cards, names);
                     return new DebriefResponse.DebriefEntry(
-                            toResponse(viewerUuid, interview, application, position, cards, names),
+                            toResponse(viewerUuid, interview, application, position, candidate,
+                                    cards, names),
                             filtered);
                 })
                 .toList();
@@ -400,7 +458,7 @@ public class RecruitmentInterviewService {
                     RecruitmentApplication application =
                             applicationsByUuid.get(interview.getApplicationUuid());
                     RecruitmentPosition position = positions.get(application.getPositionUuid());
-                    return toResponse(viewerUuid, interview, application, position,
+                    return toResponse(viewerUuid, interview, application, position, candidate,
                             scorecardsByInterview.getOrDefault(interview.getUuid(), List.of()),
                             names);
                 })
@@ -596,6 +654,7 @@ public class RecruitmentInterviewService {
                                          RecruitmentInterview interview,
                                          RecruitmentApplication application,
                                          RecruitmentPosition position,
+                                         RecruitmentCandidate candidate,
                                          List<RecruitmentScorecard> scorecards,
                                          Map<String, String> names) {
         boolean ownSubmitted = scorecards.stream()
@@ -620,7 +679,11 @@ public class RecruitmentInterviewService {
                 ownSubmitted,
                 interview.isAssigned(viewerUuid),
                 isUnlockedFor(viewerUuid, interview, application, position, scorecards, ownSubmitted),
-                interview.getGraphEventId() != null);
+                interview.getGraphEventId() != null,
+                candidate != null && candidate.getEmail() != null
+                        && !candidate.getEmail().isBlank(),
+                interview.isOnlineMeeting(),
+                interview.getJoinUrl());
     }
 
     private static List<InterviewResponse.InterviewerInfo> interviewerInfos(

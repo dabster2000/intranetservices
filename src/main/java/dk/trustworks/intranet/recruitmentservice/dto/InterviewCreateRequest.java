@@ -23,6 +23,10 @@ import java.util.List;
  * @param durationMinutes  optional interview length in minutes (15..480);
  *                         null = the 60-minute default. Drives the Outlook
  *                         event end time and the free/busy windows.
+ * @param onlineMeeting    optional: TRUE makes the Outlook event a Teams
+ *                         meeting (null/FALSE = plain event). With no room
+ *                         and no location given, the location defaults to
+ *                         "Microsoft Teams".
  */
 public record InterviewCreateRequest(
         RecruitmentInterviewKind kind,
@@ -31,6 +35,7 @@ public record InterviewCreateRequest(
         String location,
         String roomEmail,
         LocalDateTime scheduledAt,
-        Integer durationMinutes
+        Integer durationMinutes,
+        Boolean onlineMeeting
 ) {
 }

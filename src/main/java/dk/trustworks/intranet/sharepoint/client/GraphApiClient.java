@@ -318,6 +318,46 @@ public interface GraphApiClient {
     );
 
     /**
+     * Reads one calendar event's live status: start time and per-attendee
+     * RSVP responses (interview scheduling plan Phase 5 — on-demand
+     * polling, no webhooks). The {@code Prefer} header makes Graph return
+     * the start as Europe/Copenhagen wall clock, directly comparable to
+     * the interview row's {@code scheduled_at}.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/event-get">Get event</a>
+     */
+    @GET
+    @Path("/users/{userPrincipal}/events/{eventId}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam(
+            name = "Prefer", value = "outlook.timezone=\"Europe/Copenhagen\"")
+    CalendarEventDetails getCalendarEventDetails(
+        @PathParam("userPrincipal") String userPrincipal,
+        @PathParam("eventId") String eventId,
+        @jakarta.ws.rs.QueryParam("$select") String select
+    );
+
+    /**
+     * The status subset of the Graph event resource. Attendee
+     * {@code status.response} values: {@code none}, {@code organizer},
+     * {@code tentativelyAccepted}, {@code accepted}, {@code declined},
+     * {@code notResponded}.
+     */
+    record CalendarEventDetails(
+        CalendarEventRequest.DateTimeTimeZone start,
+        java.util.List<EventAttendee> attendees,
+        CalendarEvent.OnlineMeeting onlineMeeting
+    ) {
+        public record EventAttendee(
+            CalendarEventRequest.Attendee.EmailAddress emailAddress,
+            String type,
+            AttendeeStatus status
+        ) {
+            public record AttendeeStatus(String response) { }
+        }
+    }
+
+    /**
      * Lists the tenant's bookable meeting rooms. Used by the recruitment
      * interview scheduler's room picker — requires the app-level
      * {@code Place.Read.All} permission.
@@ -370,22 +410,46 @@ public interface GraphApiClient {
     /**
      * {@code getSchedule} response. {@code availabilityView} is one digit
      * per interval; "0" = free — any other digit means busy/tentative/OOF.
+     * {@code workingHours} rides along in every response (no extra
+     * permission) — start/end are wall-clock strings like
+     * {@code "08:00:00.0000000"} in the mailbox's own {@code timeZone}
+     * (a Windows zone name, e.g. "Romance Standard Time").
      */
     record ScheduleCollectionResponse(
         @JsonProperty("value") java.util.List<ScheduleInformation> value
     ) {
         public record ScheduleInformation(
             String scheduleId,
-            String availabilityView
-        ) { }
+            String availabilityView,
+            WorkingHours workingHours
+        ) {
+            public record WorkingHours(
+                java.util.List<String> daysOfWeek,
+                String startTime,
+                String endTime,
+                TimeZoneName timeZone
+            ) {
+                public record TimeZoneName(String name) { }
+            }
+        }
     }
 
-    /** Graph calendar event response — only the id is needed. */
-    record CalendarEvent(String id) { }
+    /**
+     * Graph calendar event response — the id plus the Teams meeting link
+     * when the event is an online meeting ({@code onlineMeeting} may lag
+     * on PATCH responses; a later read backfills it).
+     */
+    record CalendarEvent(String id, Boolean isOnlineMeeting, OnlineMeeting onlineMeeting) {
+        public record OnlineMeeting(String joinUrl) { }
+    }
 
     /**
      * Graph calendar event create/patch body (subset of the Graph event
      * resource). Null fields are omitted on PATCH.
+     * <p>
+     * {@code transactionId} is CREATE-ONLY (Graph rejects it on PATCH):
+     * the caller's idempotency key — a retried create with the same id
+     * never double-books.
      */
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     record CalendarEventRequest(
@@ -394,7 +458,14 @@ public interface GraphApiClient {
         DateTimeTimeZone start,
         DateTimeTimeZone end,
         EventLocation location,
-        java.util.List<Attendee> attendees
+        java.util.List<Attendee> attendees,
+        Boolean isOnlineMeeting,
+        String onlineMeetingProvider,
+        java.util.List<String> categories,
+        Integer reminderMinutesBeforeStart,
+        String sensitivity,
+        String transactionId,
+        Boolean responseRequested
     ) {
         public record ItemBody(String contentType, String content) { }
         public record DateTimeTimeZone(String dateTime, String timeZone) { }

@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DebriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
@@ -11,13 +12,16 @@ import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewerAvailabilityResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyInterviewsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.ScheduleGridResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ScorecardSubmitRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.SuggestedSlotsResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.AvailabilitySlotSuggester;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCalendarService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
@@ -42,7 +46,12 @@ import lombok.extern.jbosslog.JBossLog;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -91,6 +100,12 @@ public class RecruitmentInterviewResource {
     private static final String[] INTERVIEWER_STATUSES =
             {"ACTIVE", "PAID_LEAVE", "MATERNITY_LEAVE", "NON_PAY_LEAVE"};
     private static final String[] INTERVIEWER_TYPES = {"CONSULTANT", "STAFF", "STUDENT"};
+
+    /** Bound on the schedule-grid / suggested-slots probe set: 20 is one
+     * Graph {@code getSchedule} batch — no dialog picks more people. */
+    private static final int MAX_GRID_INTERVIEWERS = 20;
+
+    private static final DateTimeFormatter HH_MM = DateTimeFormatter.ofPattern("HH:mm");
 
     @Inject
     RecruitmentFeatureFlag featureFlag;
@@ -333,6 +348,180 @@ public class RecruitmentInterviewResource {
         return new InterviewerAvailabilityResponse(availability, availability.size());
     }
 
+    /**
+     * The manual-mode invitation file (plan Phase 6): the interview as a
+     * downloadable iCalendar REQUEST — the fallback whenever Graph writes
+     * are off or an interview has no Outlook event. Same authz posture as
+     * every other interview read surface: the interview UUID is NOT a
+     * capability token — role + per-viewer visibility are enforced, and
+     * invisible rows answer 404. The filename derives from the UUID
+     * alone, so the Content-Disposition header cannot carry injected text.
+     */
+    @GET
+    @Path("/interviews/{uuid}/ics")
+    @Produces("text/calendar")
+    @RolesAllowed({"recruitment:read", "recruitment:interview"})
+    public Response ics(@PathParam("uuid") UUID interviewUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        if (interview.getScheduledAt() == null) {
+            throw badRequest("This interview has no time yet — nothing to invite to");
+        }
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
+        String ics = calendarService.icsFor(interview, candidate);
+        return Response.ok(ics, "text/calendar; charset=utf-8")
+                .header("Content-Disposition",
+                        "attachment; filename=\"interview-" + interview.getUuid() + ".ics\"")
+                .build();
+    }
+
+    /**
+     * The Outlook event's live RSVP + drift status (plan Phase 5): who
+     * has accepted/declined, and whether the event was moved in Outlook
+     * behind the intranet's back. On-demand only — the UI asks when a
+     * dialog opens or a row expands; there are no webhooks. Unknown
+     * ({@code known=false}, empty rsvps) when the interview has no
+     * Outlook event, the Graph toggle is off, or the read failed.
+     * Read-tier + the same per-viewer visibility rule as every other
+     * interview read surface (assigned interviewer OR position access).
+     */
+    @GET
+    @Path("/interviews/{uuid}/calendar-status")
+    @RolesAllowed({"recruitment:read", "recruitment:interview"})
+    public CalendarStatusResponse calendarStatus(@PathParam("uuid") UUID interviewUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
+        return calendarService.eventStatus(interview, candidate);
+    }
+
+    /**
+     * One day's availability grid for the scheduling dialog's assistant
+     * pane: one row per chosen interviewer plus the chosen room, 48
+     * 15-minute cells over 07:00–19:00 Europe/Copenhagen. Strictly
+     * free/busy digits + working hours — event details are never
+     * requested from Graph and never ride here (same privacy stance as
+     * the availability booleans). Empty {@code entries} (never an error)
+     * when the Graph calendar toggle is off. Write-tier: only schedulers
+     * need it.
+     * <p>
+     * {@code date} (ISO date) is required; {@code interviewerUuids} is a
+     * comma-separated list of user UUIDs (at most
+     * {@value #MAX_GRID_INTERVIEWERS}); {@code roomEmail} optionally adds
+     * the room's row. Invalid values → 400.
+     */
+    @GET
+    @Path("/interviews/schedule-grid")
+    @RolesAllowed({"recruitment:write"})
+    public ScheduleGridResponse scheduleGrid(@QueryParam("date") String date,
+                                             @QueryParam("interviewerUuids") String interviewerUuids,
+                                             @QueryParam("roomEmail") String roomEmail) {
+        enforceFlag();
+        LocalDate day = parseRequiredDate(date);
+        List<String> uuids = parseInterviewerUuids(interviewerUuids, false);
+        requireRoomEmailValid(roomEmail);
+        String dayStart = AvailabilitySlotSuggester.DAY_WINDOW_START.format(HH_MM);
+        if (!calendarService.isEnabled()) {
+            return new ScheduleGridResponse(day,
+                    AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, List.of());
+        }
+
+        Map<String, String> emailByUuid = new LinkedHashMap<>();
+        for (String uuid : uuids) {
+            User user = User.findById(uuid);
+            emailByUuid.put(uuid, user != null ? user.getEmail() : null);
+        }
+        List<String> mailboxes = new ArrayList<>(emailByUuid.values().stream()
+                .filter(email -> email != null && !email.isBlank())
+                .toList());
+        boolean roomRequested = roomEmail != null && !roomEmail.isBlank();
+        if (roomRequested) {
+            mailboxes.add(roomEmail);
+        }
+
+        // Graph echoes the requested address as scheduleId; compare
+        // case-insensitively to be safe.
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> byEmail =
+                new java.util.HashMap<>();
+        calendarService.daySchedule(mailboxes, day)
+                .forEach((email, schedule) -> byEmail.put(email.toLowerCase(Locale.ROOT), schedule));
+
+        List<ScheduleGridResponse.GridEntry> entries = new ArrayList<>();
+        emailByUuid.forEach((uuid, email) -> {
+            AvailabilitySlotSuggester.MailboxWindowSchedule schedule =
+                    email == null || email.isBlank()
+                            ? null
+                            : byEmail.get(email.toLowerCase(Locale.ROOT));
+            entries.add(new ScheduleGridResponse.GridEntry(uuid, "USER",
+                    schedule != null ? schedule.availabilityView() : null,
+                    toWorkingHoursDto(schedule != null ? schedule.workingHours() : null)));
+        });
+        if (roomRequested) {
+            AvailabilitySlotSuggester.MailboxWindowSchedule schedule =
+                    byEmail.get(roomEmail.toLowerCase(Locale.ROOT));
+            entries.add(new ScheduleGridResponse.GridEntry(roomEmail, "ROOM",
+                    schedule != null ? schedule.availabilityView() : null,
+                    toWorkingHoursDto(schedule != null ? schedule.workingHours() : null)));
+        }
+        return new ScheduleGridResponse(day,
+                AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, entries);
+    }
+
+    /**
+     * Ranked slot suggestions for the chosen interviewers — the dialog's
+     * suggestion chips. Every suggested slot has all chosen interviewers
+     * free, lies inside their working-hours intersection, on a weekday;
+     * it carries the smallest free room seating everyone when one exists.
+     * Empty (never an error) when the Graph calendar toggle is off or
+     * availability could not be read — the chips row is simply absent,
+     * same degrade posture as the room picker. Write-tier: only
+     * schedulers need it.
+     * <p>
+     * {@code interviewerUuids} (comma-separated user UUIDs, at most
+     * {@value #MAX_GRID_INTERVIEWERS}) is required; optional
+     * {@code durationMinutes} (15..480, default 60) and {@code from}
+     * (ISO date, default today). Invalid values → 400.
+     */
+    @GET
+    @Path("/interviews/suggested-slots")
+    @RolesAllowed({"recruitment:write"})
+    public SuggestedSlotsResponse suggestedSlots(
+            @QueryParam("interviewerUuids") String interviewerUuids,
+            @QueryParam("durationMinutes") Integer durationMinutes,
+            @QueryParam("from") String from) {
+        enforceFlag();
+        List<String> uuids = parseInterviewerUuids(interviewerUuids, true);
+        int duration = requireDurationValid(durationMinutes);
+        LocalDate fromDay = parseOptionalDate(from);
+        if (!calendarService.isEnabled()) {
+            return new SuggestedSlotsResponse(List.of());
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneId.of("Europe/Copenhagen"));
+        if (fromDay == null) {
+            fromDay = now.toLocalDate();
+        }
+        List<String> emails = uuids.stream()
+                .map(uuid -> (User) User.findById(uuid))
+                .map(user -> user != null ? user.getEmail() : null)
+                .filter(email -> email != null && !email.isBlank())
+                .toList();
+        // The candidate joins the interviewers in the room.
+        int headcount = uuids.size() + 1;
+        List<AvailabilitySlotSuggester.Slot> slots =
+                calendarService.suggestedSlots(emails, duration, fromDay, headcount, now);
+        return new SuggestedSlotsResponse(slots.stream()
+                .map(slot -> new SuggestedSlotsResponse.SuggestedSlot(
+                        slot.start(), slot.durationMinutes(),
+                        slot.roomEmail(), slot.roomDisplayName()))
+                .toList());
+    }
+
     // ---- Helpers ----------------------------------------------------------------------
 
     private RecruitmentCandidate requireCandidate(String candidateUuid) {
@@ -488,6 +677,73 @@ public class RecruitmentInterviewResource {
         } catch (DateTimeParseException e) {
             throw new WebApplicationException("start must be an ISO local datetime", 400);
         }
+    }
+
+    /** Blank/absent → null; anything else must parse as an ISO date. */
+    private static LocalDate parseOptionalDate(String date) {
+        if (date == null || date.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(date);
+        } catch (DateTimeParseException e) {
+            throw badRequest("date must be an ISO date (yyyy-MM-dd)");
+        }
+    }
+
+    private static LocalDate parseRequiredDate(String date) {
+        LocalDate parsed = parseOptionalDate(date);
+        if (parsed == null) {
+            throw badRequest("date is required (ISO date, yyyy-MM-dd)");
+        }
+        return parsed;
+    }
+
+    /**
+     * The {@code interviewerUuids} query param: comma-separated user
+     * UUIDs, deduplicated in order. Malformed UUIDs and oversized lists →
+     * 400; an empty list → 400 only when {@code required}.
+     */
+    private static List<String> parseInterviewerUuids(String interviewerUuids, boolean required) {
+        LinkedHashSet<String> uuids = new LinkedHashSet<>();
+        if (interviewerUuids != null && !interviewerUuids.isBlank()) {
+            for (String token : interviewerUuids.split(",")) {
+                String trimmed = token.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                try {
+                    uuids.add(UUID.fromString(trimmed).toString());
+                } catch (IllegalArgumentException e) {
+                    throw badRequest("interviewerUuids must be comma-separated user UUIDs");
+                }
+            }
+        }
+        if (required && uuids.isEmpty()) {
+            throw badRequest("interviewerUuids is required");
+        }
+        if (uuids.size() > MAX_GRID_INTERVIEWERS) {
+            throw badRequest("interviewerUuids must list at most " + MAX_GRID_INTERVIEWERS + " users");
+        }
+        return List.copyOf(uuids);
+    }
+
+    /** Suggester working hours → DTO shape (lowercase weekday names, HH:mm). */
+    private static ScheduleGridResponse.WorkingHours toWorkingHoursDto(
+            AvailabilitySlotSuggester.WorkingHours workingHours) {
+        if (workingHours == null) {
+            return null;
+        }
+        List<String> days = workingHours.days() == null ? null
+                : workingHours.days().stream()
+                        .sorted()
+                        .map(day -> day.name().toLowerCase(Locale.ROOT))
+                        .toList();
+        return new ScheduleGridResponse.WorkingHours(
+                days,
+                workingHours.start() != null ? workingHours.start().format(HH_MM) : null,
+                workingHours.end() != null ? workingHours.end().format(HH_MM) : null,
+                workingHours.timeZoneName());
     }
 
     /**
