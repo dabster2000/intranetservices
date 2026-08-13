@@ -16,6 +16,12 @@ import java.util.List;
  * @param debriefUnlocked       whether the blind rule unlocks scorecard
  *                              content for the viewer right now
  * @param calendarSynced        whether an Outlook event exists (Graph toggle)
+ * @param candidateInvitable    whether the candidate has an email — false
+ *                              means the Outlook invitation only reaches the
+ *                              interviewers, and the UI must say so instead
+ *                              of silently not inviting the candidate
+ * @param onlineMeeting         whether the Outlook event is a Teams meeting
+ * @param joinUrl               the Teams join link when known
  */
 public record InterviewResponse(
         String uuid,
@@ -37,7 +43,10 @@ public record InterviewResponse(
         boolean ownScorecardSubmitted,
         boolean viewerAssigned,
         boolean debriefUnlocked,
-        boolean calendarSynced
+        boolean calendarSynced,
+        boolean candidateInvitable,
+        boolean onlineMeeting,
+        String joinUrl
 ) {
 
     /** An assigned interviewer + their submission state (never the content). */

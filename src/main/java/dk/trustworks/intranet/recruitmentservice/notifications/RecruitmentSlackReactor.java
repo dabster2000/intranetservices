@@ -438,7 +438,8 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
      * a rare duplicate DM beats a silently lost kit.
      */
     private void interviewKitDms(RecruitmentEvent event) throws Exception {
-        Object interviewUuid = payload(event).get("interview_uuid");
+        Map<String, Object> payload = payload(event);
+        Object interviewUuid = payload.get("interview_uuid");
         RecruitmentInterview interview = interviewUuid == null ? null
                 : RecruitmentInterview.findById(interviewUuid.toString());
         if (interview == null) {
@@ -446,10 +447,26 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
                     event.getEventType(), event.getSeq());
             return;
         }
+        // A reschedule is not always a move: when only the interviewer list
+        // changed, "Interview moved" to everyone is noise AND wrong — the
+        // new people get a proper "you've been added" kit DM, everyone
+        // else hears nothing.
+        List<String> recipients = interview.getInterviewerUuids();
+        boolean addedOnly = false;
+        if (event.getEventType() == RecruitmentEventType.INTERVIEW_RESCHEDULED) {
+            KitDmPlan plan = rescheduleDmPlan(interview.getInterviewerUuids(),
+                    stringList(payload.get("previous_interviewer_uuids")),
+                    rescheduleDetailsChanged(payload));
+            if (plan.recipients().isEmpty()) {
+                return; // list-only removal — nobody left to notify
+            }
+            recipients = plan.recipients();
+            addedOnly = plan.addedOnly();
+        }
         RecruitmentCandidate candidate = findCandidate(event.getCandidateUuid());
         RecruitmentPosition position = findPosition(event.getPositionUuid());
         SlackCandidateFacts facts = SlackCandidateFacts.of(candidate, position, null);
-        String message = kitDmText(event.getEventType(), interview, facts, position);
+        String message = kitDmText(event.getEventType(), addedOnly, interview, facts, position);
 
         boolean actionable = event.getEventType() != RecruitmentEventType.INTERVIEW_CANCELLED
                 && interview.getKind() == RecruitmentInterviewKind.ROUND
@@ -462,7 +479,7 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
                         SlackRecruitmentViews.scorecardActions(interview.getUuid()))
                 : null;
 
-        for (String interviewerUuid : interview.getInterviewerUuids()) {
+        for (String interviewerUuid : recipients) {
             User interviewer = User.findById(interviewerUuid);
             if (interviewer == null || interviewer.getSlackusername() == null
                     || interviewer.getSlackusername().isBlank()) {
@@ -478,8 +495,53 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         }
     }
 
+    /**
+     * DM plan for one INTERVIEW_RESCHEDULED event: who to DM, and whether
+     * the message is the "you've been added" variant. When the event's
+     * details (time/place/length) changed, every current interviewer gets
+     * the "moved" DM — additions included, the new details matter to them
+     * most of all. When ONLY the interviewer list changed, the additions
+     * get their kit and nobody else is pinged. A null previous list means
+     * a pre-diff event (or catch-up of one) — fall back to DM-everyone,
+     * the old behavior.
+     */
+    record KitDmPlan(boolean addedOnly, List<String> recipients) { }
+
+    static KitDmPlan rescheduleDmPlan(List<String> currentInterviewers,
+                                      List<String> previousInterviewers,
+                                      boolean detailsChanged) {
+        if (previousInterviewers == null || detailsChanged) {
+            return new KitDmPlan(false, currentInterviewers);
+        }
+        return new KitDmPlan(true, currentInterviewers.stream()
+                .filter(uuid -> !previousInterviewers.contains(uuid))
+                .toList());
+    }
+
+    /** Did the reschedule change WHEN or WHERE (vs only WHO)? Compares the
+     * event's before/after payload pairs, null-safe. */
+    static boolean rescheduleDetailsChanged(Map<String, Object> payload) {
+        return payloadChanged(payload, "previous_scheduled_at", "scheduled_at")
+                || payloadChanged(payload, "previous_location", "location")
+                || payloadChanged(payload, "previous_room_email", "room_email")
+                || payloadChanged(payload, "previous_duration_minutes", "duration_minutes");
+    }
+
+    private static boolean payloadChanged(Map<String, Object> payload,
+                                          String beforeKey, String afterKey) {
+        return !java.util.Objects.equals(payload.get(beforeKey), payload.get(afterKey));
+    }
+
+    private static List<String> stringList(Object payloadValue) {
+        if (!(payloadValue instanceof List<?> list)) {
+            return null;
+        }
+        return list.stream().filter(java.util.Objects::nonNull).map(Object::toString).toList();
+    }
+
     /** Structural facts only: names/titles mrkdwn-escaped by the facts record. */
-    private String kitDmText(RecruitmentEventType type, RecruitmentInterview interview,
+    private String kitDmText(RecruitmentEventType type, boolean addedOnly,
+                             RecruitmentInterview interview,
                              SlackCandidateFacts facts, RecruitmentPosition position) {
         boolean informal = interview.getRound() == null;
         StringBuilder sb = new StringBuilder(256);
@@ -487,9 +549,17 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             case INTERVIEW_SCHEDULED -> sb.append(":calendar: *Interview scheduled* — you're ")
                     .append(informal ? "having an informal chat with " : "interviewing ")
                     .append(facts.displayName());
-            case INTERVIEW_RESCHEDULED -> sb.append(":calendar: *Interview moved* — your ")
-                    .append(informal ? "informal chat" : "interview").append(" with ")
-                    .append(facts.displayName());
+            case INTERVIEW_RESCHEDULED -> {
+                if (addedOnly) {
+                    sb.append(":calendar: *You've been added* — you're now ")
+                            .append(informal ? "joining an informal chat with " : "interviewing ")
+                            .append(facts.displayName());
+                } else {
+                    sb.append(":calendar: *Interview moved* — your ")
+                            .append(informal ? "informal chat" : "interview").append(" with ")
+                            .append(facts.displayName());
+                }
+            }
             default -> sb.append(":x: *Interview cancelled* — your ")
                     .append(informal ? "informal chat" : "interview").append(" with ")
                     .append(facts.displayName());
@@ -505,7 +575,7 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             return sb.toString();
         }
         if (interview.getScheduledAt() != null) {
-            sb.append(type == RecruitmentEventType.INTERVIEW_RESCHEDULED
+            sb.append(type == RecruitmentEventType.INTERVIEW_RESCHEDULED && !addedOnly
                             ? " has moved to " : " on ")
                     .append(interview.getScheduledAt().format(KIT_TIME));
         }

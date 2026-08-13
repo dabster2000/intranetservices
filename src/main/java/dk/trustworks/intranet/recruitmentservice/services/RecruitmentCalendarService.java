@@ -92,6 +92,16 @@ public class RecruitmentCalendarService {
     @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.enabled", defaultValue = "false")
     boolean calendarEnabled;
 
+    /**
+     * The shared organizer mailbox new events are created under (plan
+     * Phase 2, decision D1: {@code career@trustworks.dk} — env
+     * {@code DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER}).
+     * Empty (the default) falls back to the first interviewer's mailbox,
+     * the pre-V492 behavior — the code ships safely ahead of the config.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.organizer", defaultValue = "")
+    String configuredOrganizer;
+
     private GraphApiClient graph() {
         if (graphApiClient == null) {
             graphApiClient = graphApiClientInstance.get();
@@ -104,14 +114,21 @@ public class RecruitmentCalendarService {
     }
 
     /**
+     * What {@link #createEvent} handed to Graph and got back — the caller
+     * persists all three so update/cancel address the right mailbox and
+     * the UI can offer the Teams link.
+     */
+    public record CreatedEvent(String eventId, String organizer, String joinUrl) { }
+
+    /**
      * Create the Outlook event for a newly scheduled interview.
      *
-     * @return the Graph event id to store on the interview, or empty when
-     *         the toggle is off, no organizer mailbox resolves, or Graph
-     *         fails (logged, never thrown)
+     * @return the created event's linkage to store on the interview, or
+     *         empty when the toggle is off, no organizer mailbox
+     *         resolves, or Graph fails (logged, never thrown)
      */
-    public Optional<String> createEvent(RecruitmentInterview interview,
-                                        RecruitmentCandidate candidate) {
+    public Optional<CreatedEvent> createEvent(RecruitmentInterview interview,
+                                              RecruitmentCandidate candidate) {
         if (!calendarEnabled) {
             return Optional.empty();
         }
@@ -123,8 +140,11 @@ public class RecruitmentCalendarService {
                 return Optional.empty();
             }
             GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
-                    organizer, buildEvent(interview, candidate));
-            return Optional.ofNullable(created != null ? created.id() : null);
+                    organizer, buildEvent(interview, candidate, true));
+            if (created == null || created.id() == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new CreatedEvent(created.id(), organizer, joinUrlOf(created)));
         } catch (Exception e) {
             log.warnv("Graph calendar create failed for interview {0}: {1} — proceeding without calendar event",
                     interview.getUuid(), e.getMessage());
@@ -132,23 +152,36 @@ public class RecruitmentCalendarService {
         }
     }
 
-    /** Push a reschedule (new time/location/attendees) to the existing Outlook event. */
-    public void updateEvent(RecruitmentInterview interview,
-                            RecruitmentCandidate candidate) {
+    /**
+     * Push a reschedule (new time/location/attendees, possibly a newly
+     * enabled Teams meeting) to the existing Outlook event.
+     *
+     * @return the join link from the PATCH response when Graph included
+     *         one (it may lag — a later read backfills), else empty
+     */
+    public Optional<String> updateEvent(RecruitmentInterview interview,
+                                        RecruitmentCandidate candidate) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
-            return;
+            return Optional.empty();
         }
         try {
             String organizer = organizerMailbox(interview);
             if (organizer == null) {
-                return;
+                return Optional.empty();
             }
-            graph().updateCalendarEvent(organizer, interview.getGraphEventId(),
-                    buildEvent(interview, candidate));
+            GraphApiClient.CalendarEvent updated = graph().updateCalendarEvent(
+                    organizer, interview.getGraphEventId(),
+                    buildEvent(interview, candidate, false));
+            return Optional.ofNullable(updated != null ? joinUrlOf(updated) : null);
         } catch (Exception e) {
             log.warnv("Graph calendar update failed for interview {0}: {1} — calendar may be stale",
                     interview.getUuid(), e.getMessage());
+            return Optional.empty();
         }
+    }
+
+    private static String joinUrlOf(GraphApiClient.CalendarEvent event) {
+        return event.onlineMeeting() != null ? event.onlineMeeting().joinUrl() : null;
     }
 
     /** Cancel the Outlook event (attendees get a cancellation). 404 = already gone, fine. */
@@ -513,8 +546,15 @@ public class RecruitmentCalendarService {
 
     // ---- Shaping -----------------------------------------------------------
 
+    /**
+     * The full event body. {@code create} gates the create-only fields:
+     * {@code transactionId} (Graph rejects it on PATCH) rides only on
+     * creates — the interview UUID, so a retry-stormed create never
+     * double-books.
+     */
     private CalendarEventRequest buildEvent(RecruitmentInterview interview,
-                                            RecruitmentCandidate candidate) {
+                                            RecruitmentCandidate candidate,
+                                            boolean create) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
         // The position is named nowhere on the invitation — not here and
         // not in the body: the candidate is an attendee, and what they are
@@ -548,6 +588,11 @@ public class RecruitmentCalendarService {
                     "resource"));
         }
 
+        // Teams fields are one-way: TRUE turns the meeting online (works on
+        // both create and PATCH — verified in this tenant, Phase 0.3 spike);
+        // FALSE is never sent, so an existing Teams meeting is not silently
+        // stripped by an unrelated reschedule.
+        boolean teams = interview.isOnlineMeeting();
         return new CalendarEventRequest(
                 subject,
                 new CalendarEventRequest.ItemBody("text",
@@ -560,7 +605,16 @@ public class RecruitmentCalendarService {
                 interview.getLocation() != null
                         ? new CalendarEventRequest.EventLocation(interview.getLocation())
                         : null,
-                attendees);
+                attendees,
+                teams ? Boolean.TRUE : null,
+                teams ? "teamsForBusiness" : null,
+                List.of("Recruitment"),
+                15,
+                // D3: the informative subject stays; the event itself is
+                // marked private so shared-calendar viewers see busy only.
+                "private",
+                create ? interview.getUuid() : null,
+                Boolean.TRUE);
     }
 
     /**
@@ -619,8 +673,26 @@ public class RecruitmentCalendarService {
                 new CalendarEventRequest.Attendee.EmailAddress(email, name), "required");
     }
 
-    /** The first interviewer's mailbox — they act as organizer. */
+    /**
+     * The mailbox to address the event under, in order (Phase 2 organizer
+     * hardening):
+     * <ol>
+     *   <li>the interview's STORED organizer — update/cancel must PATCH the
+     *       mailbox the event actually lives in, whatever the interviewer
+     *       list looks like today;</li>
+     *   <li>the configured shared mailbox (D1, {@code career@trustworks.dk})
+     *       for new events;</li>
+     *   <li>the first interviewer's mailbox — the pre-V492 fallback while
+     *       the config is empty.</li>
+     * </ol>
+     */
     private String organizerMailbox(RecruitmentInterview interview) {
+        if (interview.getGraphOrganizer() != null && !interview.getGraphOrganizer().isBlank()) {
+            return interview.getGraphOrganizer();
+        }
+        if (configuredOrganizer != null && !configuredOrganizer.isBlank()) {
+            return configuredOrganizer.trim();
+        }
         List<String> interviewers = interview.getInterviewerUuids();
         if (interviewers == null || interviewers.isEmpty()) {
             return null;

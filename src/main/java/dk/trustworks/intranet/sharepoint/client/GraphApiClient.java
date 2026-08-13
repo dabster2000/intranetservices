@@ -394,12 +394,22 @@ public interface GraphApiClient {
         }
     }
 
-    /** Graph calendar event response — only the id is needed. */
-    record CalendarEvent(String id) { }
+    /**
+     * Graph calendar event response — the id plus the Teams meeting link
+     * when the event is an online meeting ({@code onlineMeeting} may lag
+     * on PATCH responses; a later read backfills it).
+     */
+    record CalendarEvent(String id, Boolean isOnlineMeeting, OnlineMeeting onlineMeeting) {
+        public record OnlineMeeting(String joinUrl) { }
+    }
 
     /**
      * Graph calendar event create/patch body (subset of the Graph event
      * resource). Null fields are omitted on PATCH.
+     * <p>
+     * {@code transactionId} is CREATE-ONLY (Graph rejects it on PATCH):
+     * the caller's idempotency key — a retried create with the same id
+     * never double-books.
      */
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     record CalendarEventRequest(
@@ -408,7 +418,14 @@ public interface GraphApiClient {
         DateTimeTimeZone start,
         DateTimeTimeZone end,
         EventLocation location,
-        java.util.List<Attendee> attendees
+        java.util.List<Attendee> attendees,
+        Boolean isOnlineMeeting,
+        String onlineMeetingProvider,
+        java.util.List<String> categories,
+        Integer reminderMinutesBeforeStart,
+        String sensitivity,
+        String transactionId,
+        Boolean responseRequested
     ) {
         public record ItemBody(String contentType, String content) { }
         public record DateTimeTimeZone(String dateTime, String timeZone) { }

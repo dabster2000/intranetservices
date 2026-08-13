@@ -81,6 +81,26 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String graphEventId;
 
+    /**
+     * The mailbox the Graph event was created under (V492). Update and
+     * cancel MUST address this mailbox — deriving the organizer from the
+     * current interviewer list breaks the moment interviewer #1 is
+     * removed on a reschedule. {@code NULL} when no event exists.
+     */
+    @Column(name = "graph_organizer", length = 255)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String graphOrganizer;
+
+    /** Whether the Outlook event is a Teams meeting (V492). */
+    @Column(name = "online_meeting", nullable = false)
+    private boolean onlineMeeting;
+
+    /** The Teams join link Graph returned; {@code NULL} when not a Teams
+     * meeting (or the link has not been read back yet). */
+    @Column(name = "join_url", length = 1024)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String joinUrl;
+
     /** Soft FKs to {@code users.uuid} — the assigned interviewers. */
     @Convert(converter = StringListConverter.class)
     @Column(name = "interviewer_uuids", columnDefinition = "JSON", nullable = false)

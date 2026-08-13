@@ -86,9 +86,9 @@ class RecruitmentCalendarServiceTest {
     @Test
     void toggleOff_neverTouchesGraph() {
         service.calendarEnabled = false;
-        Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
+        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate()));
-        assertTrue(id.isEmpty());
+        assertTrue(created.isEmpty());
         verifyNoInteractions(graph);
     }
 
@@ -96,12 +96,12 @@ class RecruitmentCalendarServiceTest {
     void toggleOn_createsInFirstInterviewersMailbox_withCandidateAttendee() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-123"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-123", null, null));
 
-        Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
+        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate()));
 
-        assertEquals(Optional.of("evt-123"), id);
+        assertEquals("evt-123", created.orElseThrow().eventId());
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(eq(interviewerA + "@example.com"), body.capture());
@@ -152,7 +152,7 @@ class RecruitmentCalendarServiceTest {
     void eventTimes_wallClockCopenhagen_summerDate() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-summer"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-summer", null, null));
 
         // Aug 1 = CEST. The wall-clock string must pass through untouched,
         // stamped Europe/Copenhagen — never "UTC" (that shifted every event
@@ -173,7 +173,7 @@ class RecruitmentCalendarServiceTest {
     void eventTimes_wallClockCopenhagen_winterDate() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-winter"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-winter", null, null));
 
         // Jan 15 = CET. Same IANA id year-round: Graph resolves CET vs CEST
         // from the event date, so DST needs no handling on our side.
@@ -195,7 +195,7 @@ class RecruitmentCalendarServiceTest {
     void roomEmail_invitedAsResourceAttendee_peopleStayRequired() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-room"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-room", null, null));
 
         RecruitmentInterview interview = interview();
         interview.setRoomEmail("room-hq2@trustworks.dk");
@@ -224,7 +224,7 @@ class RecruitmentCalendarServiceTest {
     void withoutRoomEmail_noResourceAttendee() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-no-room"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-no-room", null, null));
 
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview(), candidate()));
@@ -336,7 +336,7 @@ class RecruitmentCalendarServiceTest {
     void event_usesTheInterviewsOwnDuration() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-90"));
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-90", null, null));
 
         RecruitmentInterview interview = interview();
         interview.setDurationMinutes(90);
@@ -424,9 +424,9 @@ class RecruitmentCalendarServiceTest {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 403: missing Calendars.ReadWrite"));
 
-        Optional<String> id = QuarkusTransaction.requiringNew().call(() ->
+        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate()));
-        assertTrue(id.isEmpty(), "a Graph failure yields empty, never an exception");
+        assertTrue(created.isEmpty(), "a Graph failure yields empty, never an exception");
     }
 
     // ---- Fixtures --------------------------------------------------------------
