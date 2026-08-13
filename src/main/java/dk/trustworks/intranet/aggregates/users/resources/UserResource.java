@@ -197,6 +197,11 @@ public class UserResource {
                          @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
         User user = userAPI.findById(uuid, shallowFlag);
+        if (user == null) {
+            // A null entity becomes an empty 204, which BFF callers treat as a
+            // successful (null) payload — a missing user must be a 404.
+            throw new NotFoundException("User not found: " + uuid);
+        }
         return user;
     }
 
