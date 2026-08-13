@@ -54,19 +54,33 @@ public class BillingContextResolver {
      * @throws BadRequestException when the contract or billing client cannot be found.
      */
     public BillingContext resolve(Invoice invoice) {
+        boolean intercompany = invoice.getType() == InvoiceType.INTERNAL
+                || invoice.getType() == InvoiceType.INTERNAL_SERVICE
+                || invoice.isInternalCreditNote();
+
         // Guard before findByUuid: Panache findById(null) throws a raw IllegalArgumentException
-        // (500). A draft without a contract reference can only exist by a creation bug — fail
-        // with an actionable 400 instead.
+        // (500). For regular invoices a draft without a contract reference can only exist by a
+        // creation bug — fail with an actionable 400. Intercompany invoices are the exception:
+        // INTERNAL_SERVICE settlement drafts (distribution page) bill no contract work and are
+        // created without a contract reference. They proceed with a null contract — nothing
+        // downstream reads it for them: the billing entity comes from the stamp / debtor CVR
+        // below, payment terms use immediatePaymentTermFor, and both the draft mapper and the
+        // EAN checker null-guard BillingContext.contract().
+        Contract contract;
         if (invoice.getContractuuid() == null || invoice.getContractuuid().isBlank()) {
-            throw new BadRequestException(
-                    "This draft has no contract reference and cannot be finalized. "
-                    + "Settlement internals must have the contract stamped at creation — contact finance.");
-        }
-        Contract contract = contractService.findByUuid(invoice.getContractuuid());
-        if (contract == null) {
-            throw new BadRequestException(
-                    "This draft references a contract that no longer exists. "
-                    + "The contract may have been deleted — start a new draft from an active contract.");
+            if (!intercompany) {
+                throw new BadRequestException(
+                        "This draft has no contract reference and cannot be finalized. "
+                        + "Contact finance.");
+            }
+            contract = null;
+        } else {
+            contract = contractService.findByUuid(invoice.getContractuuid());
+            if (contract == null) {
+                throw new BadRequestException(
+                        "This draft references a contract that no longer exists. "
+                        + "The contract may have been deleted — start a new draft from an active contract.");
+            }
         }
 
         // FR-3 — invoice-stamped billing client takes precedence over the
@@ -100,6 +114,15 @@ public class BillingContextResolver {
                             + "debtor company (matched by CVR). Verify the debtor company has a "
                             + "CVR and a matching Client exists, then try again."));
             return new BillingContext(invoice, contract, intercompanyClient);
+        }
+
+        // Only reachable with a null contract for an internal credit note that carries
+        // neither a billing-client stamp nor a contract reference (stamps are written at
+        // creation, so this indicates data damage). Fail actionably instead of NPE'ing.
+        if (contract == null) {
+            throw new BadRequestException(
+                    "This internal credit note has no billing entity stamped and no contract "
+                    + "reference to resolve one from — contact finance.");
         }
 
         String billingClientUuid = contract.getBillingClientUuid() != null

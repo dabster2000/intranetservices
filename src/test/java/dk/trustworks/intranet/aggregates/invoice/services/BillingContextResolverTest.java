@@ -201,6 +201,87 @@ class BillingContextResolverTest {
         verify(clientService, never()).findByUuid(any());
     }
 
+    // ── branch 0: intercompany invoices without a contract reference ──────────
+    // INTERNAL_SERVICE settlement drafts (distribution page) bill no contract work and are
+    // created with a blank contractuuid. They must resolve with a null contract instead of
+    // 400'ing — the billing entity comes from the stamp / debtor CVR, payment terms use
+    // immediatePaymentTermFor, and every BillingContext.contract() consumer null-guards.
+
+    @Test
+    void resolve_internalServiceWithBlankContract_andStamp_resolvesWithNullContract() {
+        Invoice inv = internalInvoice("inv-1", "", "stamped-client-uuid");
+        inv.setType(InvoiceType.INTERNAL_SERVICE);
+        Client stamped = client("stamped-client-uuid", "TRUSTWORKS A/S");
+
+        when(clientService.findByUuid("stamped-client-uuid")).thenReturn(stamped);
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(stamped, result.billingClient());
+        assertNull(result.contract(), "Settlement drafts carry no contract — context must hold null");
+        verify(contractService, never()).findByUuid(any());
+    }
+
+    @Test
+    void resolve_internalServiceWithBlankContract_andNullStamp_resolvesIntercompanyClient() {
+        Invoice inv = internalInvoice("inv-1", "", null);
+        inv.setType(InvoiceType.INTERNAL_SERVICE);
+        inv.setDebtorCompanyuuid("debtor-company-uuid");
+        Client intercompany = client("intercompany-client-uuid", "TRUSTWORKS A/S");
+
+        when(intercompanyClientResolver.resolveByDebtorCompanyUuid("debtor-company-uuid"))
+                .thenReturn(Optional.of(intercompany));
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(intercompany, result.billingClient());
+        assertNull(result.contract());
+        verify(contractService, never()).findByUuid(any());
+    }
+
+    @Test
+    void resolve_internalWithBlankContract_andStamp_resolvesWithNullContract() {
+        Invoice inv = internalInvoice("inv-1", null, "stamped-client-uuid");
+        Client stamped = client("stamped-client-uuid", "TRUSTWORKS A/S");
+
+        when(clientService.findByUuid("stamped-client-uuid")).thenReturn(stamped);
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(stamped, result.billingClient());
+        assertNull(result.contract());
+    }
+
+    @Test
+    void resolve_internalCreditNoteWithBlankContract_andStamp_resolvesWithNullContract() {
+        Invoice inv = internalInvoice("inv-1", "", "stamped-client-uuid");
+        inv.setType(InvoiceType.CREDIT_NOTE);
+        inv.setDebtorCompanyuuid("debtor-company-uuid"); // makes isInternalCreditNote() true
+        Client stamped = client("stamped-client-uuid", "TRUSTWORKS A/S");
+
+        when(clientService.findByUuid("stamped-client-uuid")).thenReturn(stamped);
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(stamped, result.billingClient());
+        assertNull(result.contract());
+    }
+
+    @Test
+    void resolve_internalCreditNoteWithBlankContract_andNoStamp_throwsBadRequest_neverNpes() {
+        // CREDIT_NOTE does not match the INTERNAL/INTERNAL_SERVICE debtor-CVR branch; with no
+        // stamp and no contract the resolver must fail actionably instead of NPE'ing on the
+        // contract-based fallback.
+        Invoice inv = internalInvoice("inv-1", "", null);
+        inv.setType(InvoiceType.CREDIT_NOTE);
+        inv.setDebtorCompanyuuid("debtor-company-uuid");
+
+        BadRequestException thrown = assertThrows(BadRequestException.class,
+                () -> resolver.resolve(inv));
+        assertTrue(thrown.getMessage().contains("no billing entity"),
+                "Error should explain the unresolvable billing entity, got: " + thrown.getMessage());
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private Invoice regularInvoice(String uuid, String contractUuid) {
