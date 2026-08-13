@@ -77,6 +77,22 @@ public class InvoiceRepository {
     }
 
     /**
+     * Re-reads the entity's row from the database, replacing any stale first-level-cache state.
+     *
+     * <p>Exists for reconciliation flows where a {@code REQUIRES_NEW} bulk update (e.g.
+     * {@code InvoiceBookingAttemptWriter.markBooked}) has just rewritten the row underneath a
+     * loaded entity: without the refresh, a later {@code persist} of that stale instance would
+     * silently overwrite the reconciled state with the pre-update snapshot.
+     *
+     * <p>No {@code @Transactional} — called outside a transaction the SELECT runs in autocommit
+     * and sees the latest committed row, which is exactly the point; inside one it would be pinned
+     * to the transaction's REPEATABLE READ snapshot and could re-read the stale values.
+     */
+    public void refresh(Invoice invoice) {
+        Invoice.getEntityManager().refresh(invoice);
+    }
+
+    /**
      * Returns invoices in PENDING_REVIEW whose {@code invoicedate} predates the given
      * cutoff date.
      *

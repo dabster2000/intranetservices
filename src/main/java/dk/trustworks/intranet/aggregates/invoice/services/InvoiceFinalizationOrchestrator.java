@@ -117,6 +117,9 @@ public class InvoiceFinalizationOrchestrator {
     @Inject
     InvoiceBookingAttemptRepository attemptRepo;
 
+    @Inject
+    jakarta.transaction.TransactionManager transactionManager;
+
     /**
      * Kill switch for internal-invoice e-conomic writes. Staging sets this {@code false}
      * so it can never create drafts or book invoices in the shared production e-conomic
@@ -546,8 +549,22 @@ public class InvoiceFinalizationOrchestrator {
         // re-entry would self-invoke past the interceptor and reuse the doomed session.
         // markBooked is idempotent: the attempt row converges on BOOKED and the invoice update
         // carries `WHERE economics_booked_number IS NULL`, so a redundant run writes nothing.
+        // Ambient-transaction split (2026-08-13, invoice 603bdb0d): on the finalizeAutomatically
+        // path the outer transaction already holds this invoice row's X-lock (createDraft flushed
+        // a status update), so markBooked's REQUIRES_NEW invoices-row update would wait on our own
+        // suspended transaction — a guaranteed self-deadlock that burned 2× innodb_lock_wait_timeout
+        // and rolled back a vendor-accepted booking. With an ambient transaction, record only the
+        // attempt row durably (markBookedAttemptOnly); the outer transaction persists the invoice
+        // state itself via applyBookedState's managed-entity mutations at commit. Without one
+        // (interactive /book path), keep the combined durable write — there the bulk invoices-row
+        // update is the ONLY writer, since entity mutations outside a transaction never flush.
+        boolean ambientTx = hasActiveTransaction();
         try {
-            attempts.markBooked(attempt.getUuid(), invoiceUuid, booked.getBookedInvoiceNumber());
+            if (ambientTx) {
+                attempts.markBookedAttemptOnly(attempt.getUuid(), booked.getBookedInvoiceNumber());
+            } else {
+                attempts.markBooked(attempt.getUuid(), invoiceUuid, booked.getBookedInvoiceNumber());
+            }
         } catch (RuntimeException e) {
             // Arc rewraps the checked commit-phase RollbackException as ArcUndeclaredThrowableException,
             // so the catch has to be RuntimeException and the test has to be shape-independent.
@@ -559,7 +576,11 @@ public class InvoiceFinalizationOrchestrator {
             // A second failure propagates: the attempt stays PENDING with posted_at set, so the next
             // bookDraft replays the same key and the same frozen body inside the TTL and e-conomic
             // returns its cached 201. That is the designed recovery, not a silent loss.
-            attempts.markBooked(attempt.getUuid(), invoiceUuid, booked.getBookedInvoiceNumber());
+            if (ambientTx) {
+                attempts.markBookedAttemptOnly(attempt.getUuid(), booked.getBookedInvoiceNumber());
+            } else {
+                attempts.markBooked(attempt.getUuid(), invoiceUuid, booked.getBookedInvoiceNumber());
+            }
         }
 
         emitBookingCounter("InvoiceBookCommitted", invoiceUuid, attempt.getIdempotencyKey(),
@@ -631,6 +652,34 @@ public class InvoiceFinalizationOrchestrator {
         log.infof("bookDraft: invoiceUuid=%s bookedNumber=%s COMMITTED",
                 invoiceUuid, bookedNumber);
         return inv;
+    }
+
+    /**
+     * True when a JTA transaction is active on this thread — i.e. bookDraft was entered through a
+     * {@code @Transactional} caller ({@code InternalInvoiceOrchestrator.finalizeAutomatically}).
+     * Conservative on lookup failure: no-transaction is the interactive default, where the combined
+     * durable write is both required and safe.
+     */
+    private boolean hasActiveTransaction() {
+        // Null only in unit tests that build this orchestrator without a container; there is no
+        // JTA transaction in that context either, so no-transaction is the truthful answer.
+        if (transactionManager == null) return false;
+        try {
+            return transactionManager.getStatus() != jakarta.transaction.Status.STATUS_NO_TRANSACTION;
+        } catch (jakarta.transaction.SystemException e) {
+            log.warn("bookDraft: could not determine transaction status — assuming none", e);
+            return false;
+        }
+    }
+
+    /**
+     * Debtor-voucher entry point for {@code InternalInvoiceOrchestrator.adoptVendorBooking}: posts
+     * the supplier voucher for a booking that was reconciled after the fact. The caller must have
+     * set {@code grandTotal} (transient) to the vendor-verified gross first. Failure demotes to
+     * {@code PARTIALLY_UPLOADED} exactly like the inline path.
+     */
+    void postDebtorVoucherAfterReconcile(Invoice inv) {
+        postDebtorSideVoucherIfInternal(inv);
     }
 
     private void postDebtorSideVoucherIfInternal(Invoice inv) {
@@ -852,6 +901,9 @@ public class InvoiceFinalizationOrchestrator {
         }
         int draftInvoiceNumber = draft.getDraftInvoiceNumber();
 
+        assertNoUnresolvedPostedSibling(
+                attemptRepo.listPostedUnresolvedByInvoice(invoiceUuid), draftInvoiceNumber, invoiceUuid);
+
         return attempts.reserve(
                 invoiceUuid,
                 companyUuid,
@@ -860,6 +912,36 @@ public class InvoiceFinalizationOrchestrator {
                 sendBy,
                 "book-" + invoiceUuid,
                 EconomicsBookingRequest.of(draftInvoiceNumber, sendBy));
+    }
+
+    /**
+     * Fail-closed double-booking guard. The booking idempotency key is the invariant
+     * {@code "book-" + invoiceUuid} (blue/green requirement, see {@link #reserveBookingAttempt}),
+     * so a NEW attempt for the same invoice sends a <em>different body under the same key</em>: a
+     * {@code PayloadChanged} 400 inside the vendor's one-hour TTL, and a <b>second booked
+     * invoice</b> after it — the exact mechanism of the 2026-08-07 duplicate (28218). While any
+     * earlier attempt has been POSTed but not resolved (PENDING with {@code posted_at}, or
+     * NEEDS_RECONCILIATION), refuse to mint a new one before anything goes out the door.
+     * Replaying the SAME attempt (same draftInvoiceNumber) stays allowed — that is the designed
+     * recovery. Resolution paths: {@code InternalInvoiceOrchestrator.adoptVendorBooking} when the
+     * booked number is known (logs / vendor UI), or manual reconciliation at e-conomic.
+     */
+    static void assertNoUnresolvedPostedSibling(List<InvoiceBookingAttempt> postedUnresolved,
+                                                int draftInvoiceNumber,
+                                                String invoiceUuid) {
+        for (InvoiceBookingAttempt a : postedUnresolved) {
+            if (a.getDraftInvoiceNumber() != draftInvoiceNumber) {
+                throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                        .entity("Invoice " + invoiceUuid + " has an earlier booking attempt ("
+                                + a.getUuid() + ", draftInvoiceNumber " + a.getDraftInvoiceNumber()
+                                + ", posted at " + a.getPostedAt() + ", state " + a.getState()
+                                + ") whose e-conomic outcome is unresolved. Booking again could "
+                                + "create a duplicate booked invoice. Reconcile the earlier attempt "
+                                + "first (adopt its booked number via the reconcile endpoint, or "
+                                + "resolve it at e-conomic).")
+                        .build());
+            }
+        }
     }
 
     /**
