@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *       idempotency keys and the terminal-status guard both hold).</li>
  * </ul>
  * Runs in the {@code @QuarkusTest} tier against the local docker DB
- * (V495–V497 applied) — not in the CI gate; the validation phase runs
+ * (V498–V500 applied) — not in the CI gate; the validation phase runs
  * it explicitly.
  */
 @QuarkusTest

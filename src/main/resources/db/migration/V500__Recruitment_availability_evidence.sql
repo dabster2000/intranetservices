@@ -1,36 +1,41 @@
 -- ===================================================================
--- V495: Recruitment ATS — Method B candidate-option scheduling core
+-- V500: Recruitment ATS — Method B availability evidence + constraints
 -- ===================================================================
--- Feature: Interview scheduling Method B Phase 8 (plan 2026-08-12) —
---          scheduling requests, proposed slots, interviewer approvals,
---          calendar holds, candidate option batches and the
---          transactional outbox that carries every external write.
+-- Feature: Interview scheduling Method B Phase 12 (plan 2026-08-12) —
+--          multimodal interviewer availability: free-text (and, Phase
+--          13, calendar-image) evidence with normalized constraints,
+--          confirmed through the D6/D9 Slack loop before anything
+--          reaches the slot planner.
 -- Domain:  recruitmentservice (interview loop)
 --
 -- WHY
---   Method B lets the backend secure 1–3 interview options: it proposes
---   slots to interviewers in Slack, protects approved slots with
---   attendee-less calendar holds (D5), offers the options to the
---   candidate on a public page and finalizes the chosen one through the
---   Method A two-event machinery. Deploys kill in-flight jobs and the
---   ALB caps requests at 60 s, so the whole workflow is DB-persisted
---   state advanced by short idempotent steps — these tables ARE the
---   workflow. No in-memory orchestration exists anywhere.
+--   Interviewers answer proposal DMs with Danish/English free text
+--   ("ikke tirsdag formiddag") and calendar screenshots. The AI
+--   extraction turns those into normalized BUSY / AVAILABLE_ONLY /
+--   PREFERRED / AVOID intervals — but the model's reading is EVIDENCE,
+--   not truth: rows are born PENDING and only the interviewer's
+--   explicit Bekræft (or a requiresConfirmation=false clear statement)
+--   promotes them to CONFIRMED scheduling input (D9). The original
+--   free text lives in recruitment_events pii blocks only — these
+--   tables hold structure, never prose.
 --
 -- Design notes:
---   * recruitment_scheduling_outbox follows the invoice-booking outbox
---     idiom (invoice_booking_attempt, V477): the state change and the
---     intended external action commit together; a dispatcher sweep
---     executes with a per-action idempotency key and an atomic claim,
---     so two instances (blue/green overlap) never double-execute.
---   * recruitment_option_batch stores only the SHA-256 of the candidate
---     token — the raw capability token is never persisted.
---   * recruitment_calendar_hold: one row per interviewer per slot plus
---     one for the room (D5 = N attendee-less events). The hold uuid is
---     the Graph transactionId, so a retried create never double-books.
---   * Statuses are CHECK-pinned like V490 — every state is known
---     upfront from spec §15; a new state is a deliberate migration.
---   * Collation utf8mb4_general_ci, matching the recruitment siblings.
+--   * recruitment_availability_evidence is one interpreted submission
+--     (one Slack message / image / recruiter entry). confirmation_status
+--     is CHECK-pinned like V498; REJECTED rows (UNKNOWN intent, failed
+--     validation) are kept for the Phase 14 manual-review panel —
+--     deliberate addition to the plan's §12.1 column list, as is
+--     `intent` (the panel filters on it) and `language` (the D6 reply
+--     templates answer in the interviewer's language).
+--   * s3_deleted_at is Phase 13's deletion audit anchor (D10), added
+--     here so the image phase ships without another migration.
+--   * recruitment_availability_constraint rows are the normalized
+--     intervals; hardness is stored for audit but v1 planning treats
+--     BUSY/AVAILABLE_ONLY as hard and PREFERRED/AVOID as ranking-only
+--     (spec §12.3).
+--   * Times are wall-clock Europe/Copenhagen LocalDateTime, matching
+--     the rest of the interview loop; the evidence row records the
+--     timezone the extraction assumed.
 --
 -- Idempotency: repair-at-start re-runs migrations across checkouts —
 --   DDL is IF NOT EXISTS and the procedure is a full redefinition.
@@ -40,266 +45,105 @@
 -- Rollback: inert without the backend image that writes these tables
 --   (everything is dark behind dk.trustworks.recruitment.scheduling.
 --   methodb.enabled). Full removal:
---     DROP TABLE recruitment_scheduling_outbox;
---     DROP TABLE recruitment_option_batch;
---     DROP TABLE recruitment_calendar_hold;
---     DROP TABLE recruitment_slot_approval;
---     DROP TABLE recruitment_proposed_slot;
---     DROP TABLE recruitment_scheduling_request;
---   (and re-apply V490's sp_sync_prod_to_staging to drop the exclusions).
+--     DROP TABLE recruitment_availability_constraint;
+--     DROP TABLE recruitment_availability_evidence;
+--   (and re-apply V498's sp_sync_prod_to_staging to drop the two
+--   exclusions added below).
 -- ===================================================================
 
 -- -------------------------------------------------------------------
--- 1. The scheduling request — one Method B run on one application
+-- 1. Availability evidence — one interpreted interviewer submission
 -- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_scheduling_request (
-    uuid VARCHAR(36) NOT NULL,
-    application_uuid VARCHAR(36) NOT NULL
-        COMMENT 'FK recruitment_applications.uuid — the pipeline run being scheduled.',
-    recruiter_uuid VARCHAR(36) NOT NULL
-        COMMENT 'Soft FK users.uuid — who started Method B; receives escalations and handbacks.',
-
-    -- Interview parameters mirroring the Method A create path
-    kind VARCHAR(10) NOT NULL
-        COMMENT 'ROUND or INFORMAL — same vocabulary as recruitment_interviews.kind.',
-    round INT NULL
-        COMMENT '1..3 for ROUND, NULL for INFORMAL.',
-    duration_minutes INT NOT NULL DEFAULT 60,
-    online_meeting BIT(1) NOT NULL DEFAULT b'0'
-        COMMENT 'The finalized interview becomes a Teams meeting.',
-    require_room BIT(1) NOT NULL DEFAULT b'0'
-        COMMENT 'Only slots with a bookable free room qualify.',
-    location VARCHAR(200) NULL
-        COMMENT 'PII-free free-text location fallback, as on interviews.',
-    interviewer_uuids JSON NOT NULL
-        COMMENT 'Soft FKs users.uuid — REQUIRED interviewers; every one must approve a slot.',
-    optional_interviewer_uuids JSON NULL
-        COMMENT 'Soft FKs users.uuid — optional interviewers (defaults §29.7: never block, rank slots where they are free higher).',
-
-    -- Method B option parameters
-    requested_options TINYINT NOT NULL DEFAULT 3
-        COMMENT '1–3 options to secure for the candidate.',
-    window_start DATE NOT NULL,
-    window_end DATE NOT NULL
-        COMMENT 'Inclusive date window the options must fall in.',
-    permitted_start TIME NULL,
-    permitted_end TIME NULL
-        COMMENT 'Optional wall-clock band inside the 07:00–19:00 probe window.',
-    min_separation_hours INT NOT NULL DEFAULT 0
-        COMMENT 'Minimum gap between any two offered options.',
-    different_days BIT(1) NOT NULL DEFAULT b'0'
-        COMMENT 'Every offered option must fall on a different calendar day.',
-    candidate_deadline DATETIME NULL
-        COMMENT 'Explicit candidate answer-by override; NULL = computed at send time (3 business days, defaults §29.2).',
-    automation_deadline DATETIME NOT NULL
-        COMMENT 'Two-week anchor (defaults §29.18): unfinished by here => holds released, request handed back.',
-    review_required BIT(1) NOT NULL DEFAULT b'1'
-        COMMENT 'D11: the recruiter reviews & sends the secured options; default ON.',
-    options_approved_at DATETIME NULL
-        COMMENT 'When the recruiter approved the option batch for sending (D11 review action).',
-
-    status VARCHAR(26) NOT NULL DEFAULT 'DRAFT',
-    handback_reason VARCHAR(1000) NULL
-        COMMENT 'Why the request left automation (structural text, no candidate PII).',
-    next_action_at DATETIME NULL
-        COMMENT 'Advance-sweep pacing: NULL = act on next sweep; future = wait (e.g. search retry backoff).',
-    version INT NOT NULL DEFAULT 0
-        COMMENT 'JPA optimistic lock — sweeps and handlers race safely.',
-
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_by VARCHAR(36) NOT NULL,
-    modified_by VARCHAR(36) NULL,
-
-    PRIMARY KEY (uuid),
-    KEY idx_rsr_application (application_uuid),
-    KEY idx_rsr_status_next (status, next_action_at),
-    CONSTRAINT fk_rsr_application FOREIGN KEY (application_uuid)
-        REFERENCES recruitment_applications (uuid),
-    CONSTRAINT chk_rsr_status_enum CHECK (status IN (
-        'DRAFT','SEARCHING','WAITING_FOR_INTERVIEWERS','HOLDING_OPTIONS',
-        'READY_FOR_CANDIDATE','WAITING_FOR_CANDIDATE','FINALIZING',
-        'SCHEDULED','HANDED_BACK','EXPIRED','CANCELLED')),
-    CONSTRAINT chk_rsr_requested_options CHECK (requested_options BETWEEN 1 AND 3)
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_general_ci
-  COMMENT='Method B: one candidate-option scheduling run on one application (spec §15 state machine)';
-
--- -------------------------------------------------------------------
--- 2. Proposed slots — the concrete times moving through the pipeline
--- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_proposed_slot (
+CREATE TABLE IF NOT EXISTS recruitment_availability_evidence (
     uuid VARCHAR(36) NOT NULL,
     request_uuid VARCHAR(36) NOT NULL,
-    option_no INT NOT NULL
-        COMMENT 'Per-request sequence (1,2,3,…) — the "mulighed i/n" label in hold subjects (D12: no candidate name there).',
-    slot_start DATETIME NOT NULL
-        COMMENT 'Wall-clock Europe/Copenhagen, as everywhere in the interview loop.',
-    slot_end DATETIME NOT NULL,
-    room_email VARCHAR(255) NULL
-        COMMENT 'The bookable room secured for this slot; NULL = no room.',
-    room_name VARCHAR(200) NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'DISCOVERED',
-    reject_reason VARCHAR(200) NULL
-        COMMENT 'Structural rejection cause: INTERVIEWER_DECLINED | RECHECK_CONFLICT | HOLD_FAILURE | HOLD_LOST | RECRUITER_RELEASED | …',
-    expires_at DATETIME NULL
-        COMMENT 'Candidate deadline + 1 h buffer once offered — the hold-cleanup sweep releases past-due slots.',
-    version INT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (uuid),
-    KEY idx_rps_request_status (request_uuid, status),
-    CONSTRAINT fk_rps_request FOREIGN KEY (request_uuid)
-        REFERENCES recruitment_scheduling_request (uuid),
-    CONSTRAINT chk_rps_status_enum CHECK (status IN (
-        'DISCOVERED','PROPOSED','PARTIALLY_APPROVED','APPROVED','RECHECKING',
-        'HELD','OFFERED','SELECTED','FINALIZED','REJECTED','RELEASED','EXPIRED'))
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_general_ci
-  COMMENT='Method B: one concrete interview time under consideration for one scheduling request';
-
--- -------------------------------------------------------------------
--- 3. Per-interviewer approvals on a slot (the Slack DM loop)
--- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_slot_approval (
-    uuid VARCHAR(36) NOT NULL,
-    slot_uuid VARCHAR(36) NOT NULL,
     user_uuid VARCHAR(36) NOT NULL
-        COMMENT 'Soft FK users.uuid — the required interviewer this approval belongs to.',
-    status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
-    responded_at DATETIME NULL,
+        COMMENT 'Soft FK users.uuid — the interviewer whose availability this evidences.',
+    source_type VARCHAR(10) NOT NULL
+        COMMENT 'TEXT = Slack free text; IMAGE = calendar image (Phase 13); RECRUITER = manual panel entry; CORRECTION = a Ret-flow resubmission; BUTTON reserved for approval-derived evidence.',
+    intent VARCHAR(40) NOT NULL
+        COMMENT 'The allowlisted extraction intent (spec §13.3); UNKNOWN rows land on the Phase 14 manual-review list.',
     slack_channel_id VARCHAR(30) NULL
-        COMMENT 'The DM channel the proposal card was posted to — chat.update target.',
+        COMMENT 'Source ref: the DM channel the message arrived in.',
     slack_message_ts VARCHAR(30) NULL
-        COMMENT 'The proposal card message ts — updated in place on approve/decline.',
-    nudge_count INT NOT NULL DEFAULT 0
-        COMMENT 'Silence reminders sent (defaults §29.16: 24 h, 72 h, then recruiter escalation).',
-    last_nudged_at DATETIME NULL,
+        COMMENT 'Source ref: the Slack ts of the source message.',
+    file_sha256 CHAR(64) NULL
+        COMMENT 'IMAGE only: SHA-256 of the original file — proves WHAT was sent after the object is deleted (D10).',
+    s3_deleted_at DATETIME NULL
+        COMMENT 'IMAGE only: when the S3 original was deleted (D10 audit); NULL = not yet deleted (or never stored).',
+    covered_from DATE NULL,
+    covered_to DATE NULL
+        COMMENT 'The date range the evidence actually covers — constraints apply INSIDE this range only (spec §11.5 visible-range rule).',
+    timezone VARCHAR(50) NOT NULL DEFAULT 'Europe/Copenhagen'
+        COMMENT 'The timezone the extraction assumed; a non-Copenhagen zone forces confirmation.',
+    language CHAR(2) NOT NULL DEFAULT 'da'
+        COMMENT 'da|en — the D6 confirmation loop answers in the interviewer''s language.',
+    confidence DECIMAL(3,2) NULL
+        COMMENT 'The extraction''s lowest per-constraint confidence; NULL for RECRUITER entries.',
+    confirmation_status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
+    confirmed_at DATETIME NULL,
+    expires_at DATETIME NULL
+        COMMENT 'End of the covered period (spec §23) — expired evidence is ignored by the engine.',
+    supersedes_uuid VARCHAR(36) NULL
+        COMMENT 'The older evidence row this one replaces (Ret flow / newer statement from the same interviewer).',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (uuid),
-    UNIQUE KEY uk_rsa_slot_user (slot_uuid, user_uuid),
-    CONSTRAINT fk_rsa_slot FOREIGN KEY (slot_uuid)
-        REFERENCES recruitment_proposed_slot (uuid),
-    CONSTRAINT chk_rsa_status_enum CHECK (status IN ('PENDING','APPROVED','DECLINED'))
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_general_ci
-  COMMENT='Method B: one required interviewer''s answer to one proposed slot';
-
--- -------------------------------------------------------------------
--- 4. Calendar holds — attendee-less Graph events protecting a slot (D5)
--- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_calendar_hold (
-    uuid VARCHAR(36) NOT NULL
-        COMMENT 'Also the Graph transactionId of the create — a retried create never double-books.',
-    slot_uuid VARCHAR(36) NOT NULL,
-    owner_kind VARCHAR(4) NOT NULL
-        COMMENT 'USER = an interviewer''s own calendar; ROOM = direct write into the room mailbox (Phase 7.5 spike: allowed in this tenant).',
-    user_uuid VARCHAR(36) NULL
-        COMMENT 'Soft FK users.uuid for USER holds; NULL for ROOM.',
-    mailbox VARCHAR(255) NOT NULL
-        COMMENT 'The calendar the hold event lives in.',
-    graph_event_id VARCHAR(255) NULL
-        COMMENT 'NULL until the outbox CREATE_HOLD action succeeded.',
-    status VARCHAR(10) NOT NULL DEFAULT 'CREATED',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_verified_at DATETIME NULL
-        COMMENT 'Reconciliation sweep: last time Graph confirmed the event still exists.',
-    released_at DATETIME NULL,
-
-    PRIMARY KEY (uuid),
-    KEY idx_rch_slot (slot_uuid),
-    KEY idx_rch_status (status),
-    CONSTRAINT fk_rch_slot FOREIGN KEY (slot_uuid)
-        REFERENCES recruitment_proposed_slot (uuid),
-    CONSTRAINT chk_rch_owner_enum CHECK (owner_kind IN ('USER','ROOM')),
-    CONSTRAINT chk_rch_status_enum CHECK (status IN ('CREATED','VERIFIED','MISSING','RELEASED'))
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_general_ci
-  COMMENT='Method B: one attendee-less [HOLD] calendar event per interviewer/room per held slot (D5, D12)';
-
--- -------------------------------------------------------------------
--- 5. Candidate option batches — the public page capability
--- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_option_batch (
-    uuid VARCHAR(36) NOT NULL,
-    request_uuid VARCHAR(36) NOT NULL,
-    token_hash CHAR(64) NOT NULL
-        COMMENT 'SHA-256 hex of the 256-bit capability token. The raw token is NEVER stored.',
-    sent_at DATETIME NULL,
-    expires_at DATETIME NOT NULL
-        COMMENT 'The candidate deadline — the public page answers a uniform 404 past this.',
-    status VARCHAR(10) NOT NULL DEFAULT 'ACTIVE',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (uuid),
-    UNIQUE KEY uk_rob_token_hash (token_hash),
-    KEY idx_rob_request (request_uuid),
-    CONSTRAINT fk_rob_request FOREIGN KEY (request_uuid)
+    KEY idx_rae_request_status (request_uuid, confirmation_status),
+    KEY idx_rae_user (user_uuid),
+    CONSTRAINT fk_rae_request FOREIGN KEY (request_uuid)
         REFERENCES recruitment_scheduling_request (uuid),
-    CONSTRAINT chk_rob_status_enum CHECK (status IN ('ACTIVE','CLOSED','EXPIRED'))
+    CONSTRAINT chk_rae_source_enum CHECK (source_type IN
+        ('BUTTON','TEXT','IMAGE','RECRUITER','CORRECTION')),
+    CONSTRAINT chk_rae_status_enum CHECK (confirmation_status IN
+        ('PENDING','CONFIRMED','CANCELLED','SUPERSEDED','EXPIRED','REJECTED'))
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_general_ci
-  COMMENT='Method B: one tokenized option set offered to the candidate; at most one ACTIVE per request';
+  COMMENT='Method B: one interpreted availability submission (spec §8.4) — PENDING until the interviewer confirms (D9); free text lives in event pii, never here';
 
 -- -------------------------------------------------------------------
--- 6. The scheduling outbox — every external write goes through here
+-- 2. Normalized constraints — the intervals the engine consumes
 -- -------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS recruitment_scheduling_outbox (
+CREATE TABLE IF NOT EXISTS recruitment_availability_constraint (
     uuid VARCHAR(36) NOT NULL,
-    request_uuid VARCHAR(36) NOT NULL,
-    slot_uuid VARCHAR(36) NULL,
-    action VARCHAR(40) NOT NULL
-        COMMENT 'SEND_PROPOSAL_DM | CREATE_HOLD | DELETE_HOLD | SEND_RECRUITER_DM | … — executor registry key.',
-    idempotency_key VARCHAR(200) NOT NULL
-        COMMENT 'request+slot+action+version (plan §8.3) — the same intended action is never enqueued twice.',
-    payload_json TEXT NULL
-        COMMENT 'Structural action parameters only (uuids, mailboxes, option numbers). NEVER free text or candidate PII — that lives in event pii blocks.',
-    status VARCHAR(12) NOT NULL DEFAULT 'PENDING',
-    attempt_count INT NOT NULL DEFAULT 0,
-    last_error VARCHAR(1000) NULL,
-    next_attempt_at DATETIME NOT NULL
-        COMMENT 'Due time; exponential backoff on retry.',
-    claimed_at DATETIME NULL
-        COMMENT 'When an instance atomically claimed the row (PENDING -> IN_PROGRESS). Stale claims are re-eligible after the claim timeout.',
-    completed_at DATETIME NULL,
+    evidence_uuid VARCHAR(36) NOT NULL,
+    type VARCHAR(15) NOT NULL
+        COMMENT 'BUSY subtracts; AVAILABLE_ONLY restricts its covered days; PREFERRED/AVOID rank only (spec §12.3).',
+    start_at DATETIME NOT NULL
+        COMMENT 'Wall-clock Europe/Copenhagen, end-exclusive interval.',
+    end_at DATETIME NOT NULL,
+    hardness VARCHAR(4) NOT NULL DEFAULT 'HARD'
+        COMMENT 'Stored for audit; v1 planning derives hardness from type alone (BUSY/AVAILABLE_ONLY hard, PREFERRED/AVOID soft).',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (uuid),
-    UNIQUE KEY uk_rso_idempotency (idempotency_key),
-    KEY idx_rso_due (status, next_attempt_at),
-    KEY idx_rso_request (request_uuid),
-    CONSTRAINT fk_rso_request FOREIGN KEY (request_uuid)
-        REFERENCES recruitment_scheduling_request (uuid),
-    CONSTRAINT chk_rso_status_enum CHECK (status IN ('PENDING','IN_PROGRESS','COMPLETED','FAILED'))
+    KEY idx_rac_evidence (evidence_uuid),
+    CONSTRAINT fk_rac_evidence FOREIGN KEY (evidence_uuid)
+        REFERENCES recruitment_availability_evidence (uuid),
+    CONSTRAINT chk_rac_type_enum CHECK (type IN
+        ('BUSY','AVAILABLE_ONLY','PREFERRED','AVOID')),
+    CONSTRAINT chk_rac_hardness_enum CHECK (hardness IN ('HARD','SOFT')),
+    CONSTRAINT chk_rac_interval CHECK (start_at < end_at)
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_general_ci
-  COMMENT='Method B transactional outbox: state change + intended external write commit together; a dispatcher sweep executes with idempotency keys (invoice-booking idiom)';
+  COMMENT='Method B: one normalized availability interval extracted from (and scoped to) one evidence row';
 
 -- -------------------------------------------------------------------
--- 7. Extend the prod→staging sync exclusion list.
---    Established pattern (V258, V453/V457, V466, V490): the FULL
---    procedure body below is copied VERBATIM from V490 — the latest
---    declaration — with exactly one change: the six Method B scheduling
+-- 3. Extend the prod→staging sync exclusion list.
+--    Established pattern (V258, V453/V457, V466, V490, V498): the FULL
+--    procedure body below is copied VERBATIM from V498 — the latest
+--    declaration — with exactly one change: the two Method B evidence
 --    tables appended to the TABLE_NAME NOT IN (...) list beside their
---    recruitment siblings, marked with a V495 comment.
+--    recruitment siblings, marked with a V500 comment.
 --
---    They belong on the list for the same reason the rest of the
---    recruitment block does: slots/approvals/holds reference candidate
---    pipelines (GDPR-governed, not anonymized in the sync), and outbox/
---    batch rows carry prod Slack channel ids, Graph event ids and token
---    hashes that mean nothing — or are actively dangerous to act on —
---    in staging.
+--    They belong on the list for the same reason the V498 block does:
+--    evidence rows reference candidate pipelines and carry interviewer
+--    availability patterns (GDPR-governed personal data, not anonymized
+--    in the sync), plus prod Slack channel ids and message timestamps
+--    that mean nothing in staging.
 -- -------------------------------------------------------------------
 
 DROP PROCEDURE IF EXISTS sp_sync_prod_to_staging;
@@ -362,12 +206,14 @@ BEGIN
               'recruitment_reactor_offsets',
               'recruitment_reactor_deliveries',
               'recruitment_reactor_dead_letters', -- V490
-              'recruitment_scheduling_request',   -- V495
-              'recruitment_proposed_slot',        -- V495
-              'recruitment_slot_approval',        -- V495
-              'recruitment_calendar_hold',        -- V495
-              'recruitment_option_batch',         -- V495
-              'recruitment_scheduling_outbox',    -- V495
+              'recruitment_scheduling_request',   -- V498
+              'recruitment_proposed_slot',        -- V498
+              'recruitment_slot_approval',        -- V498
+              'recruitment_calendar_hold',        -- V498
+              'recruitment_option_batch',         -- V498
+              'recruitment_scheduling_outbox',    -- V498
+              'recruitment_availability_evidence',   -- V500
+              'recruitment_availability_constraint', -- V500
               'recruitment_signing_completed_cases',
               'recruitment_slack_inbound_dedupe',
               'recruitment_email_templates',
