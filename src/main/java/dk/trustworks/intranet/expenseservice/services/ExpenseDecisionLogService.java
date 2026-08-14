@@ -73,6 +73,13 @@ public class ExpenseDecisionLogService {
     }
 
     @Transactional
+    public void recordEconomicRelink(Expense e, String actorUuid, String toStatus, String reason) {
+        // Called BEFORE the caller mutates the entity, so e.getStatus() is the from-status.
+        append(e, "ACCOUNTING", actorUuid, "ECONOMIC_RELINK",
+               e.getStatus(), toStatus, e.getState(), e.getState(), e.getAiRuleId(), reason);
+    }
+
+    @Transactional
     public void recordLegacyOverride(Expense e, String actorUuid) {
         append(e, "HR", actorUuid, "LEGACY_OVERRIDE",
                e.getStatus(), "VALIDATED", null, null, e.getAiRuleId(), null);
