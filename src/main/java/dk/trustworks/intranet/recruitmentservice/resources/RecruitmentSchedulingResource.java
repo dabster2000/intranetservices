@@ -161,7 +161,7 @@ public class RecruitmentSchedulingResource {
         UUID actor = currentActor();
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         schedulingService.cancel(row, actor.toString());
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     /** Manual takeover: hand the request back to the recruiter. */
@@ -173,7 +173,7 @@ public class RecruitmentSchedulingResource {
         UUID actor = currentActor();
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         schedulingService.handBack(row, actor.toString(), "RECRUITER_TAKEOVER");
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     /** Extend the search window / automation anchor. */
@@ -191,7 +191,7 @@ public class RecruitmentSchedulingResource {
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         schedulingService.extendWindow(row, actor.toString(),
                 body.windowEnd(), body.automationDeadline());
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     /** Swap a required interviewer (defaults §29.8). */
@@ -210,7 +210,7 @@ public class RecruitmentSchedulingResource {
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         schedulingService.replaceInterviewer(row, actor.toString(),
                 body.fromUserUuid(), body.toUserUuid());
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     /** The D11 review action: release some options, approve the rest. */
@@ -224,7 +224,7 @@ public class RecruitmentSchedulingResource {
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         schedulingService.approveOptions(row, actor.toString(),
                 body != null ? body.releaseSlotUuids() : null);
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     /**
@@ -243,7 +243,7 @@ public class RecruitmentSchedulingResource {
         RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
         validateEvidence(row, body);
         schedulingService.addRecruiterEvidence(row, actor.toString(), body);
-        return schedulingService.aggregate(row);
+        return freshAggregate(requestUuid);
     }
 
     // ---- Request bodies ---------------------------------------------------
@@ -404,6 +404,26 @@ public class RecruitmentSchedulingResource {
     }
 
     /** Visible AND the caller holds decision rights on the position. */
+    /**
+     * Re-read the request from the database and aggregate it, for the response
+     * to a mutating command.
+     *
+     * <p>This resource is not transactional, so the row handed to a command was
+     * loaded outside the command's transaction and is detached — the command
+     * mutates the managed copy it re-reads, not this one. Aggregating the local
+     * row would therefore answer with pre-mutation state. Both halves matter:
+     * without the command's re-read the change is lost, and without this one the
+     * caller is told it never happened.
+     */
+    private SchedulingRequestResponse freshAggregate(UUID requestUuid) {
+        RecruitmentSchedulingRequest fresh =
+                RecruitmentSchedulingRequest.findById(requestUuid.toString());
+        if (fresh == null) {
+            throw new NotFoundException("Scheduling request not found: " + requestUuid);
+        }
+        return schedulingService.aggregate(fresh);
+    }
+
     private RecruitmentSchedulingRequest requireDecidableRequest(UUID requestUuid, UUID viewer) {
         RecruitmentSchedulingRequest row = requireVisibleRequest(requestUuid, viewer);
         RecruitmentApplication application =
