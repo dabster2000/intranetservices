@@ -10,13 +10,18 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityConstraint;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentProposedSlot;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSchedulingRequest;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSlotApproval;
 import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceConfirmationStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceSourceType;
+import dk.trustworks.intranet.recruitmentservice.model.enums.ProposedSlotStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxAction;
+import dk.trustworks.intranet.recruitmentservice.model.enums.SlotApprovalStatus;
 import dk.trustworks.intranet.recruitmentservice.slack.SlackAvailabilityViews;
+import dk.trustworks.intranet.recruitmentservice.slack.SlackSchedulingViews;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -24,14 +29,16 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
  * The Method B free-text loop's worker (plan §12.2–§12.4). Runs on the
- * {@code ManagedExecutor} AFTER the inbound dispatch committed (the P25
- * offload shape — the extraction is an OpenAI round-trip that must not
- * ride a pooled connection or Slack's 3 s ack):
+ * {@link SchedulingAsyncRunner}'s plain thread AFTER the inbound
+ * dispatch committed (the extraction is an OpenAI round-trip that must
+ * not ride a pooled connection or Slack's 3 s ack — and must never see
+ * a propagated transaction context, finding F10):
  * <ol>
  *   <li><b>Correlate</b> — the DM channel + thread ts against the
  *       stored proposal-card refs; fallback: the sender's single active
@@ -76,6 +83,9 @@ public class AvailabilityMessageService {
 
     @Inject
     SchedulingOutboxService outboxService;
+
+    @Inject
+    RecruitmentSchedulingService schedulingService;
 
     @Inject
     SchedulingEvidenceStorageService storageService;
@@ -125,22 +135,68 @@ public class AvailabilityMessageService {
                 return;
             }
 
-            AvailabilityExtractionService.Extraction extraction = extractionService.extract(
-                    LocalDate.now(), correlation.windowStart(), correlation.windowEnd(), text);
-            AvailabilityExtractionService.Validated validated =
-                    AvailabilityExtractionService.validate(extraction,
-                            correlation.windowStart(), correlation.windowEnd());
-
-            Disposition disposition = QuarkusTransaction.requiringNew()
-                    .call(() -> dispose(actorUuid, channelId, messageTs, text,
-                            correlation.requestUuid(), validated));
-            answer(channelId, disposition, validated, actorUuid,
-                    correlation.requestUuid(), text);
+            processText(actorUuid, channelId, messageTs, text, correlation);
         } catch (Exception e) {
             // Content-free by the module's PII log discipline.
             log.errorf(e, "Method B availability message processing failed (channel kind=%s)",
                     channelId != null && channelId.startsWith("D") ? "dm" : "other");
         }
+    }
+
+    /**
+     * The F7 entry: a note typed into the legacy "Foreslå anden tid"
+     * modal is availability information exactly like a plain DM reply,
+     * so it runs the same extraction pipeline — only the correlation is
+     * already settled (the modal's approval claim names the request).
+     * Called on the {@link SchedulingAsyncRunner} after the submit's
+     * dispatch committed; replies land in the proposal DM's channel.
+     */
+    public void processNote(String actorUuid, String channelId, String requestUuid,
+                            String text) {
+        try {
+            Correlation correlation = QuarkusTransaction.requiringNew().call(() -> {
+                RecruitmentSchedulingRequest request =
+                        RecruitmentSchedulingRequest.findById(requestUuid);
+                if (request == null || request.getStatus().isTerminal()) {
+                    return Correlation.NO_ACTIVE_RESULT;
+                }
+                return new Correlation(CorrelationOutcome.MATCHED, request.getUuid(),
+                        request.getWindowStart(), request.getWindowEnd());
+            });
+            if (correlation.outcome() != CorrelationOutcome.MATCHED) {
+                // The modal already answered the interviewer; a closed
+                // request needs no second reply.
+                return;
+            }
+            processText(actorUuid, channelId, null, text, correlation);
+        } catch (Exception e) {
+            log.error("Method B availability note processing failed", e);
+        }
+    }
+
+    /** The shared text pipeline: extract → validate → dispose → answer. */
+    private void processText(String actorUuid, String channelId, String messageTs,
+                             String text, Correlation correlation) {
+        AvailabilityExtractionService.Extraction extraction;
+        try {
+            extraction = extractionService.extract(
+                    LocalDate.now(), correlation.windowStart(), correlation.windowEnd(), text);
+        } catch (Exception e) {
+            // AI down (§27 scenario 11): the failure becomes a REJECTED
+            // evidence row + the deterministic template — never silence.
+            log.warnf("Method B availability extraction failed — treating as UNKNOWN: %s",
+                    e.getMessage());
+            extraction = AvailabilityExtractionService.Extraction.unknown();
+        }
+        AvailabilityExtractionService.Validated validated =
+                AvailabilityExtractionService.validate(extraction,
+                        correlation.windowStart(), correlation.windowEnd());
+
+        Outcome outcome = QuarkusTransaction.requiringNew()
+                .call(() -> dispose(actorUuid, channelId, messageTs, text,
+                        correlation.requestUuid(), validated));
+        answer(channelId, outcome, validated, actorUuid,
+                correlation.requestUuid(), text);
     }
 
     // ------------------------------------------------------------------
@@ -151,11 +207,14 @@ public class AvailabilityMessageService {
      * Ingest up to {@value IMAGES_PER_MESSAGE_MAX} attachments: download
      * with the bot token (participant already verified by correlation),
      * gate on MAGIC BYTES (Slack's mimetype is a claim) and the 20 MB
-     * vision cap, store to S3 under the env-scoped prefix, THEN extract
-     * (spec §11.2's order). Every image becomes its own evidence row;
-     * {@code requiresConfirmation} is FORCED — an image never
-     * auto-confirms (D9). Image bytes touch the vision call and S3,
-     * never logs, never event pii.
+     * vision cap, extract, and only store to S3 once the extraction
+     * produced a persistable reading. Extraction-first is the F11 fix:
+     * the original order (store, then extract) meant every extraction
+     * failure abandoned an interviewer's calendar screenshot as an
+     * untracked PII object no deletion path could find. Every image
+     * becomes its own evidence row; {@code requiresConfirmation} is
+     * FORCED — an image never auto-confirms (D9). Image bytes touch the
+     * vision call and S3, never logs, never event pii.
      */
     private void processImages(String actorUuid, String channelId, String messageTs,
                                String text, Correlation correlation,
@@ -185,34 +244,50 @@ public class AvailabilityMessageService {
             }
             String evidenceUuid = java.util.UUID.randomUUID().toString();
             String sha256 = sha256Hex(bytes);
+
+            AvailabilityExtractionService.Validated validated;
             try {
-                storageService.store(evidenceUuid, bytes, mime);
+                AvailabilityExtractionService.Extraction extraction =
+                        extractionService.extractFromImage(LocalDate.now(),
+                                correlation.windowStart(), correlation.windowEnd(),
+                                text, bytes, mime);
+                AvailabilityExtractionService.Validated gated =
+                        AvailabilityExtractionService.validate(extraction,
+                                correlation.windowStart(), correlation.windowEnd());
+                // D9: image-derived constraints ALWAYS confirm — no
+                // confidence-threshold shortcut, whatever the model said.
+                validated = new AvailabilityExtractionService.Validated(gated.intent(),
+                        gated.language(), gated.timezone(), gated.coveredFrom(),
+                        gated.coveredTo(), gated.constraints(), true,
+                        gated.minConfidence(), gated.ambiguities(),
+                        gated.clarifyingQuestion(), gated.rejectReason());
             } catch (Exception e) {
-                log.warnf("Method B evidence image store failed: %s", e.getMessage());
-                reply(channelId, SlackAvailabilityViews.imageFetchFailedText());
-                continue;
+                // AI down (§27 scenario 11): a REJECTED row for the
+                // manual-review list, the deterministic template, and —
+                // because nothing was stored — no orphan (F11).
+                log.warnf("Method B image extraction failed — treating as UNKNOWN: %s",
+                        e.getMessage());
+                validated = AvailabilityExtractionService.validate(
+                        AvailabilityExtractionService.Extraction.unknown(),
+                        correlation.windowStart(), correlation.windowEnd());
             }
+            AvailabilityExtractionService.Validated disposable = validated;
 
-            AvailabilityExtractionService.Extraction extraction =
-                    extractionService.extractFromImage(LocalDate.now(),
-                            correlation.windowStart(), correlation.windowEnd(),
-                            text, bytes, mime);
-            AvailabilityExtractionService.Validated gated =
-                    AvailabilityExtractionService.validate(extraction,
-                            correlation.windowStart(), correlation.windowEnd());
-            // D9: image-derived constraints ALWAYS confirm — no
-            // confidence-threshold shortcut, whatever the model said.
-            AvailabilityExtractionService.Validated validated = new
-                    AvailabilityExtractionService.Validated(gated.intent(),
-                    gated.language(), gated.timezone(), gated.coveredFrom(),
-                    gated.coveredTo(), gated.constraints(), true,
-                    gated.minConfidence(), gated.ambiguities(),
-                    gated.clarifyingQuestion(), gated.rejectReason());
-
-            Disposition disposition = QuarkusTransaction.requiringNew()
+            Outcome outcome = QuarkusTransaction.requiringNew()
                     .call(() -> disposeImage(actorUuid, channelId, messageTs, text,
-                            correlation.requestUuid(), evidenceUuid, sha256, validated));
-            answer(channelId, disposition, validated, actorUuid,
+                            correlation.requestUuid(), evidenceUuid, sha256, disposable));
+            if (outcome.disposition() == Disposition.SUMMARY_QUEUED) {
+                // The reading is persisted and awaits confirmation — NOW
+                // the original earns its (evidence-row-tracked) S3 slot.
+                // A failed put leaves a row without an object; the D10
+                // deleter is S3-idempotent, so that never dangles.
+                try {
+                    storageService.store(evidenceUuid, bytes, mime);
+                } catch (Exception e) {
+                    log.warnf("Method B evidence image store failed: %s", e.getMessage());
+                }
+            }
+            answer(channelId, outcome, disposable, actorUuid,
                     correlation.requestUuid(), text);
         }
     }
@@ -225,14 +300,14 @@ public class AvailabilityMessageService {
      * evidence uuid IS the S3 key, so the row and the object stay
      * matched whatever the outcome.
      */
-    Disposition disposeImage(String actorUuid, String channelId, String messageTs,
-                             String text, String requestUuid, String evidenceUuid,
-                             String sha256,
-                             AvailabilityExtractionService.Validated validated) {
+    Outcome disposeImage(String actorUuid, String channelId, String messageTs,
+                         String text, String requestUuid, String evidenceUuid,
+                         String sha256,
+                         AvailabilityExtractionService.Validated validated) {
         RecruitmentSchedulingRequest request =
                 RecruitmentSchedulingRequest.findById(requestUuid);
         if (request == null || request.getStatus().isTerminal()) {
-            return Disposition.USE_BUTTONS;
+            return Outcome.of(Disposition.USE_BUTTONS);
         }
         boolean availability = AvailabilitySchedulingPrompts.AVAILABILITY_INTENTS
                 .contains(validated.intent());
@@ -265,13 +340,15 @@ public class AvailabilityMessageService {
                                 : AvailabilityExtractionService.REJECT_UNKNOWN_INTENT)
                         : "STORED");
         if (rejected) {
-            return validated.clarifyingQuestion() != null
-                    ? Disposition.CLARIFY : Disposition.IMAGE_UNREADABLE;
+            return Outcome.of(validated.clarifyingQuestion() != null
+                    ? Disposition.CLARIFY : Disposition.IMAGE_UNREADABLE);
         }
         outboxService.enqueue(request.getUuid(), null,
                 SchedulingOutboxAction.SEND_EVIDENCE_DM, evidence.getUuid(),
                 evidenceDmPayload(evidence.getUuid()));
-        return Disposition.SUMMARY_QUEUED;
+        // F12: a calendar image answers the open proposals too.
+        List<CardUpdate> cards = resolveOpenProposals(request, actorUuid);
+        return new Outcome(Disposition.SUMMARY_QUEUED, cards);
     }
 
     private static String sha256Hex(byte[] bytes) {
@@ -348,13 +425,25 @@ public class AvailabilityMessageService {
     /** What the after-transaction reply step must do. */
     enum Disposition {SUMMARY_QUEUED, USE_BUTTONS, ROUTED, CLARIFY, UNPARSEABLE, IMAGE_UNREADABLE}
 
-    Disposition dispose(String actorUuid, String channelId, String messageTs, String text,
-                        String requestUuid,
-                        AvailabilityExtractionService.Validated validated) {
+    /** One proposal-card rewrite the reply step performs after commit (F12). */
+    record CardUpdate(String channelId, String messageTs, String fallback,
+                      List<com.slack.api.model.block.LayoutBlock> blocks) {
+    }
+
+    /** A disposition plus the card rewrites it earned. */
+    record Outcome(Disposition disposition, List<CardUpdate> cardUpdates) {
+        static Outcome of(Disposition disposition) {
+            return new Outcome(disposition, List.of());
+        }
+    }
+
+    Outcome dispose(String actorUuid, String channelId, String messageTs, String text,
+                    String requestUuid,
+                    AvailabilityExtractionService.Validated validated) {
         RecruitmentSchedulingRequest request =
                 RecruitmentSchedulingRequest.findById(requestUuid);
         if (request == null || request.getStatus().isTerminal()) {
-            return Disposition.USE_BUTTONS;
+            return Outcome.of(Disposition.USE_BUTTONS);
         }
         String intent = validated.intent();
 
@@ -364,7 +453,7 @@ public class AvailabilityMessageService {
                     SchedulingOutboxAction.SEND_RECRUITER_DM,
                     "NLU_NOTE:" + (messageTs != null ? messageTs : java.util.UUID.randomUUID()),
                     interviewerNotePayload(actorUuid, intent, text));
-            return Disposition.ROUTED;
+            return Outcome.of(Disposition.ROUTED);
         }
 
         if (AvailabilitySchedulingPrompts.INTENT_APPROVE_SLOT.equals(intent)
@@ -373,7 +462,7 @@ public class AvailabilityMessageService {
             // re-authorize against the approval row; a sentence cannot
             // (spec §13.3's closing rule).
             recordReceived(request, actorUuid, null, validated, text, "USE_BUTTONS");
-            return Disposition.USE_BUTTONS;
+            return Outcome.of(Disposition.USE_BUTTONS);
         }
 
         boolean availability =
@@ -389,8 +478,8 @@ public class AvailabilityMessageService {
                     validated.rejectReason() != null
                             ? validated.rejectReason()
                             : AvailabilityExtractionService.REJECT_UNKNOWN_INTENT);
-            return validated.clarifyingQuestion() != null
-                    ? Disposition.CLARIFY : Disposition.UNPARSEABLE;
+            return Outcome.of(validated.clarifyingQuestion() != null
+                    ? Disposition.CLARIFY : Disposition.UNPARSEABLE);
         }
 
         // A valid availability submission: evidence + constraints.
@@ -420,7 +509,101 @@ public class AvailabilityMessageService {
         outboxService.enqueue(request.getUuid(), null,
                 SchedulingOutboxAction.SEND_EVIDENCE_DM, evidence.getUuid(),
                 evidenceDmPayload(evidence.getUuid()));
-        return Disposition.SUMMARY_QUEUED;
+        // F12: answering by message settles the open proposals like a
+        // button press would — the cards must not stay live.
+        List<CardUpdate> cards = resolveOpenProposals(request, actorUuid);
+        return new Outcome(Disposition.SUMMARY_QUEUED, cards);
+    }
+
+    /**
+     * The F12 rule (owner decision 2026-08-14): an availability message
+     * IS the interviewer's answer to whatever proposals still await
+     * them. Every PENDING approval of theirs on a live slot becomes a
+     * decline — slot REJECTED ({@code INTERVIEWER_REPLIED}), holds
+     * compensated, cards rewritten to a settled state — and the planner
+     * re-searches with the new information once it is confirmed. Slots
+     * they already approved stay approved.
+     */
+    private List<CardUpdate> resolveOpenProposals(RecruitmentSchedulingRequest request,
+                                                  String actorUuid) {
+        List<CardUpdate> updates = new ArrayList<>();
+        RecruitmentApplication application =
+                RecruitmentApplication.findById(request.getApplicationUuid());
+        RecruitmentCandidate candidate = application == null ? null
+                : RecruitmentCandidate.findById(application.getCandidateUuid());
+        RecruitmentPosition position = application == null ? null
+                : RecruitmentPosition.findById(application.getPositionUuid());
+        String candidateName = candidateDisplayName(candidate);
+        String positionTitle = position != null ? position.getTitle() : null;
+
+        List<RecruitmentProposedSlot> slots =
+                RecruitmentProposedSlot.list("requestUuid = ?1", request.getUuid());
+        boolean resolvedAny = false;
+        for (RecruitmentProposedSlot slot : slots) {
+            if (!slot.getStatus().isLive()) {
+                continue;
+            }
+            RecruitmentSlotApproval mine = RecruitmentSlotApproval
+                    .<RecruitmentSlotApproval>find(
+                            "slotUuid = ?1 and userUuid = ?2 and status = ?3",
+                            slot.getUuid(), actorUuid, SlotApprovalStatus.PENDING)
+                    .firstResult();
+            if (mine == null) {
+                continue;
+            }
+            mine.setStatus(SlotApprovalStatus.DECLINED);
+            mine.setRespondedAt(LocalDateTime.now());
+            slot.setStatus(ProposedSlotStatus.REJECTED);
+            slot.setRejectReason(RecruitmentSchedulingService.REASON_INTERVIEWER_REPLIED);
+            schedulingService.releaseHolds(request, slot);
+            resolvedAny = true;
+            eventRecorder.record(RecruitmentEventBuilder
+                    .event(RecruitmentEventType.SLOT_DECLINED)
+                    .application(request.getApplicationUuid())
+                    .candidate(application != null ? application.getCandidateUuid() : null)
+                    .position(application != null ? application.getPositionUuid() : null)
+                    .actorUser(actorUuid)
+                    .payload("request_uuid", request.getUuid())
+                    .payload("slot_uuid", slot.getUuid())
+                    .payload("origin", "slack_message"));
+
+            if (mine.getSlackChannelId() != null && mine.getSlackMessageTs() != null) {
+                updates.add(new CardUpdate(mine.getSlackChannelId(),
+                        mine.getSlackMessageTs(), "Interviewforslag — besvaret",
+                        SlackSchedulingViews.messageAnsweredCard(request, slot,
+                                candidateName, positionTitle)));
+            }
+            List<RecruitmentSlotApproval> siblings =
+                    RecruitmentSlotApproval.list("slotUuid = ?1", slot.getUuid());
+            for (RecruitmentSlotApproval sibling : siblings) {
+                if (sibling.getUuid().equals(mine.getUuid())
+                        || sibling.getSlackChannelId() == null
+                        || sibling.getSlackMessageTs() == null) {
+                    continue;
+                }
+                updates.add(new CardUpdate(sibling.getSlackChannelId(),
+                        sibling.getSlackMessageTs(), "Interviewforslag — lukket",
+                        SlackSchedulingViews.closedCard(request, slot,
+                                candidateName, positionTitle)));
+            }
+        }
+        if (resolvedAny) {
+            // Wake the sweep for status recompute; the search itself
+            // waits for the evidence to confirm (the orchestrator's
+            // fresh-pending-evidence grace).
+            request.setNextActionAt(null);
+        }
+        return updates;
+    }
+
+    private static String candidateDisplayName(RecruitmentCandidate candidate) {
+        if (candidate == null) {
+            return "kandidaten";
+        }
+        String first = candidate.getFirstName() == null ? "" : candidate.getFirstName();
+        String last = candidate.getLastName() == null ? "" : candidate.getLastName();
+        String name = (first + " " + last).trim();
+        return name.isEmpty() ? "kandidaten" : name;
     }
 
     private RecruitmentAvailabilityEvidence newEvidence(
@@ -492,10 +675,20 @@ public class AvailabilityMessageService {
     // Step 4 — the conversational replies (best-effort, after commit)
     // ------------------------------------------------------------------
 
-    private void answer(String channelId, Disposition disposition,
+    private void answer(String channelId, Outcome outcome,
                         AvailabilityExtractionService.Validated validated,
                         String actorUuid, String requestUuid, String text) {
-        switch (disposition) {
+        // F12 first: settle the proposal cards, THEN talk — the settled
+        // card is what makes the conversational reply legible.
+        for (CardUpdate update : outcome.cardUpdates()) {
+            try {
+                slackService.updateMessage(update.channelId(), update.messageTs(),
+                        update.fallback(), update.blocks());
+            } catch (Exception e) {
+                log.warnf("Method B proposal-card settle failed: %s", e.getMessage());
+            }
+        }
+        switch (outcome.disposition()) {
             case SUMMARY_QUEUED -> {
                 // The consequential message is the outbox-delivered
                 // summary card — nothing conversational to add here.

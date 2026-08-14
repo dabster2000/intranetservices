@@ -8,7 +8,9 @@ import dk.trustworks.intranet.recruitmentservice.dto.SlackInboundResponse;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
+import dk.trustworks.intranet.recruitmentservice.services.AvailabilityMessageService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSchedulingFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.SchedulingAsyncRunner;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -22,8 +24,13 @@ import lombok.extern.jbosslog.JBossLog;
  * <p>
  * The DM is sent synchronously (the openView precedent — one Slack call
  * inside the dispatch window): on failure the interviewer is told to
- * contact the recruiter directly, and NOTHING is recorded — a logged
- * note the recruiter never received would lie to the audit trail.
+ * contact the recruitment team directly, and NOTHING is recorded — a
+ * logged note the recruiter never received would lie to the audit trail.
+ * <p>
+ * The "Foreslå anden tid" note ADDITIONALLY feeds the Phase 12
+ * availability pipeline after the dispatch commits (F7 — the button the
+ * interviewer is most likely to press must not discard what they wrote;
+ * new cards no longer carry the button, but delivered ones do).
  */
 public final class SlackSchedulingNoteSubmitHandlers {
 
@@ -53,6 +60,17 @@ public final class SlackSchedulingNoteSubmitHandlers {
         /** The deterministic DM headline (Danish). */
         abstract String headline();
 
+        /** Whether the note also feeds the availability pipeline (F7). */
+        boolean feedsAvailability() {
+            return false;
+        }
+
+        @Inject
+        SchedulingAsyncRunner asyncRunner;
+
+        @Inject
+        AvailabilityMessageService messageService;
+
         @Override
         public SlackInboundResponse handle(User actor, SlackInboundRequest request) {
             if (!methodBFlag.isMethodBEnabled()) {
@@ -75,7 +93,8 @@ public final class SlackSchedulingNoteSubmitHandlers {
             if (recruiter == null || recruiter.getSlackusername() == null
                     || recruiter.getSlackusername().isBlank()) {
                 return SlackInboundResponse.handled(
-                        "Rekruttereren kunne ikke findes på Slack — kontakt dem direkte.");
+                        "Rekrutteringsteamet kunne ikke findes på Slack — "
+                                + "kontakt dem direkte.");
             }
             String message = ":speech_balloon: *" + headline() + "*\n"
                     + "Fra " + SlackHandlerSupport.displayName(actor)
@@ -91,7 +110,7 @@ public final class SlackSchedulingNoteSubmitHandlers {
                                         .BlockCompositions.markdownText(message)))));
             } catch (Exception e) {
                 return SlackInboundResponse.handled(
-                        "Beskeden kunne ikke sendes — kontakt rekruttereren direkte.");
+                        "Beskeden kunne ikke sendes — kontakt rekrutteringsteamet direkte.");
             }
 
             eventRecorder.record(RecruitmentEventBuilder
@@ -107,7 +126,21 @@ public final class SlackSchedulingNoteSubmitHandlers {
                     .payload("note_kind", noteKind())
                     .payload("origin", "slack")
                     .pii("note", note));
-            return SlackInboundResponse.handled("Beskeden er sendt til rekruttereren.");
+
+            if (feedsAvailability()) {
+                // F7: what the interviewer wrote is availability — run it
+                // through the Phase 12 pipeline after this dispatch
+                // commits, answering in the proposal DM's channel.
+                String actorUuid = actor.getUuid();
+                String channelId = resolved.approval().getSlackChannelId();
+                String requestUuid = resolved.request().getUuid();
+                asyncRunner.submitAfterCommit(() ->
+                        messageService.processNote(actorUuid, channelId, requestUuid, note));
+                return SlackInboundResponse.handled(
+                        "Modtaget — jeg læser dine tider og er tilbage om et øjeblik. "
+                                + "Beskeden er også sendt til rekrutteringsteamet.");
+            }
+            return SlackInboundResponse.handled("Beskeden er sendt til rekrutteringsteamet.");
         }
     }
 
@@ -139,6 +172,11 @@ public final class SlackSchedulingNoteSubmitHandlers {
         @Override
         String headline() {
             return "Forslag om anden interviewtid";
+        }
+
+        @Override
+        boolean feedsAvailability() {
+            return true;
         }
     }
 

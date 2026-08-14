@@ -93,6 +93,10 @@ public final class MultiSlotPlanner {
      *                       {@code requestedOptions} (top-up planning)
      * @param excluded       times never to propose again (this request's
      *                       rejected/released slots)
+     * @param declined       times a HUMAN said no to (interviewer decline
+     *                       or message answer) — the re-plan repels their
+     *                       day and neighbourhood instead of proposing
+     *                       the adjacent half-hour (F5)
      * @param externalConstraints confirmed evidence intervals per
      *                       LOWERCASE mailbox (Phase 12) — resolver
      *                       output; empty map = O365-only planning
@@ -115,6 +119,7 @@ public final class MultiSlotPlanner {
             LocalDateTime notBefore,
             List<PlannedSlot> alreadyPlanned,
             List<TimeInterval> excluded,
+            List<TimeInterval> declined,
             Map<String, List<ExternalConstraint>> externalConstraints) {
     }
 
@@ -222,16 +227,80 @@ public final class MultiSlotPlanner {
                 room != null ? room.email() : null,
                 room != null ? room.displayName() : null,
                 optionalFree,
-                preferenceScore(request, slotStart, slotEnd));
+                preferenceScore(request, slotStart, slotEnd)
+                        - declinedPenalty(request.declined(), slotStart));
     }
 
-    /** The interviewer posture: unknown never counts as busy — but a
-     * CONFIRMED external claim binds regardless of O365 visibility. */
+    /** Penalty steps of the F5 repulsion — each far larger than any
+     * realistic PREFERRED/AVOID sum, so a declined day only comes back
+     * when nothing else fits. */
+    static final int DECLINED_SAME_DAY_PENALTY = 4;
+    static final int DECLINED_NEAR_TIME_PENALTY = 4;
+    static final int DECLINED_NEAR_HOURS = 3;
+
+    /**
+     * How hard a candidate start repels times a human declined (F5): a
+     * decline means "not that day" far more often than "not that exact
+     * half-hour", so the same day costs {@value DECLINED_SAME_DAY_PENALTY}
+     * and being within {@value DECLINED_NEAR_HOURS} h of a declined start
+     * on that day costs {@value DECLINED_NEAR_TIME_PENALTY} more. Soft on
+     * purpose — a window with no other feasible day still plans, just
+     * last.
+     */
+    static int declinedPenalty(List<TimeInterval> declined, LocalDateTime slotStart) {
+        int penalty = 0;
+        boolean sameDay = false;
+        boolean nearTime = false;
+        for (TimeInterval interval : declined) {
+            if (!interval.start().toLocalDate().equals(slotStart.toLocalDate())) {
+                continue;
+            }
+            sameDay = true;
+            long distanceMinutes = Math.abs(
+                    ChronoUnit.MINUTES.between(interval.start(), slotStart));
+            if (distanceMinutes < DECLINED_NEAR_HOURS * 60L) {
+                nearTime = true;
+            }
+        }
+        if (sameDay) {
+            penalty += DECLINED_SAME_DAY_PENALTY;
+        }
+        if (nearTime) {
+            penalty += DECLINED_NEAR_TIME_PENALTY;
+        }
+        return penalty;
+    }
+
+    /** What one interviewer's confirmed statements say about a slot. */
+    enum ExternalVerdict {
+        /** A BUSY claim overlaps, or a governing AVAILABLE_ONLY day
+         * does not fit — the slot is out. */
+        BLOCKED,
+        /** The slot fits inside a stated AVAILABLE_ONLY window — the
+         * human's word beats their O365 calendar (F1a). */
+        AVAILABLE_OVERRIDE,
+        /** No statement governs — O365 decides. */
+        NEUTRAL
+    }
+
+    /**
+     * The interviewer posture: unknown never counts as busy — a
+     * CONFIRMED external claim binds regardless of O365 visibility, and
+     * (F1a, owner decision 2026-08-14) a slot inside a stated available
+     * period IS available even where O365 says busy: people state
+     * availability knowing they will move the conflicting meeting. A
+     * confirmed external BUSY still beats everything (§27 scenario 4).
+     */
     private static boolean personFree(PlanRequest request, LocalDateTime anchor,
                                       String email, LocalDateTime slotStart) {
         LocalDateTime slotEnd = slotStart.plusMinutes(request.durationMinutes());
-        if (!externallyFree(constraintsOf(request, email), slotStart, slotEnd)) {
+        ExternalVerdict verdict =
+                externalVerdict(constraintsOf(request, email), slotStart, slotEnd);
+        if (verdict == ExternalVerdict.BLOCKED) {
             return false;
+        }
+        if (verdict == ExternalVerdict.AVAILABLE_OVERRIDE) {
+            return true;
         }
         MailboxWindowSchedule schedule = request.schedules().get(email);
         if (schedule == null) {
@@ -245,14 +314,15 @@ public final class MultiSlotPlanner {
 
     /**
      * The spec §12.3 precedence, hard-rule half (pure; matrix-tested):
-     * any BUSY overlap blocks (busy wins — this SUBTRACTS on top of
-     * O365, a positive claim can never re-open an O365-busy time);
-     * on a day at least one AVAILABLE_ONLY window governs, the slot
-     * must fit inside one of the (resolver-merged) windows; days
-     * outside every restricted range are untouched (covered-range-only).
+     * any BUSY overlap blocks — busy claims always win, whatever else
+     * is stated. On a day at least one AVAILABLE_ONLY window governs,
+     * the slot must fit inside one of the (resolver-merged) windows —
+     * and when it does, the fit is an OVERRIDE: the stated period beats
+     * the O365 calendar (F1a). Days outside every restricted range are
+     * untouched (covered-range-only).
      */
-    static boolean externallyFree(List<ExternalConstraint> constraints,
-                                  LocalDateTime slotStart, LocalDateTime slotEnd) {
+    static ExternalVerdict externalVerdict(List<ExternalConstraint> constraints,
+                                           LocalDateTime slotStart, LocalDateTime slotEnd) {
         boolean dayRestricted = false;
         boolean fitsRestriction = false;
         LocalDate slotDate = slotStart.toLocalDate();
@@ -260,7 +330,7 @@ public final class MultiSlotPlanner {
             switch (constraint.type()) {
                 case BUSY -> {
                     if (constraint.overlaps(slotStart, slotEnd)) {
-                        return false;
+                        return ExternalVerdict.BLOCKED;
                     }
                 }
                 case AVAILABLE_ONLY -> {
@@ -277,7 +347,11 @@ public final class MultiSlotPlanner {
                 }
             }
         }
-        return !dayRestricted || fitsRestriction;
+        if (dayRestricted) {
+            return fitsRestriction
+                    ? ExternalVerdict.AVAILABLE_OVERRIDE : ExternalVerdict.BLOCKED;
+        }
+        return ExternalVerdict.NEUTRAL;
     }
 
     /** The soft-rule half: +1 per fully containing PREFERRED, −1 per
@@ -303,10 +377,15 @@ public final class MultiSlotPlanner {
         return request.externalConstraints().getOrDefault(email, List.of());
     }
 
-    /** The room posture: only a KNOWN free schedule makes a promise. */
+    /** The room posture: only a KNOWN free schedule makes a promise —
+     * and no room is ever touched unless the request ASKED for one
+     * (F2, owner decision 2026-08-14). */
     private static RoomOption smallestFittingFreeRoom(PlanRequest request,
                                                       LocalDateTime anchor,
                                                       LocalDateTime slotStart) {
+        if (!request.requireRoom()) {
+            return null;
+        }
         return request.rooms().stream()
                 .filter(room -> room.capacity() != null
                         && room.capacity() >= request.headcount())

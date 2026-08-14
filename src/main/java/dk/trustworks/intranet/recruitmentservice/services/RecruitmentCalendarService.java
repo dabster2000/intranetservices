@@ -921,14 +921,21 @@ public class RecruitmentCalendarService {
     /**
      * The busy/tentative event ids overlapping {@code [start, end)} in a
      * mailbox — the Method B recheck source (plan §9.3): the caller
-     * excludes its own hold ids; anything left is a conflict. Events
-     * marked {@code free} are ignored. THROWS on Graph failure — a
-     * recheck that cannot see the calendar must not pass.
+     * excludes its own hold ids; anything left is a conflict. Ignored:
+     * events marked {@code free}; CANCELLED events still parked on the
+     * calendar ("Annulleret: …" keeps a non-free {@code showAs} — a
+     * meeting that is not happening must not block a slot, F1b); and
+     * events that merely TOUCH the window boundary (an event ending
+     * exactly at the slot start overlaps nothing — enforced here so
+     * Graph's own boundary semantics cannot reject back-to-back slots,
+     * F1c). THROWS on Graph failure — a recheck that cannot see the
+     * calendar must not pass.
      */
     public List<String> busyEventIdsInWindow(String mailbox, LocalDateTime start,
                                              LocalDateTime end) {
         GraphApiClient.CalendarViewResponse response = graph().calendarView(
-                mailbox, start.toString(), end.toString(), "id,showAs", 100);
+                mailbox, start.toString(), end.toString(),
+                "id,showAs,isCancelled,start,end", 100);
         if (response == null || response.value() == null) {
             return List.of();
         }
@@ -936,8 +943,41 @@ public class RecruitmentCalendarService {
                 .filter(event -> event.id() != null)
                 .filter(event -> !"free".equalsIgnoreCase(
                         event.showAs() == null ? "" : event.showAs()))
+                .filter(event -> !Boolean.TRUE.equals(event.isCancelled()))
+                .filter(event -> strictlyOverlaps(event, start, end))
                 .map(GraphApiClient.CalendarViewResponse.CalendarViewEvent::id)
                 .toList();
+    }
+
+    /**
+     * True when the event's interval and {@code [start, end)} share
+     * actual time — boundary contact is not overlap. Unparseable or
+     * missing event bounds count as overlapping (the conservative
+     * reading: never silently pass a conflict we cannot place).
+     */
+    static boolean strictlyOverlaps(
+            GraphApiClient.CalendarViewResponse.CalendarViewEvent event,
+            LocalDateTime start, LocalDateTime end) {
+        LocalDateTime eventStart = parseGraphDateTime(event.start());
+        LocalDateTime eventEnd = parseGraphDateTime(event.end());
+        if (eventStart == null || eventEnd == null) {
+            return true;
+        }
+        return eventStart.isBefore(end) && eventEnd.isAfter(start);
+    }
+
+    /** Graph answers e.g. {@code 2026-08-25T14:00:00.0000000} (wall
+     * clock in the Prefer header's zone). Null on absence or surprise. */
+    static LocalDateTime parseGraphDateTime(
+            GraphApiClient.CalendarViewResponse.GraphDateTime value) {
+        if (value == null || value.dateTime() == null) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(value.dateTime());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

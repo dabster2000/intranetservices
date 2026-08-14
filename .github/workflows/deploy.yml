@@ -110,7 +110,7 @@ jobs:
           environment-variables: |
             [
               {"name":"LOGLEVEL_Q","value":"INFO"},
-              {"name":"APPLICATION_BASE_URL","value":"https://intra.trustworks.dk"},
+              {"name":"APPLICATION_BASE_URL","value":"https://tw-1bec5887af0d4066a2ff90910770d250.ecs.eu-west-1.on.aws"},
               {"name":"SMTPSERVER","value":"mail.smtp2go.com"},
               {"name":"MAILUSERNAME","value":"trustworks.dk"},
               {"name":"JOURNALNUMBER","value":"7"},
@@ -136,6 +136,10 @@ jobs:
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER","value":"career@trustworks.dk"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_OPTIONS_BASE_URL","value":"https://tw-1bec5887af0d4066a2ff90910770d250.ecs.eu-west-1.on.aws"},
+              {"name":"DK_TRUSTWORKS_RECRUITMENT_SLACK_BASE_URL","value":"https://tw-1bec5887af0d4066a2ff90910770d250.ecs.eu-west-1.on.aws"},
+              {"name":"RECRUITMENT_HR_SLACK_DOSSIER_BASE_URL","value":"https://tw-1bec5887af0d4066a2ff90910770d250.ecs.eu-west-1.on.aws/recruitment/candidates"},
+              {"name":"DK_TRUSTWORKS_RECRUITMENT_CONSENT_BASE_URL","value":"https://tw-1bec5887af0d4066a2ff90910770d250.ecs.eu-west-1.on.aws"},
+              {"name":"DK_TRUSTWORKS_RECRUITMENT_GDPR_SWEEP_ENABLED","value":"false"},
               {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview,Hired Employees"}
             ]
           secrets: |

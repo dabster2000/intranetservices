@@ -1007,6 +1007,12 @@ public class SlackService {
 
     /**
      * Constructs the profile view URL for the current application.
+     * <p>
+     * The path is {@code /profile}. It was {@code /profile-view} — the Vaadin
+     * {@code @Route} of the retired v1 app — which has no route or rewrite in the
+     * React app, so the "View Documents" link in the signed-document DM 404'd for
+     * every recipient. The v1-to-v2 mapping is recorded in v1's own migration
+     * registry: {@code createFallbackPage("profile", …, "/profile", "profile-view", …)}.
      *
      * @return Full URL to the profile view, or null if base URL not configured
      */
@@ -1021,7 +1027,7 @@ public class SlackService {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
 
-        return baseUrl + "/profile-view";
+        return baseUrl + "/profile";
     }
 
 }

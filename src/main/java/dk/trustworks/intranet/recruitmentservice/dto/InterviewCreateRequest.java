@@ -27,6 +27,14 @@ import java.util.List;
  *                         meeting (null/FALSE = plain event). With no room
  *                         and no location given, the location defaults to
  *                         "Microsoft Teams".
+ * @param createCalendarEvent optional: FALSE records the interview WITHOUT
+ *                         creating any Outlook event (F17 — the interview
+ *                         was already booked by hand; only the ATS record
+ *                         with scorecards/debrief/stage progression is
+ *                         wanted). null/TRUE = create as always. The
+ *                         reschedule dialog's existing "create the
+ *                         invitation now" checkbox attaches a real event
+ *                         later.
  */
 public record InterviewCreateRequest(
         RecruitmentInterviewKind kind,
@@ -36,6 +44,7 @@ public record InterviewCreateRequest(
         String roomEmail,
         LocalDateTime scheduledAt,
         Integer durationMinutes,
-        Boolean onlineMeeting
+        Boolean onlineMeeting,
+        Boolean createCalendarEvent
 ) {
 }

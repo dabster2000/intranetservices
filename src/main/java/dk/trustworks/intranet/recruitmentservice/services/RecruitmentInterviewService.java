@@ -161,12 +161,18 @@ public class RecruitmentInterviewService {
         interview.persist();
 
         // Outlook is best-effort: a Graph failure never fails scheduling.
-        calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
-            interview.setGraphEventId(created.eventId());
-            interview.setGraphOrganizer(created.organizer());
-            interview.setJoinUrl(created.joinUrl());
-            interview.setGraphCandidateEventId(created.candidateEventId());
-        });
+        // createCalendarEvent=false (F17) skips Outlook deliberately —
+        // the interview was booked by hand; nobody is invited to
+        // anything, and calendarSynced stays false until the reschedule
+        // dialog's recovery checkbox creates the missing event.
+        if (shouldCreateEventOnCreate(request.createCalendarEvent())) {
+            calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
+                interview.setGraphEventId(created.eventId());
+                interview.setGraphOrganizer(created.organizer());
+                interview.setJoinUrl(created.joinUrl());
+                interview.setGraphCandidateEventId(created.candidateEventId());
+            });
+        }
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_SCHEDULED,
                 interview, application, position, actor)
@@ -251,6 +257,16 @@ public class RecruitmentInterviewService {
                 .payload("online_meeting", interview.isOnlineMeeting())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
         return interview;
+    }
+
+    /**
+     * The create branch: only an EXPLICIT {@code createCalendarEvent:
+     * false} skips the Outlook event (F17's deliberate no-calendar
+     * interview) — null and TRUE both create, so every existing caller
+     * keeps its behaviour. Static and pure, pinned by a DB-free test.
+     */
+    static boolean shouldCreateEventOnCreate(Boolean createCalendarEvent) {
+        return !Boolean.FALSE.equals(createCalendarEvent);
     }
 
     /**

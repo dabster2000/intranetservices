@@ -86,9 +86,25 @@ public final class SlackSchedulingViews {
     }
 
     /**
+     * The interviewer-guidance line every proposal card carries (F13
+     * free-text-primary + F15, owner decisions 2026-08-14): the card's
+     * two buttons answer THIS proposal; everything else — availability,
+     * calendar screenshots, questions — is a plain message in the same
+     * chat, and the card is where the interviewer learns that.
+     */
+    static final String CARD_GUIDANCE =
+            "Passer tiden ikke? Skriv dine ledige tider her i chatten — eller send "
+                    + "et screenshot af din kalender — så foreslår jeg nye tider ud "
+                    + "fra dem. Spørgsmål kan også bare skrives her; de sendes videre "
+                    + "til rekrutteringsteamet.";
+
+    /**
      * The proposal DM card (plan §9.1). {@code nudge} &gt; 0 renders the
-     * reminder variant (defaults §29.16). Every button carries the
-     * approval uuid as its value — a CLAIM the handlers re-authorize.
+     * reminder variant (defaults §29.16). The buttons carry the
+     * approval uuid as their value — a CLAIM the handlers re-authorize.
+     * Godkend/Afvis only (F13): free text and images are the primary
+     * path for everything that is not a plain yes/no, and the guidance
+     * line says so.
      */
     public static List<LayoutBlock> proposalCard(RecruitmentSchedulingRequest request,
                                                  RecruitmentProposedSlot slot,
@@ -104,17 +120,14 @@ public final class SlackSchedulingViews {
         blocks.add(section(s -> s.text(markdownText(summaryLine(request, slot,
                 candidateName, positionTitle)))));
         blocks.add(context(c -> c.elements(asContextElements(markdownText(
-                "Mulighed " + slot.getOptionNo() + " · Svar med knapperne — "
-                        + "\"Godkend\" reserverer tiden foreløbigt i din kalender.")))));
+                "Mulighed " + slot.getOptionNo() + " · \"Godkend\" reserverer tiden "
+                        + "foreløbigt i din kalender.")))));
         blocks.add(actions(a -> a.elements(asElements(
                 button(b -> b.actionId(ACTION_APPROVE).value(approvalUuid)
                         .style("primary").text(plainText("Godkend"))),
                 button(b -> b.actionId(ACTION_DECLINE).value(approvalUuid)
-                        .style("danger").text(plainText("Afvis"))),
-                button(b -> b.actionId(ACTION_SUGGEST).value(approvalUuid)
-                        .text(plainText("Foreslå anden tid"))),
-                button(b -> b.actionId(ACTION_ASK).value(approvalUuid)
-                        .text(plainText("Spørg rekruttereren")))))));
+                        .style("danger").text(plainText("Afvis")))))));
+        blocks.add(context(c -> c.elements(asContextElements(markdownText(CARD_GUIDANCE)))));
         return blocks;
     }
 
@@ -153,6 +166,22 @@ public final class SlackSchedulingViews {
                 + danishInterval(slot.getSlotStart(), slot.getSlotEnd())
                 + ". Du får invitationen i Outlook; øvrige foreløbige reserveringer "
                 + "er frigivet.";
+    }
+
+    /** The card after the interviewer answered by MESSAGE instead of a
+     * button (F12) — buttons gone, the message is acknowledged as the
+     * answer. */
+    public static List<LayoutBlock> messageAnsweredCard(RecruitmentSchedulingRequest request,
+                                                        RecruitmentProposedSlot slot,
+                                                        String candidateName,
+                                                        String positionTitle) {
+        return asBlocks(
+                section(s -> s.text(markdownText(summaryLine(request, slot,
+                        candidateName, positionTitle)))),
+                context(c -> c.elements(asContextElements(markdownText(
+                        ":speech_balloon: Du har svaret med en besked — forslaget er "
+                                + "lukket, og dine oplysninger bruges i den videre "
+                                + "planlægning.")))));
     }
 
     /** The card when the slot died elsewhere (a colleague declined, a
@@ -199,21 +228,28 @@ public final class SlackSchedulingViews {
         return text.toString();
     }
 
-    // ---- Note modals (no NLU until Phase 12 — plain routed notes) ---------
+    // ---- Note modals -------------------------------------------------------
+    // The buttons that open these are gone from NEW cards (F13 — free
+    // text is the primary path), but cards already delivered before the
+    // change still carry them, so the modals stay serviceable.
 
-    /** "Foreslå anden tid": a plain note routed to the recruiter. */
+    /** "Foreslå anden tid" (legacy cards): the note now feeds the same
+     * availability pipeline as a plain chat message (F7). */
     public static View suggestModal(String privateMetadata) {
         return noteModal(SUGGEST_SUBMIT, privateMetadata, "Foreslå anden tid",
-                "Send til rekruttereren",
-                "Skriv hvilke tider der passer dig bedre — beskeden går direkte "
-                        + "til rekruttereren, som finder et nyt forslag.");
+                "Send",
+                "Skriv hvilke tider der passer dig — fx \"onsdage efter kl. 15\". "
+                        + "Jeg planlægger ud fra dem og sender dem også videre til "
+                        + "rekrutteringsteamet. Du kan altid bare skrive direkte i "
+                        + "chatten i stedet.");
     }
 
-    /** "Spørg rekruttereren": a plain question routed to the recruiter. */
+    /** "Spørg rekrutteringsteamet" (legacy cards): a plain question
+     * routed to the recruiter. */
     public static View askModal(String privateMetadata) {
-        return noteModal(ASK_SUBMIT, privateMetadata, "Spørg rekruttereren",
+        return noteModal(ASK_SUBMIT, privateMetadata, "Spørg rekrutteringsteamet",
                 "Send spørgsmål",
-                "Dit spørgsmål sendes direkte til rekruttereren. Forslaget "
+                "Dit spørgsmål sendes direkte til rekrutteringsteamet. Forslaget "
                         + "forbliver åbent, til du svarer med knapperne.");
     }
 

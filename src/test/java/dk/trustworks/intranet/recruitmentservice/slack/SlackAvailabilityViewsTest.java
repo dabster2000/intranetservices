@@ -109,14 +109,16 @@ class SlackAvailabilityViewsTest {
 
     @Test
     void cannedReplies_existInBothLanguages_andTheNoMatchOnesAreDanish() {
-        assertTrue(SlackAvailabilityViews.NO_ACTIVE_TEXT.contains("rekruttereren"));
+        // F14 (owner-reported, 2026-08-14): "rekruttereren" is malformed
+        // Danish — the copy says "rekrutteringsteamet" everywhere.
+        assertTrue(SlackAvailabilityViews.NO_ACTIVE_TEXT.contains("rekrutteringsteamet"));
         assertTrue(SlackAvailabilityViews.AMBIGUOUS_TEXT.contains("tråden"));
         assertTrue(SlackAvailabilityViews.useButtonsText("da").contains("knapperne"));
         assertTrue(SlackAvailabilityViews.useButtonsText("en").contains("buttons"));
         assertTrue(SlackAvailabilityViews.unparseableText("da").contains("præcise datoer"));
         assertTrue(SlackAvailabilityViews.unparseableText("en").contains("exact dates"));
-        assertTrue(SlackAvailabilityViews.routedAckText("da").contains("rekruttereren"));
-        assertTrue(SlackAvailabilityViews.routedAckText("en").contains("recruiter"));
+        assertTrue(SlackAvailabilityViews.routedAckText("da").contains("rekrutteringsteamet"));
+        assertTrue(SlackAvailabilityViews.routedAckText("en").contains("recruitment team"));
         // Phase 13: the image-path replies. Pre-extraction ones are
         // Danish (language unknown before the model ran).
         assertTrue(SlackAvailabilityViews.imageFetchFailedText().contains("hente billedet"));

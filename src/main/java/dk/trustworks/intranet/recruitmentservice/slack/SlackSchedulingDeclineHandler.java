@@ -110,7 +110,12 @@ public class SlackSchedulingDeclineHandler implements SlackInboundHandler {
                     SlackSchedulingViews.closedCard(resolved.request(), resolved.slot(),
                             resolved.candidateName(), resolved.positionTitle()));
         }
+        // F6 (owner decision 2026-08-14): a decline is the moment to ask
+        // for availability — otherwise the planner guesses again blind.
         return SlackInboundResponse.handled(
-                "Forslaget er afvist — systemet leder efter en anden tid.");
+                "Forslaget er afvist. Hvornår passer det dig? Skriv dine ledige "
+                        + "tider her i chatten — fx \"onsdage efter kl. 15\" — eller "
+                        + "send et screenshot af din kalender, så foreslår jeg nye "
+                        + "tider ud fra dem.");
     }
 }

@@ -251,6 +251,82 @@ class MultiSlotPlannerTest {
         return new PlanRequest(windowStart, windowEnd, permittedStart, permittedEnd,
                 duration, requested, minSeparation, differentDays, requireRoom,
                 required.size() + optional.size() + 1, required, optional, rooms,
-                schedules, notBefore, alreadyPlanned, excluded, Map.of());
+                schedules, notBefore, alreadyPlanned, excluded, List.of(), Map.of());
+    }
+
+    // ---- F2: requireRoom=false never touches rooms -----------------------
+
+    @Test
+    void withoutRequireRoom_noRoomIsAssigned_evenWhenOneIsFree() {
+        // Owner decision 2026-08-14: an online interview must not block
+        // a physical room — not even opportunistically.
+        RoomOption room = new RoomOption("room@trustworks.dk", "Room 1", 8);
+        List<PlannedSlot> picks = MultiSlotPlanner.plan(request(
+                MONDAY, MONDAY, null, null, 60, 1, 0, false, false,
+                List.of(A), List.of(), List.of(room),
+                Map.of(A, allFree(), "room@trustworks.dk", allFree()),
+                EARLY, List.of(), List.of()));
+        assertEquals(1, picks.size());
+        assertNull(picks.getFirst().roomEmail());
+    }
+
+    // ---- F5: declined times repel the re-plan ----------------------------
+
+    @Test
+    void declinedSlot_pushesReplanToAnotherDay() {
+        // Monday 13.00 was declined; with Tuesday available the re-plan
+        // must NOT answer with Monday 13.30 (the adjacent half-hour).
+        List<TimeInterval> declined = List.of(new TimeInterval(
+                MONDAY.atTime(13, 0), MONDAY.atTime(13, 45)));
+        PlanRequest request = new PlanRequest(
+                MONDAY, MONDAY.plusDays(1), null, null, 45, 1, 0, false, false,
+                2, List.of(A), List.of(), List.of(),
+                Map.of(A, allFree()), EARLY, List.of(),
+                List.of(new TimeInterval(MONDAY.atTime(13, 0), MONDAY.atTime(13, 45))),
+                declined, Map.of());
+        List<PlannedSlot> picks = MultiSlotPlanner.plan(request);
+        assertEquals(1, picks.size());
+        assertEquals(MONDAY.plusDays(1), picks.getFirst().start().toLocalDate(),
+                "a declined Monday must rank every Tuesday slot above Monday");
+    }
+
+    @Test
+    void declinedPenalty_tiersByDayAndProximity() {
+        List<TimeInterval> declined = List.of(new TimeInterval(
+                MONDAY.atTime(13, 0), MONDAY.atTime(13, 45)));
+        assertEquals(0, MultiSlotPlanner.declinedPenalty(declined,
+                MONDAY.plusDays(1).atTime(13, 30)), "other days are unpenalised");
+        assertEquals(MultiSlotPlanner.DECLINED_SAME_DAY_PENALTY,
+                MultiSlotPlanner.declinedPenalty(declined, MONDAY.atTime(8, 0)),
+                "same day, far away: day penalty only");
+        assertEquals(MultiSlotPlanner.DECLINED_SAME_DAY_PENALTY
+                        + MultiSlotPlanner.DECLINED_NEAR_TIME_PENALTY,
+                MultiSlotPlanner.declinedPenalty(declined, MONDAY.atTime(13, 30)),
+                "the adjacent half-hour: day + proximity");
+    }
+
+    // ---- F1a: a stated available period beats the O365 calendar ----------
+
+    @Test
+    void statedAvailablePeriod_overridesO365Busy() {
+        // O365 shows Monday fully busy, but the interviewer SAID
+        // "Monday 13–15 works" — the human's word wins (owner decision
+        // 2026-08-14); outside the stated window the day stays blocked.
+        MailboxWindowSchedule allBusy = new MailboxWindowSchedule("2".repeat(4000), null);
+        Map<String, List<MultiSlotPlanner.ExternalConstraint>> constraints = Map.of(A,
+                List.of(new MultiSlotPlanner.ExternalConstraint(
+                        dk.trustworks.intranet.recruitmentservice.model.enums
+                                .AvailabilityConstraintType.AVAILABLE_ONLY,
+                        MONDAY.atTime(13, 0), MONDAY.atTime(15, 0),
+                        MONDAY, MONDAY)));
+        PlanRequest request = new PlanRequest(
+                MONDAY, MONDAY, null, null, 60, 3, 0, false, false,
+                2, List.of(A), List.of(), List.of(),
+                Map.of(A, allBusy), EARLY, List.of(), List.of(), List.of(),
+                constraints);
+        List<PlannedSlot> picks = MultiSlotPlanner.plan(request);
+        assertEquals(2, picks.size(), "only the stated 13–15 window plans");
+        assertEquals(MONDAY.atTime(13, 0), picks.get(0).start());
+        assertEquals(MONDAY.atTime(14, 0), picks.get(1).start());
     }
 }
