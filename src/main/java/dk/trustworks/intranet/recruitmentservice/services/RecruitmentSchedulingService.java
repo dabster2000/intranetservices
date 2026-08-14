@@ -172,7 +172,107 @@ public class RecruitmentSchedulingService {
                         batch.getUuid(), batch.getSentAt(), batch.getExpiresAt(),
                         batch.getStatus()) : null,
                 outboxService.failedCount(request.getUuid()),
+                evidenceViews(request),
                 request.getCreatedAt(), request.getUpdatedAt());
+    }
+
+    /** The Phase 14 evidence surface: newest first, structure only. */
+    private List<SchedulingRequestResponse.EvidenceView> evidenceViews(
+            RecruitmentSchedulingRequest request) {
+        List<dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence>
+                rows = dk.trustworks.intranet.recruitmentservice.model
+                        .RecruitmentAvailabilityEvidence.list(
+                                "requestUuid = ?1 order by createdAt desc", request.getUuid());
+        List<SchedulingRequestResponse.EvidenceView> views = new ArrayList<>(rows.size());
+        for (var row : rows) {
+            List<dk.trustworks.intranet.recruitmentservice.model
+                    .RecruitmentAvailabilityConstraint> constraints =
+                    dk.trustworks.intranet.recruitmentservice.model
+                            .RecruitmentAvailabilityConstraint.list(
+                                    "evidenceUuid = ?1", row.getUuid());
+            views.add(new SchedulingRequestResponse.EvidenceView(
+                    row.getUuid(), row.getUserUuid(), row.getSourceType(),
+                    row.getIntent(), row.getConfirmationStatus(), row.getLanguage(),
+                    row.getCoveredFrom(), row.getCoveredTo(),
+                    row.getConfidence() != null ? row.getConfidence().toPlainString() : null,
+                    row.getExpiresAt(), row.getCreatedAt(),
+                    constraints.stream().map(c -> new SchedulingRequestResponse.ConstraintView(
+                            c.getType(), c.getStartAt(), c.getEndAt())).toList()));
+        }
+        return views;
+    }
+
+    /**
+     * The Phase 14 manual-review action: the recruiter converts what an
+     * interviewer meant into constraints by hand (plan §14 — RECRUITER
+     * source). Born CONFIRMED: a human typed the intervals, the D9
+     * confirmation loop has nothing left to ask. Supersedes the
+     * interviewer's older overlapping evidence like any confirm, and
+     * wakes the planner.
+     */
+    @Transactional
+    public dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence
+            addRecruiterEvidence(RecruitmentSchedulingRequest request, String actorUuid,
+                                 dk.trustworks.intranet.recruitmentservice.dto
+                                         .EvidenceCreateRequest create) {
+        requireLive(request);
+        var evidence = new dk.trustworks.intranet.recruitmentservice.model
+                .RecruitmentAvailabilityEvidence();
+        evidence.setRequestUuid(request.getUuid());
+        evidence.setUserUuid(create.userUuid());
+        evidence.setSourceType(dk.trustworks.intranet.recruitmentservice.model.enums
+                .EvidenceSourceType.RECRUITER);
+        evidence.setIntent("PROVIDE_AVAILABILITY");
+        evidence.setCoveredFrom(create.coveredFrom());
+        evidence.setCoveredTo(create.coveredTo());
+        evidence.setConfirmationStatus(dk.trustworks.intranet.recruitmentservice.model.enums
+                .EvidenceConfirmationStatus.CONFIRMED);
+        evidence.setConfirmedAt(LocalDateTime.now());
+        evidence.setExpiresAt(create.coveredTo() != null
+                ? create.coveredTo().atTime(23, 59, 59) : null);
+        evidence.persist();
+        for (var interval : create.constraints()) {
+            var constraint = new dk.trustworks.intranet.recruitmentservice.model
+                    .RecruitmentAvailabilityConstraint();
+            constraint.setEvidenceUuid(evidence.getUuid());
+            constraint.setType(interval.type());
+            constraint.setStartAt(interval.startAt());
+            constraint.setEndAt(interval.endAt());
+            constraint.persist();
+        }
+        List<String> superseded =
+                AvailabilityMessageService.supersedeOlder(evidence);
+        request.setNextActionAt(null); // wake the planner
+
+        RecruitmentApplication application = application(request);
+        RecruitmentEventBuilder received = RecruitmentEventBuilder
+                .event(RecruitmentEventType.AVAILABILITY_EVIDENCE_RECEIVED)
+                .application(request.getApplicationUuid())
+                .candidate(application != null ? application.getCandidateUuid() : null)
+                .position(application != null ? application.getPositionUuid() : null)
+                .actorUser(actorUuid)
+                .payload("request_uuid", request.getUuid())
+                .payload("evidence_uuid", evidence.getUuid())
+                .payload("source_type", "RECRUITER")
+                .payload("intent", evidence.getIntent())
+                .payload("disposition", "STORED")
+                .payload("constraint_count", create.constraints().size())
+                .payload("interviewer_uuid", create.userUuid());
+        eventRecorder.record(received);
+        RecruitmentEventBuilder confirmed = RecruitmentEventBuilder
+                .event(RecruitmentEventType.AVAILABILITY_EVIDENCE_CONFIRMED)
+                .application(request.getApplicationUuid())
+                .candidate(application != null ? application.getCandidateUuid() : null)
+                .position(application != null ? application.getPositionUuid() : null)
+                .actorUser(actorUuid)
+                .payload("request_uuid", request.getUuid())
+                .payload("evidence_uuid", evidence.getUuid())
+                .payload("auto", false);
+        if (!superseded.isEmpty()) {
+            confirmed.payload("superseded_evidence_uuids", superseded);
+        }
+        eventRecorder.record(confirmed);
+        return evidence;
     }
 
     /** Every request of an application, newest first, as panel aggregates —

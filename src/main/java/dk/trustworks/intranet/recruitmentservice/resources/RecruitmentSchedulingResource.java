@@ -227,6 +227,25 @@ public class RecruitmentSchedulingResource {
         return schedulingService.aggregate(row);
     }
 
+    /**
+     * The Phase 14 manual-review action (plan §14): convert what an
+     * interviewer meant — an UNKNOWN/REJECTED extraction, a phone call,
+     * a hallway answer — into RECRUITER-source constraints by hand.
+     */
+    @POST
+    @Path("/scheduling-requests/{uuid}/evidence")
+    @RolesAllowed({"recruitment:write"})
+    public SchedulingRequestResponse addEvidence(@PathParam("uuid") UUID requestUuid,
+                                                 dk.trustworks.intranet.recruitmentservice.dto
+                                                         .EvidenceCreateRequest body) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentSchedulingRequest row = requireDecidableRequest(requestUuid, actor);
+        validateEvidence(row, body);
+        schedulingService.addRecruiterEvidence(row, actor.toString(), body);
+        return schedulingService.aggregate(row);
+    }
+
     // ---- Request bodies ---------------------------------------------------
 
     /** Envelope of {@code GET /recruitment/scheduling/flags}. */
@@ -244,6 +263,39 @@ public class RecruitmentSchedulingResource {
     }
 
     // ---- Validation -------------------------------------------------------
+
+    /** The Phase 14 evidence gate: participant, sane intervals, capped. */
+    private void validateEvidence(RecruitmentSchedulingRequest row,
+                                  dk.trustworks.intranet.recruitmentservice.dto
+                                          .EvidenceCreateRequest body) {
+        if (body == null || body.userUuid() == null || body.userUuid().isBlank()) {
+            throw badRequest("userUuid is required — whose availability is this?");
+        }
+        boolean participant = (row.getInterviewerUuids() != null
+                        && row.getInterviewerUuids().contains(body.userUuid()))
+                || (row.getOptionalInterviewerUuids() != null
+                        && row.getOptionalInterviewerUuids().contains(body.userUuid()));
+        if (!participant) {
+            throw badRequest("userUuid is not an interviewer on this request");
+        }
+        if (body.constraints() == null || body.constraints().isEmpty()
+                || body.constraints().size() > 20) {
+            throw badRequest("constraints must contain 1–20 intervals");
+        }
+        for (var interval : body.constraints()) {
+            if (interval.type() == null || interval.startAt() == null
+                    || interval.endAt() == null
+                    || !interval.startAt().isBefore(interval.endAt())) {
+                throw badRequest("every constraint needs a type and startAt < endAt");
+            }
+        }
+        if ((body.coveredFrom() == null) != (body.coveredTo() == null)) {
+            throw badRequest("coveredFrom and coveredTo come together or not at all");
+        }
+        if (body.coveredFrom() != null && body.coveredFrom().isAfter(body.coveredTo())) {
+            throw badRequest("coveredFrom must not be after coveredTo");
+        }
+    }
 
     private void validateCreate(SchedulingRequestCreateRequest request) {
         if (request.kind() == null) {

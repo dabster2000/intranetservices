@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.AvailabilityConstraintType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CalendarHoldOwnerKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CalendarHoldStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceConfirmationStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceSourceType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.OptionBatchStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.ProposedSlotStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
@@ -48,6 +51,7 @@ public record SchedulingRequestResponse(
         List<SlotView> slots,
         BatchView activeBatch,
         long failedOutboxActions,
+        List<EvidenceView> evidence,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
@@ -95,6 +99,36 @@ public record SchedulingRequestResponse(
             LocalDateTime sentAt,
             LocalDateTime expiresAt,
             OptionBatchStatus status
+    ) {
+    }
+
+    /**
+     * One availability-evidence row for the panel (Phase 14): the
+     * confirmed inputs shaping the search, plus the REJECTED/UNKNOWN
+     * rows the recruiter reviews manually (the plan §14 list) —
+     * structure only, the source text stays in event pii.
+     */
+    public record EvidenceView(
+            String uuid,
+            String userUuid,
+            EvidenceSourceType sourceType,
+            String intent,
+            EvidenceConfirmationStatus status,
+            String language,
+            LocalDate coveredFrom,
+            LocalDate coveredTo,
+            String confidence,
+            LocalDateTime expiresAt,
+            LocalDateTime createdAt,
+            List<ConstraintView> constraints
+    ) {
+    }
+
+    /** One normalized interval of one evidence row. */
+    public record ConstraintView(
+            AvailabilityConstraintType type,
+            LocalDateTime startAt,
+            LocalDateTime endAt
     ) {
     }
 }

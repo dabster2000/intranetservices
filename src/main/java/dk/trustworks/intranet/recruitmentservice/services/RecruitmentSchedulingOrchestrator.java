@@ -428,6 +428,9 @@ public class RecruitmentSchedulingOrchestrator {
     /** Holds examined per reconciliation sweep. */
     static final int RECONCILE_BATCH = 100;
 
+    /** Pause between per-hold Graph probes (plan §14's 429 pacing). */
+    static final long RECONCILE_PACING_MS = 150;
+
     @Scheduled(every = "15m", identity = "recruitment-scheduling-hold-reconcile",
             concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void reconcileTimer() {
@@ -461,6 +464,16 @@ public class RecruitmentSchedulingOrchestrator {
             } catch (Exception e) {
                 log.warnf("Method B hold reconciliation failed for %s: %s",
                         holdUuid, e.getMessage());
+            }
+            // Graph 429 pacing (plan §14): one probe per event id — a
+            // full batch fired back-to-back is a burst Graph may
+            // throttle. ~150 ms apart spreads 100 probes over ~15 s of
+            // the scheduler thread; SKIP guards overlap.
+            try {
+                Thread.sleep(RECONCILE_PACING_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
     }
@@ -725,6 +738,38 @@ public class RecruitmentSchedulingOrchestrator {
             return;
         }
         expireStaleEvidence();
+        enqueueImageDeletions();
+    }
+
+    /**
+     * The single D10 deletion trigger (plan §13.3): every IMAGE evidence
+     * row whose lifecycle left PENDING — confirmed, cancelled,
+     * superseded, expired (the 48 h timeout lands here via
+     * {@link #expireStaleEvidence}) or rejected — sheds its S3 original
+     * within one sweep. One observation point instead of enqueues
+     * sprinkled across every transition; the outbox INSERT IGNORE makes
+     * re-observation free, and the bucket lifecycle rule backstops the
+     * lot.
+     */
+    public void enqueueImageDeletions() {
+        QuarkusTransaction.requiringNew().run(() -> {
+            List<dk.trustworks.intranet.recruitmentservice.model
+                    .RecruitmentAvailabilityEvidence> due =
+                    dk.trustworks.intranet.recruitmentservice.model
+                            .RecruitmentAvailabilityEvidence.list(
+                                    "sourceType = ?1 and fileSha256 is not null "
+                                            + "and s3DeletedAt is null "
+                                            + "and confirmationStatus != ?2",
+                                    dk.trustworks.intranet.recruitmentservice.model.enums
+                                            .EvidenceSourceType.IMAGE,
+                                    dk.trustworks.intranet.recruitmentservice.model.enums
+                                            .EvidenceConfirmationStatus.PENDING);
+            for (var evidence : due) {
+                outboxService.enqueue(evidence.getRequestUuid(), null,
+                        SchedulingOutboxAction.DELETE_EVIDENCE_IMAGE, evidence.getUuid(),
+                        schedulingService.refPayload("evidenceUuid", evidence.getUuid()));
+            }
+        });
     }
 
     /**
