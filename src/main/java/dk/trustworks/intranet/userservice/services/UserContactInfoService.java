@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.userservice.services;
 
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.NotFoundException;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -19,8 +21,15 @@ public class UserContactInfoService {
 
     @Transactional
     public UserContactinfo findOne(String useruuid) {
+        if (User.findById(useruuid) == null) {
+            // Without this check the lazy-create below hits fk_user_contactinfo_user
+            // and surfaces as a 409 on a GET for a user that does not exist.
+            throw new NotFoundException("User not found: " + useruuid);
+        }
         UserContactinfo userContactinfo = UserContactinfo.findCurrentByUseruuid(useruuid);
         if (userContactinfo == null) {
+            // PUT /users/{uuid}/contactinfo updates by useruuid and is a silent
+            // no-op when no row exists, so the default row must be persisted here.
             userContactinfo = new UserContactinfo();
             userContactinfo.setUuid(UUID.randomUUID().toString());
             userContactinfo.setStreetname("");

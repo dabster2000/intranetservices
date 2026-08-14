@@ -35,6 +35,13 @@ class CvToolSyncServiceFailureTest {
         service.cvToolClient = client;
         // Retries must never cost this suite real wall-clock time.
         service.sleeper = millis -> { };
+        // Production defaults: @ConfigProperty does not run in plain JUnit, and leaving
+        // these at 0 would make every failure breach the cap — which would keep the
+        // assertions below green for the wrong reason. Every case here is small enough
+        // that the 5% cap governs, so all of them still throw. See
+        // CvToolSyncPartialFailureTest for the full-roster behaviour.
+        service.syncFailureThreshold = 3;
+        service.syncFailurePercent = 5.0;
         return service;
     }
 
@@ -92,10 +99,15 @@ class CvToolSyncServiceFailureTest {
     }
 
     /**
-     * A partial failure must fail the job too. The real run that exposed this
-     * synced 127 employees, failed 9 on a uk_useruuid constraint violation, and
-     * still reported COMPLETED with "0 failed" — because a persist failure
-     * returned false, which the loop counted as "unchanged".
+     * A partial failure must fail the job when it is proportionally large. The real
+     * run that exposed this synced 127 employees, failed 9 on a uk_useruuid constraint
+     * violation, and still reported COMPLETED with "0 failed" — because a persist
+     * failure returned false, which the loop counted as "unchanged".
+     *
+     * <p>1 of 2 is 50%, far past the 5% cap, so it throws. A proportionally <em>small</em>
+     * partial failure is now tolerated instead — see
+     * {@code CvToolSyncPartialFailureTest#twoFailuresOutOfAFullRosterDoNotFailTheJob},
+     * and note that the 9-of-136 incident above still fails there too.
      */
     @Test
     void throwsWhenOnlySomeEmployeesFail() {

@@ -84,10 +84,14 @@ public class InvoiceRepository {
      * loaded entity: without the refresh, a later {@code persist} of that stale instance would
      * silently overwrite the reconciled state with the pre-update snapshot.
      *
-     * <p>No {@code @Transactional} — called outside a transaction the SELECT runs in autocommit
-     * and sees the latest committed row, which is exactly the point; inside one it would be pinned
-     * to the transaction's REPEATABLE READ snapshot and could re-read the stale values.
+     * <p>{@code @Transactional} is REQUIRED here, not optional: JPA specifies
+     * {@code EntityManager.refresh} throws {@code TransactionRequiredException} outside a
+     * transaction (proven in prod, 2026-08-14, first reconcile of invoice 603bdb0d). Because the
+     * transaction starts at this call, its REPEATABLE READ snapshot begins now and therefore sees
+     * the just-committed {@code REQUIRES_NEW} update — a caller-owned transaction opened before
+     * that update would not.
      */
+    @Transactional
     public void refresh(Invoice invoice) {
         Invoice.getEntityManager().refresh(invoice);
     }

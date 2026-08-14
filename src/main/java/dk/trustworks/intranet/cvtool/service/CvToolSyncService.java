@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,6 +35,19 @@ import java.util.UUID;
  * for over a month without raising a single alert. Anything that means "no CVs
  * were synced" must propagate out of {@link #syncAllBaseCvs()} so the job is
  * marked FAILED and surfaces in nightly job monitoring.
+ * <p>
+ * <b>...but a few failed employees do not.</b> Throwing on every failure was an
+ * over-correction: it marked a night FAILED over two stalled sockets out of 148,
+ * which is not a state anyone can act on differently from a dead sync. A run now
+ * tolerates up to {@code cvtool.sync.failure-threshold} employees (or
+ * {@code cvtool.sync.failure-percent}, whichever is tighter) and reports the
+ * shortfall on a {@code CVTOOL_SYNC_PARTIAL_FAILURE} ERROR line. Above the cap it
+ * throws as before.
+ * <p>
+ * Do <em>not</em> reach for {@code BatchletResult.PARTIAL} or
+ * {@code AbstractEnhancedBatchlet} to express the tolerated case. Both are unused,
+ * and both signal by returning a string — which is precisely the mechanism that
+ * hid the original outage, because nothing downstream reads the exit status.
  */
 @JBossLog
 @ApplicationScoped
@@ -71,6 +85,39 @@ public class CvToolSyncService {
 
     /** Swapped in tests so retry policy is exercised without real waiting. */
     CvToolRetryExecutor.Sleeper sleeper = CvToolRetryExecutor.Sleeper.REAL;
+
+    /**
+     * Failed employees this run may absorb before the whole job is failed.
+     *
+     * <p>Three, because the observed transient rate is <em>two</em> — 2026-08-12 lost
+     * employees 10 and 11 to individual 30s read timeouts while the other 146 synced
+     * fine. Drawing the line at two would turn the very next three-blip night red, and
+     * a job that cries wolf is a job whose alerts stop being read; that is the actual
+     * mechanism by which this sync stayed dead for a month. Three is exactly one unit
+     * of headroom over the observed maximum and nothing more.
+     *
+     * <p>It also stays well under the known real defect: the {@code uk_useruuid}
+     * constraint incident failed <em>nine</em> of 136 (see the upsert comment below),
+     * which must still fail the job. A 3x margin separates the two.
+     */
+    @ConfigProperty(name = "cvtool.sync.failure-threshold", defaultValue = "3")
+    int syncFailureThreshold;
+
+    /**
+     * Second, proportional cap on failures — the tighter of the two governs.
+     *
+     * <p>At the production roster of ~148 this is 7.4, so the absolute cap above is what
+     * actually fires; this one exists so the absolute cannot silently become a free pass
+     * on a much smaller list. Three failures out of six employees is an outage, not a
+     * blip, and without this clause the absolute would wave it through.
+     *
+     * <p>Deliberately <b>not</b> floored at 1.0, unlike
+     * {@code DeletionCircuitBreaker#exceedsCap}. That floor exists there to let a tiny
+     * run still perform one legitimate deletion; here the small-run bias must point the
+     * other way — on a two-employee list, one failure is 50% and has to fail the job.
+     */
+    @ConfigProperty(name = "cvtool.sync.failure-percent", defaultValue = "5.0")
+    double syncFailurePercent;
 
     /**
      * Main sync method. Called by the nightly batchlet.
@@ -127,6 +174,11 @@ public class CvToolSyncService {
         int skipped = 0;
         int failed = 0;
         int unchanged = 0;
+        // Who failed, not just how many. Below the threshold the run stays green, so
+        // this list is the only record of which people are carrying stale CVs — and a
+        // name repeating night after night is how a chronic failure gets spotted before
+        // it becomes another silent month.
+        List<String> failures = new ArrayList<>();
 
         for (CvToolEmployeeSkinny employee : employees) {
             // Skip deleted employees
@@ -151,6 +203,8 @@ public class CvToolSyncService {
                 log.errorf(e, "Failed to sync employee %d (%s): %s",
                         employee.id(), employee.name(), CvToolRetryExecutor.rootCause(e));
                 failed++;
+                failures.add(String.format("%d (%s): %s",
+                        employee.id(), employee.name(), CvToolRetryExecutor.rootCause(e)));
             }
         }
 
@@ -159,18 +213,54 @@ public class CvToolSyncService {
             synced, unchanged, skipped, failed, employees.size()
         );
 
-        // Any failure fails the job. A partial failure is exactly the shape of
-        // problem that hid here for a month: 8 people silently stopped syncing
-        // while the run still reported success. Per-employee upserts commit in
-        // their own transactions, so throwing does not discard the work that
-        // did succeed — it just makes the run visible in job monitoring, and it
-        // keeps being visible every night until someone fixes the cause.
-        if (failed > 0) {
+        // A handful of failures is not the same event as a broken sync, and conflating
+        // them cost this job twice. Failing on failed > 0 marked 2026-08-12 FAILED over
+        // two 30s read timeouts out of 148 — while 128 CVs were written — which makes
+        // the batch-monitor signal useless for telling "the sync is down" from "two
+        // sockets stalled". Never failing is the older, worse bug: 8 people silently
+        // stopped syncing while the run reported success.
+        //
+        // So: breach the cap and the job still throws, exactly as before. Under the cap
+        // the run is COMPLETED but says so at ERROR, naming everyone who was left
+        // behind. Per-employee upserts commit in their own transactions, so neither
+        // branch discards work that already succeeded.
+        //
+        // Both bounds are checked and the tighter governs — the DeletionCircuitBreaker
+        // shape, this codebase's one existing percentage cap.
+        boolean exceedsAbsolute = failed > syncFailureThreshold;
+        boolean exceedsPercent = failed > employees.size() * (syncFailurePercent / 100.0);
+        if (exceedsAbsolute || exceedsPercent) {
             log.error(summary);
             throw new CvToolSyncException(summary);
         }
 
-        log.info(summary);
+        if (failed > 0) {
+            // ERROR, and carrying a stable token, because this is the ONLY signal that
+            // a tolerated failure ever produces. The run ends BatchStatus=COMPLETED, so
+            // the metric records outcome="success" — JobMonitoringListener.emitJobPerf
+            // switches on BatchStatus alone and never reads the exit status.
+            //
+            // Nor does the returned string below rescue it: cvtool-sync.xml declares no
+            // <end>/<fail>/<next> transition, so JBeret keeps a batchlet's return value
+            // on the step context and never propagates it to the job. Production bears
+            // this out — the JOB-MONITOR line for a healthy run reads
+            // "status: COMPLETED, exitStatus: COMPLETED", not the summary. So the
+            // summary is computed and discarded, which is why it has to be *in* this
+            // line: without the synced count, "2 failed" cannot be told apart from a
+            // night where nothing was written at all — the exact distinction this whole
+            // change exists to make.
+            //
+            // CVTOOL_SYNC_PARTIAL_FAILURE is matched by the nightly log sweep's job
+            // filter. That filter is an explicit token list, so a new token is invisible
+            // until it is added there — the token and the sweep's list have to move
+            // together (~/.claude/scheduled-tasks/log-file-monitor/SKILL.md).
+            log.errorf("CVTOOL_SYNC_PARTIAL_FAILURE — %s. Tolerated: up to %d failures or "
+                            + "%.1f%% of the roster. Stale CVs: %s",
+                    summary, syncFailureThreshold, syncFailurePercent,
+                    String.join("; ", failures));
+        } else {
+            log.info(summary);
+        }
         return "COMPLETED: " + summary;
     }
 

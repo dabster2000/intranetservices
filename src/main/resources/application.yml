@@ -604,6 +604,14 @@ cvtool:
   # Replaced the old cvtool.username/password pair — the CV Tool backend removed
   # POST /auth/login, which broke the nightly sync silently.
   subscription-key: ${CVTOOL_SUBSCRIPTION_KEY:}
+  sync:
+    # How many employees may fail before the whole nightly run is failed. The tighter
+    # of the two caps governs. Observed transient rate is 2 (2026-08-12: two 30s read
+    # timeouts out of 148, with 128 CVs written); the known real defect was 9 of 136.
+    # Under the cap the run stays COMPLETED and logs CVTOOL_SYNC_PARTIAL_FAILURE at
+    # ERROR; over it, the job throws as before.
+    failure-threshold: ${CVTOOL_SYNC_FAILURE_THRESHOLD:3}
+    failure-percent: ${CVTOOL_SYNC_FAILURE_PERCENT:5.0}
 
 # Generation and pre-warm controls for the AI consultant sales profiles that back the dashboard
 # "Available Now" card. Generation NEVER runs on the request thread (see
