@@ -93,13 +93,31 @@ public class CompetenceRequirementService {
     // subjects
     // -----------------------------------------------------------------------
 
-    /** Resolve one person into the shape the matcher needs. */
+    /**
+     * Resolve one person into the shape the matcher needs.
+     *
+     * <p><strong>The hydration is not optional.</strong> {@code User.statuses} is
+     * {@code @Transient}, so {@code findById} leaves it empty and
+     * {@code getUserStatus(date)} then falls back to its synthetic TERMINATED status.
+     * {@link #isActiveEmployee} would read that as "not an employee" and
+     * {@link CompetenceAudienceMatcher#inAudience} bails at its first guard, before
+     * targeting is ever consulted — so <em>every</em> learner read returns nothing, for
+     * <em>everyone</em>, and it looks exactly like a targeting or permission problem
+     * rather than a missing join.
+     *
+     * <p>This is the whole learner surface: {@link #visibleTo} and {@link #requireVisible}
+     * both route through here. The batch callers ({@link CompetenceMatrixService}, the
+     * audience preview, the due notifier) each hydrate their own population before calling
+     * {@link #subjectsOf}, which is why they were unaffected and this path was not.
+     */
     public Subject subjectOf(String useruuid) {
         User user = User.findById(useruuid);
         if (user == null) {
             return new Subject(useruuid, false, null, Set.of(), Set.of());
         }
-        return subjectsOf(List.of(user)).get(useruuid);
+        List<User> one = List.of(user);
+        CompetenceMatrixService.hydrateStatuses(one);
+        return subjectsOf(one).get(useruuid);
     }
 
     /**
