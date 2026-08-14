@@ -191,8 +191,11 @@ public final class AvailabilitySlotSuggester {
      * is "0". Digits outside the view's range follow the caller's posture:
      * {@code lenient} treats them as free (interviewers — unknown never
      * counts as busy), otherwise they disqualify (rooms).
+     * <p>
+     * Package-private: {@code MultiSlotPlanner} (Method B) scans with the
+     * same digit semantics against the same window anchor.
      */
-    private static boolean viewFree(LocalDateTime windowStart, String availabilityView,
+    static boolean viewFree(LocalDateTime windowStart, String availabilityView,
                                     LocalDateTime slotStart, int durationMinutes,
                                     boolean lenient) {
         if (availabilityView == null || availabilityView.isEmpty()) {
@@ -219,8 +222,10 @@ public final class AvailabilitySlotSuggester {
      * True when the slot lies inside the mailbox's working hours: the day
      * is a working day and {@code [start, start+duration]} fits the
      * wall-clock span. Null or half-known working hours never constrain.
+     * <p>
+     * Package-private: shared with {@code MultiSlotPlanner} (Method B).
      */
-    private static boolean withinWorkingHours(WorkingHours workingHours,
+    static boolean withinWorkingHours(WorkingHours workingHours,
                                               LocalDateTime slotStart, int durationMinutes) {
         if (workingHours == null) {
             return true;

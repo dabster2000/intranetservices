@@ -543,6 +543,85 @@ public class RecruitmentCalendarService {
     }
 
     /**
+     * Raw schedules for an arbitrary date window (Method B slot
+     * planning): digit index 0 = {@code from} at 07:00, digits running
+     * CONTINUOUSLY (nights and weekends included) to {@code to} at
+     * 19:00 — the {@link MultiSlotPlanner} anchor convention, identical
+     * to {@link #suggestedSlots}' use of the digit string.
+     * <p>
+     * Long windows are probed in ≤10-day {@code getSchedule} chunks
+     * (the base plan's Graph-429 pacing rule) and stitched per mailbox.
+     * A failed or short chunk TRUNCATES that mailbox's view at the last
+     * good digit rather than padding: truncated digits count as free
+     * for interviewers (unknown never counts as busy) and disqualify
+     * rooms (a suggested room is a promise) — exactly the
+     * {@code viewFree} lenient/strict posture. Working hours come from
+     * the first chunk that carries them.
+     * <p>
+     * Empty when the toggle is off.
+     */
+    public Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> windowSchedules(
+            List<String> mailboxes, LocalDate from, LocalDate to) {
+        if (!calendarEnabled || mailboxes.isEmpty() || to.isBefore(from)) {
+            return Map.of();
+        }
+        LocalDateTime windowEnd = to.atTime(AvailabilitySlotSuggester.DAY_WINDOW_END);
+        Map<String, StringBuilder> views = new HashMap<>();
+        Map<String, AvailabilitySlotSuggester.WorkingHours> hours = new HashMap<>();
+        Set<String> truncated = new HashSet<>();
+
+        LocalDateTime chunkStart = from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START);
+        while (chunkStart.isBefore(windowEnd)) {
+            LocalDateTime chunkEnd = chunkStart.plusDays(10);
+            if (chunkEnd.isAfter(windowEnd)) {
+                chunkEnd = windowEnd;
+            }
+            int expectedDigits = (int) (java.time.Duration.between(chunkStart, chunkEnd)
+                    .toMinutes() / AvailabilitySlotSuggester.INTERVAL_MINUTES);
+            Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> chunk =
+                    mailboxWindowSchedules(mailboxes, chunkStart, chunkEnd);
+            for (String mailbox : mailboxes) {
+                String key = chunk.keySet().stream()
+                        .filter(k -> k.equalsIgnoreCase(mailbox))
+                        .findFirst().orElse(null);
+                AvailabilitySlotSuggester.MailboxWindowSchedule schedule =
+                        key != null ? chunk.get(key) : null;
+                String lower = mailbox.toLowerCase(Locale.ROOT);
+                if (schedule != null && schedule.workingHours() != null) {
+                    hours.putIfAbsent(lower, schedule.workingHours());
+                }
+                if (truncated.contains(lower)) {
+                    continue;
+                }
+                String view = schedule != null ? schedule.availabilityView() : null;
+                if (view == null) {
+                    truncated.add(lower);
+                    continue;
+                }
+                views.computeIfAbsent(lower, k -> new StringBuilder()).append(view);
+                if (view.length() < expectedDigits) {
+                    truncated.add(lower);
+                }
+            }
+            chunkStart = chunkEnd;
+        }
+
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> result = new HashMap<>();
+        for (String mailbox : mailboxes) {
+            String lower = mailbox.toLowerCase(Locale.ROOT);
+            StringBuilder view = views.get(lower);
+            AvailabilitySlotSuggester.WorkingHours workingHours = hours.get(lower);
+            if (view == null && workingHours == null) {
+                continue; // wholly unknown mailbox — absent, never busy
+            }
+            result.put(lower, new AvailabilitySlotSuggester.MailboxWindowSchedule(
+                    view != null && view.length() > 0 ? view.toString() : null,
+                    workingHours));
+        }
+        return result;
+    }
+
+    /**
      * Ranked slot suggestions for a set of interviewers (see
      * {@link AvailabilitySlotSuggester} for the rules). One multi-day
      * {@code getSchedule} window per 20-mailbox batch — NEVER one call per

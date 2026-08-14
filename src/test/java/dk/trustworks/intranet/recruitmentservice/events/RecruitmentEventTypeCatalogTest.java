@@ -61,6 +61,14 @@ class RecruitmentEventTypeCatalogTest {
         // actions ("every mutating endpoint = one command = ≥1 event",
         // spec §6.2); together with recruitment_record_checks they form
         // the ISAE audit trail. The attest itself is never stored.
+        // The SCHEDULING_* / SLOT_* / HOLD_* / OPTION* block is the Method
+        // B addition (plan 2026-08-12 §8.6): the candidate-option
+        // scheduling lifecycle. Beyond the plan's own list,
+        // SCHEDULING_REQUEST_UPDATED (extend-window/replace-interviewer),
+        // SLOT_REJECTED (system rejection has no human decline event),
+        // SCHEDULING_OPTIONS_APPROVED (the D11 review action) and
+        // SCHEDULING_REMINDER_SENT (sweep side effects are events) follow
+        // the same catalog-addition rules as the paragraphs above.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -80,7 +88,13 @@ class RecruitmentEventTypeCatalogTest {
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
                 "CIRCLE_MEMBER_ADDED", "CIRCLE_MEMBER_REMOVED",
                 "AI_SUGGESTIONS_GENERATED", "AI_SUGGESTION_RESOLVED", "AI_BRIEF_GENERATED",
-                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE");
+                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE",
+                "SCHEDULING_REQUEST_CREATED", "SCHEDULING_REQUEST_UPDATED",
+                "SLOT_PROPOSED", "SLOT_APPROVED", "SLOT_DECLINED", "SLOT_REJECTED",
+                "HOLD_CREATED", "HOLD_RELEASED", "HOLD_MISSING",
+                "SCHEDULING_OPTIONS_APPROVED", "OPTIONS_SENT", "OPTION_SELECTED",
+                "SCHEDULING_FINALIZED", "SCHEDULING_HANDED_BACK", "SCHEDULING_CANCELLED",
+                "SCHEDULING_REMINDER_SENT");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -90,9 +104,10 @@ class RecruitmentEventTypeCatalogTest {
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
                         + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
-                        + "V481 RECORD_CHECK_* and APPLICATION_POSITION_CHANGED "
+                        + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
+                        + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION* "
                         + "additions exactly");
-        assertEquals(52, RecruitmentEventType.values().length);
+        assertEquals(68, RecruitmentEventType.values().length);
     }
 
     @Test
