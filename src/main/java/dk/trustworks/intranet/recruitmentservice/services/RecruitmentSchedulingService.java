@@ -173,6 +173,15 @@ public class RecruitmentSchedulingService {
                 request.getCreatedAt(), request.getUpdatedAt());
     }
 
+    /** Every request of an application, newest first, as panel aggregates —
+     * the FE discovers the active request (and the history) through this
+     * after a page load; request uuids are never persisted client-side. */
+    public List<SchedulingRequestResponse> aggregatesForApplication(String applicationUuid) {
+        List<RecruitmentSchedulingRequest> rows = RecruitmentSchedulingRequest
+                .list("applicationUuid = ?1 order by createdAt desc", applicationUuid);
+        return rows.stream().map(this::aggregate).toList();
+    }
+
     // ---- Terminating commands ---------------------------------------------
 
     /** Recruiter cancel: release everything, terminal CANCELLED. */

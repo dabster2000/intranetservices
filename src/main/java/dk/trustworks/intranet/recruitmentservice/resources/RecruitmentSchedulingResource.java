@@ -102,6 +102,31 @@ public class RecruitmentSchedulingResource {
 
     // ---- Read -------------------------------------------------------------
 
+    /**
+     * The Method B flag as a literal boolean — the ONE scheduling endpoint
+     * alive while the flag is off, mirroring the AI-flags posture: it
+     * reports the flag (so the dialog knows whether to show the method
+     * selector) and carries no flag guard of its own. No admin bypass —
+     * everyone sees the same value.
+     */
+    @GET
+    @Path("/scheduling/flags")
+    public SchedulingFlagsResponse flags() {
+        return new SchedulingFlagsResponse(methodBFlag.isMethodBEnabled());
+    }
+
+    /** An application's scheduling requests, newest first — the FE panel
+     * discovers the active request (and shows the history) through this. */
+    @GET
+    @Path("/applications/{uuid}/scheduling-requests")
+    public List<SchedulingRequestResponse> listForApplication(
+            @PathParam("uuid") UUID applicationUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        requireVisibleApplication(applicationUuid, actor);
+        return schedulingService.aggregatesForApplication(applicationUuid.toString());
+    }
+
     /** The FE panel aggregate. */
     @GET
     @Path("/scheduling-requests/{uuid}")
@@ -190,6 +215,10 @@ public class RecruitmentSchedulingResource {
     }
 
     // ---- Request bodies ---------------------------------------------------
+
+    /** Envelope of {@code GET /recruitment/scheduling/flags}. */
+    public record SchedulingFlagsResponse(boolean methodBEnabled) {
+    }
 
     public record ExtendWindowRequest(LocalDate windowEnd,
                                       LocalDateTime automationDeadline) {
