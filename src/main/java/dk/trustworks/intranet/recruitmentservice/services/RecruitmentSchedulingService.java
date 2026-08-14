@@ -212,9 +212,10 @@ public class RecruitmentSchedulingService {
      */
     @Transactional
     public dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence
-            addRecruiterEvidence(RecruitmentSchedulingRequest request, String actorUuid,
+            addRecruiterEvidence(RecruitmentSchedulingRequest detached, String actorUuid,
                                  dk.trustworks.intranet.recruitmentservice.dto
                                          .EvidenceCreateRequest create) {
+        RecruitmentSchedulingRequest request = managed(detached);
         requireLive(request);
         var evidence = new dk.trustworks.intranet.recruitmentservice.model
                 .RecruitmentAvailabilityEvidence();
@@ -284,11 +285,42 @@ public class RecruitmentSchedulingService {
         return rows.stream().map(this::aggregate).toList();
     }
 
+    /**
+     * Re-read the request inside the caller's transaction so mutations are
+     * actually flushed.
+     *
+     * <p>{@code RecruitmentSchedulingResource} is not transactional: it loads
+     * the request through {@code requireVisibleRequest()} to run the
+     * visibility and decision-rights checks, so by the time the entity reaches
+     * a {@code @Transactional} command here it is <em>detached</em>. Setters on
+     * a detached entity are silently discarded — the command's queries (slot
+     * releases, lifecycle events, outbox rows) still commit, so the failure
+     * looks like success and only the request row is left behind.
+     *
+     * <p>Safe for every caller: for a detached argument this loads the managed
+     * instance; for one the orchestrator already loaded inside its own
+     * transaction, {@code findById} returns that same instance from the
+     * persistence context.
+     */
+    private RecruitmentSchedulingRequest managed(RecruitmentSchedulingRequest request) {
+        if (request == null) {
+            return null;
+        }
+        RecruitmentSchedulingRequest fresh =
+                RecruitmentSchedulingRequest.findById(request.getUuid());
+        if (fresh == null) {
+            throw new jakarta.ws.rs.NotFoundException(
+                    "Scheduling request not found: " + request.getUuid());
+        }
+        return fresh;
+    }
+
     // ---- Terminating commands ---------------------------------------------
 
     /** Recruiter cancel: release everything, terminal CANCELLED. */
     @Transactional
-    public void cancel(RecruitmentSchedulingRequest request, String actorUuid) {
+    public void cancel(RecruitmentSchedulingRequest detached, String actorUuid) {
+        RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.CANCELLED);
         releasePipeline(request, REASON_REQUEST_CANCELLED);
         request.setStatus(SchedulingRequestStatus.CANCELLED);
@@ -303,8 +335,9 @@ public class RecruitmentSchedulingService {
      * null = automation.
      */
     @Transactional
-    public void handBack(RecruitmentSchedulingRequest request, String actorUuid,
+    public void handBack(RecruitmentSchedulingRequest detached, String actorUuid,
                          String reason) {
+        RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.HANDED_BACK);
         releasePipeline(request, REASON_REQUEST_HANDED_BACK);
         request.setStatus(SchedulingRequestStatus.HANDED_BACK);
@@ -324,7 +357,8 @@ public class RecruitmentSchedulingService {
      * stored in event pii only — the Phase 9 note posture).
      */
     @Transactional
-    public void candidateDeclinedOptions(RecruitmentSchedulingRequest request, String note) {
+    public void candidateDeclinedOptions(RecruitmentSchedulingRequest detached, String note) {
+        RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.HANDED_BACK);
         releasePipeline(request, REASON_REQUEST_HANDED_BACK);
         request.setStatus(SchedulingRequestStatus.HANDED_BACK);
@@ -356,7 +390,8 @@ public class RecruitmentSchedulingService {
      * says "never answered" instead of "automation stopped").
      */
     @Transactional
-    public void expireOptions(RecruitmentSchedulingRequest request) {
+    public void expireOptions(RecruitmentSchedulingRequest detached) {
+        RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.EXPIRED);
         releasePipeline(request, REASON_OPTIONS_EXPIRED);
         request.setStatus(SchedulingRequestStatus.EXPIRED);
@@ -417,9 +452,10 @@ public class RecruitmentSchedulingService {
 
     /** Extend the search window (and optionally the automation anchor). */
     @Transactional
-    public void extendWindow(RecruitmentSchedulingRequest request, String actorUuid,
+    public void extendWindow(RecruitmentSchedulingRequest detached, String actorUuid,
                              java.time.LocalDate newWindowEnd,
                              LocalDateTime newAutomationDeadline) {
+        RecruitmentSchedulingRequest request = managed(detached);
         requireLive(request);
         if (newWindowEnd == null || newWindowEnd.isBefore(request.getWindowEnd())) {
             throw badRequest("windowEnd can only be extended");
@@ -451,8 +487,9 @@ public class RecruitmentSchedulingService {
      * cancels or takes over instead.
      */
     @Transactional
-    public void replaceInterviewer(RecruitmentSchedulingRequest request, String actorUuid,
+    public void replaceInterviewer(RecruitmentSchedulingRequest detached, String actorUuid,
                                    String fromUserUuid, String toUserUuid) {
+        RecruitmentSchedulingRequest request = managed(detached);
         requireLive(request);
         if (request.getStatus() == SchedulingRequestStatus.WAITING_FOR_CANDIDATE
                 || request.getStatus() == SchedulingRequestStatus.FINALIZING) {
@@ -526,8 +563,9 @@ public class RecruitmentSchedulingService {
      * WAITING_FOR_CANDIDATE — this records the recruiter's go.
      */
     @Transactional
-    public void approveOptions(RecruitmentSchedulingRequest request, String actorUuid,
+    public void approveOptions(RecruitmentSchedulingRequest detached, String actorUuid,
                                List<String> releaseSlotUuids) {
+        RecruitmentSchedulingRequest request = managed(detached);
         if (request.getStatus() != SchedulingRequestStatus.READY_FOR_CANDIDATE
                 && request.getStatus() != SchedulingRequestStatus.HOLDING_OPTIONS) {
             throw badRequest("Options can only be reviewed once slots are secured");
