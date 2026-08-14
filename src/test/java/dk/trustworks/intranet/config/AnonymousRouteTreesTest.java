@@ -21,12 +21,14 @@ class AnonymousRouteTreesTest {
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/onboarding"));
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/login"));
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/expenses/mobile"));
+        assertTrue(AnonymousRouteTrees.isAnonymousTree("/interview-valg"));
     }
 
     @Test
     void subRoutesOfAnonymousTreesAreBlocked() {
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/apply/senior-consultant"));
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/consent/abc-123"));
+        assertTrue(AnonymousRouteTrees.isAnonymousTree("/interview-valg/abc-123"));
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/onboarding/upload"));
         assertTrue(AnonymousRouteTrees.isAnonymousTree("/expenses/mobile/capture"));
     }
