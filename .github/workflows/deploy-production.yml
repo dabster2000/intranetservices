@@ -126,6 +126,7 @@ jobs:
               {"name":"INDIVIDUAL_BONUS_MONTHLY_RECONCILIATION_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER","value":"career@trustworks.dk"},
+              {"name":"DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED","value":"true"},
               {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview,Hired Employees"}
             ]
           secrets: |
