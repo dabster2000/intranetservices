@@ -75,6 +75,12 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
         }
 
         requestHeaderHolder.setUserUuid(requestedBy);
+        // The BFF sets X-Acting-For alongside X-Requested-By while an admin is
+        // impersonating; X-Requested-By already carries the SUBJECT, so without this the
+        // actor is invisible to the backend. Surfaces that record evidence about a person
+        // (the competence module's completions, attempts and approvals) refuse the write
+        // when it is present. Never trusted for authorization — only for refusal.
+        requestHeaderHolder.setActingForUuid(context.getHeaders().getFirst("X-Acting-For"));
         // Compensation routes retain the actor only in the request-scoped holder and protected audit table.
         // Never place it in ordinary logs/MDC, even briefly before the domain redaction filter runs.
         if (compensationRequest) {

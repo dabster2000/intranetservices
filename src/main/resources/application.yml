@@ -548,6 +548,19 @@ dk:
         # Comma-separated table names in the base that are NOT candidate
         # pipelines (lookup/config tables) and must not be imported.
         excluded-tables: ${AIRTABLE_EXCLUDED_TABLES:}
+      # Method B interview scheduling (candidate-option scheduling, plan
+      # 2026-08-12): placeholder holds, Slack interviewer coordination,
+      # the candidate option page. Default OFF — every Method B phase
+      # merges dark behind this flag; independent of
+      # dk.trustworks.recruitment.graph.calendar.enabled (Method A).
+      # Deliberately a config property, not an app_settings row: the
+      # staging nightly refresh re-seeds app_settings and would flip an
+      # app-settings-backed flag off mid-soak. Per D8 staging turns it on
+      # only when Phase 13 (image evidence) is done; production only
+      # after the spec §27 scenario matrix passes on staging.
+      scheduling:
+        methodb:
+          enabled: ${DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED:false}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,

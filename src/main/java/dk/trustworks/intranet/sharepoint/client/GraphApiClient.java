@@ -358,6 +358,42 @@ public interface GraphApiClient {
     }
 
     /**
+     * The events overlapping a time window in a mailbox's default
+     * calendar — the Method B recheck (plan §9.3): the
+     * {@code availabilityView} digit string cannot attribute busyness to
+     * events, so the hold-time recheck reads {@code calendarView} with
+     * {@code $select=id,showAs} and excludes this request's own hold
+     * event ids; any OTHER busy/tentative event is a conflict. Strictly
+     * ids + free/busy status — no subjects or bodies are requested.
+     * <p>
+     * {@code startDateTime}/{@code endDateTime} are ISO-8601; with the
+     * {@code Prefer} header below they are interpreted AND returned as
+     * Europe/Copenhagen wall clock, matching the interview loop's naive
+     * datetimes.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview">List calendarView</a>
+     */
+    @GET
+    @Path("/users/{userPrincipal}/calendarView")
+    @Produces(MediaType.APPLICATION_JSON)
+    @org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam(
+            name = "Prefer", value = "outlook.timezone=\"Europe/Copenhagen\"")
+    CalendarViewResponse calendarView(
+        @PathParam("userPrincipal") String userPrincipal,
+        @jakarta.ws.rs.QueryParam("startDateTime") String startDateTime,
+        @jakarta.ws.rs.QueryParam("endDateTime") String endDateTime,
+        @jakarta.ws.rs.QueryParam("$select") String select,
+        @jakarta.ws.rs.QueryParam("$top") Integer top
+    );
+
+    /** {@code calendarView} response — id + free/busy status only. */
+    record CalendarViewResponse(
+        @JsonProperty("value") java.util.List<CalendarViewEvent> value
+    ) {
+        public record CalendarViewEvent(String id, String showAs) { }
+    }
+
+    /**
      * Lists the tenant's bookable meeting rooms. Used by the recruitment
      * interview scheduler's room picker — requires the app-level
      * {@code Place.Read.All} permission.
@@ -450,6 +486,12 @@ public interface GraphApiClient {
      * {@code transactionId} is CREATE-ONLY (Graph rejects it on PATCH):
      * the caller's idempotency key — a retried create with the same id
      * never double-books.
+     * <p>
+     * {@code showAs} ({@code free|tentative|busy|oof|workingElsewhere})
+     * and {@code isReminderOn} exist for the Method B placeholder holds
+     * (attendee-less tentative events that must not pop reminders);
+     * ordinary interview events leave both null and keep Graph's
+     * defaults.
      */
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     record CalendarEventRequest(
@@ -465,7 +507,9 @@ public interface GraphApiClient {
         Integer reminderMinutesBeforeStart,
         String sensitivity,
         String transactionId,
-        Boolean responseRequested
+        Boolean responseRequested,
+        String showAs,
+        Boolean isReminderOn
     ) {
         public record ItemBody(String contentType, String content) { }
         public record DateTimeTimeZone(String dateTime, String timeZone) { }

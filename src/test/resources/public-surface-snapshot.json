@@ -1,11 +1,11 @@
 {
   "generatedFrom": "src/test/java/dk/trustworks/intranet/security/surface/PublicSurfaceSnapshotter.java",
   "totals": {
-    "endpoints": 37,
-    "permitAllEndpoints": 20,
+    "endpoints": 40,
+    "permitAllEndpoints": 23,
     "entityReturningEndpoints": 11,
     "entityRequestBodies": 3,
-    "unresolved": 8,
+    "unresolved": 9,
     "truncated": 0,
     "sensitiveFields": 3
   },
@@ -339,6 +339,35 @@
           "projectuuid": "java.lang.String",
           "type": "dk.trustworks.intranet.dao.crm.model.enums.TaskType",
           "uuid": "java.lang.String"
+        }
+      }
+    },
+    "GET /public/scheduling/{token}": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource#view",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse": {
+          "candidateFirstName": "java.lang.String",
+          "deadline": "java.time.LocalDateTime",
+          "durationMinutes": "int",
+          "kind": "dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind",
+          "locationKind": "java.lang.String",
+          "locationLabel": "java.lang.String",
+          "options": "java.util.List<dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse$PublicOption>",
+          "positionTitle": "java.lang.String",
+          "round": "java.lang.Integer",
+          "selectedOptionId": "java.lang.String",
+          "status": "java.lang.String",
+          "timezone": "java.lang.String"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse$PublicOption": {
+          "end": "java.time.LocalDateTime",
+          "optionId": "java.lang.String",
+          "start": "java.time.LocalDateTime"
         }
       }
     },
@@ -865,6 +894,51 @@
         }
       }
     },
+    "POST /public/scheduling/{token}/none-work": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource#noneWork",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource$NoneWorkRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource$NoneWorkRequest": {
+          "note": "java.lang.String"
+        }
+      }
+    },
+    "POST /public/scheduling/{token}/select": {
+      "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource#select",
+      "access": "permit-all",
+      "returns": "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse",
+      "returnsEntity": false,
+      "requestBody": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource$SelectRequest",
+      "requestBodyIsEntity": false,
+      "fields": {
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse": {
+          "candidateFirstName": "java.lang.String",
+          "deadline": "java.time.LocalDateTime",
+          "durationMinutes": "int",
+          "kind": "dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind",
+          "locationKind": "java.lang.String",
+          "locationLabel": "java.lang.String",
+          "options": "java.util.List<dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse$PublicOption>",
+          "positionTitle": "java.lang.String",
+          "round": "java.lang.Integer",
+          "selectedOptionId": "java.lang.String",
+          "status": "java.lang.String",
+          "timezone": "java.lang.String"
+        },
+        "dk.trustworks.intranet.recruitmentservice.dto.PublicSchedulingResponse$PublicOption": {
+          "end": "java.time.LocalDateTime",
+          "optionId": "java.lang.String",
+          "start": "java.time.LocalDateTime"
+        },
+        "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource$SelectRequest": {
+          "optionId": "java.lang.String"
+        }
+      }
+    },
     "POST /public/work": {
       "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#save",
       "access": "public:read",
@@ -923,6 +997,7 @@
     "POST /knowledge/conferences/{conferenceuuid}/participants — returns Object, shape not statically known",
     "POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants — returns Object, shape not statically known",
     "POST /onboarding/tokens/{tokenUuid}/upload — returns Response, shape not statically known",
+    "POST /public/scheduling/{token}/none-work — returns Response, shape not statically known",
     "PUT /public/client/{clientuuid} — returns Response, shape not statically known"
   ],
   "truncated": [],

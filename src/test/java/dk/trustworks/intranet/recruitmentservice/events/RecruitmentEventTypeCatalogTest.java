@@ -61,6 +61,14 @@ class RecruitmentEventTypeCatalogTest {
         // actions ("every mutating endpoint = one command = ≥1 event",
         // spec §6.2); together with recruitment_record_checks they form
         // the ISAE audit trail. The attest itself is never stored.
+        // The SCHEDULING_* / SLOT_* / HOLD_* / OPTION* block is the Method
+        // B addition (plan 2026-08-12 §8.6): the candidate-option
+        // scheduling lifecycle. Beyond the plan's own list,
+        // SCHEDULING_REQUEST_UPDATED (extend-window/replace-interviewer),
+        // SLOT_REJECTED (system rejection has no human decline event),
+        // SCHEDULING_OPTIONS_APPROVED (the D11 review action) and
+        // SCHEDULING_REMINDER_SENT (sweep side effects are events) follow
+        // the same catalog-addition rules as the paragraphs above.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -80,7 +88,16 @@ class RecruitmentEventTypeCatalogTest {
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
                 "CIRCLE_MEMBER_ADDED", "CIRCLE_MEMBER_REMOVED",
                 "AI_SUGGESTIONS_GENERATED", "AI_SUGGESTION_RESOLVED", "AI_BRIEF_GENERATED",
-                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE");
+                "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE",
+                "SCHEDULING_REQUEST_CREATED", "SCHEDULING_REQUEST_UPDATED",
+                "SLOT_PROPOSED", "SLOT_APPROVED", "SLOT_DECLINED", "SLOT_REJECTED",
+                "HOLD_CREATED", "HOLD_RELEASED", "HOLD_MISSING",
+                "SCHEDULING_OPTIONS_APPROVED", "OPTIONS_SENT", "OPTION_SELECTED",
+                "SCHEDULING_FINALIZED", "SCHEDULING_HANDED_BACK", "SCHEDULING_CANCELLED",
+                "SCHEDULING_EXPIRED", "SCHEDULING_REMINDER_SENT", "SCHEDULING_NOTE_ROUTED",
+                "AVAILABILITY_EVIDENCE_RECEIVED", "AVAILABILITY_EVIDENCE_CONFIRMED",
+                "AVAILABILITY_EVIDENCE_CANCELLED", "AVAILABILITY_IMAGE_DELETED",
+                "AI_SCHEDULING_EXCHANGE");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -90,9 +107,10 @@ class RecruitmentEventTypeCatalogTest {
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
                         + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
-                        + "V481 RECORD_CHECK_* and APPLICATION_POSITION_CHANGED "
-                        + "additions exactly");
-        assertEquals(52, RecruitmentEventType.values().length);
+                        + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
+                        + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
+                        + "AVAILABILITY_EVIDENCE_* additions exactly");
+        assertEquals(75, RecruitmentEventType.values().length);
     }
 
     @Test
@@ -101,8 +119,10 @@ class RecruitmentEventTypeCatalogTest {
                 .filter(t -> t.name().startsWith("AI_"))
                 .count();
         // The five AI_* types exist since P1 (plan §P1 scope);
-        // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25).
-        assertEquals(6, aiTypes, "five P1 AI_* types + the P25 AI_ASSISTANT_EXCHANGE");
+        // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25);
+        // AI_SCHEDULING_EXCHANGE is Method B Phase 12's clarifying-question
+        // log (plan 2026-08-12 §12.4, D6).
+        assertEquals(7, aiTypes, "five P1 AI_* types + the P25 and Method B exchanges");
     }
 
     @Test

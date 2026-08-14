@@ -1,0 +1,115 @@
+-- ===================================================================
+-- V497 — ADMIN gets the three competence permissions explicitly
+--
+-- Fixes: "I don't have access rights to admin module"
+-- (reported 2026-08-14 against the SKI 7.b competence module on staging).
+--
+-- -------------------------------------------------------------------
+-- ROOT CAUSE: client-scope augmentation is not user permission
+-- -------------------------------------------------------------------
+-- V495 seeded role_permission for TECHPARTNER, TEAMLEAD and HR, and
+-- deliberately seeded nothing for ADMIN, on this reasoning (V495, verbatim):
+--
+--     "ADMIN reaches everything through admin:* expansion and needs no
+--      row here."
+--
+-- That is true of exactly one of the two authorization paths, and the
+-- competence admin page is gated by the other one.
+--
+--   1. THE API-CLIENT PATH — where admin:* expansion is real.
+--      AdminScopeAugmentor is a Quarkus SecurityIdentityAugmentor. It
+--      inspects the identity minted from the *bearer token*, and when that
+--      identity carries the admin:* role it adds Permissions.allKeysAsSet()
+--      to it. The token reaching this backend is a system/client token with
+--      no user information (the user travels in X-Requested-By), so what
+--      gets expanded is the BFF's API client — not any employee. This is
+--      why every @RolesAllowed({"competence:read"|"competence:write"|
+--      "competence:approve"}) on CompetenceAdminResource would have passed
+--      happily. Spec §19.11 already records this asymmetry from the other
+--      direction (it is what stops the learner endpoints 403'ing every
+--      employee).
+--
+--   2. THE USER PATH — where nothing expands anything.
+--      The per-user gate is the BFF's requirePermission(), which calls
+--      GET /users/{uuid}/permissions -> EffectivePermissionService
+--      -> DbAuthzStore.loadEffectivePermissions(), i.e. literally:
+--
+--          SELECT DISTINCT rp.permission_key
+--          FROM roles r
+--          JOIN role_permission rp ON rp.role = r.role AND rp.revoked_at IS NULL
+--          JOIN permission p ON p.permission_key = rp.permission_key
+--                           AND p.revoked_at IS NULL
+--          WHERE r.useruuid = :useruuid AND rp.data_scope = 'ALL'
+--
+--      There is no wildcard handling anywhere in that path — not in
+--      DbAuthzStore, not in AuthzStore, not in AuthorizationServiceImpl.
+--      admin:* is a *scope* on a token; it is not a role_permission row and
+--      it never becomes one. A user whose only role is ADMIN therefore
+--      resolves to whatever ADMIN was explicitly granted, and V495 granted
+--      it nothing in the Competence category.
+--
+-- WHY THE FAILURE LOOKED LIKE NOTHING HAPPENING: page_registry gates
+-- /knowledge/competence/admin on required_permission='competence:approve'
+-- (V495). The same empty permission set is what RouteAccessGuard consumes,
+-- so the UI redirected to /dashboard *before issuing any request*. That is
+-- why staging CloudWatch shows a successful learner call
+-- (/api/knowledge/competence/me/requirements) and no /admin/** call, no
+-- requirePermission denial, and no COMPETENCE_* token in the backend log at
+-- all: nothing was ever denied server-side, because nothing was ever asked.
+--
+-- V486 (recruitment go-live) already established the correct pattern by
+-- granting ADMIN recruitment:manage explicitly rather than relying on
+-- admin:*. This migration follows V486's shape exactly.
+--
+-- -------------------------------------------------------------------
+-- SCOPE OF THE FIX
+-- -------------------------------------------------------------------
+-- ADMIN only. Spec §4.8's role table lists four rows and V495 seeded the
+-- other three correctly and completely:
+--
+--     TECHPARTNER  read + write + approve   ALL    -- seeded by V495
+--     ADMIN        (via admin:*)            ALL    -- MISSING -> this file
+--     TEAMLEAD     read + approve           TEAM   -- seeded by V495
+--     HR           read                     ALL    -- seeded by V495
+--
+-- Granting ALL (not TEAM) to ADMIN matches §4.8's "ALL" column, and matches
+-- TECHPARTNER, the module's other full-rights role.
+--
+-- NOT CHANGED HERE, deliberately: TEAMLEAD's grants are TEAM-scoped by
+-- design (§4.8 — the matrix is colleagues' training records, i.e. employee
+-- performance data), and the legacy boolean projection above returns
+-- ALL-scope grants only, so a TEAMLEAD is also currently redirected away
+-- from the admin route. That is the documented Phase 8 scope model
+-- ("sub-ALL grants must never satisfy a scope-blind check", AuthzStore
+-- javadoc) behaving as specified, not a seeding defect. Widening TEAMLEAD
+-- to ALL to make the page open would hand every team lead company-wide
+-- access to colleagues' training records — a security regression, and an
+-- owner decision, not a bug fix. Left alone on purpose.
+--
+-- -------------------------------------------------------------------
+-- WHY A NEW MIGRATION AND NOT AN EDIT TO V495
+-- -------------------------------------------------------------------
+-- V495 has already run on staging. Editing it would fail Flyway on a
+-- checksum mismatch, and this deployment runs repair-at-start, which
+-- realigns the checksum WITHOUT re-executing the file — so the edit would
+-- silently never apply. Fix forward only.
+--
+-- No permission rows are needed: V495 already inserted competence:read,
+-- competence:write and competence:approve into `permission` (the FK target
+-- of role_permission.permission_key). No role_definition row is needed
+-- either: V245 seeds ADMIN.
+--
+-- Rollback:
+--   UPDATE role_permission SET revoked_at = NOW()
+--    WHERE role = 'ADMIN' AND permission_key LIKE 'competence:%';
+-- ===================================================================
+
+INSERT INTO role_permission (role, permission_key, data_scope, created_at, created_by)
+VALUES
+    ('ADMIN', 'competence:read',    'ALL', NOW(), 'V497'),
+    ('ADMIN', 'competence:write',   'ALL', NOW(), 'V497'),
+    ('ADMIN', 'competence:approve', 'ALL', NOW(), 'V497')
+ON DUPLICATE KEY UPDATE
+    revoked_at  = NULL,
+    updated_at  = NOW(),
+    modified_by = 'V497';

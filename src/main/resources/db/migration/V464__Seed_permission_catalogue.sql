@@ -61,6 +61,15 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('companies:read', 'Companies — read', NULL, 'Companies', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('competence:approve', 'Competence — approve', NULL, 'Competence', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('competence:read', 'Competence — read', NULL, 'Competence', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('competence:write', 'Competence — write', NULL, 'Competence', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('conference:read', 'Conference — read', NULL, 'Conference', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
