@@ -45,6 +45,11 @@ class CvToolSyncRetryTest {
         service.subscriptionKey = Optional.of("key");
         service.cvToolClient = client;
         service.sleeper = millis -> { };
+        // Production defaults: @ConfigProperty does not run in plain JUnit, and leaving
+        // these at 0 would make every failure breach the cap — masking any regression
+        // in the tolerance those numbers encode. See CvToolSyncPartialFailureTest.
+        service.syncFailureThreshold = 3;
+        service.syncFailurePercent = 5.0;
         return service;
     }
 
