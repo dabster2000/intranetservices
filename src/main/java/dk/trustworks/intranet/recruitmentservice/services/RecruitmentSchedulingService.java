@@ -211,7 +211,7 @@ public class RecruitmentSchedulingService {
      * wakes the planner.
      */
     @Transactional
-    public dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence
+    public SchedulingRequestResponse
             addRecruiterEvidence(RecruitmentSchedulingRequest detached, String actorUuid,
                                  dk.trustworks.intranet.recruitmentservice.dto
                                          .EvidenceCreateRequest create) {
@@ -273,7 +273,7 @@ public class RecruitmentSchedulingService {
             confirmed.payload("superseded_evidence_uuids", superseded);
         }
         eventRecorder.record(confirmed);
-        return evidence;
+        return aggregate(request);
     }
 
     /** Every request of an application, newest first, as panel aggregates —
@@ -319,13 +319,14 @@ public class RecruitmentSchedulingService {
 
     /** Recruiter cancel: release everything, terminal CANCELLED. */
     @Transactional
-    public void cancel(RecruitmentSchedulingRequest detached, String actorUuid) {
+    public SchedulingRequestResponse cancel(RecruitmentSchedulingRequest detached, String actorUuid) {
         RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.CANCELLED);
         releasePipeline(request, REASON_REQUEST_CANCELLED);
         request.setStatus(SchedulingRequestStatus.CANCELLED);
         recordLifecycleEvent(request, RecruitmentEventType.SCHEDULING_CANCELLED,
                 actorUuid, null);
+        return aggregate(request);
     }
 
     /**
@@ -335,7 +336,7 @@ public class RecruitmentSchedulingService {
      * null = automation.
      */
     @Transactional
-    public void handBack(RecruitmentSchedulingRequest detached, String actorUuid,
+    public SchedulingRequestResponse handBack(RecruitmentSchedulingRequest detached, String actorUuid,
                          String reason) {
         RecruitmentSchedulingRequest request = managed(detached);
         SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.HANDED_BACK);
@@ -348,6 +349,7 @@ public class RecruitmentSchedulingService {
                 SchedulingOutboxAction.SEND_RECRUITER_DM,
                 "HANDBACK:" + request.getVersion(),
                 noticePayload("HANDBACK"));
+        return aggregate(request);
     }
 
     /**
@@ -452,7 +454,7 @@ public class RecruitmentSchedulingService {
 
     /** Extend the search window (and optionally the automation anchor). */
     @Transactional
-    public void extendWindow(RecruitmentSchedulingRequest detached, String actorUuid,
+    public SchedulingRequestResponse extendWindow(RecruitmentSchedulingRequest detached, String actorUuid,
                              java.time.LocalDate newWindowEnd,
                              LocalDateTime newAutomationDeadline) {
         RecruitmentSchedulingRequest request = managed(detached);
@@ -476,6 +478,7 @@ public class RecruitmentSchedulingService {
                 "window_end_to", newWindowEnd.toString(),
                 "automation_deadline_from", oldDeadline.toString(),
                 "automation_deadline_to", request.getAutomationDeadline().toString()));
+        return aggregate(request);
     }
 
     /**
@@ -487,7 +490,7 @@ public class RecruitmentSchedulingService {
      * cancels or takes over instead.
      */
     @Transactional
-    public void replaceInterviewer(RecruitmentSchedulingRequest detached, String actorUuid,
+    public SchedulingRequestResponse replaceInterviewer(RecruitmentSchedulingRequest detached, String actorUuid,
                                    String fromUserUuid, String toUserUuid) {
         RecruitmentSchedulingRequest request = managed(detached);
         requireLive(request);
@@ -554,6 +557,7 @@ public class RecruitmentSchedulingService {
                 "change", "REPLACE_INTERVIEWER",
                 "from_user_uuid", fromUserUuid,
                 "to_user_uuid", toUserUuid));
+        return aggregate(request);
     }
 
     /**
@@ -563,7 +567,7 @@ public class RecruitmentSchedulingService {
      * WAITING_FOR_CANDIDATE — this records the recruiter's go.
      */
     @Transactional
-    public void approveOptions(RecruitmentSchedulingRequest detached, String actorUuid,
+    public SchedulingRequestResponse approveOptions(RecruitmentSchedulingRequest detached, String actorUuid,
                                List<String> releaseSlotUuids) {
         RecruitmentSchedulingRequest request = managed(detached);
         if (request.getStatus() != SchedulingRequestStatus.READY_FOR_CANDIDATE
@@ -600,6 +604,7 @@ public class RecruitmentSchedulingService {
                 .payload("request_uuid", request.getUuid())
                 .payload("kept_slot_uuids", kept)
                 .payload("released_slot_uuids", released));
+        return aggregate(request);
     }
 
     // ---- Shared helpers ----------------------------------------------------
