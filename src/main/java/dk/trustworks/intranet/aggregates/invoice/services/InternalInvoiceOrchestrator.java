@@ -248,21 +248,37 @@ public class InternalInvoiceOrchestrator {
                     "Only INTERNAL or INTERNAL_SERVICE invoices can adopt a vendor booking. "
                     + "Current type: " + inv.getType());
         }
+        // Completion mode: the booked number is already recorded locally (an earlier adopt got
+        // through markBooked and then failed before the debtor voucher — 2026-08-14, first
+        // reconcile of 603bdb0d died on the pre-fix non-transactional refresh). Re-running with
+        // the SAME number skips the recording and just verifies + posts the voucher. A DIFFERENT
+        // number is still a hard error. CAUTION: this path cannot see whether the voucher already
+        // posted (postDebtorSideVoucher records no voucher number), so re-running after a fully
+        // successful adopt can duplicate the debtor voucher — check the debtor's e-conomic journal
+        // before re-running.
+        boolean completionOnly = false;
         if (inv.getEconomicsBookedNumber() != null) {
-            throw new BadRequestException("Invoice " + invoiceUuid
-                    + " already carries economics_booked_number " + inv.getEconomicsBookedNumber());
+            if (inv.getEconomicsBookedNumber() != bookedNumber) {
+                throw new BadRequestException("Invoice " + invoiceUuid
+                        + " already carries economics_booked_number " + inv.getEconomicsBookedNumber()
+                        + " — refusing to adopt a different number (" + bookedNumber + ")");
+            }
+            completionOnly = true;
         }
 
-        // Evidence gate: adopting is only legal when an outbound booking POST actually happened.
-        List<InvoiceBookingAttempt> posted = attemptRepo.listPostedUnresolvedByInvoice(invoiceUuid);
-        if (posted.isEmpty()) {
-            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
-                    .entity("Invoice " + invoiceUuid + " has no posted, unresolved booking attempt — "
-                            + "there is nothing to adopt. If the invoice was never booked at "
-                            + "e-conomic, finalize it normally instead.")
-                    .build());
+        InvoiceBookingAttempt attempt = null;
+        if (!completionOnly) {
+            // Evidence gate: adopting is only legal when an outbound booking POST actually happened.
+            List<InvoiceBookingAttempt> posted = attemptRepo.listPostedUnresolvedByInvoice(invoiceUuid);
+            if (posted.isEmpty()) {
+                throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                        .entity("Invoice " + invoiceUuid + " has no posted, unresolved booking attempt — "
+                                + "there is nothing to adopt. If the invoice was never booked at "
+                                + "e-conomic, finalize it normally instead.")
+                        .build());
+            }
+            attempt = posted.get(0);
         }
-        InvoiceBookingAttempt attempt = posted.get(0);
 
         // Vendor verification: the booked invoice must exist in the ISSUER's agreement and its
         // gross must match what this invoice's persisted items would have produced.
@@ -284,15 +300,21 @@ public class InternalInvoiceOrchestrator {
                     .build());
         }
 
-        log.warnf("adoptVendorBooking: adopting bookedNumber=%d for invoiceUuid=%s "
-                        + "(attempt=%s, postedAt=%s, verified gross=%.2f)",
-                bookedNumber, invoiceUuid, attempt.getUuid(), attempt.getPostedAt(),
-                booked.getGrossAmount());
+        if (completionOnly) {
+            log.warnf("adoptVendorBooking: COMPLETION-ONLY for invoiceUuid=%s bookedNumber=%d "
+                            + "(already recorded) — verifying and posting the debtor voucher only",
+                    invoiceUuid, bookedNumber);
+        } else {
+            log.warnf("adoptVendorBooking: adopting bookedNumber=%d for invoiceUuid=%s "
+                            + "(attempt=%s, postedAt=%s, verified gross=%.2f)",
+                    bookedNumber, invoiceUuid, attempt.getUuid(), attempt.getPostedAt(),
+                    booked.getGrossAmount());
 
-        // Durable write (attempt + invoice row) in its own committed transaction, then refresh the
-        // entity past its stale pre-adoption snapshot before any further use.
-        attemptWriter.markBooked(attempt.getUuid(), invoiceUuid, bookedNumber);
-        invoices.refresh(inv);
+            // Durable write (attempt + invoice row) in its own committed transaction, then refresh
+            // the entity past its stale pre-adoption snapshot before any further use.
+            attemptWriter.markBooked(attempt.getUuid(), invoiceUuid, bookedNumber);
+            invoices.refresh(inv);
+        }
 
         // Debtor-side supplier voucher with the vendor-verified gross. The transient grandTotal
         // must be set explicitly — this entity was never through createDraft's recalculation.

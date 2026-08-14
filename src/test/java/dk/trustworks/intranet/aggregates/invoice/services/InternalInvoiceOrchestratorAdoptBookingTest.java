@@ -106,7 +106,7 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
     }
 
     @Test
-    void adopt_rejects_invoice_that_already_carries_a_booked_number() {
+    void adopt_rejects_a_DIFFERENT_already_recorded_booked_number() {
         Invoice inv = settlementDraft("inv-4");
         inv.setEconomicsBookedNumber(50000);
         when(invoices.findByUuid("inv-4")).thenReturn(Optional.of(inv));
@@ -114,6 +114,26 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
         assertThrows(BadRequestException.class, () -> internal.adoptVendorBooking("inv-4", 50107));
 
         verifyNoInteractions(attemptRepo, bookApi, attemptWriter);
+    }
+
+    // Completion mode: an earlier adopt recorded the booking but died before the debtor voucher
+    // (2026-08-14, invoice 603bdb0d — the pre-fix refresh threw TransactionRequiredException).
+    // Re-running with the SAME number must skip the recording and just verify + post the voucher.
+    @Test
+    void adopt_with_matching_recorded_number_completes_voucher_only() {
+        Invoice inv = settlementDraft("inv-7");
+        inv.setEconomicsBookedNumber(50107);
+        when(invoices.findByUuid("inv-7")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("cyber-uuid")).thenReturn(TOKENS);
+        when(bookApi.getBooked("secret", "grant", 50107)).thenReturn(booked(17078.70));
+
+        Invoice result = internal.adoptVendorBooking("inv-7", 50107);
+
+        verify(issuerSide).postDebtorVoucherAfterReconcile(inv);
+        assertEquals(17078.70, inv.getGrandTotal(), 0.001);
+        verifyNoInteractions(attemptRepo, attemptWriter);
+        verify(invoices, never()).refresh(any());
+        assertSame(inv, result);
     }
 
     @Test
