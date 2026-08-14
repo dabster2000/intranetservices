@@ -1,7 +1,7 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 86,
+  "count": 89,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
@@ -20,6 +20,9 @@
     { "key": "careerlevel:read", "displayName": "Career level — read", "category": "Career level" },
     { "key": "careerlevel:write", "displayName": "Career level — write", "category": "Career level" },
     { "key": "companies:read", "displayName": "Companies — read", "category": "Companies" },
+    { "key": "competence:approve", "displayName": "Competence — approve", "category": "Competence" },
+    { "key": "competence:read", "displayName": "Competence — read", "category": "Competence" },
+    { "key": "competence:write", "displayName": "Competence — write", "category": "Competence" },
     { "key": "conference:read", "displayName": "Conference — read", "category": "Conference" },
     { "key": "conference:write", "displayName": "Conference — write", "category": "Conference" },
     { "key": "consultant:read", "displayName": "Consultant — read", "category": "Consultant" },

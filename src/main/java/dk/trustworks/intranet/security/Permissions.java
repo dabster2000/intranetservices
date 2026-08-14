@@ -114,6 +114,17 @@ public final class Permissions {
             new Permission("knowledge:read", "Knowledge — read", "Knowledge"),
             new Permission("knowledge:write", "Knowledge — write", "Knowledge"),
 
+            // Competence (SKI 7.b secure-development competence module).
+            // Deliberately NOT knowledge:* — /knowledge/courses is elective,
+            // enrolment-based learning; this is mandatory, targeted, assessed
+            // compliance training whose evidence an auditor reads. Authoring
+            // and approving are separate keys so "who writes the test" and
+            // "who attests a pass" can be split without a code change — the
+            // module's own funktionsadskillelse lesson applied to itself.
+            new Permission("competence:read", "Competence — read", "Competence"),
+            new Permission("competence:write", "Competence — write", "Competence"),
+            new Permission("competence:approve", "Competence — approve", "Competence"),
+
             // Teams
             new Permission("teams:read", "Teams — read", "Teams"),
             new Permission("teams:write", "Teams — write", "Teams"),

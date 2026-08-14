@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.batch;
 
+import dk.trustworks.intranet.competenceservice.services.CompetenceAttemptService;
+import dk.trustworks.intranet.competenceservice.services.CompetenceDueNotifier;
 import dk.trustworks.intranet.services.PracticeSyncService;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -25,6 +27,12 @@ public class BatchScheduler {
 
     @Inject
     PracticeSyncService practiceSyncService;
+
+    @Inject
+    CompetenceAttemptService competenceAttemptService;
+
+    @Inject
+    CompetenceDueNotifier competenceDueNotifier;
 
     /**
      * Kill switch for expense-consume — the only scheduled job that POSTs vouchers
@@ -116,6 +124,32 @@ public class BatchScheduler {
      */
     @ConfigProperty(name = "dk.trustworks.employee-documents.retention-job.enabled", defaultValue = "true")
     boolean employeeDocumentsRetentionJobEnabled;
+
+    /**
+     * Kill switch for the competence attempt reaper (competence spec §5.11). Off =
+     * timed-out in-progress attempts are never marked abandoned, which is not just a
+     * cosmetic backlog: {@code start()} refuses a second open attempt, so an unreaped
+     * row locks that person out of ever retaking the test. Purely internal — the reaper
+     * touches no external system, so unlike the e-conomic switches there is no staging
+     * reason to turn it off.
+     */
+    @ConfigProperty(name = "dk.trustworks.competence.attempt-reaper.enabled", defaultValue = "true")
+    boolean competenceAttemptReaperEnabled;
+
+    /**
+     * Kill switch for the competence due notifier (competence spec §13). Off = no
+     * overdue/falls-due-soon DMs at all; the matrix and the employee landing page keep
+     * computing exactly the same conditions per viewer, so nothing is lost except the
+     * push.
+     * <p>
+     * Default true for production, but <strong>staging's deploy should set this to
+     * {@code false}</strong>: staging is refreshed from a production clone, so every real
+     * employee's real competence state is present and an enabled notifier would DM the
+     * whole company from a test environment — the same reasoning as the e-conomic upload
+     * switches above, applied to people instead of vouchers.
+     */
+    @ConfigProperty(name = "dk.trustworks.competence.due-notifier.enabled", defaultValue = "true")
+    boolean competenceDueNotifierEnabled;
 
     /**
      * Read-side kill switch for finance-load-economics. Staging false.
@@ -681,6 +715,60 @@ public class BatchScheduler {
             jobOperator.start("employee-documents-retention", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule employee-documents-retention: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Mark timed-out in-progress competence attempts as abandoned (competence spec §5.11).
+     * Without it a closed browser tab leaves a row that looks like an unfinished obligation
+     * forever — and blocks that person from ever starting the test again, since a second
+     * open attempt is refused.
+     * <p>
+     * Idempotent: the query selects only unsubmitted attempts older than the configured
+     * timeout, so a second pass finds nothing new. That matters concretely — {@code
+     * @Scheduled} can fire on the OLD task during an ECS Express cutover, so two JVMs may
+     * run this minutes apart against the same rows, and the outcome must be identical to
+     * one run. {@code SKIP} covers the in-JVM half of the same concern.
+     * <p>
+     * Schedule: every 15 minutes. The timeout itself is a setting (default 120 minutes),
+     * so this only bounds how long a reapable row lingers past it.
+     */
+    @Scheduled(every = "15m", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void scheduleCompetenceAttemptReaper() {
+        if (!competenceAttemptReaperEnabled) {
+            log.debug("competence-attempt-reaper skipped: dk.trustworks.competence.attempt-reaper.enabled=false");
+            return;
+        }
+        try {
+            competenceAttemptService.reapStaleAttempts();
+        } catch (Exception e) {
+            log.error("competence-attempt-reaper tick failed", e);
+        }
+    }
+
+    /**
+     * DM everyone whose microcourse or test is overdue, or falls due within 14 days
+     * (competence spec §13). The message names a requirement and a date — never a score
+     * (§10.9).
+     * <p>
+     * Idempotent by an {@code app_settings}-recorded last-run date claimed before the
+     * first DM: a second firing on the same day — the ECS Express cutover case — sends
+     * nothing. See {@link CompetenceDueNotifier} for why the claim comes first.
+     * <p>
+     * Schedule: daily at 07:00 UTC, the slot spec §13 names. It shares the slot with the
+     * recruitment SLA sweep; both are a handful of queries and some DMs, so the overlap is
+     * not worth spreading.
+     */
+    @Scheduled(cron = "0 0 7 * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void scheduleCompetenceDueNotifier() {
+        if (!competenceDueNotifierEnabled) {
+            log.debug("competence-due-notifier skipped: dk.trustworks.competence.due-notifier.enabled=false");
+            return;
+        }
+        try {
+            competenceDueNotifier.run(LocalDate.now());
+        } catch (Exception e) {
+            log.error("competence-due-notifier run failed", e);
         }
     }
 

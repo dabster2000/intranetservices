@@ -27,9 +27,13 @@ class PermissionsCatalogueTest {
      * 85 at extraction from {@code AdminScopeAugmentor.ALL_SCOPES};
      * 86 since the recruitment go-live added {@code recruitment:manage}
      * (2026-08-10) to separate the recruiter tier from {@code
-     * recruitment:write}, which every team lead holds.
+     * recruitment:write}, which every team lead holds;
+     * 89 since the SKI 7.b competence module added {@code competence:read},
+     * {@code :write} and {@code :approve} (2026-08-14) — deliberately not
+     * reusing {@code knowledge:*}, which gates elective CKO courses rather
+     * than mandatory, assessed compliance training.
      */
-    private static final int EXPECTED_PERMISSIONS = 86;
+    private static final int EXPECTED_PERMISSIONS = 89;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {
