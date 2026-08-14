@@ -101,11 +101,29 @@ public class RecruitmentCalendarService {
      * The shared organizer mailbox new events are created under (plan
      * Phase 2, decision D1: {@code career@trustworks.dk} — env
      * {@code DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER}).
-     * Empty (the default) falls back to the first interviewer's mailbox,
-     * the pre-V492 behavior — the code ships safely ahead of the config.
+     * Absent falls back to the first interviewer's mailbox, the
+     * pre-V492 behavior — the code ships safely ahead of the config.
+     * <p>
+     * {@code Optional<String>} deliberately — NOT a plain String with
+     * {@code defaultValue = ""}: SmallRye converts an empty string to
+     * null, which makes the property REQUIRED and fails every boot
+     * without the env var (SRCFG00014) — the cvtool.username trap. This
+     * exact shape took the whole {@code @QuarkusTest} tier down between
+     * the Method A merge and the Method B validation phase.
      */
-    @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.organizer", defaultValue = "")
-    String configuredOrganizer;
+    @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.organizer")
+    Optional<String> configuredOrganizerValue;
+
+    /** The organizer mailbox, or null when unconfigured (fallback applies).
+     * Null-tolerant on the FIELD too: unit tests build this service with
+     * bare {@code new}, where no injection ever ran. */
+    private String configuredOrganizer() {
+        if (configuredOrganizerValue == null) {
+            return null;
+        }
+        return configuredOrganizerValue.filter(v -> !v.isBlank())
+                .map(String::trim).orElse(null);
+    }
 
     private GraphApiClient graph() {
         if (graphApiClient == null) {
@@ -421,9 +439,8 @@ public class RecruitmentCalendarService {
      * organizer while the config is empty.
      */
     private String candidateOrganizer(String internalOrganizer) {
-        return configuredOrganizer != null && !configuredOrganizer.isBlank()
-                ? configuredOrganizer.trim()
-                : internalOrganizer;
+        String organizer = configuredOrganizer();
+        return organizer != null ? organizer : internalOrganizer;
     }
 
     /**
@@ -1266,8 +1283,9 @@ public class RecruitmentCalendarService {
         if (interview.getGraphOrganizer() != null && !interview.getGraphOrganizer().isBlank()) {
             return interview.getGraphOrganizer();
         }
-        if (configuredOrganizer != null && !configuredOrganizer.isBlank()) {
-            return configuredOrganizer.trim();
+        String organizer = configuredOrganizer();
+        if (organizer != null) {
+            return organizer;
         }
         List<String> interviewers = interview.getInterviewerUuids();
         if (interviewers == null || interviewers.isEmpty()) {
