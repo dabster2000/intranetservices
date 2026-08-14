@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
+import dk.trustworks.intranet.expenseservice.dto.ExpenseRelinkRequestDTO;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseRelinkResultDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseResendPrecheckDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseResendRequestDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseResendResultDTO;
+import dk.trustworks.intranet.expenseservice.services.ExpenseEconomicRelinkService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseEconomicResendService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
@@ -18,7 +21,9 @@ import jakarta.ws.rs.core.MediaType;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Manual e-conomic re-send (spec §4). Mirrors {@link ExpenseBatchDecisionResource}: each uuid is
@@ -32,6 +37,7 @@ import java.util.List;
 public class ExpenseEconomicsResendResource {
 
     @Inject ExpenseEconomicResendService resend;
+    @Inject ExpenseEconomicRelinkService relink;
     @Inject RequestHeaderHolder header;
 
     @POST
@@ -67,5 +73,51 @@ public class ExpenseEconomicsResendResource {
             }
         }
         return new ExpenseResendResultDTO(updated, skipped, failed);
+    }
+
+    /**
+     * Re-link each expense to an existing (moved/renumbered) voucher. Rows are independent —
+     * one row's failure never blocks the rest — but a request containing the same expense or
+     * the same target voucher twice is rejected outright: the second write would either be a
+     * confusing no-op or a double-claim, so the payload itself must be unambiguous.
+     */
+    @POST
+    @Path("/relink")
+    @RolesAllowed({"expenses:review"})
+    public ExpenseRelinkResultDTO relink(@Valid ExpenseRelinkRequestDTO body) {
+        rejectDuplicates(body);
+        String actor = header.getUserUuid();
+        List<ExpenseRelinkResultDTO.Applied> applied = new ArrayList<>();
+        List<ExpenseRelinkResultDTO.Skipped> skipped = new ArrayList<>();
+        List<ExpenseRelinkResultDTO.Failed> failed = new ArrayList<>();
+        for (ExpenseRelinkRequestDTO.Row row : body.rows()) {
+            try {
+                applied.add(relink.relinkOne(row, actor, body.dryRun()));
+            } catch (NotFoundException ex) {
+                skipped.add(new ExpenseRelinkResultDTO.Skipped(row.uuid(), "not found"));
+            } catch (BadRequestException ex) {
+                skipped.add(new ExpenseRelinkResultDTO.Skipped(row.uuid(), ex.getMessage()));
+            } catch (Exception ex) {
+                log.errorf(ex, "Expense e-conomic re-link failed for uuid=%s", row.uuid());
+                failed.add(new ExpenseRelinkResultDTO.Failed(row.uuid(), "re-link failed"));
+            }
+        }
+        return new ExpenseRelinkResultDTO(body.dryRun(), applied.size(), applied, skipped, failed);
+    }
+
+    static void rejectDuplicates(ExpenseRelinkRequestDTO body) {
+        Set<String> uuids = new HashSet<>();
+        Set<String> targets = new HashSet<>();
+        for (ExpenseRelinkRequestDTO.Row row : body.rows()) {
+            if (!uuids.add(row.uuid())) {
+                throw new BadRequestException("duplicate expense uuid in request: " + row.uuid());
+            }
+            String key = row.target() == ExpenseRelinkRequestDTO.Target.BOOKED
+                    ? "booked:" + row.accountingyear() + ":" + row.vouchernumber()
+                    : "draft:" + row.journalnumber() + ":" + row.accountingyear() + ":" + row.vouchernumber();
+            if (!targets.add(key)) {
+                throw new BadRequestException("duplicate target voucher in request: " + key);
+            }
+        }
     }
 }
