@@ -73,6 +73,11 @@ public final class SlackSchedulingViews {
         return start.format(DAY) + " kl. " + start.format(TIME) + "–" + end.format(TIME);
     }
 
+    /** One Danish point in time: {@code fredag den 22. august kl. 16.00}. */
+    public static String danishDayTime(LocalDateTime at) {
+        return at.format(DAY) + " kl. " + at.format(TIME);
+    }
+
     /** The card's one-line interview label: "Interview 2" / "Uformel snak". */
     public static String interviewLabel(RecruitmentInterviewKind kind, Integer round) {
         return kind == RecruitmentInterviewKind.INFORMAL

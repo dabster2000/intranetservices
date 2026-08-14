@@ -101,6 +101,24 @@ public class SchedulingRecruiterDmExecutor implements SchedulingOutboxExecutor {
                                 + who + " har ikke svaret på forslaget" + when
                                 + " trods påmindelser.\n" + link);
             }
+            case "SCHEDULED" -> new Notice(recruiter, "Interview booket",
+                    ":white_check_mark: *Kandidaten har valgt et tidspunkt — interviewet er booket*\n"
+                            + "Invitationerne er sendt, og de øvrige reserveringer er frigivet.\n"
+                            + link);
+            case "OPTIONS_EXPIRED" -> new Notice(recruiter, "Kandidaten svarede ikke",
+                    ":hourglass_flowing_sand: *Kandidaten valgte ikke et tidspunkt inden fristen*\n"
+                            + "Mulighederne er frigivet, og linket virker ikke længere. "
+                            + "Book direkte, eller start en ny søgning.\n" + link);
+            case "CANDIDATE_NONE_WORK" -> {
+                String note = payload.path("note").asText(null);
+                yield new Notice(recruiter, "Kandidaten kan ikke bruge tidspunkterne",
+                        ":raised_hand: *Kandidaten meldte, at ingen af tidspunkterne passer*\n"
+                                + (note != null && !note.isBlank()
+                                        ? "Kandidatens besked: “" + note + "”\n"
+                                        : "")
+                                + "Reserveringerne er frigivet — tag kontakt og aftal noget andet.\n"
+                                + link);
+            }
             default -> {
                 log.warnf("Method B recruiter notice of unknown kind '%s' dropped", kind);
                 yield null;
@@ -116,6 +134,10 @@ public class SchedulingRecruiterDmExecutor implements SchedulingOutboxExecutor {
             case "AUTOMATION_DEADLINE" -> "tidsfristen for automatisk planlægning udløb";
             case "WINDOW_EXHAUSTED" -> "ingen mulige tider i det valgte vindue";
             case "RECRUITER_TAKEOVER" -> "manuel overtagelse";
+            case "CANDIDATE_NO_EMAIL" -> "kandidaten har ingen mailadresse";
+            case "CANDIDATE_DECLINED_OPTIONS" -> "kandidaten kunne ikke bruge tidspunkterne";
+            case "FINALIZE_REJECTED" -> "interviewet kunne ikke oprettes automatisk";
+            case "SELECTION_LOST" -> "kandidatens valg kunne ikke genfindes";
             default -> reason;
         };
     }

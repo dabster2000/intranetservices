@@ -80,6 +80,12 @@ public class RecruitmentSchedulingOrchestrator {
     @Inject
     RecruitmentEventRecorder eventRecorder;
 
+    @Inject
+    RecruitmentSchedulingCandidateService candidateService;
+
+    @Inject
+    RecruitmentInterviewService interviewService;
+
     @Scheduled(every = "1m", identity = "recruitment-scheduling-advance",
             concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void advanceTimer() {
@@ -127,11 +133,14 @@ public class RecruitmentSchedulingOrchestrator {
         }
         LocalDateTime now = LocalDateTime.now();
 
-        // The two-week anchor (spec §19.4). FINALIZING is exempt: a
-        // running saga finishes; if it regresses, the next sweep lands
-        // here again.
+        // The two-week anchor (spec §19.4) governs the SEARCH. FINALIZING
+        // is exempt (a running saga finishes), and so is
+        // WAITING_FOR_CANDIDATE: once options are OUT, the candidate
+        // deadline (= batch expiry) governs — yanking a live link out from
+        // under the candidate would be worse than a few extra days.
         if (now.isAfter(request.getAutomationDeadline())
-                && request.getStatus() != SchedulingRequestStatus.FINALIZING) {
+                && request.getStatus() != SchedulingRequestStatus.FINALIZING
+                && request.getStatus() != SchedulingRequestStatus.WAITING_FOR_CANDIDATE) {
             schedulingService.handBack(request, null, REASON_AUTOMATION_DEADLINE);
             return;
         }
@@ -143,10 +152,16 @@ public class RecruitmentSchedulingOrchestrator {
         }
 
         switch (request.getStatus()) {
-            case SEARCHING, WAITING_FOR_INTERVIEWERS, HOLDING_OPTIONS, READY_FOR_CANDIDATE ->
-                    pipelineStep(request, now);
-            // WAITING_FOR_CANDIDATE / FINALIZING advance on candidate
-            // events and the Phase 11 saga, not here.
+            case SEARCHING, WAITING_FOR_INTERVIEWERS, HOLDING_OPTIONS, READY_FOR_CANDIDATE -> {
+                pipelineStep(request, now);
+                // The Phase 11 send step: review gate passed (or off) and
+                // the requested count still secured ⇒ options go out.
+                if (request.getStatus() == SchedulingRequestStatus.READY_FOR_CANDIDATE) {
+                    candidateService.sendOptionsIfReady(request, now);
+                }
+            }
+            case WAITING_FOR_CANDIDATE -> candidateService.expireIfOverdue(request, now);
+            case FINALIZING -> finalizeStep(request, now);
             default -> {
             }
         }
@@ -654,6 +669,184 @@ public class RecruitmentSchedulingOrchestrator {
 
     private void deferSearch(RecruitmentSchedulingRequest request, LocalDateTime now) {
         request.setNextActionAt(now.plusMinutes(SEARCH_RETRY_MINUTES));
+    }
+
+    // ---- Finalization saga (plan §11.3) ------------------------------------
+
+    /** Structural reasons of the finalization branch. */
+    static final String REASON_FINALIZE_CONFLICT = "FINALIZE_RECHECK_CONFLICT";
+    static final String REASON_FINALIZE_REJECTED = "FINALIZE_REJECTED";
+    static final String REASON_SELECTION_LOST = "SELECTION_LOST";
+
+    /**
+     * One resumable finalization pass, inside the per-request
+     * {@code REQUIRES_NEW} transaction. Idempotency anchor: a previous
+     * attempt that created the interview but crashed before completing is
+     * detected by the interview-existence guard, so the meeting is never
+     * created twice; a Graph outage simply returns and the next sweep
+     * retries.
+     */
+    private void finalizeStep(RecruitmentSchedulingRequest request, LocalDateTime now) {
+        RecruitmentProposedSlot selected = RecruitmentProposedSlot
+                .<RecruitmentProposedSlot>find("requestUuid = ?1 and status = ?2",
+                        request.getUuid(), ProposedSlotStatus.SELECTED)
+                .firstResult();
+        RecruitmentApplication application =
+                RecruitmentApplication.findById(request.getApplicationUuid());
+        if (selected == null || application == null) {
+            schedulingService.handBack(request, null, REASON_SELECTION_LOST);
+            return;
+        }
+
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview existing =
+                dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview
+                        .<dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview>find(
+                                "applicationUuid = ?1 and scheduledAt = ?2 and status = ?3",
+                                application.getUuid(), selected.getSlotStart(),
+                                dk.trustworks.intranet.recruitmentservice.model.enums
+                                        .RecruitmentInterviewStatus.SCHEDULED)
+                        .firstResult();
+
+        if (existing == null) {
+            // Step 2: recheck the selected slot (calendarView minus our
+            // own holds, room included) before anything irreversible.
+            java.util.Set<String> ownIds = ownHoldEventIds(request);
+            List<String> mailboxes = mailboxesOf(request.getInterviewerUuids());
+            if (selected.getRoomEmail() != null && !selected.getRoomEmail().isBlank()) {
+                mailboxes = new ArrayList<>(mailboxes);
+                mailboxes.add(selected.getRoomEmail());
+            }
+            try {
+                for (String mailbox : mailboxes) {
+                    List<String> busy = calendarService.busyEventIdsInWindow(
+                            mailbox, selected.getSlotStart(), selected.getSlotEnd());
+                    if (busy.stream().anyMatch(id -> !ownIds.contains(id))) {
+                        selectedSlotInvalid(request, selected, now);
+                        return;
+                    }
+                }
+            } catch (Exception e) {
+                // Graph unreachable — neither pass nor fail; retry.
+                log.warnf("Method B finalize recheck deferred for request %s: %s",
+                        request.getUuid(), e.getMessage());
+                return;
+            }
+
+            // Step 3: the real interview through the existing Method A
+            // create path — kit DMs, scorecard SLAs, RSVP tracking and the
+            // two-event model all apply unchanged. Optional interviewers
+            // ride along when their calendar is free for the slot
+            // (defaults §29.7 — they never blocked, now they join if they
+            // can; a failed probe just leaves them off the invitation).
+            List<String> attendees = new ArrayList<>(request.getInterviewerUuids());
+            for (String optionalUuid : request.getOptionalInterviewerUuids()) {
+                User optional = User.findById(optionalUuid);
+                if (optional == null || optional.getEmail() == null
+                        || optional.getEmail().isBlank()) {
+                    continue;
+                }
+                try {
+                    List<String> busy = calendarService.busyEventIdsInWindow(
+                            optional.getEmail(), selected.getSlotStart(), selected.getSlotEnd());
+                    if (busy.stream().allMatch(ownIds::contains)) {
+                        attendees.add(optionalUuid);
+                    }
+                } catch (Exception e) {
+                    log.debugf("Method B optional-interviewer probe failed for %s — leaving them off: %s",
+                            optionalUuid, e.getMessage());
+                }
+            }
+            dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate candidate =
+                    dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate
+                            .findById(application.getCandidateUuid());
+            dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition position =
+                    dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition
+                            .findById(application.getPositionUuid());
+            try {
+                existing = interviewService.create(application, position, candidate,
+                        new dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest(
+                                request.getKind(), request.getRound(), attendees,
+                                request.getLocation(), selected.getRoomEmail(),
+                                selected.getSlotStart(), request.getDurationMinutes(),
+                                request.isOnlineMeeting()),
+                        java.util.UUID.fromString(request.getRecruiterUuid()));
+            } catch (dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation e) {
+                // A rule the pipeline could not have satisfied (terminal
+                // application, stage drift) — automation cannot finish.
+                log.warnf("Method B finalize rejected for request %s: %s",
+                        request.getUuid(), e.getMessage());
+                schedulingService.handBack(request, null, REASON_FINALIZE_REJECTED);
+                return;
+            }
+        }
+
+        // Steps 4+5: the winner's holds are superseded by the real event,
+        // the losers are released, the batch closes, the request ends.
+        selected.setStatus(ProposedSlotStatus.FINALIZED);
+        schedulingService.releaseHolds(request, selected);
+        schedulingService.releasePipeline(request, "REQUEST_SCHEDULED");
+        SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.SCHEDULED);
+        request.setStatus(SchedulingRequestStatus.SCHEDULED);
+        outboxService.enqueue(request.getUuid(), null,
+                SchedulingOutboxAction.SEND_RECRUITER_DM,
+                "SCHEDULED:" + request.getUuid(),
+                schedulingService.refPayload("notice", "SCHEDULED"));
+        eventRecorder.record(RecruitmentEventBuilder
+                .event(RecruitmentEventType.SCHEDULING_FINALIZED)
+                .application(request.getApplicationUuid())
+                .candidate(application.getCandidateUuid())
+                .position(application.getPositionUuid())
+                .actorScheduler()
+                .payload("request_uuid", request.getUuid())
+                .payload("slot_uuid", selected.getUuid())
+                .payload("interview_uuid", existing.getUuid())
+                .payload("slot_start", selected.getSlotStart().toString()));
+        log.infof("Method B request %s finalized: interview %s at %s",
+                request.getUuid(), existing.getUuid(), selected.getSlotStart());
+    }
+
+    /**
+     * The selected option died at recheck (spec §16.3): reject it, then —
+     * remaining options ⇒ the candidate chooses again; window still open
+     * ⇒ re-search (batch closes, the recruiter's next batch mints a fresh
+     * link); otherwise hand back.
+     */
+    private void selectedSlotInvalid(RecruitmentSchedulingRequest request,
+                                     RecruitmentProposedSlot selected,
+                                     LocalDateTime now) {
+        rejectSlot(request, selected, REASON_FINALIZE_CONFLICT);
+        long remaining = RecruitmentProposedSlot.count(
+                "requestUuid = ?1 and status = ?2 and (expiresAt is null or expiresAt > ?3)",
+                request.getUuid(), ProposedSlotStatus.OFFERED, now);
+        switch (afterSelectedSlotInvalid((int) remaining,
+                !now.toLocalDate().isAfter(request.getWindowEnd()))) {
+            case CHOOSE_AGAIN -> {
+                SchedulingStateMachine.require(request.getStatus(),
+                        SchedulingRequestStatus.WAITING_FOR_CANDIDATE);
+                request.setStatus(SchedulingRequestStatus.WAITING_FOR_CANDIDATE);
+            }
+            case RESEARCH -> {
+                schedulingService.releasePipeline(request, REASON_FINALIZE_CONFLICT);
+                SchedulingStateMachine.require(request.getStatus(),
+                        SchedulingRequestStatus.SEARCHING);
+                request.setStatus(SchedulingRequestStatus.SEARCHING);
+                request.setNextActionAt(null);
+            }
+            case HAND_BACK -> schedulingService.handBack(request, null, REASON_WINDOW_EXHAUSTED);
+        }
+    }
+
+    /** The post-recheck-failure branch (pure; DB-free tested). */
+    enum RecheckFailureBranch {CHOOSE_AGAIN, RESEARCH, HAND_BACK}
+
+    static RecheckFailureBranch afterSelectedSlotInvalid(int remainingOffered,
+                                                         boolean windowAllowsMore) {
+        if (remainingOffered > 0) {
+            return RecheckFailureBranch.CHOOSE_AGAIN;
+        }
+        return windowAllowsMore
+                ? RecheckFailureBranch.RESEARCH
+                : RecheckFailureBranch.HAND_BACK;
     }
 
     /** Derive the pipeline status from the slot set and apply it when it

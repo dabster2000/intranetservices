@@ -48,6 +48,8 @@ public class RecruitmentSchedulingService {
     public static final String REASON_RECRUITER_RELEASED = "RECRUITER_RELEASED";
     public static final String REASON_REQUEST_CANCELLED = "REQUEST_CANCELLED";
     public static final String REASON_REQUEST_HANDED_BACK = "REQUEST_HANDED_BACK";
+    public static final String REASON_CANDIDATE_DECLINED = "CANDIDATE_DECLINED_OPTIONS";
+    public static final String REASON_OPTIONS_EXPIRED = "OPTIONS_EXPIRED";
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
@@ -213,6 +215,57 @@ public class RecruitmentSchedulingService {
                 SchedulingOutboxAction.SEND_RECRUITER_DM,
                 "HANDBACK:" + request.getVersion(),
                 noticePayload("HANDBACK"));
+    }
+
+    /**
+     * The candidate declared none of the offered options work (defaults
+     * §29.17): terminal HANDED_BACK, everything released, the recruiter
+     * escalated with the candidate's note (routed verbatim to the DM and
+     * stored in event pii only — the Phase 9 note posture).
+     */
+    @Transactional
+    public void candidateDeclinedOptions(RecruitmentSchedulingRequest request, String note) {
+        SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.HANDED_BACK);
+        releasePipeline(request, REASON_REQUEST_HANDED_BACK);
+        request.setStatus(SchedulingRequestStatus.HANDED_BACK);
+        request.setHandbackReason(REASON_CANDIDATE_DECLINED);
+        recordLifecycleEvent(request, RecruitmentEventType.SCHEDULING_HANDED_BACK,
+                null, REASON_CANDIDATE_DECLINED);
+        if (note != null && !note.isBlank()) {
+            RecruitmentApplication application = application(request);
+            eventRecorder.record(RecruitmentEventBuilder
+                    .event(RecruitmentEventType.SCHEDULING_NOTE_ROUTED)
+                    .application(request.getApplicationUuid())
+                    .candidate(application != null ? application.getCandidateUuid() : null)
+                    .position(application != null ? application.getPositionUuid() : null)
+                    .actorCandidate()
+                    .payload("request_uuid", request.getUuid())
+                    .payload("origin", "CANDIDATE_NONE_WORK")
+                    .pii("note", note));
+        }
+        outboxService.enqueue(request.getUuid(), null,
+                SchedulingOutboxAction.SEND_RECRUITER_DM,
+                "NONE_WORK:" + request.getUuid(),
+                noneWorkPayload(note));
+    }
+
+    /**
+     * The candidate deadline passed without an answer: terminal EXPIRED,
+     * everything released, recruiter notified (plan §11.3 expiry sweep;
+     * spec §15's Expired state — distinct from HandedBack so the panel
+     * says "never answered" instead of "automation stopped").
+     */
+    @Transactional
+    public void expireOptions(RecruitmentSchedulingRequest request) {
+        SchedulingStateMachine.require(request.getStatus(), SchedulingRequestStatus.EXPIRED);
+        releasePipeline(request, REASON_OPTIONS_EXPIRED);
+        request.setStatus(SchedulingRequestStatus.EXPIRED);
+        recordLifecycleEvent(request, RecruitmentEventType.SCHEDULING_EXPIRED,
+                null, REASON_OPTIONS_EXPIRED);
+        outboxService.enqueue(request.getUuid(), null,
+                SchedulingOutboxAction.SEND_RECRUITER_DM,
+                "EXPIRED:" + request.getUuid(),
+                noticePayload("OPTIONS_EXPIRED"));
     }
 
     /**
@@ -494,6 +547,18 @@ public class RecruitmentSchedulingService {
 
     private String noticePayload(String kind) {
         return refPayload("notice", kind);
+    }
+
+    /** The none-work escalation payload — the note rides to the DM only. */
+    private String noneWorkPayload(String note) {
+        try {
+            Map<String, String> payload = note == null || note.isBlank()
+                    ? Map.of("notice", "CANDIDATE_NONE_WORK")
+                    : Map.of("notice", "CANDIDATE_NONE_WORK", "note", note);
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            return "{\"notice\":\"CANDIDATE_NONE_WORK\"}";
+        }
     }
 
     private static WebApplicationException badRequest(String message) {

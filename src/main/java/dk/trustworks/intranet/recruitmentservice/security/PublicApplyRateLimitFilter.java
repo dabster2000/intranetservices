@@ -160,7 +160,10 @@ public class PublicApplyRateLimitFilter implements ContainerRequestFilter {
             path = "/" + path;
         }
         return path.equals("/apply") || path.startsWith("/apply/")
-                || path.equals("/consent") || path.startsWith("/consent/");
+                || path.equals("/consent") || path.startsWith("/consent/")
+                // Method B candidate option page (plan §11.1) — select /
+                // none-work POSTs share the public-surface budget.
+                || path.equals("/public/scheduling") || path.startsWith("/public/scheduling/");
     }
 
     /**

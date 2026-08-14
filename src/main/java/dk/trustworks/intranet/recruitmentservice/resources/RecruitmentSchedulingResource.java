@@ -88,7 +88,20 @@ public class RecruitmentSchedulingResource {
         validateCreate(request);
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
-        requireDecisionRights(positionOf(application), actor);
+        RecruitmentPosition position = positionOf(application);
+        requireDecisionRights(position, actor);
+        if (request.kind() == RecruitmentInterviewKind.ROUND) {
+            // Fail HERE, not at finalization: the Method A create path
+            // enforces the same rule when the candidate has already chosen.
+            String roundStage = "INTERVIEW_" + request.round();
+            if (position.getStageSet() == null
+                    || !position.getStageSet().contains(roundStage)) {
+                throw new WebApplicationException(
+                        "Round " + request.round()
+                                + " is not part of this position's pipeline",
+                        Response.Status.CONFLICT);
+            }
+        }
 
         int automationDays = request.automationDays() != null
                 ? request.automationDays() : DEFAULT_AUTOMATION_DAYS;

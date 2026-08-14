@@ -232,6 +232,13 @@ public enum RecruitmentEventType {
     /** The recruiter cancelled the request. */
     SCHEDULING_CANCELLED,
     /**
+     * The candidate deadline passed without an answer — options released,
+     * request terminal EXPIRED (plan §11.3's expiry sweep). Catalog
+     * addition beyond the plan §8.6 list: spec §15's Expired state is a
+     * distinct ending ("never answered") and the timeline must say so.
+     */
+    SCHEDULING_EXPIRED,
+    /**
      * The sweep nudged a silent interviewer or escalated to the
      * recruiter (defaults §29.16). One event per nudge. Catalog addition
      * beyond the plan §8.6 list — "reactors' own side effects are
