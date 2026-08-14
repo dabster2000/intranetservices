@@ -198,11 +198,18 @@ public class RecruitmentSchedulingOrchestrator {
     // ---- Recheck + holds (plan §9.3, D5/D12) -------------------------------
 
     /**
-     * The last required approval landed: recheck availability via
-     * calendarView — EXCLUDING this request's own hold event ids (the
-     * digit string cannot attribute busyness; other requests' holds
-     * correctly block) — then create the hold rows and enqueue their
-     * Graph creates. Conflict ⇒ slot REJECTED and the search resumes.
+     * The last required approval landed: create the hold rows and
+     * enqueue their Graph creates.
+     * <p>
+     * F1a (owner decision 2026-08-14): an interviewer's explicit
+     * approval BEATS their own calendar — busy people accept a proposal
+     * knowing they will move the overlapping meeting, and the system
+     * silently overruling them was both wrong and invisible. Every
+     * required interviewer approved this exact slot, so their own
+     * calendars are NOT re-checked — not here, and a conflict created
+     * after approval yields too. Only a resource that cannot consent —
+     * the room — is still re-checked (excluding this request's own hold
+     * event ids; other requests' holds correctly block).
      */
     private void recheckAndHold(RecruitmentSchedulingRequest request,
                                 RecruitmentProposedSlot slot) {
@@ -215,27 +222,24 @@ public class RecruitmentSchedulingOrchestrator {
                 userByMailbox.put(user.getEmail(), interviewerUuid);
             }
         }
-        if (slot.getRoomEmail() != null && !slot.getRoomEmail().isBlank()) {
+        boolean hasRoom = slot.getRoomEmail() != null && !slot.getRoomEmail().isBlank();
+        if (hasRoom) {
             mailboxes.add(slot.getRoomEmail());
-        }
-
-        java.util.Set<String> ownHoldIds = ownHoldEventIds(request);
-        try {
-            for (String mailbox : mailboxes) {
+            java.util.Set<String> ownHoldIds = ownHoldEventIds(request);
+            try {
                 List<String> busy = calendarService.busyEventIdsInWindow(
-                        mailbox, slot.getSlotStart(), slot.getSlotEnd());
-                boolean conflict = busy.stream().anyMatch(id -> !ownHoldIds.contains(id));
-                if (conflict) {
+                        slot.getRoomEmail(), slot.getSlotStart(), slot.getSlotEnd());
+                if (busy.stream().anyMatch(id -> !ownHoldIds.contains(id))) {
                     rejectSlot(request, slot, "RECHECK_CONFLICT");
                     return;
                 }
+            } catch (Exception e) {
+                // Graph unreachable — a recheck that cannot see the
+                // calendar must not pass OR reject. Try again next sweep.
+                log.warnf("Method B recheck deferred for slot %s: %s",
+                        slot.getUuid(), e.getMessage());
+                return;
             }
-        } catch (Exception e) {
-            // Graph unreachable — a recheck that cannot see the calendar
-            // must not pass OR reject. Try again next sweep.
-            log.warnf("Method B recheck deferred for slot %s: %s",
-                    slot.getUuid(), e.getMessage());
-            return;
         }
 
         for (String mailbox : mailboxes) {
@@ -568,6 +572,12 @@ public class RecruitmentSchedulingOrchestrator {
         });
     }
 
+    /** How long a fresh unconfirmed availability statement pauses the
+     * slot search: the interviewer just told us something — planning
+     * on before they press Bekræft would re-propose against it (F12's
+     * pacing half). Bekræft/Ret both wake the sweep immediately. */
+    static final int PENDING_EVIDENCE_GRACE_MINUTES = 30;
+
     /** Plan and propose up to the missing option count. */
     private void searchAndPropose(RecruitmentSchedulingRequest request,
                                   List<RecruitmentProposedSlot> slots,
@@ -584,6 +594,10 @@ public class RecruitmentSchedulingOrchestrator {
             // yields no more — nothing to plan.
             return;
         }
+        if (hasFreshPendingEvidence(request, now)) {
+            deferSearch(request, now);
+            return;
+        }
 
         List<String> requiredEmails = mailboxesOf(request.getInterviewerUuids());
         if (requiredEmails.size() < request.getInterviewerUuids().size()) {
@@ -592,7 +606,12 @@ public class RecruitmentSchedulingOrchestrator {
                     request.getInterviewerUuids().size());
         }
         List<String> optionalEmails = mailboxesOf(request.getOptionalInterviewerUuids());
-        List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms();
+        // F2 (owner decision 2026-08-14): requireRoom=false means rooms
+        // are never touched — no opportunistic assignment, no hold. An
+        // online interview must not block a physical room.
+        List<MeetingRoomsResponse.MeetingRoom> rooms = request.isRequireRoom()
+                ? calendarService.listRooms()
+                : List.of();
 
         List<String> mailboxes = new ArrayList<>(requiredEmails);
         mailboxes.addAll(optionalEmails);
@@ -618,6 +637,15 @@ public class RecruitmentSchedulingOrchestrator {
                 .map(slot -> new MultiSlotPlanner.TimeInterval(
                         slot.getSlotStart(), slot.getSlotEnd()))
                 .toList();
+        // F5: times a human said no to repel the re-plan — a declined
+        // Monday 13.00 must not come back as Monday 13.30.
+        List<MultiSlotPlanner.TimeInterval> declined = slots.stream()
+                .filter(slot -> "INTERVIEWER_DECLINED".equals(slot.getRejectReason())
+                        || RecruitmentSchedulingService.REASON_INTERVIEWER_REPLIED
+                                .equals(slot.getRejectReason()))
+                .map(slot -> new MultiSlotPlanner.TimeInterval(
+                        slot.getSlotStart(), slot.getSlotEnd()))
+                .toList();
 
         int needed = request.getRequestedOptions() - (int) live;
         List<MultiSlotPlanner.PlannedSlot> picks = MultiSlotPlanner.plan(
@@ -636,7 +664,7 @@ public class RecruitmentSchedulingOrchestrator {
                                 .toList(),
                         schedules,
                         now.plusHours(MIN_LEAD_HOURS),
-                        alreadyPlanned, excluded,
+                        alreadyPlanned, excluded, declined,
                         externalConstraintsByMailbox(request, now)));
         if (picks.isEmpty()) {
             deferSearch(request, now);
@@ -683,6 +711,25 @@ public class RecruitmentSchedulingOrchestrator {
 
     private void deferSearch(RecruitmentSchedulingRequest request, LocalDateTime now) {
         request.setNextActionAt(now.plusMinutes(SEARCH_RETRY_MINUTES));
+    }
+
+    /**
+     * A PENDING availability statement younger than the grace period
+     * means an interviewer just spoke and has not yet confirmed the
+     * reading — searching now would propose against what they said
+     * (F7's exact failure). The confirm/correct buttons null
+     * {@code nextActionAt}, so an answer resumes planning immediately;
+     * silence resumes it after the grace via {@link #deferSearch}.
+     */
+    private boolean hasFreshPendingEvidence(RecruitmentSchedulingRequest request,
+                                            LocalDateTime now) {
+        return dk.trustworks.intranet.recruitmentservice.model
+                .RecruitmentAvailabilityEvidence.count(
+                        "requestUuid = ?1 and confirmationStatus = ?2 and createdAt > ?3",
+                        request.getUuid(),
+                        dk.trustworks.intranet.recruitmentservice.model.enums
+                                .EvidenceConfirmationStatus.PENDING,
+                        now.minusMinutes(PENDING_EVIDENCE_GRACE_MINUTES)) > 0;
     }
 
     // ---- Confirmed external evidence → planner constraints (Phase 12) ------
@@ -857,28 +904,28 @@ public class RecruitmentSchedulingOrchestrator {
                         .firstResult();
 
         if (existing == null) {
-            // Step 2: recheck the selected slot (calendarView minus our
-            // own holds, room included) before anything irreversible.
+            // Step 2: recheck the selected slot before anything
+            // irreversible. F1a (owner decision 2026-08-14): the
+            // interviewers explicitly approved this slot — their own
+            // calendars no longer veto it, even for conflicts created
+            // after approval. Only the room (a resource that cannot
+            // consent) is re-checked, minus our own holds.
             java.util.Set<String> ownIds = ownHoldEventIds(request);
-            List<String> mailboxes = mailboxesOf(request.getInterviewerUuids());
             if (selected.getRoomEmail() != null && !selected.getRoomEmail().isBlank()) {
-                mailboxes = new ArrayList<>(mailboxes);
-                mailboxes.add(selected.getRoomEmail());
-            }
-            try {
-                for (String mailbox : mailboxes) {
+                try {
                     List<String> busy = calendarService.busyEventIdsInWindow(
-                            mailbox, selected.getSlotStart(), selected.getSlotEnd());
+                            selected.getRoomEmail(), selected.getSlotStart(),
+                            selected.getSlotEnd());
                     if (busy.stream().anyMatch(id -> !ownIds.contains(id))) {
                         selectedSlotInvalid(request, selected, now);
                         return;
                     }
+                } catch (Exception e) {
+                    // Graph unreachable — neither pass nor fail; retry.
+                    log.warnf("Method B finalize recheck deferred for request %s: %s",
+                            request.getUuid(), e.getMessage());
+                    return;
                 }
-            } catch (Exception e) {
-                // Graph unreachable — neither pass nor fail; retry.
-                log.warnf("Method B finalize recheck deferred for request %s: %s",
-                        request.getUuid(), e.getMessage());
-                return;
             }
 
             // Step 3: the real interview through the existing Method A
@@ -917,7 +964,7 @@ public class RecruitmentSchedulingOrchestrator {
                                 request.getKind(), request.getRound(), attendees,
                                 request.getLocation(), selected.getRoomEmail(),
                                 selected.getSlotStart(), request.getDurationMinutes(),
-                                request.isOnlineMeeting()),
+                                request.isOnlineMeeting(), null),
                         java.util.UUID.fromString(request.getRecruiterUuid()));
             } catch (dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation e) {
                 // A rule the pipeline could not have satisfied (terminal

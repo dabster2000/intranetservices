@@ -39,4 +39,17 @@ class RecruitmentInterviewRescheduleBranchTest {
     void toggleOff_neverCreates() {
         assertFalse(shouldCreateMissingEvent(null, true, false));
     }
+
+    // ---- F17: the create-side no-calendar toggle --------------------------
+
+    @Test
+    void create_skipsOutlookOnlyOnExplicitFalse() {
+        // F17: only a deliberate createCalendarEvent=false records the
+        // interview without an Outlook event; null and TRUE keep every
+        // existing caller (Method A dialog, Method B finalization) on
+        // the create path.
+        assertTrue(RecruitmentInterviewService.shouldCreateEventOnCreate(null));
+        assertTrue(RecruitmentInterviewService.shouldCreateEventOnCreate(true));
+        assertFalse(RecruitmentInterviewService.shouldCreateEventOnCreate(false));
+    }
 }

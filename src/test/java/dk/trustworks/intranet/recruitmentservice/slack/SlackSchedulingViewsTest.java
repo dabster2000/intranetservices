@@ -50,21 +50,34 @@ class SlackSchedulingViewsTest {
     // ---- Proposal card ----------------------------------------------------
 
     @Test
-    void proposalCard_carriesFourButtonsWithTheApprovalClaim() {
+    void proposalCard_carriesGodkendAfvisOnly_withTheApprovalClaim() {
+        // F13 (owner decision 2026-08-14): free text is the primary
+        // path — the card keeps exactly Godkend/Afvis, and the guidance
+        // line teaches the chat instead of extra buttons.
         List<LayoutBlock> blocks = SlackSchedulingViews.proposalCard(
                 request(), slot(), "Jane Doe", "Senior Consultant", "approval-1", 0);
 
-        ActionsBlock actions = (ActionsBlock) blocks.get(blocks.size() - 1);
+        ActionsBlock actions = (ActionsBlock) blocks.stream()
+                .filter(ActionsBlock.class::isInstance)
+                .map(ActionsBlock.class::cast)
+                .reduce((first, second) -> second)
+                .orElseThrow();
         List<String> actionIds = actions.getElements().stream()
                 .map(element -> ((ButtonElement) element).getActionId())
                 .toList();
         assertEquals(List.of(
                 SlackSchedulingViews.ACTION_APPROVE,
-                SlackSchedulingViews.ACTION_DECLINE,
-                SlackSchedulingViews.ACTION_SUGGEST,
-                SlackSchedulingViews.ACTION_ASK), actionIds);
+                SlackSchedulingViews.ACTION_DECLINE), actionIds);
         actions.getElements().forEach(element ->
                 assertEquals("approval-1", ((ButtonElement) element).getValue()));
+
+        // F15: the card itself explains free text and screenshots.
+        ContextBlock guidance = (ContextBlock) blocks.get(blocks.size() - 1);
+        String text = ((com.slack.api.model.block.composition.MarkdownTextObject)
+                guidance.getElements().get(0)).getText();
+        assertTrue(text.contains("Skriv dine ledige tider"), text);
+        assertTrue(text.contains("screenshot"), text);
+        assertTrue(text.contains("rekrutteringsteamet"), text);
     }
 
     @Test
@@ -99,12 +112,13 @@ class SlackSchedulingViewsTest {
     // ---- Answered / closed rewrites --------------------------------------
 
     @Test
-    void answeredClosedAndBookedCards_dropTheButtons() {
+    void answeredClosedBookedAndMessageCards_dropTheButtons() {
         for (List<LayoutBlock> blocks : List.of(
                 SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, true),
                 SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, false),
                 SlackSchedulingViews.closedCard(request(), slot(), "Jane", null),
-                SlackSchedulingViews.bookedCard(request(), slot(), "Jane", null))) {
+                SlackSchedulingViews.bookedCard(request(), slot(), "Jane", null),
+                SlackSchedulingViews.messageAnsweredCard(request(), slot(), "Jane", null))) {
             assertTrue(blocks.stream().noneMatch(ActionsBlock.class::isInstance),
                     "rewritten cards must not keep live buttons");
             assertTrue(blocks.get(blocks.size() - 1) instanceof ContextBlock);

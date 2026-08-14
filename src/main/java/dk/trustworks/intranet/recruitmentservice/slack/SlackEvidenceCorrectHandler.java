@@ -63,9 +63,10 @@ public class SlackEvidenceCorrectHandler implements SlackInboundHandler {
         evidence.setConfirmationStatus(EvidenceConfirmationStatus.CANCELLED);
         RecruitmentSchedulingRequest schedulingRequest =
                 RecruitmentSchedulingRequest.findById(evidence.getRequestUuid());
-        if (schedulingRequest != null && !schedulingRequest.getStatus().isTerminal()
-                && wasConfirmed) {
-            // Withdrawn scheduling input — replan without it.
+        if (schedulingRequest != null && !schedulingRequest.getStatus().isTerminal()) {
+            // Withdrawn scheduling input (was confirmed) OR a discarded
+            // pending reading: either way the answer arrived — end the
+            // fresh-pending-evidence search grace and replan now.
             schedulingRequest.setNextActionAt(null);
         }
         record(schedulingRequest, evidence, actor.getUuid());

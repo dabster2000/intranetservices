@@ -386,11 +386,22 @@ public interface GraphApiClient {
         @jakarta.ws.rs.QueryParam("$top") Integer top
     );
 
-    /** {@code calendarView} response — id + free/busy status only. */
+    /** {@code calendarView} response — ids, free/busy status, the
+     * cancellation flag and the interval bounds. No subjects or bodies
+     * are ever requested. {@code isCancelled} keeps "Annulleret:"
+     * meetings — cancelled but still on the calendar, typically still
+     * non-free {@code showAs} — from blocking a slot (F1b);
+     * {@code start}/{@code end} let the caller drop boundary-touching
+     * events whatever Graph's window semantics are (F1c). */
     record CalendarViewResponse(
         @JsonProperty("value") java.util.List<CalendarViewEvent> value
     ) {
-        public record CalendarViewEvent(String id, String showAs) { }
+        public record CalendarViewEvent(String id, String showAs,
+                                        @JsonProperty("isCancelled") Boolean isCancelled,
+                                        GraphDateTime start, GraphDateTime end) { }
+
+        /** Graph's {@code dateTimeTimeZone} shape. */
+        public record GraphDateTime(String dateTime, String timeZone) { }
     }
 
     /**

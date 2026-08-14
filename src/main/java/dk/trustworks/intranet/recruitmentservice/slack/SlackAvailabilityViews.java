@@ -50,7 +50,8 @@ public final class SlackAvailabilityViews {
     /** Plan §12.2's no-match reply — Danish by decree. */
     public static final String NO_ACTIVE_TEXT =
             "Der er ingen aktiv interviewplanlægning at knytte din besked til — "
-                    + "brug knapperne på et interviewforslag, eller kontakt rekruttereren.";
+                    + "brug knapperne på et interviewforslag, eller kontakt "
+                    + "rekrutteringsteamet.";
 
     /** Several active requests and no thread anchor — still deterministic Danish. */
     public static final String AMBIGUOUS_TEXT =
@@ -244,10 +245,10 @@ public final class SlackAvailabilityViews {
     /** A routed intent's acknowledgement to the interviewer. */
     public static String routedAckText(String language) {
         return "en".equals(language)
-                ? "I have passed your message on to the recruiter, who will get "
-                        + "back to you."
-                : "Jeg har sendt din besked videre til rekruttereren, som vender "
-                        + "tilbage til dig.";
+                ? "I have passed your message on to the recruitment team, who will "
+                        + "get back to you."
+                : "Jeg har sendt din besked videre til rekrutteringsteamet, som "
+                        + "vender tilbage til dig.";
     }
 
     /** The non-blocking stale-evidence notice at finalization (spec §23). */
@@ -259,12 +260,12 @@ public final class SlackAvailabilityViews {
                         + interval(slotStart, slotEnd, true)
                         + ". Your external-calendar information for that period had "
                         + "expired — if the time no longer works, contact the "
-                        + "recruiter right away."
+                        + "recruitment team right away."
                 : "Interviewet er booket "
                         + interval(slotStart, slotEnd, false)
                         + ". Din eksterne kalenderbesked for perioden var udløbet — "
-                        + "hvis tiden ikke længere passer, så kontakt rekruttereren "
-                        + "med det samme.";
+                        + "hvis tiden ikke længere passer, så kontakt "
+                        + "rekrutteringsteamet med det samme.";
     }
 
     /** The summary DM's notification/preview text. */

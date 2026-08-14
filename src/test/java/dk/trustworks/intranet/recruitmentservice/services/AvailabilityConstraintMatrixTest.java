@@ -70,25 +70,33 @@ class AvailabilityConstraintMatrixTest {
                         availableEvidence, List.of(row(availableEvidence,
                                 AvailabilityConstraintType.AVAILABLE_ONLY,
                                 MONDAY.atTime(7, 0), MONDAY.atTime(10, 0)))));
-        assertFalse(MultiSlotPlanner.externallyFree(external.get("user-1"),
-                MONDAY.atTime(8, 0), MONDAY.atTime(9, 0)));
+        assertEquals(MultiSlotPlanner.ExternalVerdict.BLOCKED,
+                MultiSlotPlanner.externalVerdict(external.get("user-1"),
+                        MONDAY.atTime(8, 0), MONDAY.atTime(9, 0)));
     }
 
     @Test
     void availableOnly_restrictsItsCoveredDays_only() {
         // "Monday: only 13–15" covering Monday alone. Monday slots must
-        // fit 13–15; Tuesday is untouched (covered-range-only).
+        // fit 13–15 (and a fit OVERRIDES O365 — F1a); Tuesday is
+        // untouched (covered-range-only).
         Map<String, List<ExternalConstraint>> external = resolve(
                 evidence(EvidenceConfirmationStatus.CONFIRMED, MONDAY, MONDAY, null),
                 constraint(AvailabilityConstraintType.AVAILABLE_ONLY,
                         MONDAY.atTime(13, 0), MONDAY.atTime(15, 0)));
         List<ExternalConstraint> constraints = external.get("user-1");
-        assertFalse(MultiSlotPlanner.externallyFree(constraints,
-                MONDAY.atTime(9, 0), MONDAY.atTime(10, 0)), "outside the window on a covered day");
-        assertTrue(MultiSlotPlanner.externallyFree(constraints,
-                MONDAY.atTime(13, 30), MONDAY.atTime(14, 30)), "inside the window");
-        assertTrue(MultiSlotPlanner.externallyFree(constraints,
-                TUESDAY.atTime(9, 0), TUESDAY.atTime(10, 0)), "uncovered day is unrestricted");
+        assertEquals(MultiSlotPlanner.ExternalVerdict.BLOCKED,
+                MultiSlotPlanner.externalVerdict(constraints,
+                        MONDAY.atTime(9, 0), MONDAY.atTime(10, 0)),
+                "outside the window on a covered day");
+        assertEquals(MultiSlotPlanner.ExternalVerdict.AVAILABLE_OVERRIDE,
+                MultiSlotPlanner.externalVerdict(constraints,
+                        MONDAY.atTime(13, 30), MONDAY.atTime(14, 30)),
+                "inside the window — the stated period beats the calendar");
+        assertEquals(MultiSlotPlanner.ExternalVerdict.NEUTRAL,
+                MultiSlotPlanner.externalVerdict(constraints,
+                        TUESDAY.atTime(9, 0), TUESDAY.atTime(10, 0)),
+                "uncovered day is unrestricted");
     }
 
     @Test
@@ -101,8 +109,9 @@ class AvailabilityConstraintMatrixTest {
                         MONDAY.atTime(9, 0), MONDAY.atTime(12, 0)),
                 row(row, AvailabilityConstraintType.AVAILABLE_ONLY,
                         MONDAY.atTime(12, 0), MONDAY.atTime(15, 0)))));
-        assertTrue(MultiSlotPlanner.externallyFree(external.get("user-1"),
-                MONDAY.atTime(11, 0), MONDAY.atTime(13, 0)));
+        assertEquals(MultiSlotPlanner.ExternalVerdict.AVAILABLE_OVERRIDE,
+                MultiSlotPlanner.externalVerdict(external.get("user-1"),
+                        MONDAY.atTime(11, 0), MONDAY.atTime(13, 0)));
     }
 
     // ------------------------------------------------------------------
@@ -120,8 +129,10 @@ class AvailabilityConstraintMatrixTest {
                         MONDAY.atTime(13, 0), MONDAY.atTime(16, 0)),
                 row(row, AvailabilityConstraintType.AVOID,
                         MONDAY.atTime(7, 0), MONDAY.atTime(10, 0)))));
-        assertTrue(MultiSlotPlanner.externallyFree(external.get("user-1"),
-                MONDAY.atTime(7, 0), MONDAY.atTime(8, 0)), "AVOID never excludes");
+        assertEquals(MultiSlotPlanner.ExternalVerdict.NEUTRAL,
+                MultiSlotPlanner.externalVerdict(external.get("user-1"),
+                        MONDAY.atTime(7, 0), MONDAY.atTime(8, 0)),
+                "AVOID never excludes");
 
         List<PlannedSlot> picks = plan(external, 1);
         assertEquals(MONDAY.atTime(13, 0), picks.getFirst().start(),
@@ -286,6 +297,6 @@ class AvailabilityConstraintMatrixTest {
                 MONDAY, MONDAY, null, null, 60, requested, 0, false, false, 2,
                 List.of(A), List.of(), List.of(),
                 Map.of(A, new MailboxWindowSchedule("0".repeat(1500), null)),
-                EARLY, List.of(), List.of(), byMailbox));
+                EARLY, List.of(), List.of(), List.of(), byMailbox));
     }
 }

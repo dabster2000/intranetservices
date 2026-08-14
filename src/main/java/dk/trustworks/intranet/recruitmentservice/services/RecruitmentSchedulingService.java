@@ -50,6 +50,9 @@ public class RecruitmentSchedulingService {
     public static final String REASON_REQUEST_HANDED_BACK = "REQUEST_HANDED_BACK";
     public static final String REASON_CANDIDATE_DECLINED = "CANDIDATE_DECLINED_OPTIONS";
     public static final String REASON_OPTIONS_EXPIRED = "OPTIONS_EXPIRED";
+    /** The interviewer answered a proposal with a message instead of a
+     * button (F12) — the message settles the proposal as a decline. */
+    public static final String REASON_INTERVIEWER_REPLIED = "INTERVIEWER_REPLIED";
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
@@ -592,6 +595,13 @@ public class RecruitmentSchedulingService {
         if (kept.isEmpty()) {
             throw badRequest("At least one held option must remain to approve");
         }
+        // F4 (owner decision 2026-08-14): approving PINS the set. The
+        // recruiter's go means "send exactly these" — lowering
+        // requestedOptions to the kept count makes the pipeline census
+        // read READY_FOR_CANDIDATE and stops the sweep from hunting for
+        // replacements it was never asked for.
+        int previousRequested = request.getRequestedOptions();
+        request.setRequestedOptions(kept.size());
         request.setOptionsApprovedAt(LocalDateTime.now());
         request.setNextActionAt(null);
         RecruitmentApplication application = application(request);
@@ -603,7 +613,9 @@ public class RecruitmentSchedulingService {
                 .actorUser(actorUuid)
                 .payload("request_uuid", request.getUuid())
                 .payload("kept_slot_uuids", kept)
-                .payload("released_slot_uuids", released));
+                .payload("released_slot_uuids", released)
+                .payload("requested_options_from", previousRequested)
+                .payload("requested_options_pinned", kept.size()));
         return aggregate(request);
     }
 

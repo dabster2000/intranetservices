@@ -5,13 +5,10 @@ import dk.trustworks.intranet.recruitmentservice.dto.SlackInboundRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SlackInboundResponse;
 import dk.trustworks.intranet.recruitmentservice.services.AvailabilityMessageService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSchedulingFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.SchedulingAsyncRunner;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.Status;
-import jakarta.transaction.Synchronization;
-import jakarta.transaction.TransactionSynchronizationRegistry;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
  * The {@code message.im} Events API handler (Method B Phase 12, plan
@@ -30,8 +27,10 @@ import org.eclipse.microprofile.context.ManagedExecutor;
  * events carry no user-visible response, so off simply means silence
  * (the P25 events posture). Everything else — correlation, extraction,
  * confirmation — happens in {@link AvailabilityMessageService} on the
- * {@code ManagedExecutor} after this dispatch commits (the extraction
- * is an OpenAI round-trip; §P9 M1 + the 3 s ack forbid it here).
+ * {@link SchedulingAsyncRunner}'s plain thread after this dispatch
+ * commits (the extraction is an OpenAI round-trip; §P9 M1 + the 3 s
+ * ack forbid it here, and a ManagedExecutor would drag the committed
+ * transaction context along — finding F10).
  */
 @JBossLog
 @ApplicationScoped
@@ -47,10 +46,7 @@ public class SlackSchedulingMessageHandler implements SlackInboundHandler {
     AvailabilityMessageService messageService;
 
     @Inject
-    ManagedExecutor managedExecutor;
-
-    @Inject
-    TransactionSynchronizationRegistry txSyncRegistry;
+    SchedulingAsyncRunner asyncRunner;
 
     @Override
     public String key() {
@@ -79,29 +75,8 @@ public class SlackSchedulingMessageHandler implements SlackInboundHandler {
         }
         String actorUuid = actor.getUuid();
         String messageTs = request.messageTs();
-        submitAfterCommit(() ->
+        asyncRunner.submitAfterCommit(() ->
                 messageService.process(actorUuid, channelId, messageTs, text, files));
         return SlackInboundResponse.handled(null);
-    }
-
-    /** The recorder's after-commit idiom — see SlackAssistantMentionHandler. */
-    private void submitAfterCommit(Runnable task) {
-        try {
-            txSyncRegistry.registerInterposedSynchronization(new Synchronization() {
-                @Override
-                public void beforeCompletion() {
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status == Status.STATUS_COMMITTED) {
-                        managedExecutor.submit(task);
-                    }
-                }
-            });
-        } catch (Exception e) {
-            // No active transaction — direct callers (tests) get the task now.
-            managedExecutor.submit(task);
-        }
     }
 }
