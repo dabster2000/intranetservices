@@ -172,6 +172,126 @@ public enum RecruitmentEventType {
     CIRCLE_MEMBER_ADDED,
     CIRCLE_MEMBER_REMOVED,
 
+    // --- Method B candidate-option scheduling (plan 2026-08-12 §8.6) -----
+    /** A recruiter started Method B on an application. Payload:
+     * structural request parameters (kind, round, window, option count). */
+    SCHEDULING_REQUEST_CREATED,
+    /**
+     * A recruiter changed a live request — extend-window or
+     * replace-interviewer. Payload: what changed, old/new values, all
+     * structural. Catalog addition beyond the plan §8.6 list — spec
+     * §6.2's rule is "every mutating endpoint = one command = ≥1 event"
+     * and the plan's REST section defines both endpoints.
+     */
+    SCHEDULING_REQUEST_UPDATED,
+    /** A slot went out to the required interviewers. Payload: slot uuid,
+     * option_no, start/end, room (structural; no candidate reference
+     * needed beyond the event's own subject columns). */
+    SLOT_PROPOSED,
+    /** One required interviewer approved a slot (Slack button). */
+    SLOT_APPROVED,
+    /** One required interviewer declined a slot (Slack button). Free-text
+     * reasons, when they exist, live in {@code pii} only. */
+    SLOT_DECLINED,
+    /**
+     * The system rejected a slot: recheck conflict, hold failure
+     * (compensation, spec §20) or a lost hold. Payload:
+     * {@code reject_reason}. Catalog addition beyond the plan §8.6 list —
+     * plan §8.2's rule is one audit event per transition, and this
+     * transition has no human actor to emit SLOT_DECLINED for.
+     */
+    SLOT_REJECTED,
+    /** One attendee-less hold event landed in a calendar (D5). Payload:
+     * hold uuid, owner kind, mailbox kind — never the candidate name
+     * (D12). */
+    HOLD_CREATED,
+    /** A hold's Graph event was deleted (release, expiry, compensation,
+     * finalization cleanup). */
+    HOLD_RELEASED,
+    /** The reconciliation sweep found a hold's event gone (the owner
+     * deleted it by hand) — the slot gets re-evaluated. */
+    HOLD_MISSING,
+    /**
+     * The recruiter approved the secured options for sending (the D11
+     * review action), possibly releasing some first. Payload: kept and
+     * released slot uuids. Catalog addition beyond the plan §8.6 list —
+     * the review gate is its own mutating endpoint (plan §8.5).
+     */
+    SCHEDULING_OPTIONS_APPROVED,
+    /** The option batch went out to the candidate (Phase 11). */
+    OPTIONS_SENT,
+    /** The candidate picked an option on the public page (Phase 11). */
+    OPTION_SELECTED,
+    /** Finalization completed — the real interview exists; its own
+     * INTERVIEW_SCHEDULED event carries the interview facts. */
+    SCHEDULING_FINALIZED,
+    /** Automation gave up and handed the request to the recruiter.
+     * Payload: reason + structural attempt history (spec §19.4 — no
+     * private evidence content). */
+    SCHEDULING_HANDED_BACK,
+    /** The recruiter cancelled the request. */
+    SCHEDULING_CANCELLED,
+    /**
+     * The candidate deadline passed without an answer — options released,
+     * request terminal EXPIRED (plan §11.3's expiry sweep). Catalog
+     * addition beyond the plan §8.6 list: spec §15's Expired state is a
+     * distinct ending ("never answered") and the timeline must say so.
+     */
+    SCHEDULING_EXPIRED,
+    /**
+     * The sweep nudged a silent interviewer or escalated to the
+     * recruiter (defaults §29.16). One event per nudge. Catalog addition
+     * beyond the plan §8.6 list — "reactors' own side effects are
+     * recorded as events", the same rule that added SCORECARD_NUDGED.
+     */
+    SCHEDULING_REMINDER_SENT,
+    /**
+     * An interviewer routed a plain note to the recruiter from a
+     * proposal card ("Foreslå anden tid" / "Spørg rekruttereren" —
+     * plan §9.1's pre-NLU path). The note text lives in {@code pii}
+     * only; payload carries the structural {@code note_kind}. Catalog
+     * addition beyond the plan §8.6 list — an auditor asking "what did
+     * the interviewer suggest, and when" reads it here (spec §3.4's
+     * timeline rule).
+     */
+    SCHEDULING_NOTE_ROUTED,
+    /**
+     * One availability submission was interpreted and stored as an
+     * evidence row (plan §12.2/§12.3) — text now, images in Phase 13.
+     * The interviewer's message text lives in {@code pii} ONLY (plan
+     * §12.2: "event pii blocks and the extraction call, nowhere else");
+     * payload carries the skeleton: evidence uuid, source type, the
+     * allowlisted intent, constraint count, lowest confidence, whether
+     * confirmation is required. UNKNOWN/REJECTED submissions are
+     * recorded too — they are the Phase 14 manual-review feed.
+     */
+    AVAILABILITY_EVIDENCE_RECEIVED,
+    /**
+     * Evidence became scheduling input (plan §12.4): the interviewer
+     * pressed Bekræft, or the extraction marked the statement
+     * unambiguous ({@code requiresConfirmation=false} auto-confirm —
+     * payload {@code auto} distinguishes the two). Any older
+     * overlapping evidence from the same interviewer it superseded is
+     * listed in payload.
+     */
+    AVAILABILITY_EVIDENCE_CONFIRMED,
+    /**
+     * Evidence left the pipeline unconsumed: Ret pressed (payload
+     * {@code reason=CORRECTION_REQUESTED}), 48 h unanswered or past its
+     * covered period ({@code reason=EXPIRED}) — the D9 rule's negative
+     * space, so the timeline shows WHY an interval never influenced
+     * planning.
+     */
+    AVAILABILITY_EVIDENCE_CANCELLED,
+    /**
+     * One evidence image was deleted from S3 (Phase 13, D10): confirm,
+     * cancel and the 48 h timeout all shed the original — this event is
+     * the deletion's audit anchor, paired with the retained
+     * {@code file_sha256} that proves WHAT was sent without keeping
+     * content. Payload carries evidence uuid + the trigger status.
+     */
+    AVAILABILITY_IMAGE_DELETED,
+
     // --- AI assist (companion spec; P9 onward) ---------------------------
     AI_SUGGESTIONS_GENERATED,
     AI_SUGGESTION_RESOLVED,
@@ -189,5 +309,14 @@ public enum RecruitmentEventType {
      * addition made in P25 — "reactors' own side effects are recorded as
      * events" applied to the conversational surface (findings §P25).
      */
-    AI_ASSISTANT_EXCHANGE
+    AI_ASSISTANT_EXCHANGE,
+    /**
+     * One AI-authored clarifying question in the Method B availability
+     * loop (plan §12.4, D6): the ONLY place model prose reaches an
+     * interviewer, always prefixed "🤖 " on the Slack surface. The
+     * question AND the source message text live in {@code pii}; payload
+     * carries intent, evidence uuid and prompt version — the spot-review
+     * log mirroring AI_ASSISTANT_EXCHANGE.
+     */
+    AI_SCHEDULING_EXCHANGE
 }

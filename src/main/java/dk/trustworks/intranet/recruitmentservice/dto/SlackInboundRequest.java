@@ -78,17 +78,29 @@ public record SlackInboundRequest(
         String actionValue,
         String privateMetadata,
         String viewId,
-        String stateValues
+        String stateValues,
+        java.util.List<FileRef> files
 ) {
 
     /** The query-only payload kind that is dispatched without a dedupe claim. */
     public static final String KIND_BLOCK_SUGGESTION = "block_suggestion";
+
+    /**
+     * One {@code message.im} attachment reference (Method B Phase 13).
+     * Everything here is a CLAIM from Slack's payload: the backend
+     * downloads via its own bot token and trusts magic bytes — never
+     * {@code mimetype} — for the format gate. Deliberately carries no
+     * file name (PII the pipeline never needs).
+     */
+    public record FileRef(String id, String mimetype, Long size,
+                          String urlPrivateDownload) {
+    }
 
     /** P13-shape convenience for tests and internal callers. */
     public SlackInboundRequest(String surface, String payloadId, String slackUserId,
                                String slackTeamId, String kind, String handlerKey,
                                String triggerId, String responseUrl) {
         this(surface, payloadId, slackUserId, slackTeamId, kind, handlerKey,
-                triggerId, responseUrl, null, null, null, null, null, null, null, null);
+                triggerId, responseUrl, null, null, null, null, null, null, null, null, null);
     }
 }

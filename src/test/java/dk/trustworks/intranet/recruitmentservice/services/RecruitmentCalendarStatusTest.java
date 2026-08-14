@@ -45,7 +45,7 @@ class RecruitmentCalendarStatusTest {
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;
-        service.configuredOrganizer = "career@trustworks.dk";
+        service.configuredOrganizerValue = java.util.Optional.of("career@trustworks.dk");
     }
 
     // ---- Pure mapping ----------------------------------------------------------

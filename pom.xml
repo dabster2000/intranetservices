@@ -13,10 +13,13 @@
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
     <quarkus.platform.version>3.36.3</quarkus.platform.version>
     <skipITs>true</skipITs>
-    <!-- Test-fork sizing. Peak RAM ~= surefire.forkCount x surefire.maxHeap.
+    <!-- Test-fork sizing. Peak RAM ~= surefire.forkCount x
+         (surefire.maxHeap + surefire.maxMetaspace).
          See the maven-surefire-plugin block for why maxHeap must stay set. -->
     <surefire.forkCount>1C</surefire.forkCount>
     <surefire.maxHeap>1g</surefire.maxHeap>
+    <surefire.maxMetaspace>384m</surefire.maxMetaspace>
+    <surefire.reuseForks>true</surefire.reuseForks>
     <!--<quarkus-amazon-services.version>2.5.1</quarkus-amazon-services.version>-->
   </properties>
   <dependencyManagement>
@@ -596,17 +599,29 @@
                is unaffected by the default: 1C = 4 forks there.
 
                Running the @QuarkusTest tier locally boots a full Quarkus app
-               per fork, so lower the fork count and raise the heap for it:
-                 ./mvnw test -Dsurefire.forkCount=4 -Dsurefire.maxHeap=2g -->
+               PER CLASS inside the reused fork, and their classloaders do not
+               reliably unload — metaspace accumulates until the 384m ceiling
+               kills the fork with OutOfMemoryError: Metaspace (observed
+               2026-08-14: the documented reuse-forks command below died after
+               ~85 tests). Run that tier with fresh JVMs per class instead —
+               metaspace then never spans more than one boot:
+                 ./mvnw test -Dgroups=io.quarkus.test.junit.QuarkusTest \
+                   -Dsurefire.forkCount=4 -Dsurefire.maxHeap=2g \
+                   -Dsurefire.reuseForks=false -Dquarkus.http.test-port=0
+               test-port=0 is NOT optional with forkCount>1: Quarkus's fixed
+               test port 8081 makes concurrent forks lose the bind race and
+               boot-abort as "1 error + all skipped" (observed 2026-08-14:
+               61 classes). Run the DB-free tier separately with the default
+               knobs. -->
           <forkCount>${surefire.forkCount}</forkCount>
-          <reuseForks>true</reuseForks>
+          <reuseForks>${surefire.reuseForks}</reuseForks>
           <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
             <maven.home>${maven.home}</maven.home>
           </systemPropertyVariables>
           <!-- @{argLine} carries Quarkus's add-opens/add-exports JVM flags; it
                is load-bearing and must stay first. -->
-          <argLine>@{argLine} -Xmx${surefire.maxHeap} -XX:MaxMetaspaceSize=384m</argLine>
+          <argLine>@{argLine} -Xmx${surefire.maxHeap} -XX:MaxMetaspaceSize=${surefire.maxMetaspace}</argLine>
         </configuration>
       </plugin>
     </plugins>

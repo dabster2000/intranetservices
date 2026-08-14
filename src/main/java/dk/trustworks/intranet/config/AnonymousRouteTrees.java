@@ -30,7 +30,8 @@ public final class AnonymousRouteTrees {
             "/guest",
             "/onboarding",
             "/login",
-            "/expenses/mobile"
+            "/expenses/mobile",
+            "/interview-valg"
     );
 
     private AnonymousRouteTrees() {

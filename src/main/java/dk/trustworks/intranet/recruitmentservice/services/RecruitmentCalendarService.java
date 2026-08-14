@@ -101,11 +101,29 @@ public class RecruitmentCalendarService {
      * The shared organizer mailbox new events are created under (plan
      * Phase 2, decision D1: {@code career@trustworks.dk} — env
      * {@code DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER}).
-     * Empty (the default) falls back to the first interviewer's mailbox,
-     * the pre-V492 behavior — the code ships safely ahead of the config.
+     * Absent falls back to the first interviewer's mailbox, the
+     * pre-V492 behavior — the code ships safely ahead of the config.
+     * <p>
+     * {@code Optional<String>} deliberately — NOT a plain String with
+     * {@code defaultValue = ""}: SmallRye converts an empty string to
+     * null, which makes the property REQUIRED and fails every boot
+     * without the env var (SRCFG00014) — the cvtool.username trap. This
+     * exact shape took the whole {@code @QuarkusTest} tier down between
+     * the Method A merge and the Method B validation phase.
      */
-    @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.organizer", defaultValue = "")
-    String configuredOrganizer;
+    @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.organizer")
+    Optional<String> configuredOrganizerValue;
+
+    /** The organizer mailbox, or null when unconfigured (fallback applies).
+     * Null-tolerant on the FIELD too: unit tests build this service with
+     * bare {@code new}, where no injection ever ran. */
+    private String configuredOrganizer() {
+        if (configuredOrganizerValue == null) {
+            return null;
+        }
+        return configuredOrganizerValue.filter(v -> !v.isBlank())
+                .map(String::trim).orElse(null);
+    }
 
     private GraphApiClient graph() {
         if (graphApiClient == null) {
@@ -421,9 +439,8 @@ public class RecruitmentCalendarService {
      * organizer while the config is empty.
      */
     private String candidateOrganizer(String internalOrganizer) {
-        return configuredOrganizer != null && !configuredOrganizer.isBlank()
-                ? configuredOrganizer.trim()
-                : internalOrganizer;
+        String organizer = configuredOrganizer();
+        return organizer != null ? organizer : internalOrganizer;
     }
 
     /**
@@ -540,6 +557,85 @@ public class RecruitmentCalendarService {
         return mailboxWindowSchedules(mailboxes,
                 date.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
                 date.atTime(AvailabilitySlotSuggester.DAY_WINDOW_END));
+    }
+
+    /**
+     * Raw schedules for an arbitrary date window (Method B slot
+     * planning): digit index 0 = {@code from} at 07:00, digits running
+     * CONTINUOUSLY (nights and weekends included) to {@code to} at
+     * 19:00 — the {@link MultiSlotPlanner} anchor convention, identical
+     * to {@link #suggestedSlots}' use of the digit string.
+     * <p>
+     * Long windows are probed in ≤10-day {@code getSchedule} chunks
+     * (the base plan's Graph-429 pacing rule) and stitched per mailbox.
+     * A failed or short chunk TRUNCATES that mailbox's view at the last
+     * good digit rather than padding: truncated digits count as free
+     * for interviewers (unknown never counts as busy) and disqualify
+     * rooms (a suggested room is a promise) — exactly the
+     * {@code viewFree} lenient/strict posture. Working hours come from
+     * the first chunk that carries them.
+     * <p>
+     * Empty when the toggle is off.
+     */
+    public Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> windowSchedules(
+            List<String> mailboxes, LocalDate from, LocalDate to) {
+        if (!calendarEnabled || mailboxes.isEmpty() || to.isBefore(from)) {
+            return Map.of();
+        }
+        LocalDateTime windowEnd = to.atTime(AvailabilitySlotSuggester.DAY_WINDOW_END);
+        Map<String, StringBuilder> views = new HashMap<>();
+        Map<String, AvailabilitySlotSuggester.WorkingHours> hours = new HashMap<>();
+        Set<String> truncated = new HashSet<>();
+
+        LocalDateTime chunkStart = from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START);
+        while (chunkStart.isBefore(windowEnd)) {
+            LocalDateTime chunkEnd = chunkStart.plusDays(10);
+            if (chunkEnd.isAfter(windowEnd)) {
+                chunkEnd = windowEnd;
+            }
+            int expectedDigits = (int) (java.time.Duration.between(chunkStart, chunkEnd)
+                    .toMinutes() / AvailabilitySlotSuggester.INTERVAL_MINUTES);
+            Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> chunk =
+                    mailboxWindowSchedules(mailboxes, chunkStart, chunkEnd);
+            for (String mailbox : mailboxes) {
+                String key = chunk.keySet().stream()
+                        .filter(k -> k.equalsIgnoreCase(mailbox))
+                        .findFirst().orElse(null);
+                AvailabilitySlotSuggester.MailboxWindowSchedule schedule =
+                        key != null ? chunk.get(key) : null;
+                String lower = mailbox.toLowerCase(Locale.ROOT);
+                if (schedule != null && schedule.workingHours() != null) {
+                    hours.putIfAbsent(lower, schedule.workingHours());
+                }
+                if (truncated.contains(lower)) {
+                    continue;
+                }
+                String view = schedule != null ? schedule.availabilityView() : null;
+                if (view == null) {
+                    truncated.add(lower);
+                    continue;
+                }
+                views.computeIfAbsent(lower, k -> new StringBuilder()).append(view);
+                if (view.length() < expectedDigits) {
+                    truncated.add(lower);
+                }
+            }
+            chunkStart = chunkEnd;
+        }
+
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> result = new HashMap<>();
+        for (String mailbox : mailboxes) {
+            String lower = mailbox.toLowerCase(Locale.ROOT);
+            StringBuilder view = views.get(lower);
+            AvailabilitySlotSuggester.WorkingHours workingHours = hours.get(lower);
+            if (view == null && workingHours == null) {
+                continue; // wholly unknown mailbox — absent, never busy
+            }
+            result.put(lower, new AvailabilitySlotSuggester.MailboxWindowSchedule(
+                    view != null && view.length() > 0 ? view.toString() : null,
+                    workingHours));
+        }
+        return result;
     }
 
     /**
@@ -764,6 +860,104 @@ public class RecruitmentCalendarService {
         }
     }
 
+    // ---- Method B placeholder holds (plan §9.3, D5/D12) --------------------
+
+    /**
+     * Create one attendee-less hold event by direct write into
+     * {@code mailbox}'s default calendar (D5: no attendees ⇒ no
+     * invitation mail; verified by the Phase 7.5 spike against user AND
+     * room mailboxes). {@code showAs: tentative}, {@code sensitivity:
+     * private} (D3), no reminder pop-ups, {@code transactionId} =
+     * the hold uuid so a replay never double-books.
+     * <p>
+     * THROWS on failure, unlike the Method A best-effort methods: the
+     * caller is an outbox executor whose retry/backoff/dead-letter IS
+     * the failure posture.
+     *
+     * @return the created Graph event id
+     */
+    public String createHoldEvent(String mailbox, String subject, String bodyText,
+                                  LocalDateTime start, LocalDateTime end,
+                                  String transactionId) {
+        GraphApiClient.CalendarEvent created = graph().createCalendarEvent(mailbox,
+                new CalendarEventRequest(
+                        subject,
+                        new CalendarEventRequest.ItemBody("text", bodyText),
+                        new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
+                        new CalendarEventRequest.DateTimeTimeZone(end.toString(), EVENT_TIME_ZONE),
+                        null,
+                        List.of(),
+                        null,
+                        null,
+                        List.of("Recruitment"),
+                        null,
+                        "private",
+                        transactionId,
+                        Boolean.FALSE,
+                        "tentative",
+                        Boolean.FALSE));
+        if (created == null || created.id() == null) {
+            throw new IllegalStateException("Graph returned no event id for hold " + transactionId);
+        }
+        return created.id();
+    }
+
+    /**
+     * Delete a hold event silently (no attendees ⇒ no cancellation
+     * mail). 404 = already gone = success; anything else throws so the
+     * outbox retries (spec §21.5: a hold that cannot be deleted keeps a
+     * cleanup warning on the request).
+     */
+    public void deleteHoldEvent(String mailbox, String eventId) {
+        try {
+            graph().deleteCalendarEvent(mailbox, eventId);
+        } catch (WebApplicationException e) {
+            if (e.getResponse() == null || e.getResponse().getStatus() != 404) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * The busy/tentative event ids overlapping {@code [start, end)} in a
+     * mailbox — the Method B recheck source (plan §9.3): the caller
+     * excludes its own hold ids; anything left is a conflict. Events
+     * marked {@code free} are ignored. THROWS on Graph failure — a
+     * recheck that cannot see the calendar must not pass.
+     */
+    public List<String> busyEventIdsInWindow(String mailbox, LocalDateTime start,
+                                             LocalDateTime end) {
+        GraphApiClient.CalendarViewResponse response = graph().calendarView(
+                mailbox, start.toString(), end.toString(), "id,showAs", 100);
+        if (response == null || response.value() == null) {
+            return List.of();
+        }
+        return response.value().stream()
+                .filter(event -> event.id() != null)
+                .filter(event -> !"free".equalsIgnoreCase(
+                        event.showAs() == null ? "" : event.showAs()))
+                .map(GraphApiClient.CalendarViewResponse.CalendarViewEvent::id)
+                .toList();
+    }
+
+    /**
+     * Whether a hold's Graph event still exists — the reconciliation
+     * probe (plan §9.4). False ONLY on a definitive 404; any other
+     * failure throws (an unreachable Graph must not read as a deleted
+     * hold).
+     */
+    public boolean holdEventExists(String mailbox, String eventId) {
+        try {
+            graph().getCalendarEventDetails(mailbox, eventId, "id");
+            return true;
+        } catch (WebApplicationException e) {
+            if (e.getResponse() != null && e.getResponse().getStatus() == 404) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
     // ---- Shaping -----------------------------------------------------------
 
     /**
@@ -849,7 +1043,9 @@ public class RecruitmentCalendarService {
                 // marked private so shared-calendar viewers see busy only.
                 "private",
                 create ? interview.getUuid() : null,
-                Boolean.TRUE);
+                Boolean.TRUE,
+                null,
+                null);
     }
 
     /** The split-mode internal note: kit pointer, position, focus areas. */
@@ -903,7 +1099,9 @@ public class RecruitmentCalendarService {
                 15,
                 "private",
                 create ? interview.getUuid() + "-candidate" : null,
-                Boolean.TRUE);
+                Boolean.TRUE,
+                null,
+                null);
     }
 
     /** The template row, or null when missing/inactive/unreadable. */
@@ -1085,8 +1283,9 @@ public class RecruitmentCalendarService {
         if (interview.getGraphOrganizer() != null && !interview.getGraphOrganizer().isBlank()) {
             return interview.getGraphOrganizer();
         }
-        if (configuredOrganizer != null && !configuredOrganizer.isBlank()) {
-            return configuredOrganizer.trim();
+        String organizer = configuredOrganizer();
+        if (organizer != null) {
+            return organizer;
         }
         List<String> interviewers = interview.getInterviewerUuids();
         if (interviewers == null || interviewers.isEmpty()) {
