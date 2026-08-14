@@ -6,12 +6,18 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCalendarHold;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentProposedSlot;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSchedulingOutbox;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSchedulingRequest;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSlotApproval;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CalendarHoldOwnerKind;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CalendarHoldStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.ProposedSlotStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxAction;
+import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingRequestStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.SlotApprovalStatus;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -146,10 +152,21 @@ public class RecruitmentSchedulingOrchestrator {
         }
     }
 
-    /** The proposal-pipeline step: top up, then recompute the status. */
+    /** The proposal-pipeline step: advance slot lifecycles (recheck →
+     * holds → HELD, with compensation), nudge silent interviewers, top
+     * up, then recompute the status. */
     private void pipelineStep(RecruitmentSchedulingRequest request, LocalDateTime now) {
         List<RecruitmentProposedSlot> slots = RecruitmentProposedSlot
                 .list("requestUuid = ?1", request.getUuid());
+
+        for (RecruitmentProposedSlot slot : slots) {
+            if (slot.getStatus() == ProposedSlotStatus.APPROVED) {
+                recheckAndHold(request, slot);
+            } else if (slot.getStatus() == ProposedSlotStatus.RECHECKING) {
+                progressRecheckingSlot(request, slot);
+            }
+        }
+        remindSilentInterviewers(request, slots, now);
 
         long live = slots.stream().filter(s -> s.getStatus().isLive()).count();
         boolean canTopUp = switch (request.getStatus()) {
@@ -158,9 +175,369 @@ public class RecruitmentSchedulingOrchestrator {
         };
         if (canTopUp && live < request.getRequestedOptions()) {
             searchAndPropose(request, slots, now);
-            slots = RecruitmentProposedSlot.list("requestUuid = ?1", request.getUuid());
         }
-        recomputeRequestStatus(request, slots);
+        recomputeRequestStatus(request,
+                RecruitmentProposedSlot.list("requestUuid = ?1", request.getUuid()));
+    }
+
+    // ---- Recheck + holds (plan §9.3, D5/D12) -------------------------------
+
+    /**
+     * The last required approval landed: recheck availability via
+     * calendarView — EXCLUDING this request's own hold event ids (the
+     * digit string cannot attribute busyness; other requests' holds
+     * correctly block) — then create the hold rows and enqueue their
+     * Graph creates. Conflict ⇒ slot REJECTED and the search resumes.
+     */
+    private void recheckAndHold(RecruitmentSchedulingRequest request,
+                                RecruitmentProposedSlot slot) {
+        List<String> mailboxes = new ArrayList<>();
+        Map<String, String> userByMailbox = new java.util.HashMap<>();
+        for (String interviewerUuid : request.getInterviewerUuids()) {
+            User user = User.findById(interviewerUuid);
+            if (user != null && user.getEmail() != null && !user.getEmail().isBlank()) {
+                mailboxes.add(user.getEmail());
+                userByMailbox.put(user.getEmail(), interviewerUuid);
+            }
+        }
+        if (slot.getRoomEmail() != null && !slot.getRoomEmail().isBlank()) {
+            mailboxes.add(slot.getRoomEmail());
+        }
+
+        java.util.Set<String> ownHoldIds = ownHoldEventIds(request);
+        try {
+            for (String mailbox : mailboxes) {
+                List<String> busy = calendarService.busyEventIdsInWindow(
+                        mailbox, slot.getSlotStart(), slot.getSlotEnd());
+                boolean conflict = busy.stream().anyMatch(id -> !ownHoldIds.contains(id));
+                if (conflict) {
+                    rejectSlot(request, slot, "RECHECK_CONFLICT");
+                    return;
+                }
+            }
+        } catch (Exception e) {
+            // Graph unreachable — a recheck that cannot see the calendar
+            // must not pass OR reject. Try again next sweep.
+            log.warnf("Method B recheck deferred for slot %s: %s",
+                    slot.getUuid(), e.getMessage());
+            return;
+        }
+
+        for (String mailbox : mailboxes) {
+            ensureHold(request, slot, mailbox, userByMailbox.get(mailbox));
+        }
+        slot.setStatus(ProposedSlotStatus.RECHECKING);
+    }
+
+    /** Every busy id this request already owns — the recheck exclusion. */
+    private java.util.Set<String> ownHoldEventIds(RecruitmentSchedulingRequest request) {
+        List<RecruitmentCalendarHold> holds = RecruitmentCalendarHold.list(
+                "slotUuid in (select s.uuid from RecruitmentProposedSlot s where s.requestUuid = ?1)",
+                request.getUuid());
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (RecruitmentCalendarHold hold : holds) {
+            if (hold.getGraphEventId() != null) {
+                ids.add(hold.getGraphEventId());
+            }
+        }
+        return ids;
+    }
+
+    /** Create the hold row + its CREATE_HOLD action, once. */
+    private void ensureHold(RecruitmentSchedulingRequest request,
+                            RecruitmentProposedSlot slot,
+                            String mailbox, String userUuid) {
+        long existing = RecruitmentCalendarHold.count(
+                "slotUuid = ?1 and mailbox = ?2 and status != ?3",
+                slot.getUuid(), mailbox, CalendarHoldStatus.RELEASED);
+        if (existing > 0) {
+            return;
+        }
+        RecruitmentCalendarHold hold = new RecruitmentCalendarHold();
+        hold.setSlotUuid(slot.getUuid());
+        hold.setOwnerKind(userUuid != null
+                ? CalendarHoldOwnerKind.USER : CalendarHoldOwnerKind.ROOM);
+        hold.setUserUuid(userUuid);
+        hold.setMailbox(mailbox);
+        hold.persist();
+        outboxService.enqueue(request.getUuid(), slot.getUuid(),
+                SchedulingOutboxAction.CREATE_HOLD, hold.getUuid(),
+                schedulingService.refPayload("holdUuid", hold.getUuid()));
+    }
+
+    /**
+     * A RECHECKING slot waits for its CREATE_HOLD actions: all created ⇒
+     * HELD; any dead-lettered ⇒ compensate — delete what was created,
+     * reject the slot, keep searching (spec §20).
+     */
+    private void progressRecheckingSlot(RecruitmentSchedulingRequest request,
+                                        RecruitmentProposedSlot slot) {
+        long failed = RecruitmentSchedulingOutbox.count(
+                "slotUuid = ?1 and action = ?2 and status = ?3",
+                slot.getUuid(), SchedulingOutboxAction.CREATE_HOLD,
+                SchedulingOutboxStatus.FAILED);
+        if (failed > 0) {
+            rejectSlot(request, slot, "HOLD_FAILURE");
+            return;
+        }
+        long pendingHolds = RecruitmentCalendarHold.count(
+                "slotUuid = ?1 and status != ?2 and graphEventId is null",
+                slot.getUuid(), CalendarHoldStatus.RELEASED);
+        if (pendingHolds == 0) {
+            slot.setStatus(ProposedSlotStatus.HELD);
+        }
+    }
+
+    /** Reject + compensate one slot, with its audit event. */
+    private void rejectSlot(RecruitmentSchedulingRequest request,
+                            RecruitmentProposedSlot slot, String reason) {
+        slot.setStatus(ProposedSlotStatus.REJECTED);
+        slot.setRejectReason(reason);
+        schedulingService.releaseHolds(request, slot);
+        RecruitmentApplication application =
+                RecruitmentApplication.findById(request.getApplicationUuid());
+        eventRecorder.record(RecruitmentEventBuilder
+                .event(RecruitmentEventType.SLOT_REJECTED)
+                .application(request.getApplicationUuid())
+                .candidate(application != null ? application.getCandidateUuid() : null)
+                .position(application != null ? application.getPositionUuid() : null)
+                .actorScheduler()
+                .payload("request_uuid", request.getUuid())
+                .payload("slot_uuid", slot.getUuid())
+                .payload("reject_reason", reason));
+    }
+
+    // ---- Interviewer-silence reminders (defaults §29.16) -------------------
+
+    /** First nudge after this much silence. */
+    static final int NUDGE_1_HOURS = 24;
+    /** Second nudge. */
+    static final int NUDGE_2_HOURS = 72;
+    /** Escalation to the recruiter. */
+    static final int ESCALATE_HOURS = 96;
+
+    private void remindSilentInterviewers(RecruitmentSchedulingRequest request,
+                                          List<RecruitmentProposedSlot> slots,
+                                          LocalDateTime now) {
+        for (RecruitmentProposedSlot slot : slots) {
+            if (slot.getStatus() != ProposedSlotStatus.PROPOSED
+                    && slot.getStatus() != ProposedSlotStatus.PARTIALLY_APPROVED) {
+                continue;
+            }
+            List<RecruitmentSlotApproval> approvals =
+                    RecruitmentSlotApproval.list("slotUuid = ?1", slot.getUuid());
+            for (RecruitmentSlotApproval approval : approvals) {
+                if (approval.getStatus() != SlotApprovalStatus.PENDING) {
+                    continue;
+                }
+                int tier = reminderTier(approval.getCreatedAt(),
+                        approval.getNudgeCount(), now);
+                if (tier == 0) {
+                    continue;
+                }
+                if (tier <= 2) {
+                    outboxService.enqueue(request.getUuid(), slot.getUuid(),
+                            SchedulingOutboxAction.SEND_PROPOSAL_DM,
+                            approval.getUuid() + ":nudge" + tier,
+                            nudgePayload(approval.getUuid(), tier));
+                } else {
+                    outboxService.enqueue(request.getUuid(), slot.getUuid(),
+                            SchedulingOutboxAction.SEND_RECRUITER_DM,
+                            "ESCALATION:" + approval.getUuid(),
+                            escalationPayload(approval.getUuid()));
+                }
+                approval.setNudgeCount(tier);
+                approval.setLastNudgedAt(now);
+                RecruitmentApplication application =
+                        RecruitmentApplication.findById(request.getApplicationUuid());
+                eventRecorder.record(RecruitmentEventBuilder
+                        .event(RecruitmentEventType.SCHEDULING_REMINDER_SENT)
+                        .application(request.getApplicationUuid())
+                        .candidate(application != null ? application.getCandidateUuid() : null)
+                        .position(application != null ? application.getPositionUuid() : null)
+                        .actorScheduler()
+                        .payload("request_uuid", request.getUuid())
+                        .payload("slot_uuid", slot.getUuid())
+                        .payload("approval_uuid", approval.getUuid())
+                        .payload("interviewer_uuid", approval.getUserUuid())
+                        .payload("tier", tier));
+            }
+        }
+    }
+
+    /**
+     * The reminder tier now due for a silent approval (pure; DB-free
+     * tested): 1 after 24 h, 2 after 72 h, 3 (recruiter escalation)
+     * after 96 h — each fired once, tracked by {@code nudgeCount}.
+     */
+    static int reminderTier(LocalDateTime approvalCreatedAt, int nudgeCount,
+                            LocalDateTime now) {
+        if (approvalCreatedAt == null) {
+            return 0;
+        }
+        long hours = java.time.Duration.between(approvalCreatedAt, now).toHours();
+        if (nudgeCount < 1 && hours >= NUDGE_1_HOURS) {
+            return 1;
+        }
+        if (nudgeCount == 1 && hours >= NUDGE_2_HOURS) {
+            return 2;
+        }
+        if (nudgeCount == 2 && hours >= ESCALATE_HOURS) {
+            return 3;
+        }
+        return 0;
+    }
+
+    private String nudgePayload(String approvalUuid, int tier) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(Map.of("approvalUuid", approvalUuid, "nudge", tier));
+        } catch (Exception e) {
+            return "{\"approvalUuid\":\"" + approvalUuid + "\",\"nudge\":" + tier + "}";
+        }
+    }
+
+    private String escalationPayload(String approvalUuid) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(Map.of("notice", "SILENCE_ESCALATION",
+                            "approvalUuid", approvalUuid));
+        } catch (Exception e) {
+            return "{\"notice\":\"SILENCE_ESCALATION\",\"approvalUuid\":\""
+                    + approvalUuid + "\"}";
+        }
+    }
+
+    // ---- Hold reconciliation + expiry sweep (plan §9.4) --------------------
+
+    /** Holds examined per reconciliation sweep. */
+    static final int RECONCILE_BATCH = 100;
+
+    @Scheduled(every = "15m", identity = "recruitment-scheduling-hold-reconcile",
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void reconcileTimer() {
+        if (!methodBFlag.isMethodBEnabled() || !calendarService.isEnabled()) {
+            return;
+        }
+        reconcileHolds();
+        expireOverdueSlots();
+    }
+
+    /**
+     * Poll every ACTIVE hold's Graph event (no webhooks — plan §9.4):
+     * still there ⇒ VERIFIED; 404 ⇒ the owner deleted it by hand ⇒
+     * MISSING + re-evaluate the slot — re-create the hold if the time is
+     * still free, else invalidate the option and let the advance sweep
+     * re-search.
+     */
+    public void reconcileHolds() {
+        List<String> holdUuids = QuarkusTransaction.requiringNew().call(() ->
+                RecruitmentCalendarHold.<RecruitmentCalendarHold>find(
+                                "graphEventId is not null and status in ?1 and slotUuid in "
+                                        + "(select s.uuid from RecruitmentProposedSlot s where s.status in ?2)",
+                                List.of(CalendarHoldStatus.CREATED, CalendarHoldStatus.VERIFIED),
+                                List.of(ProposedSlotStatus.HELD, ProposedSlotStatus.OFFERED,
+                                        ProposedSlotStatus.SELECTED))
+                        .page(0, RECONCILE_BATCH)
+                        .list().stream().map(RecruitmentCalendarHold::getUuid).toList());
+        for (String holdUuid : holdUuids) {
+            try {
+                reconcileOne(holdUuid);
+            } catch (Exception e) {
+                log.warnf("Method B hold reconciliation failed for %s: %s",
+                        holdUuid, e.getMessage());
+            }
+        }
+    }
+
+    private void reconcileOne(String holdUuid) {
+        RecruitmentCalendarHold probe = QuarkusTransaction.requiringNew()
+                .call(() -> RecruitmentCalendarHold.findById(holdUuid));
+        if (probe == null || probe.getGraphEventId() == null) {
+            return;
+        }
+        boolean exists = calendarService.holdEventExists(
+                probe.getMailbox(), probe.getGraphEventId());
+        QuarkusTransaction.requiringNew().run(() -> {
+            RecruitmentCalendarHold hold = RecruitmentCalendarHold.findById(holdUuid);
+            if (hold == null || hold.getStatus() == CalendarHoldStatus.RELEASED) {
+                return;
+            }
+            if (exists) {
+                hold.setStatus(CalendarHoldStatus.VERIFIED);
+                hold.setLastVerifiedAt(LocalDateTime.now());
+                return;
+            }
+            hold.setStatus(CalendarHoldStatus.MISSING);
+            RecruitmentProposedSlot slot = RecruitmentProposedSlot.findById(hold.getSlotUuid());
+            RecruitmentSchedulingRequest request = slot == null ? null
+                    : RecruitmentSchedulingRequest.findById(slot.getRequestUuid());
+            RecruitmentApplication application = request == null ? null
+                    : RecruitmentApplication.findById(request.getApplicationUuid());
+            eventRecorder.record(RecruitmentEventBuilder
+                    .event(RecruitmentEventType.HOLD_MISSING)
+                    .application(request != null ? request.getApplicationUuid() : null)
+                    .candidate(application != null ? application.getCandidateUuid() : null)
+                    .position(application != null ? application.getPositionUuid() : null)
+                    .actorScheduler()
+                    .payload("request_uuid", request != null ? request.getUuid() : null)
+                    .payload("slot_uuid", hold.getSlotUuid())
+                    .payload("hold_uuid", hold.getUuid())
+                    .payload("owner_kind", hold.getOwnerKind().name()));
+            if (slot == null || request == null || !slot.getStatus().isLive()) {
+                return;
+            }
+            reevaluateLostHold(request, slot, hold);
+        });
+    }
+
+    /**
+     * A hold vanished under a live slot: if the time is still free
+     * (excluding our own holds), re-create it and the slot stays valid;
+     * otherwise the owner reclaimed the time — invalidate the option.
+     */
+    private void reevaluateLostHold(RecruitmentSchedulingRequest request,
+                                    RecruitmentProposedSlot slot,
+                                    RecruitmentCalendarHold lost) {
+        try {
+            java.util.Set<String> ownIds = ownHoldEventIds(request);
+            List<String> busy = calendarService.busyEventIdsInWindow(
+                    lost.getMailbox(), slot.getSlotStart(), slot.getSlotEnd());
+            boolean conflict = busy.stream().anyMatch(id -> !ownIds.contains(id));
+            if (conflict) {
+                rejectSlot(request, slot, "HOLD_LOST");
+            } else {
+                ensureHold(request, slot, lost.getMailbox(), lost.getUserUuid());
+                // Back through the hold-creation wait state.
+                slot.setStatus(ProposedSlotStatus.RECHECKING);
+            }
+            request.setNextActionAt(null);
+        } catch (Exception e) {
+            // Recheck unavailable — leave MISSING standing; the next
+            // reconciliation pass re-evaluates.
+            log.warnf("Method B lost-hold re-evaluation deferred for slot %s: %s",
+                    slot.getUuid(), e.getMessage());
+        }
+    }
+
+    /** Offered/held slots past their expiry are released (plan §9.4). */
+    void expireOverdueSlots() {
+        LocalDateTime now = LocalDateTime.now();
+        QuarkusTransaction.requiringNew().run(() -> {
+            List<RecruitmentProposedSlot> overdue = RecruitmentProposedSlot.list(
+                    "expiresAt is not null and expiresAt < ?1 and status in ?2",
+                    now, List.of(ProposedSlotStatus.HELD, ProposedSlotStatus.OFFERED));
+            for (RecruitmentProposedSlot slot : overdue) {
+                RecruitmentSchedulingRequest request =
+                        RecruitmentSchedulingRequest.findById(slot.getRequestUuid());
+                if (request == null) {
+                    continue;
+                }
+                slot.setStatus(ProposedSlotStatus.EXPIRED);
+                schedulingService.releaseHolds(request, slot);
+                request.setNextActionAt(null);
+            }
+        });
     }
 
     /** Plan and propose up to the missing option count. */

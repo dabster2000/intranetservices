@@ -238,6 +238,16 @@ public enum RecruitmentEventType {
      * recorded as events", the same rule that added SCORECARD_NUDGED.
      */
     SCHEDULING_REMINDER_SENT,
+    /**
+     * An interviewer routed a plain note to the recruiter from a
+     * proposal card ("Foreslå anden tid" / "Spørg rekruttereren" —
+     * plan §9.1's pre-NLU path). The note text lives in {@code pii}
+     * only; payload carries the structural {@code note_kind}. Catalog
+     * addition beyond the plan §8.6 list — an auditor asking "what did
+     * the interviewer suggest, and when" reads it here (spec §3.4's
+     * timeline rule).
+     */
+    SCHEDULING_NOTE_ROUTED,
 
     // --- AI assist (companion spec; P9 onward) ---------------------------
     AI_SUGGESTIONS_GENERATED,

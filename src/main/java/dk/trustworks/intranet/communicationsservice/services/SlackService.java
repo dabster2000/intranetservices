@@ -380,6 +380,32 @@ public class SlackService {
         }
     }
 
+    /** Where a DM landed: the resolved D-channel + message ts — the
+     * {@code chat.update} address of the message. */
+    public record DmRef(String channelId, String ts) { }
+
+    /**
+     * DMs a Block Kit message and returns where it landed (Method B
+     * proposal cards, plan §9.1: approve/decline must
+     * {@code chat.update} the card in place, which needs the RESOLVED
+     * D-channel id — posting addressed the member id). Throws on
+     * transport failure and not-ok responses like the void variant; the
+     * caller is an outbox executor whose retry is the failure posture.
+     */
+    public DmRef sendDmReturningRef(User user, String fallbackText,
+                                    java.util.List<com.slack.api.model.block.LayoutBlock> blocks)
+            throws SlackApiException, IOException {
+        ChatPostMessageResponse response = Slack.getInstance().methods(motherSlackBotToken)
+                .chatPostMessage(req -> req
+                        .channel(user.getSlackusername())
+                        .text(fallbackText)
+                        .blocks(blocks));
+        if (!response.isOk()) {
+            throw new IOException("Slack block DM failed: " + response.getError());
+        }
+        return new DmRef(response.getChannel(), response.getTs());
+    }
+
     /**
      * Opens a modal view against a {@code trigger_id} (P14 — Slack inbound
      * handlers). Trigger ids expire after 3 seconds, so callers invoke this

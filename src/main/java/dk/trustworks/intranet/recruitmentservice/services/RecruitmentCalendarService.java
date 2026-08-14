@@ -843,6 +843,104 @@ public class RecruitmentCalendarService {
         }
     }
 
+    // ---- Method B placeholder holds (plan §9.3, D5/D12) --------------------
+
+    /**
+     * Create one attendee-less hold event by direct write into
+     * {@code mailbox}'s default calendar (D5: no attendees ⇒ no
+     * invitation mail; verified by the Phase 7.5 spike against user AND
+     * room mailboxes). {@code showAs: tentative}, {@code sensitivity:
+     * private} (D3), no reminder pop-ups, {@code transactionId} =
+     * the hold uuid so a replay never double-books.
+     * <p>
+     * THROWS on failure, unlike the Method A best-effort methods: the
+     * caller is an outbox executor whose retry/backoff/dead-letter IS
+     * the failure posture.
+     *
+     * @return the created Graph event id
+     */
+    public String createHoldEvent(String mailbox, String subject, String bodyText,
+                                  LocalDateTime start, LocalDateTime end,
+                                  String transactionId) {
+        GraphApiClient.CalendarEvent created = graph().createCalendarEvent(mailbox,
+                new CalendarEventRequest(
+                        subject,
+                        new CalendarEventRequest.ItemBody("text", bodyText),
+                        new CalendarEventRequest.DateTimeTimeZone(start.toString(), EVENT_TIME_ZONE),
+                        new CalendarEventRequest.DateTimeTimeZone(end.toString(), EVENT_TIME_ZONE),
+                        null,
+                        List.of(),
+                        null,
+                        null,
+                        List.of("Recruitment"),
+                        null,
+                        "private",
+                        transactionId,
+                        Boolean.FALSE,
+                        "tentative",
+                        Boolean.FALSE));
+        if (created == null || created.id() == null) {
+            throw new IllegalStateException("Graph returned no event id for hold " + transactionId);
+        }
+        return created.id();
+    }
+
+    /**
+     * Delete a hold event silently (no attendees ⇒ no cancellation
+     * mail). 404 = already gone = success; anything else throws so the
+     * outbox retries (spec §21.5: a hold that cannot be deleted keeps a
+     * cleanup warning on the request).
+     */
+    public void deleteHoldEvent(String mailbox, String eventId) {
+        try {
+            graph().deleteCalendarEvent(mailbox, eventId);
+        } catch (WebApplicationException e) {
+            if (e.getResponse() == null || e.getResponse().getStatus() != 404) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * The busy/tentative event ids overlapping {@code [start, end)} in a
+     * mailbox — the Method B recheck source (plan §9.3): the caller
+     * excludes its own hold ids; anything left is a conflict. Events
+     * marked {@code free} are ignored. THROWS on Graph failure — a
+     * recheck that cannot see the calendar must not pass.
+     */
+    public List<String> busyEventIdsInWindow(String mailbox, LocalDateTime start,
+                                             LocalDateTime end) {
+        GraphApiClient.CalendarViewResponse response = graph().calendarView(
+                mailbox, start.toString(), end.toString(), "id,showAs", 100);
+        if (response == null || response.value() == null) {
+            return List.of();
+        }
+        return response.value().stream()
+                .filter(event -> event.id() != null)
+                .filter(event -> !"free".equalsIgnoreCase(
+                        event.showAs() == null ? "" : event.showAs()))
+                .map(GraphApiClient.CalendarViewResponse.CalendarViewEvent::id)
+                .toList();
+    }
+
+    /**
+     * Whether a hold's Graph event still exists — the reconciliation
+     * probe (plan §9.4). False ONLY on a definitive 404; any other
+     * failure throws (an unreachable Graph must not read as a deleted
+     * hold).
+     */
+    public boolean holdEventExists(String mailbox, String eventId) {
+        try {
+            graph().getCalendarEventDetails(mailbox, eventId, "id");
+            return true;
+        } catch (WebApplicationException e) {
+            if (e.getResponse() != null && e.getResponse().getStatus() == 404) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
     // ---- Shaping -----------------------------------------------------------
 
     /**
@@ -928,7 +1026,9 @@ public class RecruitmentCalendarService {
                 // marked private so shared-calendar viewers see busy only.
                 "private",
                 create ? interview.getUuid() : null,
-                Boolean.TRUE);
+                Boolean.TRUE,
+                null,
+                null);
     }
 
     /** The split-mode internal note: kit pointer, position, focus areas. */
@@ -982,7 +1082,9 @@ public class RecruitmentCalendarService {
                 15,
                 "private",
                 create ? interview.getUuid() + "-candidate" : null,
-                Boolean.TRUE);
+                Boolean.TRUE,
+                null,
+                null);
     }
 
     /** The template row, or null when missing/inactive/unreadable. */
