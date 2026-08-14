@@ -217,6 +217,30 @@ public final class SlackAvailabilityViews {
                         + "kl. 9–12\".";
     }
 
+    /** The image could not be downloaded/stored — deterministic Danish
+     * (pre-extraction, language unknown). */
+    public static String imageFetchFailedText() {
+        return "Jeg kunne ikke hente billedet fra Slack — prøv at sende det "
+                + "igen, eller skriv din tilgængelighed som tekst.";
+    }
+
+    /** Wrong format or over the 20 MB cap — deterministic Danish. */
+    public static String unsupportedImageText() {
+        return "Billedformatet kan ikke bruges — send et JPEG-, PNG-, GIF- "
+                + "eller WebP-billede under 20 MB, eller skriv din "
+                + "tilgængelighed som tekst.";
+    }
+
+    /** The vision read yielded nothing usable (spec §11.5's unreadable rule). */
+    public static String imageUnreadableText(String language) {
+        return "en".equals(language)
+                ? "I could not read a calendar from that image. Send a clearer "
+                        + "screenshot, or write your availability as text."
+                : "Jeg kunne ikke læse en kalender ud af billedet. Send et "
+                        + "tydeligere skærmbillede, eller skriv din "
+                        + "tilgængelighed som tekst.";
+    }
+
     /** A routed intent's acknowledgement to the interviewer. */
     public static String routedAckText(String language) {
         return "en".equals(language)

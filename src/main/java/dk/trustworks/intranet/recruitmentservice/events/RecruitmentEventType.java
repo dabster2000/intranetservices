@@ -283,6 +283,14 @@ public enum RecruitmentEventType {
      * planning.
      */
     AVAILABILITY_EVIDENCE_CANCELLED,
+    /**
+     * One evidence image was deleted from S3 (Phase 13, D10): confirm,
+     * cancel and the 48 h timeout all shed the original — this event is
+     * the deletion's audit anchor, paired with the retained
+     * {@code file_sha256} that proves WHAT was sent without keeping
+     * content. Payload carries evidence uuid + the trigger status.
+     */
+    AVAILABILITY_IMAGE_DELETED,
 
     // --- AI assist (companion spec; P9 onward) ---------------------------
     AI_SUGGESTIONS_GENERATED,

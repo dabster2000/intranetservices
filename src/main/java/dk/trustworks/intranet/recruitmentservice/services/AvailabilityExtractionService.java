@@ -55,6 +55,35 @@ public class AvailabilityExtractionService {
     /** Below this lowest per-constraint confidence, confirmation is forced. */
     static final BigDecimal MIN_AUTOCONFIRM_CONFIDENCE = new BigDecimal("0.75");
 
+    /** The vision cap (plan §13.1 — the input_image contract's 20 MB). */
+    public static final int IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+
+    /**
+     * Magic-byte MIME sniff for the Phase 13 allowlist — jpeg/png/gif/
+     * webp, the {@code input_image} formats. Returns null for anything
+     * else. Slack's {@code mimetype} field is a CLAIM and never
+     * consulted (the ExpenseAIValidationService posture, bytes-side).
+     */
+    public static String sniffImageMime(byte[] bytes) {
+        if (bytes == null || bytes.length < 12) {
+            return null;
+        }
+        if ((bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xD8 && (bytes[2] & 0xFF) == 0xFF) {
+            return "image/jpeg";
+        }
+        if ((bytes[0] & 0xFF) == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G') {
+            return "image/png";
+        }
+        if (bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == '8') {
+            return "image/gif";
+        }
+        if (bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                && bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P') {
+            return "image/webp";
+        }
+        return null;
+    }
+
     @Inject
     OpenAIService openAIService;
 
@@ -119,6 +148,36 @@ public class AvailabilityExtractionService {
                 AvailabilitySchedulingPrompts.REFUSAL_FALLBACK_JSON,
                 extractionModel, MAX_OUTPUT_TOKENS, false,
                 extractionReasoningEffort.filter(e -> !e.isBlank()).orElse(null));
+        return parse(json);
+    }
+
+    /**
+     * Phase 13: the vision path — one calendar image (+ optional
+     * accompanying text) through the expense {@code input_image} shape,
+     * on the vision model (a non-reasoning tier: NO effort node, the
+     * gpt-4o family rejects it), {@code store:false}. Same schema, same
+     * downstream {@link #validate} gate. NEVER inside a transaction.
+     */
+    public Extraction extractFromImage(LocalDate today, LocalDate windowStart,
+                                       LocalDate windowEnd, String message,
+                                       byte[] imageBytes, String mimeType) {
+        if (QuarkusTransaction.isActive()) {
+            throw new IllegalStateException(
+                    "extractFromImage must not be called inside a transaction");
+        }
+        String json = openAIService.askWithSchemaAndImage(
+                AvailabilitySchedulingPrompts.imageSystemPrompt(),
+                AvailabilitySchedulingPrompts.userPrompt(today, windowStart, windowEnd, message),
+                java.util.Base64.getEncoder().encodeToString(imageBytes),
+                mimeType,
+                AvailabilitySchedulingPrompts.schema(),
+                SCHEMA_NAME,
+                AvailabilitySchedulingPrompts.REFUSAL_FALLBACK_JSON,
+                openAIService.getVisionModel(), MAX_OUTPUT_TOKENS, false);
+        return parse(json);
+    }
+
+    private Extraction parse(String json) {
         try {
             JsonNode node = objectMapper.readTree(json);
             if (node == null || !node.isObject() || node.isEmpty()) {

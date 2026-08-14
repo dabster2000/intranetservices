@@ -96,7 +96,8 @@ class RecruitmentEventTypeCatalogTest {
                 "SCHEDULING_FINALIZED", "SCHEDULING_HANDED_BACK", "SCHEDULING_CANCELLED",
                 "SCHEDULING_EXPIRED", "SCHEDULING_REMINDER_SENT", "SCHEDULING_NOTE_ROUTED",
                 "AVAILABILITY_EVIDENCE_RECEIVED", "AVAILABILITY_EVIDENCE_CONFIRMED",
-                "AVAILABILITY_EVIDENCE_CANCELLED", "AI_SCHEDULING_EXCHANGE");
+                "AVAILABILITY_EVIDENCE_CANCELLED", "AVAILABILITY_IMAGE_DELETED",
+                "AI_SCHEDULING_EXCHANGE");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -109,7 +110,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions exactly");
-        assertEquals(74, RecruitmentEventType.values().length);
+        assertEquals(75, RecruitmentEventType.values().length);
     }
 
     @Test

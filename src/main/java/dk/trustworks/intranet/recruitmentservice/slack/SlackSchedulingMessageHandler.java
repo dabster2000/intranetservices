@@ -69,16 +69,18 @@ public class SlackSchedulingMessageHandler implements SlackInboundHandler {
             return SlackInboundResponse.handled(null);
         }
         String text = request.text();
-        if (text == null || text.isBlank()) {
-            // Nothing extractable (emoji, file-only message — files are
-            // Phase 13's ingestion path). Silence beats a canned reply
-            // to every 👍.
+        java.util.List<dk.trustworks.intranet.recruitmentservice.dto
+                .SlackInboundRequest.FileRef> files = request.files();
+        boolean hasFiles = files != null && !files.isEmpty();
+        if ((text == null || text.isBlank()) && !hasFiles) {
+            // Nothing extractable (a bare emoji). Silence beats a canned
+            // reply to every 👍.
             return SlackInboundResponse.handled(null);
         }
         String actorUuid = actor.getUuid();
         String messageTs = request.messageTs();
         submitAfterCommit(() ->
-                messageService.process(actorUuid, channelId, messageTs, text));
+                messageService.process(actorUuid, channelId, messageTs, text, files));
         return SlackInboundResponse.handled(null);
     }
 

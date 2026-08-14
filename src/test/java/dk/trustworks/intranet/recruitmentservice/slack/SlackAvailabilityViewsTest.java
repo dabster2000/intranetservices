@@ -117,6 +117,12 @@ class SlackAvailabilityViewsTest {
         assertTrue(SlackAvailabilityViews.unparseableText("en").contains("exact dates"));
         assertTrue(SlackAvailabilityViews.routedAckText("da").contains("rekruttereren"));
         assertTrue(SlackAvailabilityViews.routedAckText("en").contains("recruiter"));
+        // Phase 13: the image-path replies. Pre-extraction ones are
+        // Danish (language unknown before the model ran).
+        assertTrue(SlackAvailabilityViews.imageFetchFailedText().contains("hente billedet"));
+        assertTrue(SlackAvailabilityViews.unsupportedImageText().contains("20 MB"));
+        assertTrue(SlackAvailabilityViews.imageUnreadableText("da").contains("kalender"));
+        assertTrue(SlackAvailabilityViews.imageUnreadableText("en").contains("calendar"));
     }
 
     @Test

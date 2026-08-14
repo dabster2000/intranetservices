@@ -407,6 +407,51 @@ public class SlackService {
     }
 
     /**
+     * Downloads one Slack-hosted file with the mother bot's token
+     * (Method B Phase 13 — {@code files:read} +
+     * {@code url_private_download}). The URL is a CLAIM from an inbound
+     * payload: only HTTPS on {@code *.slack.com} is followed, and the
+     * body is capped — a response larger than {@code maxBytes} throws
+     * instead of buffering unbounded attacker-sized content. Contents
+     * are returned, never logged.
+     */
+    public byte[] downloadFile(String urlPrivateDownload, int maxBytes) throws IOException {
+        java.net.URI uri = java.net.URI.create(urlPrivateDownload);
+        String host = uri.getHost() == null ? "" : uri.getHost();
+        if (!"https".equals(uri.getScheme())
+                || !(host.equals("slack.com") || host.endsWith(".slack.com"))) {
+            throw new IOException("Refusing to download from a non-Slack host");
+        }
+        try {
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                    .connectTimeout(java.time.Duration.ofSeconds(10))
+                    .build();
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder(uri)
+                    .header("Authorization", "Bearer " + motherSlackBotToken)
+                    .timeout(java.time.Duration.ofSeconds(30))
+                    .GET()
+                    .build();
+            java.net.http.HttpResponse<byte[]> response = client.send(request,
+                    java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() / 100 != 2) {
+                throw new IOException("Slack file download failed: HTTP " + response.statusCode());
+            }
+            byte[] body = response.body();
+            if (body == null || body.length == 0) {
+                throw new IOException("Slack file download returned no content");
+            }
+            if (body.length > maxBytes) {
+                throw new IOException("Slack file exceeds the size cap (" + body.length + " bytes)");
+            }
+            return body;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Slack file download interrupted", e);
+        }
+    }
+
+    /**
      * Opens a modal view against a {@code trigger_id} (P14 — Slack inbound
      * handlers). Trigger ids expire after 3 seconds, so callers invoke this
      * synchronously inside the dispatch path. Throws on transport failure or

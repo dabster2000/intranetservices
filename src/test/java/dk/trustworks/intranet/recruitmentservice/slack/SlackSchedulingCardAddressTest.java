@@ -43,6 +43,6 @@ class SlackSchedulingCardAddressTest {
     private static SlackInboundRequest inbound(String channelId, String messageTs) {
         return new SlackInboundRequest("interactions", "p1", "U1", "T1",
                 "block_actions", "recruitment_sched_approve", null, null,
-                null, channelId, messageTs, null, "approval-1", null, null, null);
+                null, channelId, messageTs, null, "approval-1", null, null, null, null);
     }
 }

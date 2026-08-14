@@ -33,5 +33,10 @@ public enum SchedulingOutboxAction {
      * winner, closed for the released siblings — and DM each required
      * interviewer the booked time (payload: selected slot uuid).
      * Phase 12 (folded-in §16.3 loose end). */
-    NOTIFY_FINALIZED
+    NOTIFY_FINALIZED,
+    /** Delete one evidence image from S3 once its row left PENDING
+     * (D10 — confirm/cancel/timeout all shed the original; only the
+     * sha256 + normalized constraints survive). Payload: evidence
+     * uuid; the deletion is audited. Phase 13. */
+    DELETE_EVIDENCE_IMAGE
 }

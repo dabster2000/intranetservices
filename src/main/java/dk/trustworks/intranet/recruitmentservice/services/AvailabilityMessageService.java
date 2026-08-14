@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.recruitmentservice.ai.AvailabilitySchedulingPrompts;
+import dk.trustworks.intranet.recruitmentservice.dto.SlackInboundRequest;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
@@ -57,6 +58,10 @@ public class AvailabilityMessageService {
     /** PENDING evidence older than this is expired by the sweep. */
     static final int PENDING_TIMEOUT_HOURS = 48;
 
+    /** Images processed per message (spec §11.1 allows several; three
+     * calendar screenshots cover any realistic week). */
+    static final int IMAGES_PER_MESSAGE_MAX = 3;
+
     @Inject
     RecruitmentSchedulingFeatureFlag methodBFlag;
 
@@ -71,6 +76,9 @@ public class AvailabilityMessageService {
 
     @Inject
     SchedulingOutboxService outboxService;
+
+    @Inject
+    SchedulingEvidenceStorageService storageService;
 
     @Inject
     ObjectMapper objectMapper;
@@ -91,7 +99,8 @@ public class AvailabilityMessageService {
      * inside a caller transaction. Best-effort end to end; every
      * failure is logged content-free.
      */
-    public void process(String actorUuid, String channelId, String messageTs, String text) {
+    public void process(String actorUuid, String channelId, String messageTs, String text,
+                        List<SlackInboundRequest.FileRef> files) {
         try {
             Correlation correlation = QuarkusTransaction.requiringNew()
                     .call(() -> correlate(actorUuid, channelId, messageTs));
@@ -106,6 +115,14 @@ public class AvailabilityMessageService {
                 }
                 case MATCHED -> {
                 }
+            }
+
+            if (files != null && !files.isEmpty()) {
+                // Phase 13: the message's images ARE the evidence; any
+                // accompanying text rides along as explanation for each
+                // vision call (spec §11.1 "text explaining the image").
+                processImages(actorUuid, channelId, messageTs, text, correlation, files);
+                return;
             }
 
             AvailabilityExtractionService.Extraction extraction = extractionService.extract(
@@ -123,6 +140,151 @@ public class AvailabilityMessageService {
             // Content-free by the module's PII log discipline.
             log.errorf(e, "Method B availability message processing failed (channel kind=%s)",
                     channelId != null && channelId.startsWith("D") ? "dm" : "other");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 13 — calendar-image evidence (plan §13.1–§13.3)
+    // ------------------------------------------------------------------
+
+    /**
+     * Ingest up to {@value IMAGES_PER_MESSAGE_MAX} attachments: download
+     * with the bot token (participant already verified by correlation),
+     * gate on MAGIC BYTES (Slack's mimetype is a claim) and the 20 MB
+     * vision cap, store to S3 under the env-scoped prefix, THEN extract
+     * (spec §11.2's order). Every image becomes its own evidence row;
+     * {@code requiresConfirmation} is FORCED — an image never
+     * auto-confirms (D9). Image bytes touch the vision call and S3,
+     * never logs, never event pii.
+     */
+    private void processImages(String actorUuid, String channelId, String messageTs,
+                               String text, Correlation correlation,
+                               List<SlackInboundRequest.FileRef> files) {
+        int processed = 0;
+        for (SlackInboundRequest.FileRef file : files) {
+            if (processed >= IMAGES_PER_MESSAGE_MAX) {
+                break;
+            }
+            if (file.urlPrivateDownload() == null || file.urlPrivateDownload().isBlank()) {
+                continue;
+            }
+            processed++;
+            byte[] bytes;
+            try {
+                bytes = slackService.downloadFile(file.urlPrivateDownload(),
+                        AvailabilityExtractionService.IMAGE_MAX_BYTES);
+            } catch (Exception e) {
+                log.warnf("Method B evidence image download failed: %s", e.getMessage());
+                reply(channelId, SlackAvailabilityViews.imageFetchFailedText());
+                continue;
+            }
+            String mime = AvailabilityExtractionService.sniffImageMime(bytes);
+            if (mime == null) {
+                reply(channelId, SlackAvailabilityViews.unsupportedImageText());
+                continue;
+            }
+            String evidenceUuid = java.util.UUID.randomUUID().toString();
+            String sha256 = sha256Hex(bytes);
+            try {
+                storageService.store(evidenceUuid, bytes, mime);
+            } catch (Exception e) {
+                log.warnf("Method B evidence image store failed: %s", e.getMessage());
+                reply(channelId, SlackAvailabilityViews.imageFetchFailedText());
+                continue;
+            }
+
+            AvailabilityExtractionService.Extraction extraction =
+                    extractionService.extractFromImage(LocalDate.now(),
+                            correlation.windowStart(), correlation.windowEnd(),
+                            text, bytes, mime);
+            AvailabilityExtractionService.Validated gated =
+                    AvailabilityExtractionService.validate(extraction,
+                            correlation.windowStart(), correlation.windowEnd());
+            // D9: image-derived constraints ALWAYS confirm — no
+            // confidence-threshold shortcut, whatever the model said.
+            AvailabilityExtractionService.Validated validated = new
+                    AvailabilityExtractionService.Validated(gated.intent(),
+                    gated.language(), gated.timezone(), gated.coveredFrom(),
+                    gated.coveredTo(), gated.constraints(), true,
+                    gated.minConfidence(), gated.ambiguities(),
+                    gated.clarifyingQuestion(), gated.rejectReason());
+
+            Disposition disposition = QuarkusTransaction.requiringNew()
+                    .call(() -> disposeImage(actorUuid, channelId, messageTs, text,
+                            correlation.requestUuid(), evidenceUuid, sha256, validated));
+            answer(channelId, disposition, validated, actorUuid,
+                    correlation.requestUuid(), text);
+        }
+    }
+
+    /**
+     * The image twin of {@link #dispose}: availability intents become
+     * PENDING IMAGE evidence (never auto-confirmed); everything else —
+     * non-calendar images, failed validation — becomes a REJECTED row
+     * whose S3 object the deletion sweep removes. The pre-generated
+     * evidence uuid IS the S3 key, so the row and the object stay
+     * matched whatever the outcome.
+     */
+    Disposition disposeImage(String actorUuid, String channelId, String messageTs,
+                             String text, String requestUuid, String evidenceUuid,
+                             String sha256,
+                             AvailabilityExtractionService.Validated validated) {
+        RecruitmentSchedulingRequest request =
+                RecruitmentSchedulingRequest.findById(requestUuid);
+        if (request == null || request.getStatus().isTerminal()) {
+            return Disposition.USE_BUTTONS;
+        }
+        boolean availability = AvailabilitySchedulingPrompts.AVAILABILITY_INTENTS
+                .contains(validated.intent());
+        boolean rejected = !availability || validated.rejectReason() != null;
+
+        RecruitmentAvailabilityEvidence evidence =
+                newEvidence(request, actorUuid, channelId, messageTs, validated);
+        evidence.setUuid(evidenceUuid);
+        evidence.setSourceType(EvidenceSourceType.IMAGE);
+        evidence.setFileSha256(sha256);
+        if (rejected) {
+            evidence.setConfirmationStatus(EvidenceConfirmationStatus.REJECTED);
+        }
+        evidence.persist();
+        if (!rejected) {
+            for (AvailabilityExtractionService.RawConstraint raw : validated.constraints()) {
+                RecruitmentAvailabilityConstraint constraint =
+                        new RecruitmentAvailabilityConstraint();
+                constraint.setEvidenceUuid(evidence.getUuid());
+                constraint.setType(raw.type());
+                constraint.setStartAt(raw.start());
+                constraint.setEndAt(raw.end());
+                constraint.persist();
+            }
+        }
+        recordReceived(request, actorUuid, evidence, validated, text,
+                rejected
+                        ? (validated.rejectReason() != null
+                                ? validated.rejectReason()
+                                : AvailabilityExtractionService.REJECT_UNKNOWN_INTENT)
+                        : "STORED");
+        if (rejected) {
+            return validated.clarifyingQuestion() != null
+                    ? Disposition.CLARIFY : Disposition.IMAGE_UNREADABLE;
+        }
+        outboxService.enqueue(request.getUuid(), null,
+                SchedulingOutboxAction.SEND_EVIDENCE_DM, evidence.getUuid(),
+                evidenceDmPayload(evidence.getUuid()));
+        return Disposition.SUMMARY_QUEUED;
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            StringBuilder hex = new StringBuilder(64);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16))
+                        .append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 
@@ -184,7 +346,7 @@ public class AvailabilityMessageService {
     // ------------------------------------------------------------------
 
     /** What the after-transaction reply step must do. */
-    enum Disposition {SUMMARY_QUEUED, USE_BUTTONS, ROUTED, CLARIFY, UNPARSEABLE}
+    enum Disposition {SUMMARY_QUEUED, USE_BUTTONS, ROUTED, CLARIFY, UNPARSEABLE, IMAGE_UNREADABLE}
 
     Disposition dispose(String actorUuid, String channelId, String messageTs, String text,
                         String requestUuid,
@@ -344,6 +506,8 @@ public class AvailabilityMessageService {
                     SlackAvailabilityViews.routedAckText(validated.language()));
             case UNPARSEABLE -> reply(channelId,
                     SlackAvailabilityViews.unparseableText(validated.language()));
+            case IMAGE_UNREADABLE -> reply(channelId,
+                    SlackAvailabilityViews.imageUnreadableText(validated.language()));
             case CLARIFY -> {
                 // The ONE place model prose reaches the interviewer —
                 // visibly marked and audited (D6, plan §12.4).
