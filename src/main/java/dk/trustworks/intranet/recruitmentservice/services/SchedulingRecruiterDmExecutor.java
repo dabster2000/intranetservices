@@ -119,10 +119,42 @@ public class SchedulingRecruiterDmExecutor implements SchedulingOutboxExecutor {
                                 + "Reserveringerne er frigivet — tag kontakt og aftal noget andet.\n"
                                 + link);
             }
+            case "INTERVIEWER_NOTE" -> {
+                // Phase 12: an NLU-routed interviewer message (question,
+                // escalation, replacement suggestion, cancellation). The
+                // note text rides here and in the event pii only.
+                String interviewerUuid = payload.path("interviewerUuid").asText(null);
+                String intent = payload.path("intent").asText("");
+                String note = payload.path("note").asText("");
+                User interviewer = interviewerUuid == null ? null
+                        : User.findById(interviewerUuid);
+                String who = interviewer == null ? "En interviewer"
+                        : dk.trustworks.intranet.recruitmentservice.slack
+                                .SlackHandlerSupport.displayName(interviewer);
+                yield new Notice(recruiter, "Besked fra interviewer",
+                        ":speech_balloon: *" + who + " har sendt en besked om "
+                                + "interviewplanlægningen*\n"
+                                + humanNoteIntent(intent)
+                                + (note.isBlank() ? "" : "\n“" + note + "”")
+                                + "\n" + link);
+            }
             default -> {
                 log.warnf("Method B recruiter notice of unknown kind '%s' dropped", kind);
                 yield null;
             }
+        };
+    }
+
+    /** The routed intent, humanized for the recruiter (Danish). */
+    private static String humanNoteIntent(String intent) {
+        return switch (intent) {
+            case "SUGGEST_REPLACEMENT_INTERVIEWER" ->
+                    "De foreslår, at en anden tager interviewet:";
+            case "ASK_QUESTION" -> "De har et spørgsmål til dig:";
+            case "ESCALATE_TO_RECRUITER" -> "De beder dig tage over:";
+            case "CANCEL_PARTICIPATION" ->
+                    "De ønsker at udgå af interviewet:";
+            default -> "Besked:";
         };
     }
 

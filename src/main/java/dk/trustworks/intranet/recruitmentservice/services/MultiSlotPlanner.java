@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.AvailabilityConstraintType;
 import dk.trustworks.intranet.recruitmentservice.services.AvailabilitySlotSuggester.MailboxWindowSchedule;
 import dk.trustworks.intranet.recruitmentservice.services.AvailabilitySlotSuggester.RoomOption;
 
@@ -48,6 +49,34 @@ public final class MultiSlotPlanner {
     }
 
     /**
+     * One confirmed external-evidence interval for one interviewer
+     * (Phase 12, spec §12.3) — already clipped to its evidence's
+     * covered range by {@code AvailabilityConstraintResolver}:
+     * <ul>
+     *   <li>BUSY subtracts, exactly like an O365 busy digit — busy
+     *       always wins, positive claims never override it.</li>
+     *   <li>AVAILABLE_ONLY restricts: on days inside
+     *       {@code restrictedFrom..restrictedTo} (its evidence's
+     *       covered range), a slot must fit inside one such interval;
+     *       days OUTSIDE the range are untouched (covered-range-only).</li>
+     *   <li>PREFERRED/AVOID only move {@code preferenceScore} — never a
+     *       hard exclusion.</li>
+     * </ul>
+     * {@code restrictedFrom/To} are non-null exactly for AVAILABLE_ONLY.
+     */
+    public record ExternalConstraint(AvailabilityConstraintType type,
+                                     LocalDateTime start, LocalDateTime end,
+                                     LocalDate restrictedFrom, LocalDate restrictedTo) {
+        boolean overlaps(LocalDateTime otherStart, LocalDateTime otherEnd) {
+            return otherStart.isBefore(end) && start.isBefore(otherEnd);
+        }
+
+        boolean contains(LocalDateTime otherStart, LocalDateTime otherEnd) {
+            return !otherStart.isBefore(start) && !otherEnd.isAfter(end);
+        }
+    }
+
+    /**
      * The full planning input. Mailbox keys/addresses are lowercase; the
      * schedules map shares one digit anchor: index 0 =
      * {@code windowStart} at {@link AvailabilitySlotSuggester#DAY_WINDOW_START},
@@ -64,6 +93,9 @@ public final class MultiSlotPlanner {
      *                       {@code requestedOptions} (top-up planning)
      * @param excluded       times never to propose again (this request's
      *                       rejected/released slots)
+     * @param externalConstraints confirmed evidence intervals per
+     *                       LOWERCASE mailbox (Phase 12) — resolver
+     *                       output; empty map = O365-only planning
      */
     public record PlanRequest(
             LocalDate windowStart,
@@ -82,13 +114,14 @@ public final class MultiSlotPlanner {
             Map<String, MailboxWindowSchedule> schedules,
             LocalDateTime notBefore,
             List<PlannedSlot> alreadyPlanned,
-            List<TimeInterval> excluded) {
+            List<TimeInterval> excluded,
+            Map<String, List<ExternalConstraint>> externalConstraints) {
     }
 
     /** One planned option; room fields null when no room was secured. */
     public record PlannedSlot(LocalDateTime start, LocalDateTime end,
                               String roomEmail, String roomDisplayName,
-                              int optionalFreeCount) {
+                              int optionalFreeCount, int preferenceScore) {
     }
 
     /**
@@ -98,8 +131,17 @@ public final class MultiSlotPlanner {
      */
     public static List<PlannedSlot> plan(PlanRequest request) {
         List<PlannedSlot> feasible = feasibleSlots(request);
+        // Phase 12 deviation from plan §8.4's parenthetical order
+        // (earliest → room → preference): with distinct start times an
+        // earliest-first primary key would make the preference score
+        // permanently inert, contradicting §12.5's "PREFERRED/AVOID
+        // affect ranking". Preference CLASS ranks first; earliest-first
+        // stays the tiebreak inside a class, so a request without
+        // preference evidence plans exactly as before (score 0 across
+        // the board).
         feasible.sort(Comparator
-                .comparing(PlannedSlot::start)
+                .comparingInt(PlannedSlot::preferenceScore).reversed()
+                .thenComparing(PlannedSlot::start)
                 .thenComparing(slot -> slot.roomEmail() == null) // room fit first
                 .thenComparing(Comparator.comparingInt(PlannedSlot::optionalFreeCount).reversed()));
 
@@ -179,12 +221,18 @@ public final class MultiSlotPlanner {
         return new PlannedSlot(slotStart, slotEnd,
                 room != null ? room.email() : null,
                 room != null ? room.displayName() : null,
-                optionalFree);
+                optionalFree,
+                preferenceScore(request, slotStart, slotEnd));
     }
 
-    /** The interviewer posture: unknown never counts as busy. */
+    /** The interviewer posture: unknown never counts as busy — but a
+     * CONFIRMED external claim binds regardless of O365 visibility. */
     private static boolean personFree(PlanRequest request, LocalDateTime anchor,
                                       String email, LocalDateTime slotStart) {
+        LocalDateTime slotEnd = slotStart.plusMinutes(request.durationMinutes());
+        if (!externallyFree(constraintsOf(request, email), slotStart, slotEnd)) {
+            return false;
+        }
         MailboxWindowSchedule schedule = request.schedules().get(email);
         if (schedule == null) {
             return true;
@@ -193,6 +241,66 @@ public final class MultiSlotPlanner {
                         schedule.workingHours(), slotStart, request.durationMinutes())
                 && AvailabilitySlotSuggester.viewFree(anchor, schedule.availabilityView(),
                         slotStart, request.durationMinutes(), true);
+    }
+
+    /**
+     * The spec §12.3 precedence, hard-rule half (pure; matrix-tested):
+     * any BUSY overlap blocks (busy wins — this SUBTRACTS on top of
+     * O365, a positive claim can never re-open an O365-busy time);
+     * on a day at least one AVAILABLE_ONLY window governs, the slot
+     * must fit inside one of the (resolver-merged) windows; days
+     * outside every restricted range are untouched (covered-range-only).
+     */
+    static boolean externallyFree(List<ExternalConstraint> constraints,
+                                  LocalDateTime slotStart, LocalDateTime slotEnd) {
+        boolean dayRestricted = false;
+        boolean fitsRestriction = false;
+        LocalDate slotDate = slotStart.toLocalDate();
+        for (ExternalConstraint constraint : constraints) {
+            switch (constraint.type()) {
+                case BUSY -> {
+                    if (constraint.overlaps(slotStart, slotEnd)) {
+                        return false;
+                    }
+                }
+                case AVAILABLE_ONLY -> {
+                    if (!slotDate.isBefore(constraint.restrictedFrom())
+                            && !slotDate.isAfter(constraint.restrictedTo())) {
+                        dayRestricted = true;
+                        if (constraint.contains(slotStart, slotEnd)) {
+                            fitsRestriction = true;
+                        }
+                    }
+                }
+                default -> {
+                    // PREFERRED/AVOID never exclude.
+                }
+            }
+        }
+        return !dayRestricted || fitsRestriction;
+    }
+
+    /** The soft-rule half: +1 per fully containing PREFERRED, −1 per
+     * overlapping AVOID, summed over every interviewer's constraints. */
+    static int preferenceScore(PlanRequest request, LocalDateTime slotStart,
+                               LocalDateTime slotEnd) {
+        int score = 0;
+        for (List<ExternalConstraint> constraints : request.externalConstraints().values()) {
+            for (ExternalConstraint constraint : constraints) {
+                if (constraint.type() == AvailabilityConstraintType.PREFERRED
+                        && constraint.contains(slotStart, slotEnd)) {
+                    score++;
+                } else if (constraint.type() == AvailabilityConstraintType.AVOID
+                        && constraint.overlaps(slotStart, slotEnd)) {
+                    score--;
+                }
+            }
+        }
+        return score;
+    }
+
+    private static List<ExternalConstraint> constraintsOf(PlanRequest request, String email) {
+        return request.externalConstraints().getOrDefault(email, List.of());
     }
 
     /** The room posture: only a KNOWN free schedule makes a promise. */

@@ -255,6 +255,34 @@ public enum RecruitmentEventType {
      * timeline rule).
      */
     SCHEDULING_NOTE_ROUTED,
+    /**
+     * One availability submission was interpreted and stored as an
+     * evidence row (plan §12.2/§12.3) — text now, images in Phase 13.
+     * The interviewer's message text lives in {@code pii} ONLY (plan
+     * §12.2: "event pii blocks and the extraction call, nowhere else");
+     * payload carries the skeleton: evidence uuid, source type, the
+     * allowlisted intent, constraint count, lowest confidence, whether
+     * confirmation is required. UNKNOWN/REJECTED submissions are
+     * recorded too — they are the Phase 14 manual-review feed.
+     */
+    AVAILABILITY_EVIDENCE_RECEIVED,
+    /**
+     * Evidence became scheduling input (plan §12.4): the interviewer
+     * pressed Bekræft, or the extraction marked the statement
+     * unambiguous ({@code requiresConfirmation=false} auto-confirm —
+     * payload {@code auto} distinguishes the two). Any older
+     * overlapping evidence from the same interviewer it superseded is
+     * listed in payload.
+     */
+    AVAILABILITY_EVIDENCE_CONFIRMED,
+    /**
+     * Evidence left the pipeline unconsumed: Ret pressed (payload
+     * {@code reason=CORRECTION_REQUESTED}), 48 h unanswered or past its
+     * covered period ({@code reason=EXPIRED}) — the D9 rule's negative
+     * space, so the timeline shows WHY an interval never influenced
+     * planning.
+     */
+    AVAILABILITY_EVIDENCE_CANCELLED,
 
     // --- AI assist (companion spec; P9 onward) ---------------------------
     AI_SUGGESTIONS_GENERATED,
@@ -273,5 +301,14 @@ public enum RecruitmentEventType {
      * addition made in P25 — "reactors' own side effects are recorded as
      * events" applied to the conversational surface (findings §P25).
      */
-    AI_ASSISTANT_EXCHANGE
+    AI_ASSISTANT_EXCHANGE,
+    /**
+     * One AI-authored clarifying question in the Method B availability
+     * loop (plan §12.4, D6): the ONLY place model prose reaches an
+     * interviewer, always prefixed "🤖 " on the Slack surface. The
+     * question AND the source message text live in {@code pii}; payload
+     * carries intent, evidence uuid and prompt version — the spot-review
+     * log mirroring AI_ASSISTANT_EXCHANGE.
+     */
+    AI_SCHEDULING_EXCHANGE
 }

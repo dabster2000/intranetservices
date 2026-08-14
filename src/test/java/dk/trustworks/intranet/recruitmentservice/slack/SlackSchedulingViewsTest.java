@@ -99,15 +99,25 @@ class SlackSchedulingViewsTest {
     // ---- Answered / closed rewrites --------------------------------------
 
     @Test
-    void answeredAndClosedCards_dropTheButtons() {
+    void answeredClosedAndBookedCards_dropTheButtons() {
         for (List<LayoutBlock> blocks : List.of(
                 SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, true),
                 SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, false),
-                SlackSchedulingViews.closedCard(request(), slot(), "Jane", null))) {
+                SlackSchedulingViews.closedCard(request(), slot(), "Jane", null),
+                SlackSchedulingViews.bookedCard(request(), slot(), "Jane", null))) {
             assertTrue(blocks.stream().noneMatch(ActionsBlock.class::isInstance),
                     "rewritten cards must not keep live buttons");
             assertTrue(blocks.get(blocks.size() - 1) instanceof ContextBlock);
         }
+    }
+
+    @Test
+    void bookedNotice_namesTheCandidateAndTheBookedTime() {
+        // Spec §16.3: interviewers hear about the booking in Slack too.
+        String notice = SlackSchedulingViews.bookedNotice(slot(), "Jane Doe");
+        assertTrue(notice.contains("Jane Doe"), notice);
+        assertTrue(notice.contains("tirsdag den 18. august kl. 10.00–11.00"), notice);
+        assertTrue(notice.contains("Outlook"), notice);
     }
 
     // ---- Note modals ------------------------------------------------------

@@ -113,7 +113,7 @@ class MultiSlotPlannerTest {
         // A live option 07:00–08:00 Monday + 3 h separation ⇒ the first
         // new pick starts 11:00, and only 2 are asked for.
         PlannedSlot existing = new PlannedSlot(
-                MONDAY.atTime(7, 0), MONDAY.atTime(8, 0), null, null, 0);
+                MONDAY.atTime(7, 0), MONDAY.atTime(8, 0), null, null, 0, 0);
         List<PlannedSlot> picks = MultiSlotPlanner.plan(request(
                 MONDAY, MONDAY, null, null, 60, 2, 3, false, false,
                 List.of(A), List.of(), List.of(),
@@ -125,7 +125,7 @@ class MultiSlotPlannerTest {
     @Test
     void differentDays_alsoHoldsAgainstAlreadyPlannedSlots() {
         PlannedSlot existing = new PlannedSlot(
-                MONDAY.atTime(9, 0), MONDAY.atTime(10, 0), null, null, 0);
+                MONDAY.atTime(9, 0), MONDAY.atTime(10, 0), null, null, 0, 0);
         List<PlannedSlot> picks = MultiSlotPlanner.plan(request(
                 MONDAY, FRIDAY, null, null, 60, 1, 0, true, false,
                 List.of(A), List.of(), List.of(),
@@ -251,6 +251,6 @@ class MultiSlotPlannerTest {
         return new PlanRequest(windowStart, windowEnd, permittedStart, permittedEnd,
                 duration, requested, minSeparation, differentDays, requireRoom,
                 required.size() + optional.size() + 1, required, optional, rooms,
-                schedules, notBefore, alreadyPlanned, excluded);
+                schedules, notBefore, alreadyPlanned, excluded, Map.of());
     }
 }

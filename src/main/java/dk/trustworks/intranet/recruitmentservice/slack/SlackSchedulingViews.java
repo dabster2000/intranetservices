@@ -132,6 +132,29 @@ public final class SlackSchedulingViews {
                         : ":x: Du har afvist denne mulighed.")))));
     }
 
+    /** The winning card after finalization (spec §16.3) — buttons gone,
+     * the booked time stands. */
+    public static List<LayoutBlock> bookedCard(RecruitmentSchedulingRequest request,
+                                               RecruitmentProposedSlot slot,
+                                               String candidateName,
+                                               String positionTitle) {
+        return asBlocks(
+                section(s -> s.text(markdownText(summaryLine(request, slot,
+                        candidateName, positionTitle)))),
+                context(c -> c.elements(asContextElements(markdownText(
+                        ":white_check_mark: Kandidaten valgte denne tid — interviewet er "
+                                + "booket, og invitationen kommer i Outlook.")))));
+    }
+
+    /** The one-line booked notice DM'd to each required interviewer. */
+    public static String bookedNotice(RecruitmentProposedSlot slot, String candidateName) {
+        return ":white_check_mark: Interviewet med "
+                + SlackCandidateFacts.mrkdwnSafe(candidateName) + " er booket "
+                + danishInterval(slot.getSlotStart(), slot.getSlotEnd())
+                + ". Du får invitationen i Outlook; øvrige foreløbige reserveringer "
+                + "er frigivet.";
+    }
+
     /** The card when the slot died elsewhere (a colleague declined, a
      * conflict appeared, the request closed) — buttons gone. */
     public static List<LayoutBlock> closedCard(RecruitmentSchedulingRequest request,

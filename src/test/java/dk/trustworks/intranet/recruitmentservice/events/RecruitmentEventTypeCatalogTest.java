@@ -94,7 +94,9 @@ class RecruitmentEventTypeCatalogTest {
                 "HOLD_CREATED", "HOLD_RELEASED", "HOLD_MISSING",
                 "SCHEDULING_OPTIONS_APPROVED", "OPTIONS_SENT", "OPTION_SELECTED",
                 "SCHEDULING_FINALIZED", "SCHEDULING_HANDED_BACK", "SCHEDULING_CANCELLED",
-                "SCHEDULING_EXPIRED", "SCHEDULING_REMINDER_SENT", "SCHEDULING_NOTE_ROUTED");
+                "SCHEDULING_EXPIRED", "SCHEDULING_REMINDER_SENT", "SCHEDULING_NOTE_ROUTED",
+                "AVAILABILITY_EVIDENCE_RECEIVED", "AVAILABILITY_EVIDENCE_CONFIRMED",
+                "AVAILABILITY_EVIDENCE_CANCELLED", "AI_SCHEDULING_EXCHANGE");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -105,9 +107,9 @@ class RecruitmentEventTypeCatalogTest {
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
                         + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
                         + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
-                        + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION* "
-                        + "additions exactly");
-        assertEquals(70, RecruitmentEventType.values().length);
+                        + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
+                        + "AVAILABILITY_EVIDENCE_* additions exactly");
+        assertEquals(74, RecruitmentEventType.values().length);
     }
 
     @Test
@@ -116,8 +118,10 @@ class RecruitmentEventTypeCatalogTest {
                 .filter(t -> t.name().startsWith("AI_"))
                 .count();
         // The five AI_* types exist since P1 (plan §P1 scope);
-        // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25).
-        assertEquals(6, aiTypes, "five P1 AI_* types + the P25 AI_ASSISTANT_EXCHANGE");
+        // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25);
+        // AI_SCHEDULING_EXCHANGE is Method B Phase 12's clarifying-question
+        // log (plan 2026-08-12 §12.4, D6).
+        assertEquals(7, aiTypes, "five P1 AI_* types + the P25 and Method B exchanges");
     }
 
     @Test

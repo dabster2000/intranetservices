@@ -22,5 +22,16 @@ public enum SchedulingOutboxAction {
     SEND_RECRUITER_DM,
     /** Send the candidate the option mail through the mail outbox
      * (payload: batch uuid). Phase 11. */
-    SEND_OPTION_MAIL
+    SEND_OPTION_MAIL,
+    /** DM one interviewer about their availability evidence: the D6
+     * summary card (payload kind SUMMARY + evidence uuid) or the
+     * non-blocking stale-evidence notice at finalization (kind
+     * RECONFIRM + slot times, spec §23). Phase 12. */
+    SEND_EVIDENCE_DM,
+    /** Close the loop with the interviewers after finalization
+     * (spec §16.3): rewrite every proposal card — booked for the
+     * winner, closed for the released siblings — and DM each required
+     * interviewer the booked time (payload: selected slot uuid).
+     * Phase 12 (folded-in §16.3 loose end). */
+    NOTIFY_FINALIZED
 }

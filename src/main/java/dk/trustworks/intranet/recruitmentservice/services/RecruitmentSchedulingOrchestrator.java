@@ -598,7 +598,7 @@ public class RecruitmentSchedulingOrchestrator {
                 .filter(slot -> slot.getStatus().isLive())
                 .map(slot -> new MultiSlotPlanner.PlannedSlot(
                         slot.getSlotStart(), slot.getSlotEnd(),
-                        slot.getRoomEmail(), slot.getRoomName(), 0))
+                        slot.getRoomEmail(), slot.getRoomName(), 0, 0))
                 .toList();
         List<MultiSlotPlanner.TimeInterval> excluded = slots.stream()
                 .filter(slot -> !slot.getStatus().isLive())
@@ -623,7 +623,8 @@ public class RecruitmentSchedulingOrchestrator {
                                 .toList(),
                         schedules,
                         now.plusHours(MIN_LEAD_HOURS),
-                        alreadyPlanned, excluded));
+                        alreadyPlanned, excluded,
+                        externalConstraintsByMailbox(request, now)));
         if (picks.isEmpty()) {
             deferSearch(request, now);
             return;
@@ -669,6 +670,109 @@ public class RecruitmentSchedulingOrchestrator {
 
     private void deferSearch(RecruitmentSchedulingRequest request, LocalDateTime now) {
         request.setNextActionAt(now.plusMinutes(SEARCH_RETRY_MINUTES));
+    }
+
+    // ---- Confirmed external evidence → planner constraints (Phase 12) ------
+
+    /**
+     * Load the request's CONFIRMED, unexpired evidence and resolve it
+     * into the planner's per-mailbox constraint map (plan §12.5). The
+     * covered-range/expiry/merge rules live in
+     * {@link AvailabilityConstraintResolver}; this only re-keys
+     * userUuid → lowercase mailbox.
+     */
+    private Map<String, List<MultiSlotPlanner.ExternalConstraint>>
+            externalConstraintsByMailbox(RecruitmentSchedulingRequest request,
+                                         LocalDateTime now) {
+        List<dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence>
+                evidence = dk.trustworks.intranet.recruitmentservice.model
+                        .RecruitmentAvailabilityEvidence.list(
+                                "requestUuid = ?1 and confirmationStatus = ?2",
+                                request.getUuid(),
+                                dk.trustworks.intranet.recruitmentservice.model.enums
+                                        .EvidenceConfirmationStatus.CONFIRMED);
+        if (evidence.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, List<dk.trustworks.intranet.recruitmentservice.model
+                .RecruitmentAvailabilityConstraint>> constraintsByEvidence
+                = new java.util.HashMap<>();
+        for (var row : evidence) {
+            constraintsByEvidence.put(row.getUuid(),
+                    dk.trustworks.intranet.recruitmentservice.model
+                            .RecruitmentAvailabilityConstraint.list(
+                                    "evidenceUuid = ?1", row.getUuid()));
+        }
+        Map<String, List<MultiSlotPlanner.ExternalConstraint>> byUser =
+                AvailabilityConstraintResolver.resolve(evidence, constraintsByEvidence, now);
+        Map<String, List<MultiSlotPlanner.ExternalConstraint>> byMailbox
+                = new java.util.HashMap<>();
+        byUser.forEach((userUuid, constraints) -> {
+            User user = User.findById(userUuid);
+            if (user != null && user.getEmail() != null && !user.getEmail().isBlank()) {
+                byMailbox.put(user.getEmail().toLowerCase(Locale.ROOT), constraints);
+            }
+        });
+        return byMailbox;
+    }
+
+    // ---- Evidence lifecycle sweep (Phase 12; spec §23 + the 48 h rule) -----
+
+    @Scheduled(every = "15m", identity = "recruitment-scheduling-evidence-expiry",
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void evidenceExpiryTimer() {
+        if (!methodBFlag.isMethodBEnabled()) {
+            return;
+        }
+        expireStaleEvidence();
+    }
+
+    /**
+     * Two deterministic flips, each with its audit event: CONFIRMED past
+     * its covered period → EXPIRED (the engine already ignores it by
+     * timestamp — this makes the panel say so); PENDING unanswered for
+     * 48 h → EXPIRED (a summary nobody confirmed must never linger
+     * confirmable, D9 — and Phase 13's image-deletion timeout rides the
+     * same flip).
+     */
+    public void expireStaleEvidence() {
+        LocalDateTime now = LocalDateTime.now();
+        QuarkusTransaction.requiringNew().run(() -> {
+            List<dk.trustworks.intranet.recruitmentservice.model
+                    .RecruitmentAvailabilityEvidence> stale =
+                    dk.trustworks.intranet.recruitmentservice.model
+                            .RecruitmentAvailabilityEvidence.list(
+                                    "(confirmationStatus = ?1 and expiresAt is not null and expiresAt <= ?3) "
+                                            + "or (confirmationStatus = ?2 and createdAt <= ?4)",
+                                    dk.trustworks.intranet.recruitmentservice.model.enums
+                                            .EvidenceConfirmationStatus.CONFIRMED,
+                                    dk.trustworks.intranet.recruitmentservice.model.enums
+                                            .EvidenceConfirmationStatus.PENDING,
+                                    now,
+                                    now.minusHours(AvailabilityMessageService.PENDING_TIMEOUT_HOURS));
+            for (var evidence : stale) {
+                boolean pendingTimeout = evidence.getConfirmationStatus()
+                        == dk.trustworks.intranet.recruitmentservice.model.enums
+                                .EvidenceConfirmationStatus.PENDING;
+                evidence.setConfirmationStatus(
+                        dk.trustworks.intranet.recruitmentservice.model.enums
+                                .EvidenceConfirmationStatus.EXPIRED);
+                RecruitmentSchedulingRequest request =
+                        RecruitmentSchedulingRequest.findById(evidence.getRequestUuid());
+                RecruitmentApplication application = request == null ? null
+                        : RecruitmentApplication.findById(request.getApplicationUuid());
+                eventRecorder.record(RecruitmentEventBuilder
+                        .event(RecruitmentEventType.AVAILABILITY_EVIDENCE_CANCELLED)
+                        .application(request != null ? request.getApplicationUuid() : null)
+                        .candidate(application != null ? application.getCandidateUuid() : null)
+                        .position(application != null ? application.getPositionUuid() : null)
+                        .actorScheduler()
+                        .payload("request_uuid", evidence.getRequestUuid())
+                        .payload("evidence_uuid", evidence.getUuid())
+                        .payload("reason", pendingTimeout
+                                ? "PENDING_TIMEOUT" : "EXPIRED"));
+            }
+        });
     }
 
     // ---- Finalization saga (plan §11.3) ------------------------------------
@@ -780,6 +884,13 @@ public class RecruitmentSchedulingOrchestrator {
             }
         }
 
+        // Spec §23's stale-evidence check, non-blocking by design: every
+        // required interviewer explicitly approved THIS slot with a
+        // button — a fresh direct approval outranks an expired generic
+        // claim, and the live recheck above guarded actual conflicts —
+        // so staleness earns a notice, never a rollback.
+        enqueueStaleEvidenceNotices(request, selected, now);
+
         // Steps 4+5: the winner's holds are superseded by the real event,
         // the losers are released, the batch closes, the request ends.
         selected.setStatus(ProposedSlotStatus.FINALIZED);
@@ -791,6 +902,13 @@ public class RecruitmentSchedulingOrchestrator {
                 SchedulingOutboxAction.SEND_RECRUITER_DM,
                 "SCHEDULED:" + request.getUuid(),
                 schedulingService.refPayload("notice", "SCHEDULED"));
+        // Spec §16.3's second half — the interviewers hear it in Slack
+        // too, not only via the Outlook invitation, and every proposal
+        // card stops claiming a provisional reservation.
+        outboxService.enqueue(request.getUuid(), selected.getUuid(),
+                SchedulingOutboxAction.NOTIFY_FINALIZED,
+                "FINALIZED:" + selected.getUuid(),
+                schedulingService.refPayload("selectedSlotUuid", selected.getUuid()));
         eventRecorder.record(RecruitmentEventBuilder
                 .event(RecruitmentEventType.SCHEDULING_FINALIZED)
                 .application(request.getApplicationUuid())
@@ -803,6 +921,65 @@ public class RecruitmentSchedulingOrchestrator {
                 .payload("slot_start", selected.getSlotStart().toString()));
         log.infof("Method B request %s finalized: interview %s at %s",
                 request.getUuid(), existing.getUuid(), selected.getSlotStart());
+    }
+
+    /**
+     * Enqueue one RECONFIRM notice per interviewer whose expired-but-
+     * once-confirmed AVAILABLE_ONLY evidence covered the finalized
+     * slot's date (plan §12.5, spec §23). Idempotent via the outbox key
+     * — a resumed finalization enqueues nothing twice.
+     */
+    private void enqueueStaleEvidenceNotices(RecruitmentSchedulingRequest request,
+                                             RecruitmentProposedSlot selected,
+                                             LocalDateTime now) {
+        List<dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence>
+                evidence = dk.trustworks.intranet.recruitmentservice.model
+                        .RecruitmentAvailabilityEvidence.list(
+                                "requestUuid = ?1", request.getUuid());
+        if (evidence.isEmpty()) {
+            return;
+        }
+        Map<String, List<dk.trustworks.intranet.recruitmentservice.model
+                .RecruitmentAvailabilityConstraint>> constraintsByEvidence
+                = new java.util.HashMap<>();
+        for (var row : evidence) {
+            constraintsByEvidence.put(row.getUuid(),
+                    dk.trustworks.intranet.recruitmentservice.model
+                            .RecruitmentAvailabilityConstraint.list(
+                                    "evidenceUuid = ?1", row.getUuid()));
+        }
+        List<String> staleUsers = AvailabilityConstraintResolver.staleGatingUserUuids(
+                evidence, constraintsByEvidence, selected.getSlotStart(), now);
+        for (String userUuid : staleUsers) {
+            // The user's newest once-confirmed evidence row anchors the
+            // notice (language + the outbox idempotency qualifier).
+            evidence.stream()
+                    .filter(row -> row.getUserUuid().equals(userUuid)
+                            && row.getConfirmedAt() != null)
+                    .max(java.util.Comparator.comparing(
+                            dk.trustworks.intranet.recruitmentservice.model
+                                    .RecruitmentAvailabilityEvidence::getCreatedAt))
+                    .ifPresent(row -> outboxService.enqueue(request.getUuid(),
+                            selected.getUuid(),
+                            SchedulingOutboxAction.SEND_EVIDENCE_DM,
+                            "RECONFIRM:" + row.getUuid(),
+                            reconfirmPayload(row.getUuid(), selected)));
+        }
+    }
+
+    private String reconfirmPayload(String evidenceUuid, RecruitmentProposedSlot selected) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(Map.of(
+                            "evidenceUuid", evidenceUuid,
+                            "kind", "RECONFIRM",
+                            "slotStart", selected.getSlotStart().toString(),
+                            "slotEnd", selected.getSlotEnd().toString()));
+        } catch (Exception e) {
+            return "{\"evidenceUuid\":\"" + evidenceUuid + "\",\"kind\":\"RECONFIRM\","
+                    + "\"slotStart\":\"" + selected.getSlotStart() + "\","
+                    + "\"slotEnd\":\"" + selected.getSlotEnd() + "\"}";
+        }
     }
 
     /**
