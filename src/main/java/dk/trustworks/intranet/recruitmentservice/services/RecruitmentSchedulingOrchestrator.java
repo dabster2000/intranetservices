@@ -539,9 +539,25 @@ public class RecruitmentSchedulingOrchestrator {
             if (conflict) {
                 rejectSlot(request, slot, "HOLD_LOST");
             } else {
+                // F20: retire the MISSING row FIRST — ensureHold's dedupe
+                // counts every non-RELEASED hold, so a standing MISSING
+                // row silently blocked the re-creation it was meant to
+                // trigger. The Graph event is already gone (that is what
+                // MISSING means); nothing needs deleting out there.
+                lost.setStatus(CalendarHoldStatus.RELEASED);
+                lost.setReleasedAt(LocalDateTime.now());
                 ensureHold(request, slot, lost.getMailbox(), lost.getUserUuid());
-                // Back through the hold-creation wait state.
-                slot.setStatus(ProposedSlotStatus.RECHECKING);
+                if (slot.getStatus() != ProposedSlotStatus.OFFERED
+                        && slot.getStatus() != ProposedSlotStatus.SELECTED) {
+                    // Back through the hold-creation wait state — but only
+                    // for pipeline-phase slots. F21: an OFFERED/SELECTED
+                    // slot demoted here is stranded (WAITING_FOR_CANDIDATE
+                    // requests run no pipeline step to promote it back)
+                    // and silently vanishes from the candidate's page;
+                    // the fresh hold re-protects it without touching the
+                    // candidate-facing state.
+                    slot.setStatus(ProposedSlotStatus.RECHECKING);
+                }
             }
             request.setNextActionAt(null);
         } catch (Exception e) {

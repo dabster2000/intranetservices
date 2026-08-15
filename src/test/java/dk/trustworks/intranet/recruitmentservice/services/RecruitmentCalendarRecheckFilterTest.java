@@ -95,4 +95,23 @@ class RecruitmentCalendarRecheckFilterTest {
         assertFalse(RecruitmentCalendarService.isGraphNotFound(
                 new RuntimeException("connection reset")));
     }
+
+    // ---- F19: window params carry an explicit Copenhagen offset ----------
+
+    @Test
+    void graphWindowParams_carryTheCopenhagenOffset() {
+        // Bare wall-clock params are read as UTC by calendarView (the
+        // Prefer header shapes only the response) — the recheck probed
+        // a window two hours late until the offset became explicit.
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "2026-08-26T15:00:00+02:00",
+                RecruitmentCalendarService.graphWindowParam(
+                        LocalDateTime.of(2026, 8, 26, 15, 0)),
+                "summer time is +02:00");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "2026-01-15T09:30:00+01:00",
+                RecruitmentCalendarService.graphWindowParam(
+                        LocalDateTime.of(2026, 1, 15, 9, 30)),
+                "standard time is +01:00");
+    }
 }
