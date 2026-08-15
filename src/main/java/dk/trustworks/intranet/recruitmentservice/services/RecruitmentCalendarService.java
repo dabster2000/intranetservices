@@ -952,8 +952,17 @@ public class RecruitmentCalendarService {
      */
     public List<String> busyEventIdsInWindow(String mailbox, LocalDateTime start,
                                              LocalDateTime end) {
+        // F19 (production 2026-08-15): calendarView's startDateTime/
+        // endDateTime are read as UTC when they carry no offset — the
+        // Prefer header shapes only the RESPONSE times. Bare wall-clock
+        // params therefore probed a window two hours late (CEST): a
+        // 15.00 slot was rechecked against 17.00–17.45, real 15.00
+        // meetings were invisible, and phantom conflicts appeared from
+        // meetings two hours after the slot (the actual cause of the
+        // 08-14 round-hour rejections first blamed on boundary
+        // semantics). Explicit Europe/Copenhagen offsets pin the window.
         GraphApiClient.CalendarViewResponse response = graph().calendarView(
-                mailbox, start.toString(), end.toString(),
+                mailbox, graphWindowParam(start), graphWindowParam(end),
                 "id,showAs,isCancelled,start,end", 100);
         if (response == null || response.value() == null) {
             return List.of();
@@ -983,6 +992,15 @@ public class RecruitmentCalendarService {
             return true;
         }
         return eventStart.isBefore(end) && eventEnd.isAfter(start);
+    }
+
+    /** A Copenhagen wall-clock instant as an OFFSET-carrying ISO string
+     * ({@code 2026-08-26T15:00:00+02:00}, DST-aware) — the only param
+     * shape Graph reads timezone-correctly (F19). */
+    static String graphWindowParam(LocalDateTime wallClock) {
+        return wallClock.atZone(java.time.ZoneId.of("Europe/Copenhagen"))
+                .format(java.time.format.DateTimeFormatter
+                        .ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX"));
     }
 
     /** Graph answers e.g. {@code 2026-08-25T14:00:00.0000000} (wall
