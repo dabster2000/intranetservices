@@ -69,6 +69,9 @@ public class RecruitmentSchedulingCandidateService {
     RecruitmentSchedulingService schedulingService;
 
     @Inject
+    SchedulingOutboxService outboxService;
+
+    @Inject
     RecruitmentEmailService emailService;
 
     @Inject
@@ -118,15 +121,18 @@ public class RecruitmentSchedulingCandidateService {
                 RecruitmentApplication.findById(request.getApplicationUuid());
         RecruitmentCandidate candidate = application == null ? null
                 : RecruitmentCandidate.findById(application.getCandidateUuid());
-        if (candidate == null || candidate.getEmail() == null
-                || candidate.getEmail().isBlank()) {
+        boolean manual = request.isManualCandidateDelivery();
+        if (candidate == null || (!manual && (candidate.getEmail() == null
+                || candidate.getEmail().isBlank()))) {
             // No way to reach the candidate — automation cannot proceed.
+            // (Manual delivery needs no email: the recruiter carries the
+            // link through their own channel.)
             schedulingService.handBack(request, null, "CANDIDATE_NO_EMAIL");
             return false;
         }
-        RecruitmentEmailTemplate template =
-                emailService.findActiveByKey(TEMPLATE_KEY_OPTION_INVITATION);
-        if (template == null) {
+        RecruitmentEmailTemplate template = manual ? null
+                : emailService.findActiveByKey(TEMPLATE_KEY_OPTION_INVITATION);
+        if (!manual && template == null) {
             log.warnf("Method B request %s: no active %s template — options not sent, retrying",
                     request.getUuid(), TEMPLATE_KEY_OPTION_INVITATION);
             request.setNextActionAt(now.plusMinutes(15));
@@ -154,25 +160,39 @@ public class RecruitmentSchedulingCandidateService {
 
         RecruitmentPosition position =
                 RecruitmentPosition.findById(application.getPositionUuid());
-        Map<String, String> extras = new LinkedHashMap<>();
-        extras.put("options_link", optionsBaseUrl + "/interview-valg/" + token);
-        extras.put("options_deadline", SlackSchedulingViews.danishDayTime(deadline));
-        extras.put("options_list", optionsList(held));
-        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
-                template.getSubject(), template.getBody(), candidate, position,
-                extras, template.getBodyFormat());
+        String optionsLink = optionsBaseUrl + "/interview-valg/" + token;
+        if (manual) {
+            // Recruiter-sends-the-link mode (owner request 2026-08-15):
+            // the candidate hears NOTHING from the system — the recruiter
+            // gets the link + a ready-to-send draft as a Slack DM. The
+            // raw link rides in the outbox payload exactly as it rides in
+            // the queued mail body on the email path.
+            outboxService.enqueue(request.getUuid(), null,
+                    dk.trustworks.intranet.recruitmentservice.model.enums
+                            .SchedulingOutboxAction.SEND_RECRUITER_DM,
+                    "MANUAL_LINK:" + batch.getUuid(),
+                    manualLinkPayload(optionsLink, deadline));
+        } else {
+            Map<String, String> extras = new LinkedHashMap<>();
+            extras.put("options_link", optionsLink);
+            extras.put("options_deadline", SlackSchedulingViews.danishDayTime(deadline));
+            extras.put("options_list", optionsList(held));
+            RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                    template.getSubject(), template.getBody(), candidate, position,
+                    extras, template.getBodyFormat());
 
-        emailService.send(candidate, application.getUuid(), application.getPositionUuid(),
-                template.getTemplateKey(), template.getUuid(),
-                rendered.subject(), rendered.body(), template.getBodyFormat(),
-                "METHOD_B_OPTIONS", null,
-                RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
-                        .actorScheduler()
-                        .payload("request_uuid", request.getUuid())
-                        .payload("batch_uuid", batch.getUuid()),
-                emailService.visibilityFor(candidate.getUuid()),
-                emailService.replyToFor(request.getRecruiterUuid()),
-                emailService.copiesFor(template, candidate, application.getUuid(), null));
+            emailService.send(candidate, application.getUuid(), application.getPositionUuid(),
+                    template.getTemplateKey(), template.getUuid(),
+                    rendered.subject(), rendered.body(), template.getBodyFormat(),
+                    "METHOD_B_OPTIONS", null,
+                    RecruitmentEventBuilder.event(RecruitmentEventType.EMAIL_SENT)
+                            .actorScheduler()
+                            .payload("request_uuid", request.getUuid())
+                            .payload("batch_uuid", batch.getUuid()),
+                    emailService.visibilityFor(candidate.getUuid()),
+                    emailService.replyToFor(request.getRecruiterUuid()),
+                    emailService.copiesFor(template, candidate, application.getUuid(), null));
+        }
 
         SchedulingStateMachine.require(request.getStatus(),
                 SchedulingRequestStatus.WAITING_FOR_CANDIDATE);
@@ -189,10 +209,26 @@ public class RecruitmentSchedulingCandidateService {
                 .payload("batch_uuid", batch.getUuid())
                 .payload("option_slot_uuids",
                         held.stream().map(RecruitmentProposedSlot::getUuid).toList())
+                .payload("delivery", manual ? "MANUAL" : "EMAIL")
                 .payload("deadline", deadline.toString()));
-        log.infof("Method B request %s: %d options sent to the candidate (deadline %s)",
-                request.getUuid(), held.size(), deadline);
+        log.infof("Method B request %s: %d options %s (deadline %s)",
+                request.getUuid(), held.size(),
+                manual ? "handed to the recruiter for manual delivery"
+                        : "sent to the candidate", deadline);
         return true;
+    }
+
+    /** The MANUAL_LINK recruiter-notice payload. */
+    private String manualLinkPayload(String link, LocalDateTime deadline) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "notice", "MANUAL_LINK",
+                    "link", link,
+                    "deadline", deadline.toString()));
+        } catch (Exception e) {
+            return "{\"notice\":\"MANUAL_LINK\",\"link\":\"" + link
+                    + "\",\"deadline\":\"" + deadline + "\"}";
+        }
     }
 
     /** Danish numbered option lines for {@code {{options_list}}}. */

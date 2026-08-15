@@ -138,11 +138,99 @@ public class SchedulingRecruiterDmExecutor implements SchedulingOutboxExecutor {
                                 + (note.isBlank() ? "" : "\n“" + note + "”")
                                 + "\n" + link);
             }
+            case "MANUAL_LINK" -> {
+                // Recruiter-sends-the-link mode (owner request
+                // 2026-08-15): the candidate has heard NOTHING — this DM
+                // carries the tokenized link plus a ready-to-send Danish
+                // draft (deterministic template, D6) the recruiter can
+                // copy into their own channel.
+                String optionsLink = payload.path("link").asText("");
+                String deadlineText = payload.path("deadline").asText(null);
+                java.time.LocalDateTime deadline = deadlineText == null ? null
+                        : java.time.LocalDateTime.parse(deadlineText);
+                java.util.List<RecruitmentProposedSlot> offered =
+                        RecruitmentProposedSlot.list(
+                                "requestUuid = ?1 and status = ?2 order by slotStart",
+                                request.getUuid(),
+                                dk.trustworks.intranet.recruitmentservice.model.enums
+                                        .ProposedSlotStatus.OFFERED);
+                String candidateFirstName = candidateFirstName(request);
+                yield new Notice(recruiter, "Interviewmuligheder klar — send selv linket",
+                        ":link: *Mulighederne er klar — kandidaten har IKKE fået besked*\n"
+                                + "Du valgte selv at sende linket. Kopiér udkastet herunder "
+                                + "(eller skriv dit eget) og send det til kandidaten "
+                                + "sammen med linket.\n"
+                                + "Linket: " + optionsLink + "\n"
+                                + (deadline != null
+                                        ? "Frist: " + SlackSchedulingViews.danishDayTime(deadline)
+                                                + " — derefter frigives tiderne automatisk.\n"
+                                        : "")
+                                + "```" + manualDraft(candidateFirstName, request, offered,
+                                        optionsLink, deadline,
+                                        dk.trustworks.intranet.recruitmentservice.slack
+                                                .SlackHandlerSupport.displayName(recruiter))
+                                + "```\n" + link);
+            }
             default -> {
                 log.warnf("Method B recruiter notice of unknown kind '%s' dropped", kind);
                 yield null;
             }
         };
+    }
+
+    /** The candidate's first name, or a neutral fallback. */
+    private static String candidateFirstName(RecruitmentSchedulingRequest request) {
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication application =
+                dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication
+                        .findById(request.getApplicationUuid());
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate candidate =
+                application == null ? null
+                        : dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate
+                                .findById(application.getCandidateUuid());
+        String first = candidate == null || candidate.getFirstName() == null
+                ? "" : candidate.getFirstName().trim();
+        return first.isEmpty() ? "kandidat" : first;
+    }
+
+    /**
+     * The ready-to-send Danish draft (deterministic template, D6 — never
+     * model prose): greeting, the interview's shape, the numbered
+     * options, the link, the deadline, the recruiter's signature. Pure
+     * and package-visible so the wording is pinned DB-free.
+     */
+    static String manualDraft(String candidateFirstName,
+                              RecruitmentSchedulingRequest request,
+                              java.util.List<RecruitmentProposedSlot> offered,
+                              String optionsLink,
+                              java.time.LocalDateTime deadline,
+                              String recruiterName) {
+        StringBuilder draft = new StringBuilder("Hej ")
+                .append(candidateFirstName).append(",\n\n")
+                .append("Vi vil gerne invitere dig til ")
+                .append(SlackSchedulingViews.interviewLabel(
+                        request.getKind(), request.getRound()).toLowerCase(
+                                java.util.Locale.of("da", "DK")))
+                .append(" (").append(request.getDurationMinutes()).append(" min");
+        if (request.isOnlineMeeting()) {
+            draft.append(", online via Microsoft Teams");
+        } else if (request.getLocation() != null && !request.getLocation().isBlank()) {
+            draft.append(", ").append(request.getLocation());
+        }
+        draft.append(").\n\nVælg det tidspunkt, der passer dig bedst:\n");
+        int no = 1;
+        for (RecruitmentProposedSlot slot : offered) {
+            draft.append(no++).append(". ")
+                    .append(SlackSchedulingViews.danishInterval(
+                            slot.getSlotStart(), slot.getSlotEnd()))
+                    .append('\n');
+        }
+        draft.append("\nDu vælger her: ").append(optionsLink).append('\n');
+        if (deadline != null) {
+            draft.append("Svar venligst senest ")
+                    .append(SlackSchedulingViews.danishDayTime(deadline)).append(".\n");
+        }
+        draft.append("\nVenlig hilsen\n").append(recruiterName);
+        return draft.toString();
     }
 
     /** The routed intent, humanized for the recruiter (Danish). */

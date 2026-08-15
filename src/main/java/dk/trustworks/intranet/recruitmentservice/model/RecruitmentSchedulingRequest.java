@@ -131,6 +131,12 @@ public class RecruitmentSchedulingRequest extends PanacheEntityBase implements A
     @Column(name = "review_required", nullable = false)
     private boolean reviewRequired = true;
 
+    /** Recruiter-sends-the-link mode (owner request 2026-08-15): the
+     * send step mails the candidate NOTHING — the recruiter gets the
+     * tokenized link + a ready-to-send text draft as a Slack DM. */
+    @Column(name = "manual_candidate_delivery", nullable = false)
+    private boolean manualCandidateDelivery = false;
+
     /** When the recruiter approved the batch for sending (D11). */
     @Column(name = "options_approved_at")
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)

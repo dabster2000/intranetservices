@@ -109,6 +109,8 @@ public class RecruitmentSchedulingService {
         row.setAutomationDeadline(automationDeadline);
         row.setReviewRequired(request.reviewRequired() == null
                 || request.reviewRequired());
+        row.setManualCandidateDelivery(
+                Boolean.TRUE.equals(request.manualCandidateDelivery()));
         row.persist();
 
         eventRecorder.record(RecruitmentEventBuilder
@@ -168,7 +170,8 @@ public class RecruitmentSchedulingService {
                 request.getPermittedStart(), request.getPermittedEnd(),
                 request.getMinSeparationHours(), request.isDifferentDays(),
                 request.getCandidateDeadline(), request.getAutomationDeadline(),
-                request.isReviewRequired(), request.getOptionsApprovedAt(),
+                request.isReviewRequired(), request.isManualCandidateDelivery(),
+                request.getOptionsApprovedAt(),
                 request.getHandbackReason(),
                 slotViews,
                 batch != null ? new SchedulingRequestResponse.BatchView(
