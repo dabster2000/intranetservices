@@ -46,6 +46,7 @@ public record SchedulingRequestResponse(
         LocalDateTime candidateDeadline,
         LocalDateTime automationDeadline,
         boolean reviewRequired,
+        boolean manualCandidateDelivery,
         LocalDateTime optionsApprovedAt,
         String handbackReason,
         List<SlotView> slots,

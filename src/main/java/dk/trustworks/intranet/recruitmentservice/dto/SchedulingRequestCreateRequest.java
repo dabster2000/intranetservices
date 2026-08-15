@@ -36,6 +36,11 @@ import java.util.List;
  * @param automationDays           days until the automation hands back;
  *                                 null = 14 (defaults §29.18)
  * @param reviewRequired           D11 review gate; null = true
+ * @param manualCandidateDelivery  recruiter-sends-the-link mode: the
+ *                                 send step mails the candidate NOTHING;
+ *                                 the recruiter gets the tokenized link
+ *                                 + a ready-to-send text draft in Slack.
+ *                                 null = false (mail as always)
  */
 public record SchedulingRequestCreateRequest(
         RecruitmentInterviewKind kind,
@@ -55,6 +60,7 @@ public record SchedulingRequestCreateRequest(
         Boolean differentDays,
         LocalDateTime candidateDeadline,
         Integer automationDays,
-        Boolean reviewRequired
+        Boolean reviewRequired,
+        Boolean manualCandidateDelivery
 ) {
 }
