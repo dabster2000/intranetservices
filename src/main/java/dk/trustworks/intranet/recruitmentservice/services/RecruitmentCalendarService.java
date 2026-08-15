@@ -421,14 +421,11 @@ public class RecruitmentCalendarService {
     private void deleteQuietly(String organizer, String eventId, RecruitmentInterview interview) {
         try {
             graph().deleteCalendarEvent(organizer, eventId);
-        } catch (WebApplicationException e) {
-            if (e.getResponse() == null || e.getResponse().getStatus() != 404) {
+        } catch (Exception e) {
+            if (!isGraphNotFound(e)) {
                 log.warnv("Graph calendar delete failed for interview {0}: {1}",
                         interview.getUuid(), e.getMessage());
             }
-        } catch (Exception e) {
-            log.warnv("Graph calendar delete failed for interview {0}: {1}",
-                    interview.getUuid(), e.getMessage());
         }
     }
 
@@ -911,11 +908,33 @@ public class RecruitmentCalendarService {
     public void deleteHoldEvent(String mailbox, String eventId) {
         try {
             graph().deleteCalendarEvent(mailbox, eventId);
-        } catch (WebApplicationException e) {
-            if (e.getResponse() == null || e.getResponse().getStatus() != 404) {
+        } catch (Exception e) {
+            if (!isGraphNotFound(e)) {
                 throw e;
             }
         }
+    }
+
+    /**
+     * The Graph client's 404, whatever shape it arrives in (F18,
+     * production 2026-08-15): the REST client's registered
+     * {@link dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper}
+     * throws its own {@code SharePointException} (a plain
+     * RuntimeException carrying the status), so a catch on
+     * {@code WebApplicationException} NEVER sees Graph 404s — the
+     * reconciliation probe logged every deleted hold as a failed probe
+     * and MISSING detection was dead. Both shapes are recognized here.
+     */
+    static boolean isGraphNotFound(Exception e) {
+        if (e instanceof dk.trustworks.intranet.sharepoint.client
+                .GraphResponseExceptionMapper.SharePointException graphError) {
+            return graphError.isNotFound();
+        }
+        if (e instanceof WebApplicationException webError) {
+            return webError.getResponse() != null
+                    && webError.getResponse().getStatus() == 404;
+        }
+        return false;
     }
 
     /**
@@ -990,8 +1009,8 @@ public class RecruitmentCalendarService {
         try {
             graph().getCalendarEventDetails(mailbox, eventId, "id");
             return true;
-        } catch (WebApplicationException e) {
-            if (e.getResponse() != null && e.getResponse().getStatus() == 404) {
+        } catch (Exception e) {
+            if (isGraphNotFound(e)) {
                 return false;
             }
             throw e;
