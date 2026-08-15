@@ -338,6 +338,11 @@ public class RecruitmentSchedulingOrchestrator {
     private void remindSilentInterviewers(RecruitmentSchedulingRequest request,
                                           List<RecruitmentProposedSlot> slots,
                                           LocalDateTime now) {
+        // Nudges group per (interviewer, tier): one reminder message
+        // carrying every silent option, not one DM per slot (the
+        // combined-card model, owner request 2026-08-15).
+        Map<String, List<RecruitmentSlotApproval>> nudgesByGroup =
+                new java.util.LinkedHashMap<>();
         for (RecruitmentProposedSlot slot : slots) {
             if (slot.getStatus() != ProposedSlotStatus.PROPOSED
                     && slot.getStatus() != ProposedSlotStatus.PARTIALLY_APPROVED) {
@@ -354,16 +359,16 @@ public class RecruitmentSchedulingOrchestrator {
                 if (tier == 0) {
                     continue;
                 }
-                if (tier <= 2) {
-                    outboxService.enqueue(request.getUuid(), slot.getUuid(),
-                            SchedulingOutboxAction.SEND_PROPOSAL_DM,
-                            approval.getUuid() + ":nudge" + tier,
-                            nudgePayload(approval.getUuid(), tier));
-                } else {
+                if (tier > 2) {
                     outboxService.enqueue(request.getUuid(), slot.getUuid(),
                             SchedulingOutboxAction.SEND_RECRUITER_DM,
                             "ESCALATION:" + approval.getUuid(),
                             escalationPayload(approval.getUuid()));
+                } else {
+                    nudgesByGroup.computeIfAbsent(
+                                    approval.getUserUuid() + ":" + tier,
+                                    key -> new ArrayList<>())
+                            .add(approval);
                 }
                 approval.setNudgeCount(tier);
                 approval.setLastNudgedAt(now);
@@ -382,6 +387,14 @@ public class RecruitmentSchedulingOrchestrator {
                         .payload("tier", tier));
             }
         }
+        nudgesByGroup.forEach((groupKey, approvals) -> {
+            int tier = Integer.parseInt(groupKey.substring(groupKey.lastIndexOf(':') + 1));
+            outboxService.enqueue(request.getUuid(), null,
+                    SchedulingOutboxAction.SEND_PROPOSAL_DM,
+                    approvals.getFirst().getUuid() + ":nudge" + tier,
+                    proposalBatchPayload(approvals.stream()
+                            .map(RecruitmentSlotApproval::getUuid).toList(), tier));
+        });
     }
 
     /**
@@ -405,15 +418,6 @@ public class RecruitmentSchedulingOrchestrator {
             return 3;
         }
         return 0;
-    }
-
-    private String nudgePayload(String approvalUuid, int tier) {
-        try {
-            return new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(Map.of("approvalUuid", approvalUuid, "nudge", tier));
-        } catch (Exception e) {
-            return "{\"approvalUuid\":\"" + approvalUuid + "\",\"nudge\":" + tier + "}";
-        }
     }
 
     private String escalationPayload(String approvalUuid) {
@@ -691,6 +695,10 @@ public class RecruitmentSchedulingOrchestrator {
                 RecruitmentApplication.findById(request.getApplicationUuid());
         int nextOptionNo = (int) RecruitmentProposedSlot
                 .count("requestUuid = ?1", request.getUuid()) + 1;
+        // One combined DM per interviewer per round (owner request
+        // 2026-08-15): the round's approvals are collected per
+        // interviewer and sent as ONE message with per-option buttons.
+        Map<String, List<String>> approvalUuidsByInterviewer = new java.util.LinkedHashMap<>();
         for (MultiSlotPlanner.PlannedSlot pick : picks) {
             RecruitmentProposedSlot slot = new RecruitmentProposedSlot();
             slot.setRequestUuid(request.getUuid());
@@ -706,9 +714,9 @@ public class RecruitmentSchedulingOrchestrator {
                 approval.setSlotUuid(slot.getUuid());
                 approval.setUserUuid(interviewerUuid);
                 approval.persist();
-                outboxService.enqueue(request.getUuid(), slot.getUuid(),
-                        SchedulingOutboxAction.SEND_PROPOSAL_DM, approval.getUuid(),
-                        schedulingService.refPayload("approvalUuid", approval.getUuid()));
+                approvalUuidsByInterviewer
+                        .computeIfAbsent(interviewerUuid, key -> new ArrayList<>())
+                        .add(approval.getUuid());
             }
             eventRecorder.record(RecruitmentEventBuilder
                     .event(RecruitmentEventType.SLOT_PROPOSED)
@@ -722,6 +730,29 @@ public class RecruitmentSchedulingOrchestrator {
                     .payload("slot_start", slot.getSlotStart().toString())
                     .payload("slot_end", slot.getSlotEnd().toString())
                     .payload("room_email", slot.getRoomEmail()));
+        }
+        approvalUuidsByInterviewer.forEach((interviewerUuid, approvalUuids) ->
+                outboxService.enqueue(request.getUuid(), null,
+                        SchedulingOutboxAction.SEND_PROPOSAL_DM,
+                        approvalUuids.getFirst(),
+                        proposalBatchPayload(approvalUuids, 0)));
+    }
+
+    /** The combined proposal/nudge DM payload: the round's approval
+     * uuids for one interviewer. */
+    private String proposalBatchPayload(List<String> approvalUuids, int nudge) {
+        try {
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("approvalUuids", approvalUuids);
+            if (nudge > 0) {
+                payload.put("nudge", nudge);
+            }
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(payload);
+        } catch (Exception e) {
+            return "{\"approvalUuids\":[\""
+                    + String.join("\",\"", approvalUuids) + "\"]"
+                    + (nudge > 0 ? ",\"nudge\":" + nudge : "") + "}";
         }
     }
 

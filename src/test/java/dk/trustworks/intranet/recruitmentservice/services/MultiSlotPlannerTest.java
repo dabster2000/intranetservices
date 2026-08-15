@@ -329,4 +329,33 @@ class MultiSlotPlannerTest {
         assertEquals(MONDAY.atTime(13, 0), picks.get(0).start());
         assertEquals(MONDAY.atTime(14, 0), picks.get(1).start());
     }
+
+    @Test
+    void statedWindow_waivesTheDeclinedDayRepulsion() {
+        // Backlog fix 2026-08-15: the interviewer declined Monday 13.00,
+        // then SAID "Monday 13-15 works" — the explicit statement beats
+        // the implicit day-repulsion, so Monday 13.00's window must
+        // outrank an unpenalised Tuesday.
+        List<TimeInterval> declined = List.of(new TimeInterval(
+                MONDAY.atTime(13, 0), MONDAY.atTime(13, 45)));
+        Map<String, List<MultiSlotPlanner.ExternalConstraint>> constraints = Map.of(A,
+                List.of(new MultiSlotPlanner.ExternalConstraint(
+                        dk.trustworks.intranet.recruitmentservice.model.enums
+                                .AvailabilityConstraintType.AVAILABLE_ONLY,
+                        MONDAY.atTime(13, 0), MONDAY.atTime(15, 0),
+                        MONDAY, MONDAY)));
+        PlanRequest request = new PlanRequest(
+                MONDAY, MONDAY.plusDays(1), null, null, 45, 1, 0, false, false,
+                2, List.of(A), List.of(), List.of(),
+                Map.of(A, allFree()), EARLY, List.of(),
+                List.of(new TimeInterval(MONDAY.atTime(13, 0), MONDAY.atTime(13, 45))),
+                declined, constraints);
+        List<PlannedSlot> picks = MultiSlotPlanner.plan(request);
+        assertEquals(1, picks.size());
+        assertEquals(MONDAY, picks.getFirst().start().toLocalDate(),
+                "the stated Monday window must not be repelled to Tuesday");
+        assertEquals(MONDAY.atTime(14, 0), picks.getFirst().start(),
+                "everything overlapping the declined 13.00-13.45 stays excluded; "
+                        + "the window's first clear slot wins");
+    }
 }

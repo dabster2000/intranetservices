@@ -88,6 +88,9 @@ public class AvailabilityMessageService {
     RecruitmentSchedulingService schedulingService;
 
     @Inject
+    dk.trustworks.intranet.recruitmentservice.slack.SlackProposalCardService cardService;
+
+    @Inject
     SchedulingEvidenceStorageService storageService;
 
     @Inject
@@ -347,8 +350,8 @@ public class AvailabilityMessageService {
                 SchedulingOutboxAction.SEND_EVIDENCE_DM, evidence.getUuid(),
                 evidenceDmPayload(evidence.getUuid()));
         // F12: a calendar image answers the open proposals too.
-        List<CardUpdate> cards = resolveOpenProposals(request, actorUuid);
-        return new Outcome(Disposition.SUMMARY_QUEUED, cards);
+        return new Outcome(Disposition.SUMMARY_QUEUED,
+                resolveOpenProposals(request, actorUuid));
     }
 
     private static String sha256Hex(byte[] bytes) {
@@ -425,13 +428,10 @@ public class AvailabilityMessageService {
     /** What the after-transaction reply step must do. */
     enum Disposition {SUMMARY_QUEUED, USE_BUTTONS, ROUTED, CLARIFY, UNPARSEABLE, IMAGE_UNREADABLE}
 
-    /** One proposal-card rewrite the reply step performs after commit (F12). */
-    record CardUpdate(String channelId, String messageTs, String fallback,
-                      List<com.slack.api.model.block.LayoutBlock> blocks) {
-    }
-
-    /** A disposition plus the card rewrites it earned. */
-    record Outcome(Disposition disposition, List<CardUpdate> cardUpdates) {
+    /** A disposition plus the card rewrites it earned (F12). */
+    record Outcome(Disposition disposition,
+                   List<dk.trustworks.intranet.recruitmentservice.slack
+                           .SlackProposalCardService.ComputedUpdate> cardUpdates) {
         static Outcome of(Disposition disposition) {
             return new Outcome(disposition, List.of());
         }
@@ -511,8 +511,8 @@ public class AvailabilityMessageService {
                 evidenceDmPayload(evidence.getUuid()));
         // F12: answering by message settles the open proposals like a
         // button press would — the cards must not stay live.
-        List<CardUpdate> cards = resolveOpenProposals(request, actorUuid);
-        return new Outcome(Disposition.SUMMARY_QUEUED, cards);
+        return new Outcome(Disposition.SUMMARY_QUEUED,
+                resolveOpenProposals(request, actorUuid));
     }
 
     /**
@@ -520,22 +520,15 @@ public class AvailabilityMessageService {
      * IS the interviewer's answer to whatever proposals still await
      * them. Every PENDING approval of theirs on a live slot becomes a
      * decline — slot REJECTED ({@code INTERVIEWER_REPLIED}), holds
-     * compensated, cards rewritten to a settled state — and the planner
-     * re-searches with the new information once it is confirmed. Slots
-     * they already approved stay approved.
+     * compensated, the combined cards re-rendered from state — and the
+     * planner re-searches with the new information once it is
+     * confirmed. Slots they already approved stay approved.
      */
-    private List<CardUpdate> resolveOpenProposals(RecruitmentSchedulingRequest request,
-                                                  String actorUuid) {
-        List<CardUpdate> updates = new ArrayList<>();
+    private List<dk.trustworks.intranet.recruitmentservice.slack
+            .SlackProposalCardService.ComputedUpdate> resolveOpenProposals(
+            RecruitmentSchedulingRequest request, String actorUuid) {
         RecruitmentApplication application =
                 RecruitmentApplication.findById(request.getApplicationUuid());
-        RecruitmentCandidate candidate = application == null ? null
-                : RecruitmentCandidate.findById(application.getCandidateUuid());
-        RecruitmentPosition position = application == null ? null
-                : RecruitmentPosition.findById(application.getPositionUuid());
-        String candidateName = candidateDisplayName(candidate);
-        String positionTitle = position != null ? position.getTitle() : null;
-
         List<RecruitmentProposedSlot> slots =
                 RecruitmentProposedSlot.list("requestUuid = ?1", request.getUuid());
         boolean resolvedAny = false;
@@ -566,44 +559,15 @@ public class AvailabilityMessageService {
                     .payload("request_uuid", request.getUuid())
                     .payload("slot_uuid", slot.getUuid())
                     .payload("origin", "slack_message"));
-
-            if (mine.getSlackChannelId() != null && mine.getSlackMessageTs() != null) {
-                updates.add(new CardUpdate(mine.getSlackChannelId(),
-                        mine.getSlackMessageTs(), "Interviewforslag — besvaret",
-                        SlackSchedulingViews.messageAnsweredCard(request, slot,
-                                candidateName, positionTitle)));
-            }
-            List<RecruitmentSlotApproval> siblings =
-                    RecruitmentSlotApproval.list("slotUuid = ?1", slot.getUuid());
-            for (RecruitmentSlotApproval sibling : siblings) {
-                if (sibling.getUuid().equals(mine.getUuid())
-                        || sibling.getSlackChannelId() == null
-                        || sibling.getSlackMessageTs() == null) {
-                    continue;
-                }
-                updates.add(new CardUpdate(sibling.getSlackChannelId(),
-                        sibling.getSlackMessageTs(), "Interviewforslag — lukket",
-                        SlackSchedulingViews.closedCard(request, slot,
-                                candidateName, positionTitle)));
-            }
         }
-        if (resolvedAny) {
-            // Wake the sweep for status recompute; the search itself
-            // waits for the evidence to confirm (the orchestrator's
-            // fresh-pending-evidence grace).
-            request.setNextActionAt(null);
+        if (!resolvedAny) {
+            return List.of();
         }
-        return updates;
-    }
-
-    private static String candidateDisplayName(RecruitmentCandidate candidate) {
-        if (candidate == null) {
-            return "kandidaten";
-        }
-        String first = candidate.getFirstName() == null ? "" : candidate.getFirstName();
-        String last = candidate.getLastName() == null ? "" : candidate.getLastName();
-        String name = (first + " " + last).trim();
-        return name.isEmpty() ? "kandidaten" : name;
+        // Wake the sweep for status recompute; the search itself waits
+        // for the evidence to confirm (the orchestrator's
+        // fresh-pending-evidence grace).
+        request.setNextActionAt(null);
+        return cardService.computeRequestRefresh(request);
     }
 
     private RecruitmentAvailabilityEvidence newEvidence(
@@ -634,13 +598,33 @@ public class AvailabilityMessageService {
     }
 
     /**
+     * Which confirmed statements REPLACE older overlapping evidence: a
+     * full availability picture and an explicit correction. The additive
+     * intents (a busy interval, an available interval, a preference)
+     * LAYER on top instead — the retest showed a one-hour busy note
+     * retiring a whole week's availability statement via the blind
+     * range-overlap rule, which read as the system forgetting what it
+     * was just told. Engine precedence (BUSY beats AVAILABLE) already
+     * resolves genuine conflicts between layered statements.
+     */
+    static boolean replacesOlderEvidence(String intent) {
+        return AvailabilitySchedulingPrompts.INTENT_PROVIDE_AVAILABILITY.equals(intent)
+                || AvailabilitySchedulingPrompts.INTENT_CORRECT_PRIOR.equals(intent);
+    }
+
+    /**
      * The spec §12.3 supersede rule, applied on CONFIRM: older
      * PENDING/CONFIRMED evidence from the same interviewer on the same
      * request whose covered range overlaps (or is unbounded) yields to
-     * the newer confirmed statement. Returns the superseded uuids for
+     * the newer confirmed statement — when the newer statement is a
+     * REPLACING one ({@link #replacesOlderEvidence}); additive
+     * statements supersede nothing. Returns the superseded uuids for
      * the audit payload.
      */
     public static List<String> supersedeOlder(RecruitmentAvailabilityEvidence winner) {
+        if (!replacesOlderEvidence(winner.getIntent())) {
+            return List.of();
+        }
         List<RecruitmentAvailabilityEvidence> candidates = RecruitmentAvailabilityEvidence
                 .list("requestUuid = ?1 and userUuid = ?2 and uuid != ?3 "
                                 + "and confirmationStatus in ?4",
@@ -680,14 +664,7 @@ public class AvailabilityMessageService {
                         String actorUuid, String requestUuid, String text) {
         // F12 first: settle the proposal cards, THEN talk — the settled
         // card is what makes the conversational reply legible.
-        for (CardUpdate update : outcome.cardUpdates()) {
-            try {
-                slackService.updateMessage(update.channelId(), update.messageTs(),
-                        update.fallback(), update.blocks());
-            } catch (Exception e) {
-                log.warnf("Method B proposal-card settle failed: %s", e.getMessage());
-            }
-        }
+        cardService.perform(outcome.cardUpdates());
         switch (outcome.disposition()) {
             case SUMMARY_QUEUED -> {
                 // The consequential message is the outbox-delivered

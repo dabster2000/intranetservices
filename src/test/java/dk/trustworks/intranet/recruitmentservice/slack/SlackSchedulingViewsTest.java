@@ -47,31 +47,45 @@ class SlackSchedulingViewsTest {
                 SlackSchedulingViews.interviewLabel(RecruitmentInterviewKind.INFORMAL, null));
     }
 
-    // ---- Proposal card ----------------------------------------------------
+    // ---- Combined proposal card -------------------------------------------
+
+    private static SlackSchedulingViews.OptionView open(RecruitmentProposedSlot slot,
+                                                        String approvalUuid) {
+        return new SlackSchedulingViews.OptionView(slot, approvalUuid,
+                SlackSchedulingViews.OptionState.OPEN);
+    }
 
     @Test
-    void proposalCard_carriesGodkendAfvisOnly_withTheApprovalClaim() {
-        // F13 (owner decision 2026-08-14): free text is the primary
-        // path — the card keeps exactly Godkend/Afvis, and the guidance
-        // line teaches the chat instead of extra buttons.
-        List<LayoutBlock> blocks = SlackSchedulingViews.proposalCard(
-                request(), slot(), "Jane Doe", "Senior Consultant", "approval-1", 0);
+    void combinedCard_carriesGodkendAfvisPerOpenOption_withTheApprovalClaims() {
+        // One message per interviewer per round (owner request
+        // 2026-08-15): every OPEN option carries its own Godkend/Afvis
+        // pair, values = that option's approval uuid.
+        List<LayoutBlock> blocks = SlackSchedulingViews.combinedProposalCard(
+                request(), List.of(open(slot(), "approval-1"),
+                        open(slot2(), "approval-2")),
+                "Jane Doe", "Senior Consultant", 0);
 
-        ActionsBlock actions = (ActionsBlock) blocks.stream()
+        List<ActionsBlock> actions = blocks.stream()
                 .filter(ActionsBlock.class::isInstance)
                 .map(ActionsBlock.class::cast)
-                .reduce((first, second) -> second)
-                .orElseThrow();
-        List<String> actionIds = actions.getElements().stream()
-                .map(element -> ((ButtonElement) element).getActionId())
                 .toList();
-        assertEquals(List.of(
-                SlackSchedulingViews.ACTION_APPROVE,
-                SlackSchedulingViews.ACTION_DECLINE), actionIds);
-        actions.getElements().forEach(element ->
-                assertEquals("approval-1", ((ButtonElement) element).getValue()));
+        assertEquals(2, actions.size(), "one button pair per open option");
+        int i = 0;
+        for (ActionsBlock block : actions) {
+            i++;
+            List<String> actionIds = block.getElements().stream()
+                    .map(element -> ((ButtonElement) element).getActionId())
+                    .toList();
+            assertEquals(List.of(
+                    SlackSchedulingViews.ACTION_APPROVE,
+                    SlackSchedulingViews.ACTION_DECLINE), actionIds);
+            String expected = "approval-" + i;
+            block.getElements().forEach(element ->
+                    assertEquals(expected, ((ButtonElement) element).getValue()));
+        }
 
-        // F15: the card itself explains free text and screenshots.
+        // F15: the card itself explains free text and screenshots while
+        // anything is still open.
         ContextBlock guidance = (ContextBlock) blocks.get(blocks.size() - 1);
         String text = ((com.slack.api.model.block.composition.MarkdownTextObject)
                 guidance.getElements().get(0)).getText();
@@ -81,48 +95,93 @@ class SlackSchedulingViewsTest {
     }
 
     @Test
-    void proposalCard_namesCandidateTimeAndRoom() {
-        List<LayoutBlock> blocks = SlackSchedulingViews.proposalCard(
-                request(), slot(), "Jane Doe", "Senior Consultant", "approval-1", 0);
-        String summary = ((SectionBlock) blocks.get(0)).getText().getText();
-        assertTrue(summary.contains("Jane Doe"), summary);
-        assertTrue(summary.contains("tirsdag den 18. august kl. 10.00–11.00"), summary);
-        assertTrue(summary.contains("Lille mødelokale"), summary);
-        assertTrue(summary.length() < 3000, "mrkdwn text must stay inside Slack's limit");
+    void combinedCard_namesCandidateTimesAndRoom() {
+        List<LayoutBlock> blocks = SlackSchedulingViews.combinedProposalCard(
+                request(), List.of(open(slot(), "approval-1")),
+                "Jane Doe", "Senior Consultant", 0);
+        String header = ((SectionBlock) blocks.get(0)).getText().getText();
+        assertTrue(header.contains("Jane Doe"), header);
+        String option = ((SectionBlock) blocks.get(1)).getText().getText();
+        assertTrue(option.contains("tirsdag den 18. august kl. 10.00–11.00"), option);
+        assertTrue(option.contains("Lille mødelokale"), option);
+        assertTrue(header.length() + option.length() < 3000,
+                "mrkdwn text must stay inside Slack's limit");
     }
 
     @Test
-    void proposalCard_nudgeVariant_prefixesTheReminder() {
-        List<LayoutBlock> blocks = SlackSchedulingViews.proposalCard(
-                request(), slot(), "Jane Doe", null, "approval-1", 1);
+    void combinedCard_nudgeVariant_prefixesTheReminder() {
+        List<LayoutBlock> blocks = SlackSchedulingViews.combinedProposalCard(
+                request(), List.of(open(slot(), "approval-1")), "Jane Doe", null, 1);
         String first = ((SectionBlock) blocks.get(0)).getText().getText();
         assertTrue(first.contains("Påmindelse"), first);
-        assertEquals("Påmindelse: interviewforslag tirsdag den 18. august kl. 10.00–11.00",
-                SlackSchedulingViews.proposalFallback(slot(), 1));
+        assertEquals("Påmindelse: Interviewforslag — 3 muligheder",
+                SlackSchedulingViews.combinedFallback(3, 1, false));
+        assertEquals("Interview booket",
+                SlackSchedulingViews.combinedFallback(3, 0, true));
     }
 
     @Test
-    void proposalCard_escapesMrkdwnInNames() {
-        List<LayoutBlock> blocks = SlackSchedulingViews.proposalCard(
-                request(), slot(), "Jane <&> Doe", null, "approval-1", 0);
-        String summary = ((SectionBlock) blocks.get(0)).getText().getText();
-        assertFalse(summary.contains("<&>"), summary);
+    void combinedCard_escapesMrkdwnInNames() {
+        List<LayoutBlock> blocks = SlackSchedulingViews.combinedProposalCard(
+                request(), List.of(open(slot(), "approval-1")),
+                "Jane <&> Doe", null, 0);
+        String header = ((SectionBlock) blocks.get(0)).getText().getText();
+        assertFalse(header.contains("<&>"), header);
     }
 
-    // ---- Answered / closed rewrites --------------------------------------
+    @Test
+    void combinedCard_settledOptionsCarryNoButtons_andSayAllAnswered() {
+        List<LayoutBlock> blocks = SlackSchedulingViews.combinedProposalCard(
+                request(), List.of(
+                        new SlackSchedulingViews.OptionView(slot(), "approval-1",
+                                SlackSchedulingViews.OptionState.APPROVED_BY_ME),
+                        new SlackSchedulingViews.OptionView(slot2(), "approval-2",
+                                SlackSchedulingViews.OptionState.CLOSED)),
+                "Jane", null, 0);
+        assertTrue(blocks.stream().noneMatch(ActionsBlock.class::isInstance),
+                "settled cards must not keep live buttons");
+        ContextBlock footer = (ContextBlock) blocks.get(blocks.size() - 1);
+        String text = ((com.slack.api.model.block.composition.MarkdownTextObject)
+                footer.getElements().get(0)).getText();
+        assertTrue(text.contains("Alle forslag er besvaret"), text);
+    }
 
     @Test
-    void answeredClosedBookedAndMessageCards_dropTheButtons() {
-        for (List<LayoutBlock> blocks : List.of(
-                SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, true),
-                SlackSchedulingViews.answeredCard(request(), slot(), "Jane", null, false),
-                SlackSchedulingViews.closedCard(request(), slot(), "Jane", null),
-                SlackSchedulingViews.bookedCard(request(), slot(), "Jane", null),
-                SlackSchedulingViews.messageAnsweredCard(request(), slot(), "Jane", null))) {
-            assertTrue(blocks.stream().noneMatch(ActionsBlock.class::isInstance),
-                    "rewritten cards must not keep live buttons");
-            assertTrue(blocks.get(blocks.size() - 1) instanceof ContextBlock);
-        }
+    void optionState_mapsSlotAndApprovalToTheRenderedState() {
+        var proposed = dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.PROPOSED;
+        var rejected = dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.REJECTED;
+        var finalized = dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.FINALIZED;
+        var released = dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.RELEASED;
+        var held = dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.HELD;
+        var pending = dk.trustworks.intranet.recruitmentservice.model.enums
+                .SlotApprovalStatus.PENDING;
+        var approved = dk.trustworks.intranet.recruitmentservice.model.enums
+                .SlotApprovalStatus.APPROVED;
+        var declined = dk.trustworks.intranet.recruitmentservice.model.enums
+                .SlotApprovalStatus.DECLINED;
+
+        assertEquals(SlackSchedulingViews.OptionState.OPEN,
+                SlackSchedulingViews.optionState(proposed, pending, null));
+        assertEquals(SlackSchedulingViews.OptionState.APPROVED_BY_ME,
+                SlackSchedulingViews.optionState(held, approved, null));
+        assertEquals(SlackSchedulingViews.OptionState.DECLINED_BY_ME,
+                SlackSchedulingViews.optionState(rejected, declined,
+                        "INTERVIEWER_DECLINED"));
+        assertEquals(SlackSchedulingViews.OptionState.ANSWERED_BY_MESSAGE,
+                SlackSchedulingViews.optionState(rejected, declined,
+                        "INTERVIEWER_REPLIED"));
+        assertEquals(SlackSchedulingViews.OptionState.BOOKED,
+                SlackSchedulingViews.optionState(finalized, approved, null));
+        assertEquals(SlackSchedulingViews.OptionState.CLOSED,
+                SlackSchedulingViews.optionState(rejected, pending,
+                        "RECHECK_CONFLICT"));
+        assertEquals(SlackSchedulingViews.OptionState.CLOSED,
+                SlackSchedulingViews.optionState(released, approved, null));
     }
 
     @Test
@@ -165,6 +224,14 @@ class SlackSchedulingViewsTest {
         slot.setSlotStart(TUE_10);
         slot.setSlotEnd(TUE_10.plusHours(1));
         slot.setRoomName("Lille mødelokale");
+        return slot;
+    }
+
+    private static RecruitmentProposedSlot slot2() {
+        RecruitmentProposedSlot slot = new RecruitmentProposedSlot();
+        slot.setOptionNo(3);
+        slot.setSlotStart(TUE_10.plusDays(1).plusHours(3));
+        slot.setSlotEnd(TUE_10.plusDays(1).plusHours(4));
         return slot;
     }
 }
