@@ -71,4 +71,28 @@ class RecruitmentCalendarRecheckFilterTest {
                         new GraphDateTime("2026-08-25T17:00:00.0000000", "Europe/Copenhagen")),
                 SLOT_START, SLOT_END));
     }
+
+    // ---- F18: Graph 404 recognition, whatever exception shape ------------
+
+    @Test
+    void graphNotFound_recognisesBothExceptionShapes() {
+        // The REST client's registered mapper throws SharePointException
+        // (a plain RuntimeException) — a WebApplicationException catch
+        // never sees Graph 404s, which killed MISSING-hold detection in
+        // production (F18, 2026-08-15).
+        assertTrue(RecruitmentCalendarService.isGraphNotFound(
+                new dk.trustworks.intranet.sharepoint.client
+                        .GraphResponseExceptionMapper.SharePointException("gone", 404)));
+        assertFalse(RecruitmentCalendarService.isGraphNotFound(
+                new dk.trustworks.intranet.sharepoint.client
+                        .GraphResponseExceptionMapper.SharePointException("denied", 403)));
+        assertTrue(RecruitmentCalendarService.isGraphNotFound(
+                new jakarta.ws.rs.WebApplicationException(
+                        jakarta.ws.rs.core.Response.status(404).build())));
+        assertFalse(RecruitmentCalendarService.isGraphNotFound(
+                new jakarta.ws.rs.WebApplicationException(
+                        jakarta.ws.rs.core.Response.status(500).build())));
+        assertFalse(RecruitmentCalendarService.isGraphNotFound(
+                new RuntimeException("connection reset")));
+    }
 }
