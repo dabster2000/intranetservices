@@ -96,6 +96,14 @@ public final class SlackAvailabilityViews {
                             .value(evidence.getUuid())
                             .text(plainText(en ? "Correct" : "Ret")))))));
         } else {
+            // The auto-confirmed card was read as a MISSING Bekræft
+            // button in the 2026-08-15 retest — say out loud that no
+            // confirmation is needed.
+            blocks.add(context(c -> c.elements(asContextElements(markdownText(en
+                    ? "Registered automatically — no confirmation needed. "
+                            + "Press Correct if anything is wrong."
+                    : "Registreret automatisk — ingen bekræftelse nødvendig. "
+                            + "Tryk Ret, hvis noget er forkert.")))));
             blocks.add(actions(a -> a.elements(asElements(
                     button(b -> b.actionId(ACTION_EVIDENCE_CORRECT)
                             .value(evidence.getUuid())
@@ -114,8 +122,8 @@ public final class SlackAvailabilityViews {
             sb.append(en ? "*I read your message like this:*"
                     : "*Jeg har læst din besked sådan:*");
         } else {
-            sb.append(en ? "*Registered — I will schedule around this:*"
-                    : "*Registreret — jeg planlægger uden om dette:*");
+            sb.append(en ? "*Registered — this now guides the scheduling:*"
+                    : "*Registreret — dette indgår nu i planlægningen:*");
         }
         for (RecruitmentAvailabilityConstraint constraint : constraints) {
             sb.append("\n• ").append(constraintLine(constraint, en));

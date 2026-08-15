@@ -48,6 +48,9 @@ public class SchedulingFinalizeNoticeExecutor implements SchedulingOutboxExecuto
     @Inject
     ObjectMapper objectMapper;
 
+    @Inject
+    dk.trustworks.intranet.recruitmentservice.slack.SlackProposalCardService cardService;
+
     @Override
     public SchedulingOutboxAction action() {
         return SchedulingOutboxAction.NOTIFY_FINALIZED;
@@ -59,19 +62,11 @@ public class SchedulingFinalizeNoticeExecutor implements SchedulingOutboxExecuto
         if (payload == null) {
             return; // stale action — nothing to notify
         }
-        for (CardUpdate card : payload.cardUpdates) {
-            try {
-                slackService.updateMessage(card.channelId, card.ts,
-                        card.booked ? "Interview booket" : "Interviewforslag — lukket",
-                        card.blocks);
-            } catch (Exception e) {
-                // One dead card (deactivated user, deleted DM) must not
-                // hold the booked notices hostage — cards are cosmetic,
-                // the DM below is the message that matters.
-                log.warnf("Method B finalize card update failed (channel=%s): %s",
-                        card.channelId, e.getMessage());
-            }
-        }
+        // One state-render pass over every proposal message: the winning
+        // option shows booked, everything else closed. A dead message
+        // (deactivated user, deleted DM) never blocks the notices —
+        // cards are cosmetic, the DM below is the message that matters.
+        cardService.perform(payload.cardUpdates);
         for (Map.Entry<User, String> notice : payload.notices.entrySet()) {
             slackService.sendMessage(notice.getKey(), notice.getValue(),
                     List.of(com.slack.api.model.block.Blocks.section(s -> s.text(
@@ -80,11 +75,10 @@ public class SchedulingFinalizeNoticeExecutor implements SchedulingOutboxExecuto
         }
     }
 
-    private record CardUpdate(String channelId, String ts, boolean booked,
-                              List<com.slack.api.model.block.LayoutBlock> blocks) {
-    }
-
-    private record Payload(List<CardUpdate> cardUpdates, Map<User, String> notices) {
+    private record Payload(
+            List<dk.trustworks.intranet.recruitmentservice.slack
+                    .SlackProposalCardService.ComputedUpdate> cardUpdates,
+            Map<User, String> notices) {
     }
 
     /** Null = the action is stale and counts as done. */
@@ -99,42 +93,9 @@ public class SchedulingFinalizeNoticeExecutor implements SchedulingOutboxExecuto
         if (selected == null || request == null) {
             return null;
         }
-        RecruitmentApplication application =
-                RecruitmentApplication.findById(request.getApplicationUuid());
-        RecruitmentCandidate candidate = application == null ? null
-                : RecruitmentCandidate.findById(application.getCandidateUuid());
-        RecruitmentPosition position = application == null ? null
-                : RecruitmentPosition.findById(application.getPositionUuid());
-        String candidateName = candidate == null ? "kandidaten"
-                : ((candidate.getFirstName() == null ? "" : candidate.getFirstName())
-                        + " " + (candidate.getLastName() == null ? "" : candidate.getLastName()))
-                        .trim();
-        if (candidateName.isEmpty()) {
-            candidateName = "kandidaten";
-        }
-        String positionTitle = position != null ? position.getTitle() : null;
-
-        List<CardUpdate> cards = new ArrayList<>();
-        List<RecruitmentProposedSlot> slots = RecruitmentProposedSlot
-                .list("requestUuid = ?1", request.getUuid());
-        for (RecruitmentProposedSlot slot : slots) {
-            boolean booked = slot.getUuid().equals(selected.getUuid());
-            List<RecruitmentSlotApproval> approvals = RecruitmentSlotApproval
-                    .list("slotUuid = ?1", slot.getUuid());
-            for (RecruitmentSlotApproval approval : approvals) {
-                if (approval.getSlackChannelId() == null
-                        || approval.getSlackMessageTs() == null) {
-                    continue;
-                }
-                cards.add(new CardUpdate(approval.getSlackChannelId(),
-                        approval.getSlackMessageTs(), booked,
-                        booked
-                                ? SlackSchedulingViews.bookedCard(request, slot,
-                                        candidateName, positionTitle)
-                                : SlackSchedulingViews.closedCard(request, slot,
-                                        candidateName, positionTitle)));
-            }
-        }
+        String candidateName =
+                dk.trustworks.intranet.recruitmentservice.slack
+                        .SlackProposalCardService.namesOf(request).candidateName();
 
         Map<User, String> notices = new LinkedHashMap<>();
         for (String interviewerUuid : request.getInterviewerUuids()) {
@@ -146,6 +107,6 @@ public class SchedulingFinalizeNoticeExecutor implements SchedulingOutboxExecuto
             notices.put(interviewer,
                     SlackSchedulingViews.bookedNotice(selected, candidateName));
         }
-        return new Payload(cards, notices);
+        return new Payload(cardService.computeRequestRefresh(request), notices);
     }
 }

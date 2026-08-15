@@ -52,16 +52,23 @@ class SlackAvailabilityViewsTest {
     }
 
     @Test
-    void registeredSummary_offersOnlyTheRetEscapeHatch() {
+    void registeredSummary_offersOnlyTheRetEscapeHatch_andSaysNoConfirmNeeded() {
         // Auto-confirmed (requiresConfirmation=false): no Bekræft to
-        // press — the registered card still carries Ret (D9's undo).
+        // press — the registered card still carries Ret (D9's undo) and
+        // SAYS no confirmation is needed (the Ret-only card was read as
+        // a missing button in the 2026-08-15 retest).
         List<LayoutBlock> blocks = SlackAvailabilityViews.summaryCard(evidence("da"),
                 List.of(constraint(AvailabilityConstraintType.BUSY, TUE_9, TUE_9.plusHours(3))),
                 false);
         String text = ((SectionBlock) blocks.get(0)).getText().getText();
         assertTrue(text.contains("Registreret"), text);
 
-        ActionsBlock actions = (ActionsBlock) blocks.get(1);
+        String note = ((com.slack.api.model.block.composition.MarkdownTextObject)
+                ((com.slack.api.model.block.ContextBlock) blocks.get(1))
+                        .getElements().get(0)).getText();
+        assertTrue(note.contains("ingen bekræftelse nødvendig"), note);
+
+        ActionsBlock actions = (ActionsBlock) blocks.get(2);
         assertEquals(1, actions.getElements().size());
         assertEquals(SlackAvailabilityViews.ACTION_EVIDENCE_CORRECT,
                 ((ButtonElement) actions.getElements().getFirst()).getActionId());

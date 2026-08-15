@@ -37,7 +37,7 @@ public class SlackSchedulingApproveHandler implements SlackInboundHandler {
     SlackSchedulingSupport support;
 
     @Inject
-    SlackService slackService;
+    SlackProposalCardService cardService;
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
@@ -59,7 +59,7 @@ public class SlackSchedulingApproveHandler implements SlackInboundHandler {
         }
         RecruitmentSlotApproval approval = resolved.approval();
         if (!resolved.slot().getStatus().isLive()) {
-            updateCardClosed(resolved, request);
+            refreshCards(resolved, request);
             return SlackInboundResponse.handled(SlackSchedulingSupport.GONE_TEXT);
         }
         if (approval.getStatus() != SlotApprovalStatus.PENDING) {
@@ -87,47 +87,17 @@ public class SlackSchedulingApproveHandler implements SlackInboundHandler {
                 .payload("slot_uuid", resolved.slot().getUuid())
                 .payload("origin", "slack"));
 
-        updateCard(resolved, request, true);
+        refreshCards(resolved, request);
         return SlackInboundResponse.handled(null);
     }
 
-    private void updateCard(SlackSchedulingSupport.Resolved resolved,
-                            SlackInboundRequest request, boolean approved) {
-        String channel = channelOf(resolved.approval(), request);
-        String ts = tsOf(resolved.approval(), request);
-        if (channel == null || ts == null) {
-            return;
-        }
-        slackService.updateMessage(channel, ts,
-                "Interviewforslag — besvaret",
-                SlackSchedulingViews.answeredCard(resolved.request(), resolved.slot(),
-                        resolved.candidateName(), resolved.positionTitle(), approved));
-    }
-
-    private void updateCardClosed(SlackSchedulingSupport.Resolved resolved,
-                                  SlackInboundRequest request) {
-        String channel = channelOf(resolved.approval(), request);
-        String ts = tsOf(resolved.approval(), request);
-        if (channel == null || ts == null) {
-            return;
-        }
-        slackService.updateMessage(channel, ts,
-                "Interviewforslag — lukket",
-                SlackSchedulingViews.closedCard(resolved.request(), resolved.slot(),
-                        resolved.candidateName(), resolved.positionTitle()));
-    }
-
-    /** The stored DM ref wins; the interaction's own channel/ts is the
-     * fallback (a nudge card, or a ref the executor failed to store). */
-    static String channelOf(RecruitmentSlotApproval approval, SlackInboundRequest request) {
-        return approval.getSlackChannelId() != null
-                ? approval.getSlackChannelId() : request.channelId();
-    }
-
-    static String tsOf(RecruitmentSlotApproval approval, SlackInboundRequest request) {
-        // The clicked message is the one to rewrite when the click came
-        // from a different (older/nudge) card than the stored ref.
-        return request.messageTs() != null
-                ? request.messageTs() : approval.getSlackMessageTs();
+    /** Re-render every proposal message of the request from state —
+     * including the exact message that was clicked, when it is an older
+     * card whose stored ref a reminder overwrote. */
+    private void refreshCards(SlackSchedulingSupport.Resolved resolved,
+                              SlackInboundRequest request) {
+        cardService.perform(cardService.computeRefreshAfterAction(
+                resolved.request(), resolved.approval(),
+                request.channelId(), request.messageTs()));
     }
 }

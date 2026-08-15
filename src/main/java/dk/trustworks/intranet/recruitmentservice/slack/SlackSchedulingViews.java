@@ -99,64 +99,165 @@ public final class SlackSchedulingViews {
                     + "til rekrutteringsteamet.";
 
     /**
-     * The proposal DM card (plan §9.1). {@code nudge} &gt; 0 renders the
-     * reminder variant (defaults §29.16). The buttons carry the
-     * approval uuid as their value — a CLAIM the handlers re-authorize.
-     * Godkend/Afvis only (F13): free text and images are the primary
-     * path for everything that is not a plain yes/no, and the guidance
-     * line says so.
+     * One option's state as ONE interviewer's combined card renders it —
+     * derived purely from (slot status, own approval status, reject
+     * reason), so the whole card is a render of persisted state and
+     * every rewrite is just "render again".
      */
-    public static List<LayoutBlock> proposalCard(RecruitmentSchedulingRequest request,
-                                                 RecruitmentProposedSlot slot,
-                                                 String candidateName,
-                                                 String positionTitle,
-                                                 String approvalUuid,
-                                                 int nudge) {
+    public enum OptionState {
+        /** Awaiting THIS interviewer's answer — buttons live. */
+        OPEN,
+        /** This interviewer approved; the slot is still in play. */
+        APPROVED_BY_ME,
+        /** This interviewer pressed Afvis. */
+        DECLINED_BY_ME,
+        /** This interviewer answered with a message instead (F12). */
+        ANSWERED_BY_MESSAGE,
+        /** The candidate chose this option — it became the interview. */
+        BOOKED,
+        /** Died elsewhere: a colleague declined, a conflict, a release. */
+        CLOSED
+    }
+
+    /** The (slot, own approval, reject reason) → state mapping (pure;
+     * DB-free tested). */
+    public static OptionState optionState(
+            dk.trustworks.intranet.recruitmentservice.model.enums.ProposedSlotStatus slot,
+            dk.trustworks.intranet.recruitmentservice.model.enums.SlotApprovalStatus mine,
+            String rejectReason) {
+        if (slot == dk.trustworks.intranet.recruitmentservice.model.enums
+                .ProposedSlotStatus.FINALIZED) {
+            return OptionState.BOOKED;
+        }
+        if (mine == dk.trustworks.intranet.recruitmentservice.model.enums
+                .SlotApprovalStatus.DECLINED) {
+            return dk.trustworks.intranet.recruitmentservice.services
+                    .RecruitmentSchedulingService.REASON_INTERVIEWER_REPLIED
+                            .equals(rejectReason)
+                    ? OptionState.ANSWERED_BY_MESSAGE : OptionState.DECLINED_BY_ME;
+        }
+        if (slot.isTerminal()) {
+            return OptionState.CLOSED;
+        }
+        if (mine == dk.trustworks.intranet.recruitmentservice.model.enums
+                .SlotApprovalStatus.APPROVED) {
+            return OptionState.APPROVED_BY_ME;
+        }
+        return OptionState.OPEN;
+    }
+
+    /** One option row of the combined card. */
+    public record OptionView(RecruitmentProposedSlot slot, String approvalUuid,
+                             OptionState state) {
+    }
+
+    /**
+     * THE proposal message (one per interviewer per proposal round): a
+     * header naming the interview, one block per option with its state —
+     * OPEN options carry their own Godkend/Afvis pair (values = the
+     * approval uuid, a CLAIM the handlers re-authorize) — and the
+     * free-text guidance while anything is still open (F13/F15). Every
+     * state change re-renders this same message in place, so the card
+     * always shows the whole round's truth instead of three drifting
+     * single-slot cards.
+     */
+    public static List<LayoutBlock> combinedProposalCard(
+            RecruitmentSchedulingRequest request,
+            List<OptionView> options,
+            String candidateName,
+            String positionTitle,
+            int nudge) {
         List<LayoutBlock> blocks = new ArrayList<>();
         if (nudge > 0) {
             blocks.add(section(s -> s.text(markdownText(
-                    ":bell: *Påmindelse* — dette interviewforslag venter stadig på dit svar."))));
+                    ":bell: *Påmindelse* — interviewforslag venter stadig på dit svar."))));
         }
-        blocks.add(section(s -> s.text(markdownText(summaryLine(request, slot,
-                candidateName, positionTitle)))));
-        blocks.add(context(c -> c.elements(asContextElements(markdownText(
-                "Mulighed " + slot.getOptionNo() + " · \"Godkend\" reserverer tiden "
-                        + "foreløbigt i din kalender.")))));
-        blocks.add(actions(a -> a.elements(asElements(
-                button(b -> b.actionId(ACTION_APPROVE).value(approvalUuid)
-                        .style("primary").text(plainText("Godkend"))),
-                button(b -> b.actionId(ACTION_DECLINE).value(approvalUuid)
-                        .style("danger").text(plainText("Afvis")))))));
-        blocks.add(context(c -> c.elements(asContextElements(markdownText(CARD_GUIDANCE)))));
+        blocks.add(section(s -> s.text(markdownText(headerLine(request,
+                candidateName, positionTitle, options.size())))));
+        for (OptionView option : options) {
+            blocks.add(section(s -> s.text(markdownText(optionLine(option)))));
+            if (option.state() == OptionState.OPEN) {
+                blocks.add(actions(a -> a.elements(asElements(
+                        button(b -> b.actionId(ACTION_APPROVE)
+                                .value(option.approvalUuid())
+                                .style("primary").text(plainText("Godkend"))),
+                        button(b -> b.actionId(ACTION_DECLINE)
+                                .value(option.approvalUuid())
+                                .style("danger").text(plainText("Afvis")))))));
+            }
+        }
+        boolean anyOpen = options.stream()
+                .anyMatch(option -> option.state() == OptionState.OPEN);
+        if (anyOpen) {
+            blocks.add(context(c -> c.elements(asContextElements(markdownText(
+                    "Svar pr. mulighed — \"Godkend\" reserverer tiden foreløbigt "
+                            + "i din kalender. " + CARD_GUIDANCE)))));
+        } else {
+            blocks.add(context(c -> c.elements(asContextElements(markdownText(
+                    ":white_check_mark: Alle forslag er besvaret — du behøver ikke "
+                            + "foretage dig mere her.")))));
+        }
         return blocks;
     }
 
-    /** The card after the interviewer answered — buttons gone, ✓/✗ shown. */
-    public static List<LayoutBlock> answeredCard(RecruitmentSchedulingRequest request,
-                                                 RecruitmentProposedSlot slot,
-                                                 String candidateName,
-                                                 String positionTitle,
-                                                 boolean approved) {
-        return asBlocks(
-                section(s -> s.text(markdownText(summaryLine(request, slot,
-                        candidateName, positionTitle)))),
-                context(c -> c.elements(asContextElements(markdownText(approved
-                        ? ":white_check_mark: Du har godkendt denne mulighed — tiden er reserveret foreløbigt."
-                        : ":x: Du har afvist denne mulighed.")))));
+    /** The combined card's header: interview, candidate, shape. */
+    static String headerLine(RecruitmentSchedulingRequest request,
+                             String candidateName, String positionTitle,
+                             int optionCount) {
+        StringBuilder text = new StringBuilder(":calendar: *")
+                .append(interviewLabel(request.getKind(), request.getRound()))
+                .append(": ")
+                .append(SlackCandidateFacts.mrkdwnSafe(candidateName))
+                .append("*");
+        if (positionTitle != null && !positionTitle.isBlank()) {
+            text.append(" — ").append(SlackCandidateFacts.mrkdwnSafe(positionTitle));
+        }
+        text.append("\n").append(request.getDurationMinutes()).append(" min");
+        if (request.isOnlineMeeting()) {
+            text.append(" · Microsoft Teams");
+        } else if (request.getLocation() != null && !request.getLocation().isBlank()) {
+            text.append(" · ").append(SlackCandidateFacts.mrkdwnSafe(request.getLocation()));
+        }
+        text.append(" · ").append(optionCount == 1
+                ? "1 forslag" : optionCount + " forslag");
+        return text.toString();
     }
 
-    /** The winning card after finalization (spec §16.3) — buttons gone,
-     * the booked time stands. */
-    public static List<LayoutBlock> bookedCard(RecruitmentSchedulingRequest request,
-                                               RecruitmentProposedSlot slot,
-                                               String candidateName,
-                                               String positionTitle) {
-        return asBlocks(
-                section(s -> s.text(markdownText(summaryLine(request, slot,
-                        candidateName, positionTitle)))),
-                context(c -> c.elements(asContextElements(markdownText(
-                        ":white_check_mark: Kandidaten valgte denne tid — interviewet er "
-                                + "booket, og invitationen kommer i Outlook.")))));
+    /** One option's mrkdwn row: number, time, room, state. */
+    static String optionLine(OptionView option) {
+        RecruitmentProposedSlot slot = option.slot();
+        StringBuilder text = new StringBuilder("*Mulighed ")
+                .append(slot.getOptionNo()).append("* · *")
+                .append(danishInterval(slot.getSlotStart(), slot.getSlotEnd()))
+                .append("*");
+        if (slot.getRoomName() != null && !slot.getRoomName().isBlank()) {
+            text.append(" · :round_pushpin: ")
+                    .append(SlackCandidateFacts.mrkdwnSafe(slot.getRoomName()));
+        }
+        String stateLine = switch (option.state()) {
+            case OPEN -> null;
+            case APPROVED_BY_ME ->
+                    ":white_check_mark: Godkendt — tiden er reserveret foreløbigt.";
+            case DECLINED_BY_ME -> ":x: Afvist.";
+            case ANSWERED_BY_MESSAGE -> ":speech_balloon: Besvaret med besked.";
+            case BOOKED -> ":tada: Kandidaten valgte denne tid — interviewet er "
+                    + "booket, og invitationen kommer i Outlook.";
+            case CLOSED -> ":no_entry_sign: Lukket — kræver ikke svar.";
+        };
+        if (stateLine != null) {
+            text.append("\n").append(stateLine);
+        }
+        return text.toString();
+    }
+
+    /** The combined message's notification/preview text. */
+    public static String combinedFallback(int optionCount, int nudge, boolean anyBooked) {
+        if (anyBooked) {
+            return "Interview booket";
+        }
+        String base = optionCount == 1
+                ? "Interviewforslag" : "Interviewforslag — " + optionCount + " muligheder";
+        return nudge > 0 ? "Påmindelse: " + base : base;
     }
 
     /** The one-line booked notice DM'd to each required interviewer. */
@@ -168,65 +269,6 @@ public final class SlackSchedulingViews {
                 + "er frigivet.";
     }
 
-    /** The card after the interviewer answered by MESSAGE instead of a
-     * button (F12) — buttons gone, the message is acknowledged as the
-     * answer. */
-    public static List<LayoutBlock> messageAnsweredCard(RecruitmentSchedulingRequest request,
-                                                        RecruitmentProposedSlot slot,
-                                                        String candidateName,
-                                                        String positionTitle) {
-        return asBlocks(
-                section(s -> s.text(markdownText(summaryLine(request, slot,
-                        candidateName, positionTitle)))),
-                context(c -> c.elements(asContextElements(markdownText(
-                        ":speech_balloon: Du har svaret med en besked — forslaget er "
-                                + "lukket, og dine oplysninger bruges i den videre "
-                                + "planlægning.")))));
-    }
-
-    /** The card when the slot died elsewhere (a colleague declined, a
-     * conflict appeared, the request closed) — buttons gone. */
-    public static List<LayoutBlock> closedCard(RecruitmentSchedulingRequest request,
-                                               RecruitmentProposedSlot slot,
-                                               String candidateName,
-                                               String positionTitle) {
-        return asBlocks(
-                section(s -> s.text(markdownText(summaryLine(request, slot,
-                        candidateName, positionTitle)))),
-                context(c -> c.elements(asContextElements(markdownText(
-                        ":no_entry_sign: Denne mulighed er lukket — du behøver ikke svare.")))));
-    }
-
-    /** The notification/preview text of the proposal DM. */
-    public static String proposalFallback(RecruitmentProposedSlot slot, int nudge) {
-        return (nudge > 0 ? "Påmindelse: interviewforslag " : "Interviewforslag ")
-                + danishInterval(slot.getSlotStart(), slot.getSlotEnd());
-    }
-
-    private static String summaryLine(RecruitmentSchedulingRequest request,
-                                      RecruitmentProposedSlot slot,
-                                      String candidateName,
-                                      String positionTitle) {
-        StringBuilder text = new StringBuilder(":calendar: *")
-                .append(interviewLabel(request.getKind(), request.getRound()))
-                .append(": ")
-                .append(SlackCandidateFacts.mrkdwnSafe(candidateName))
-                .append("*");
-        if (positionTitle != null && !positionTitle.isBlank()) {
-            text.append(" — ").append(SlackCandidateFacts.mrkdwnSafe(positionTitle));
-        }
-        text.append("\n*")
-                .append(danishInterval(slot.getSlotStart(), slot.getSlotEnd()))
-                .append("* (").append(request.getDurationMinutes()).append(" min)");
-        if (slot.getRoomName() != null && !slot.getRoomName().isBlank()) {
-            text.append("\n:round_pushpin: ").append(SlackCandidateFacts.mrkdwnSafe(slot.getRoomName()));
-        } else if (request.isOnlineMeeting()) {
-            text.append("\n:round_pushpin: Microsoft Teams");
-        } else if (request.getLocation() != null && !request.getLocation().isBlank()) {
-            text.append("\n:round_pushpin: ").append(SlackCandidateFacts.mrkdwnSafe(request.getLocation()));
-        }
-        return text.toString();
-    }
 
     // ---- Note modals -------------------------------------------------------
     // The buttons that open these are gone from NEW cards (F13 — free

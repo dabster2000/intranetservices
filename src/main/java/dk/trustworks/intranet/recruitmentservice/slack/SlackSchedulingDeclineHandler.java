@@ -37,7 +37,7 @@ public class SlackSchedulingDeclineHandler implements SlackInboundHandler {
     SlackSchedulingSupport support;
 
     @Inject
-    SlackService slackService;
+    SlackProposalCardService cardService;
 
     @Inject
     RecruitmentSchedulingService schedulingService;
@@ -89,27 +89,11 @@ public class SlackSchedulingDeclineHandler implements SlackInboundHandler {
                 .payload("slot_uuid", resolved.slot().getUuid())
                 .payload("origin", "slack"));
 
-        // The decliner's own card: ✗. Colleagues' cards: closed.
-        String channel = SlackSchedulingApproveHandler.channelOf(approval, request);
-        String ts = SlackSchedulingApproveHandler.tsOf(approval, request);
-        if (channel != null && ts != null) {
-            slackService.updateMessage(channel, ts, "Interviewforslag — besvaret",
-                    SlackSchedulingViews.answeredCard(resolved.request(), resolved.slot(),
-                            resolved.candidateName(), resolved.positionTitle(), false));
-        }
-        List<RecruitmentSlotApproval> siblings =
-                RecruitmentSlotApproval.list("slotUuid = ?1", approval.getSlotUuid());
-        for (RecruitmentSlotApproval sibling : siblings) {
-            if (sibling.getUuid().equals(approval.getUuid())
-                    || sibling.getSlackChannelId() == null
-                    || sibling.getSlackMessageTs() == null) {
-                continue;
-            }
-            slackService.updateMessage(sibling.getSlackChannelId(),
-                    sibling.getSlackMessageTs(), "Interviewforslag — lukket",
-                    SlackSchedulingViews.closedCard(resolved.request(), resolved.slot(),
-                            resolved.candidateName(), resolved.positionTitle()));
-        }
+        // The decliner's own message shows ✗ on this option; every
+        // colleague's message shows it closed — one state-render pass.
+        cardService.perform(cardService.computeRefreshAfterAction(
+                resolved.request(), approval,
+                request.channelId(), request.messageTs()));
         // F6 (owner decision 2026-08-14): a decline is the moment to ask
         // for availability — otherwise the planner guesses again blind.
         return SlackInboundResponse.handled(

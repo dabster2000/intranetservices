@@ -223,12 +223,32 @@ public final class MultiSlotPlanner {
                 optionalFree++;
             }
         }
+        int penalty = declinedPenalty(request.declined(), slotStart);
+        if (penalty > 0 && fitsStatedWindow(request, slotStart, slotEnd)) {
+            // Explicit beats implicit (the F1a philosophy): a slot inside
+            // a window the interviewer SAID works must not be repelled by
+            // the day their earlier proposals were declined on — the
+            // statement is newer and more specific than the repulsion.
+            penalty = 0;
+        }
         return new PlannedSlot(slotStart, slotEnd,
                 room != null ? room.email() : null,
                 room != null ? room.displayName() : null,
                 optionalFree,
-                preferenceScore(request, slotStart, slotEnd)
-                        - declinedPenalty(request.declined(), slotStart));
+                preferenceScore(request, slotStart, slotEnd) - penalty);
+    }
+
+    /** True when the slot fits a confirmed AVAILABLE_ONLY window of at
+     * least one required interviewer. */
+    static boolean fitsStatedWindow(PlanRequest request, LocalDateTime slotStart,
+                                    LocalDateTime slotEnd) {
+        for (String email : request.requiredEmails()) {
+            if (externalVerdict(constraintsOf(request, email), slotStart, slotEnd)
+                    == ExternalVerdict.AVAILABLE_OVERRIDE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Penalty steps of the F5 repulsion — each far larger than any

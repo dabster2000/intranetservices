@@ -49,4 +49,26 @@ class AvailabilityMessagePureTest {
         assertNull(AvailabilityMessageService.expiryOf(null),
                 "no covered range, no timed expiry — the 48 h pending rule still applies");
     }
+
+    @org.junit.jupiter.api.Test
+    void onlyFullPicturesAndCorrections_replaceOlderEvidence() {
+        // Backlog fix 2026-08-15: additive statements (a busy hour, an
+        // available interval, a preference) LAYER on top of what was
+        // said before — the retest showed a one-hour busy note retiring
+        // a whole week's availability statement via the blind
+        // range-overlap supersede.
+        org.junit.jupiter.api.Assertions.assertTrue(
+                AvailabilityMessageService.replacesOlderEvidence("PROVIDE_AVAILABILITY"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                AvailabilityMessageService.replacesOlderEvidence(
+                        "CORRECT_PRIOR_INTERPRETATION"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AvailabilityMessageService.replacesOlderEvidence("ADD_BUSY_INTERVAL"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AvailabilityMessageService.replacesOlderEvidence("ADD_AVAILABLE_INTERVAL"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AvailabilityMessageService.replacesOlderEvidence("ADD_PREFERENCE"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AvailabilityMessageService.replacesOlderEvidence("UNKNOWN"));
+    }
 }
