@@ -11,6 +11,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBod
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventRequest;
+import dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -34,6 +35,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Outlook calendar bridging for interview scheduling (ATS plan §P11).
@@ -72,6 +75,52 @@ public class RecruitmentCalendarService {
     static final int CALLER_ATTEMPTS = 3;
 
     /**
+     * Wait applied once to a throttled (429) batch when Graph sent no
+     * {@code Retry-After}, and the ceiling applied when it did. Graph can
+     * ask for an hour; a request-scoped caller sitting behind the ALB's 60s
+     * idle timeout cannot honour that, so we honour what we can and give up
+     * honestly rather than hang.
+     */
+    static final long THROTTLE_DEFAULT_WAIT_MS = 1_000L;
+    static final long THROTTLE_MAX_WAIT_MS = 5_000L;
+
+    /**
+     * Total time one sweep may spend BLOCKED — throttle backoff and waiting
+     * for a concurrency permit, together.
+     * <p>
+     * A sweep is 7-8 sequential batches, each of which may climb a 3-rung
+     * caller ladder, so any PER-BATCH bound is multiplied by ~24 before the
+     * caller feels it. The request sits behind the ALB's 60s idle timeout,
+     * and a fix that turns 429s into 504s would be worse than the bug it
+     * replaces.
+     * <p>
+     * Both waits share ONE budget deliberately: they are the same scarce
+     * resource — the caller's patience — and budgeting them separately is
+     * exactly how you bound each and still blow the sum.
+     */
+    static final long BLOCKING_BUDGET_MS = 10_000L;
+
+    /**
+     * The blocking allowance for a single sweep, spent down by permit waits
+     * and throttle backoff alike. Deliberately not thread-safe: one instance
+     * belongs to one sweep on one thread.
+     */
+    static final class SweepBudget {
+        private long remainingMs = BLOCKING_BUDGET_MS;
+
+        /** Grant up to {@code requestedMs}, never more than is left. */
+        long take(long requestedMs) {
+            long granted = Math.max(0L, Math.min(requestedMs, remainingMs));
+            remainingMs -= granted;
+            return granted;
+        }
+
+        long remaining() {
+            return remainingMs;
+        }
+    }
+
+    /**
      * Interview times are wall-clock as entered by the scheduler (P11
      * findings, deviation 8): {@code scheduledAt} is a naive
      * {@code LocalDateTime} meaning Copenhagen local time. Graph must be
@@ -93,6 +142,40 @@ public class RecruitmentCalendarService {
 
     /** Test seam; resolved from {@link #graphApiClientInstance} on first use. */
     GraphApiClient graphApiClient;
+
+    /**
+     * The tenant-side MailboxConcurrency guard. Application-scoped on
+     * purpose: the cap is per app per mailbox, so nothing request-scoped can
+     * enforce it (production 2026-08-15).
+     */
+    @Inject
+    GraphMailboxConcurrencyLimiter mailboxLimiter;
+
+    /**
+     * Rotates which mailbox anchors the {@code getSchedule} URL. Shared
+     * across requests — the whole point is that two concurrent sweeps do
+     * not pick the same anchor. Package-private so tests can pin it.
+     */
+    final AtomicInteger callerCursor = new AtomicInteger();
+
+    /**
+     * Addresses Graph has answered 404 {@code ErrorInvalidUser} for as a
+     * caller — employees with no mailbox in the tenant. Remembered for the
+     * process lifetime so the rotation stops paying for them: without this
+     * memo, rotating the anchor would re-discover the same dead addresses on
+     * every sweep, which is the one thing the old sticky-caller design was
+     * actually good at.
+     */
+    private final Set<String> mailboxLessCallers = ConcurrentHashMap.newKeySet();
+
+    /** Test seam so throttle backoff is asserted without wall-clock time. */
+    java.util.function.LongConsumer sleeper = millis -> {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    };
 
     @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.enabled", defaultValue = "false")
     boolean calendarEnabled;
@@ -146,6 +229,85 @@ public class RecruitmentCalendarService {
      */
     public record CreatedEvent(String eventId, String organizer, String joinUrl,
                                String candidateEventId) { }
+
+    /**
+     * The result of a free/busy sweep, with its own gaps admitted.
+     * <p>
+     * The distinction that matters — and the reason this is a record rather
+     * than a bare map — is <em>absent</em> versus <em>unresolved</em>:
+     * <ul>
+     *   <li>a mailbox Graph answered WITHOUT is genuinely mailbox-less (a
+     *       permanent, unremarkable condition — plenty of employees have no
+     *       tenant mailbox). It is simply unknown;</li>
+     *   <li>a mailbox in {@code unresolvedMailboxes} is one we never managed
+     *       to ASK about — its batch was throttled, errored, or never got a
+     *       concurrency permit. We know nothing, and we know that we were
+     *       supposed to know something.</li>
+     * </ul>
+     * Both stay "unknown never counts as busy" for marking purposes. Only
+     * the second may suppress a positive claim such as a suggested slot —
+     * conflating them would disable suggestions forever for any team
+     * containing one mailbox-less member.
+     * <p>
+     * Keys of {@code schedules} echo the addresses as Graph returned them;
+     * {@code unresolvedMailboxes} are lowercased.
+     */
+    public record ScheduleProbe(
+            Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules,
+            Set<String> unresolvedMailboxes) {
+
+        /** True when every probed mailbox was actually asked about. */
+        public boolean complete() {
+            return unresolvedMailboxes.isEmpty();
+        }
+
+        /** True when any of {@code mailboxes} (any casing) went unasked. */
+        public boolean anyUnresolved(List<String> mailboxes) {
+            return mailboxes.stream()
+                    .anyMatch(mailbox -> unresolvedMailboxes.contains(mailbox.toLowerCase(Locale.ROOT)));
+        }
+
+        static ScheduleProbe empty() {
+            return new ScheduleProbe(Map.of(), Set.of());
+        }
+    }
+
+    /**
+     * Free/busy booleans plus the mailboxes the sweep never managed to ask
+     * about — the {@link ScheduleProbe} shape for the collapsed Boolean
+     * surfaces. A mailbox in {@code unresolvedMailboxes} is absent from
+     * {@code freeByMailbox}; callers must render it unknown and may tell the
+     * user the picture is incomplete, but must never render it free.
+     */
+    public record AvailabilityProbe(Map<String, Boolean> freeByMailbox,
+                                    Set<String> unresolvedMailboxes) {
+
+        public boolean complete() {
+            return unresolvedMailboxes.isEmpty();
+        }
+
+        static AvailabilityProbe empty() {
+            return new AvailabilityProbe(Map.of(), Set.of());
+        }
+    }
+
+    /**
+     * Ranked slots plus whether the availability behind them was fully read.
+     * <p>
+     * The two carry very different meanings for an empty list, and the UI
+     * must be able to tell them apart: {@code availabilityComplete=true}
+     * with no slots means "we looked at everyone's calendar and there is
+     * genuinely nothing free"; {@code false} means "we could not read some
+     * calendar, so we are not proposing anything". Reporting the second as
+     * the first is precisely the silent gap this record exists to close.
+     */
+    public record SlotSuggestions(List<AvailabilitySlotSuggester.Slot> slots,
+                                  boolean availabilityComplete) {
+
+        static SlotSuggestions none(boolean complete) {
+            return new SlotSuggestions(List.of(), complete);
+        }
+    }
 
     /**
      * Create the Outlook events for a newly scheduled interview (plan
@@ -491,7 +653,7 @@ public class RecruitmentCalendarService {
         }
         Map<String, Boolean> freeByRoom = mailboxAvailability(
                 rooms.stream().map(MeetingRoomsResponse.MeetingRoom::emailAddress).toList(),
-                start, durationMinutes);
+                start, durationMinutes).freeByMailbox();
         return rooms.stream()
                 .map(room -> new MeetingRoomsResponse.MeetingRoom(
                         room.displayName(), room.emailAddress(),
@@ -507,11 +669,11 @@ public class RecruitmentCalendarService {
      * show the person unmarked, never as busy). Strictly free/busy — no
      * event details are requested or returned.
      */
-    public Map<String, Boolean> interviewerAvailability(List<String> emails,
-                                                        LocalDateTime start,
-                                                        int durationMinutes) {
+    public AvailabilityProbe interviewerAvailability(List<String> emails,
+                                                     LocalDateTime start,
+                                                     int durationMinutes) {
         if (!calendarEnabled || emails.isEmpty()) {
-            return Map.of();
+            return AvailabilityProbe.empty();
         }
         return mailboxAvailability(emails, start, durationMinutes);
     }
@@ -525,18 +687,19 @@ public class RecruitmentCalendarService {
      * A mailbox whose view is unknown is absent from the map (= unknown,
      * never busy).
      */
-    private Map<String, Boolean> mailboxAvailability(List<String> mailboxes,
-                                                     LocalDateTime start,
-                                                     int durationMinutes) {
+    private AvailabilityProbe mailboxAvailability(List<String> mailboxes,
+                                                  LocalDateTime start,
+                                                  int durationMinutes) {
         Map<String, Boolean> result = new HashMap<>();
-        mailboxWindowSchedules(mailboxes, start, start.plusMinutes(durationMinutes))
-                .forEach((mailbox, schedule) -> {
-                    if (schedule.availabilityView() != null) {
-                        result.put(mailbox,
-                                schedule.availabilityView().chars().allMatch(c -> c == '0'));
-                    }
-                });
-        return result;
+        ScheduleProbe probe =
+                mailboxWindowSchedules(mailboxes, start, start.plusMinutes(durationMinutes));
+        probe.schedules().forEach((mailbox, schedule) -> {
+            if (schedule.availabilityView() != null) {
+                result.put(mailbox,
+                        schedule.availabilityView().chars().allMatch(c -> c == '0'));
+            }
+        });
+        return new AvailabilityProbe(result, probe.unresolvedMailboxes());
     }
 
     /**
@@ -546,10 +709,9 @@ public class RecruitmentCalendarService {
      * requested. Empty when the toggle is off. Keys echo the probed
      * addresses as Graph returns them — compare case-insensitively.
      */
-    public Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> daySchedule(
-            List<String> mailboxes, LocalDate date) {
+    public ScheduleProbe daySchedule(List<String> mailboxes, LocalDate date) {
         if (!calendarEnabled || mailboxes.isEmpty()) {
-            return Map.of();
+            return ScheduleProbe.empty();
         }
         return mailboxWindowSchedules(mailboxes,
                 date.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
@@ -574,15 +736,23 @@ public class RecruitmentCalendarService {
      * <p>
      * Empty when the toggle is off.
      */
-    public Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> windowSchedules(
-            List<String> mailboxes, LocalDate from, LocalDate to) {
+    public ScheduleProbe windowSchedules(List<String> mailboxes, LocalDate from, LocalDate to) {
         if (!calendarEnabled || mailboxes.isEmpty() || to.isBefore(from)) {
-            return Map.of();
+            return ScheduleProbe.empty();
         }
         LocalDateTime windowEnd = to.atTime(AvailabilitySlotSuggester.DAY_WINDOW_END);
         Map<String, StringBuilder> views = new HashMap<>();
         Map<String, AvailabilitySlotSuggester.WorkingHours> hours = new HashMap<>();
         Set<String> truncated = new HashSet<>();
+        // A mailbox whose chunk was never asked about — as opposed to one
+        // Graph answered without. Accumulated across chunks: one throttled
+        // chunk makes the whole stitched view untrustworthy for that mailbox.
+        Set<String> unresolved = new HashSet<>();
+        // ONE budget for every chunk. A 60-day window is 7 chunks; giving
+        // each its own allowance would multiply the bound sevenfold — with an
+        // outbox transaction open and the 1-minute sweep tick being dropped
+        // (concurrentExecution = SKIP) for the whole duration.
+        SweepBudget budget = new SweepBudget();
 
         LocalDateTime chunkStart = from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START);
         while (chunkStart.isBefore(windowEnd)) {
@@ -592,8 +762,11 @@ public class RecruitmentCalendarService {
             }
             int expectedDigits = (int) (java.time.Duration.between(chunkStart, chunkEnd)
                     .toMinutes() / AvailabilitySlotSuggester.INTERVAL_MINUTES);
+            ScheduleProbe chunkProbe =
+                    mailboxWindowSchedules(mailboxes, chunkStart, chunkEnd, budget);
             Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> chunk =
-                    mailboxWindowSchedules(mailboxes, chunkStart, chunkEnd);
+                    chunkProbe.schedules();
+            unresolved.addAll(chunkProbe.unresolvedMailboxes());
             for (String mailbox : mailboxes) {
                 String key = chunk.keySet().stream()
                         .filter(k -> k.equalsIgnoreCase(mailbox))
@@ -632,7 +805,7 @@ public class RecruitmentCalendarService {
                     view != null && view.length() > 0 ? view.toString() : null,
                     workingHours));
         }
-        return result;
+        return new ScheduleProbe(result, Set.copyOf(unresolved));
     }
 
     /**
@@ -647,32 +820,48 @@ public class RecruitmentCalendarService {
      * suggester would happily propose every working-hours slot, and blind
      * suggestions carry more trust than they have earned.
      */
-    public List<AvailabilitySlotSuggester.Slot> suggestedSlots(List<String> interviewerEmails,
-                                                               int durationMinutes,
-                                                               LocalDate from,
-                                                               int headcount,
-                                                               LocalDateTime notBefore) {
+    public SlotSuggestions suggestedSlots(List<String> interviewerEmails,
+                                          int durationMinutes,
+                                          LocalDate from,
+                                          int headcount,
+                                          LocalDateTime notBefore) {
         if (!calendarEnabled) {
-            return List.of();
+            return SlotSuggestions.none(true);
         }
         List<MeetingRoomsResponse.MeetingRoom> rooms = listRooms();
         List<String> mailboxes = new ArrayList<>(interviewerEmails);
         rooms.forEach(room -> mailboxes.add(room.emailAddress()));
         if (mailboxes.isEmpty()) {
-            return List.of();
+            return SlotSuggestions.none(true);
         }
-        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules =
-                mailboxWindowSchedules(mailboxes,
-                        from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
-                        lastBusinessDay(from, AvailabilitySlotSuggester.BUSINESS_DAYS)
-                                .atTime(AvailabilitySlotSuggester.DAY_WINDOW_END));
-        if (schedules.isEmpty()) {
-            return List.of();
+        ScheduleProbe probe = mailboxWindowSchedules(mailboxes,
+                from.atTime(AvailabilitySlotSuggester.DAY_WINDOW_START),
+                lastBusinessDay(from, AvailabilitySlotSuggester.BUSINESS_DAYS)
+                        .atTime(AvailabilitySlotSuggester.DAY_WINDOW_END));
+        if (probe.schedules().isEmpty()) {
+            return SlotSuggestions.none(false);
+        }
+        // A suggestion chip is a positive claim — the scheduler clicks it and
+        // the time is set. Proposing against an interviewer we never managed
+        // to ASK about is the silent gap that made a throttled lookup look
+        // like a free calendar (production 2026-08-15): the suggester's
+        // "unknown never counts as busy" rule is right for MARKING people and
+        // wrong for PROMISING a time. Note this suppresses only the
+        // unresolved case — an interviewer Graph answered without simply has
+        // no mailbox, which must never disable the feature.
+        if (probe.anyUnresolved(interviewerEmails)) {
+            log.warnv("Graph free/busy incomplete for {0} of {1} chosen interviewer(s) — suggesting nothing rather than guessing",
+                    interviewerEmails.stream()
+                            .filter(email -> probe.unresolvedMailboxes()
+                                    .contains(email.toLowerCase(Locale.ROOT)))
+                            .count(),
+                    interviewerEmails.size());
+            return SlotSuggestions.none(false);
         }
         Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> byLowercase = new HashMap<>();
-        schedules.forEach((mailbox, schedule) ->
+        probe.schedules().forEach((mailbox, schedule) ->
                 byLowercase.put(mailbox.toLowerCase(Locale.ROOT), schedule));
-        return AvailabilitySlotSuggester.suggest(
+        List<AvailabilitySlotSuggester.Slot> slots = AvailabilitySlotSuggester.suggest(
                 from,
                 byLowercase,
                 interviewerEmails.stream().map(email -> email.toLowerCase(Locale.ROOT)).toList(),
@@ -682,6 +871,9 @@ public class RecruitmentCalendarService {
                                 room.displayName(), room.capacity()))
                         .toList(),
                 durationMinutes, headcount, notBefore);
+        // Rooms may still be unresolved here — that costs a room on a slot,
+        // never a wrong time, because rooms are held to the strict rule.
+        return new SlotSuggestions(slots, probe.complete());
     }
 
     /** The date of the {@code businessDays}-th weekday counting from (and
@@ -719,73 +911,197 @@ public class RecruitmentCalendarService {
      * failure costs at most one batch, and the first caller that answers
      * is reused for the rest.
      */
-    private Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> mailboxWindowSchedules(
+    private ScheduleProbe mailboxWindowSchedules(
             List<String> mailboxes, LocalDateTime windowStart, LocalDateTime windowEnd) {
+        return mailboxWindowSchedules(mailboxes, windowStart, windowEnd, new SweepBudget());
+    }
+
+    /**
+     * As above, spending a budget the CALLER owns — so a multi-chunk scan
+     * ({@link #windowSchedules}) blocks for its budget in total rather than
+     * for its budget per chunk. A 60-day Method B window is 7 chunks; a
+     * per-chunk budget would multiply the documented bound sevenfold while
+     * an outbox transaction is open.
+     */
+    private ScheduleProbe mailboxWindowSchedules(
+            List<String> mailboxes, LocalDateTime windowStart, LocalDateTime windowEnd,
+            SweepBudget budget) {
         Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> result = new HashMap<>();
+        Set<String> unresolved = new HashSet<>();
         int batches = 0;
         int failedBatches = 0;
-        String provenCaller = null;
         for (int i = 0; i < mailboxes.size(); i += GET_SCHEDULE_BATCH) {
             List<String> batch = mailboxes.subList(i,
                     Math.min(i + GET_SCHEDULE_BATCH, mailboxes.size()));
             batches++;
             boolean resolved = false;
-            for (String caller : callerCandidates(provenCaller, batch)) {
-                Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> batchResult =
-                        probeBatch(caller, batch, windowStart, windowEnd);
-                if (batchResult == null) {
+            for (String caller : callerCandidates(batch)) {
+                BatchOutcome outcome = probeBatch(caller, batch, windowStart, windowEnd, budget);
+                if (outcome.schedules() != null) {
+                    result.putAll(outcome.schedules());
+                    resolved = true;
+                    break;
+                }
+                if (outcome.mailboxLess()) {
+                    // A permanent property of the ADDRESS: remember it, and
+                    // let the ladder move on — a different mailbox is the
+                    // only possible remedy.
+                    mailboxLessCallers.add(caller.toLowerCase(Locale.ROOT));
                     continue;
                 }
-                provenCaller = caller;
-                result.putAll(batchResult);
-                resolved = true;
-                break;
+                if (outcome.throttled()) {
+                    // A property of OUR call rate, not of the address.
+                    // Escalating to another mailbox would relocate the
+                    // overload onto an innocent one — which is exactly how
+                    // the 2026-08-15 burst spread from adam.hoppe to
+                    // alberte.bang. Stop this batch instead; it is reported
+                    // as unresolved, and unresolved is never read as free.
+                    break;
+                }
             }
             if (!resolved) {
                 failedBatches++;
+                batch.forEach(mailbox -> unresolved.add(mailbox.toLowerCase(Locale.ROOT)));
             }
         }
         if (failedBatches > 0) {
-            log.warnv("Graph free/busy: {0} of {1} batch(es) unresolved — those mailboxes shown without availability",
-                    failedBatches, batches);
+            log.warnv("Graph free/busy: {0} of {1} batch(es) unresolved — {2} mailbox(es) reported as unknown, not free",
+                    failedBatches, batches, unresolved.size());
         }
-        return result;
+        return new ScheduleProbe(result, Set.copyOf(unresolved));
     }
 
     /**
-     * Caller mailboxes to try for one batch: the one already proven to
-     * answer, then the batch's own leading addresses. Bounded by
-     * {@link #CALLER_ATTEMPTS} — a wholly broken Graph must not turn one
-     * sweep into a retry storm.
+     * Caller mailboxes to try for one batch, starting at a ROTATING offset.
+     * <p>
+     * It used to start at the batch's own first address and then stick to
+     * whichever mailbox answered first ({@code provenCaller}), reusing it
+     * for every later batch. That concentrated an entire sweep — 7-8
+     * {@code getSchedule} calls over the ~140-mailbox roster — onto one
+     * mailbox, and because the roster arrives ordered by username it was
+     * always the SAME mailbox across every concurrent request. A handful of
+     * concurrent scheduling dialogs was therefore enough to put more than
+     * Microsoft's 4 concurrent requests on adam.hoppe@trustworks.dk and earn
+     * a 429 {@code ApplicationThrottled} (production 2026-08-15).
+     * <p>
+     * Rotating the anchor spreads a sweep across as many mailboxes as it has
+     * batches, and the shared cursor staggers concurrent sweeps against each
+     * other. Addresses already known to be mailbox-less are skipped, which
+     * is what {@code provenCaller} was really buying.
+     * <p>
+     * Still bounded by {@link #CALLER_ATTEMPTS} — a wholly broken Graph must
+     * not turn one sweep into a retry storm.
      */
-    private List<String> callerCandidates(String provenCaller, List<String> batch) {
-        List<String> candidates = new ArrayList<>();
-        if (provenCaller != null) {
-            candidates.add(provenCaller);
+    private List<String> callerCandidates(List<String> batch) {
+        if (batch.isEmpty()) {
+            return List.of();
         }
-        for (String mailbox : batch) {
-            if (candidates.size() >= CALLER_ATTEMPTS) {
-                break;
-            }
-            if (!candidates.contains(mailbox)) {
+        int start = Math.floorMod(callerCursor.getAndIncrement(), batch.size());
+        List<String> candidates = new ArrayList<>();
+        for (int i = 0; i < batch.size() && candidates.size() < CALLER_ATTEMPTS; i++) {
+            String mailbox = batch.get((start + i) % batch.size());
+            if (!mailboxLessCallers.contains(mailbox.toLowerCase(Locale.ROOT))
+                    && !candidates.contains(mailbox)) {
                 candidates.add(mailbox);
             }
+        }
+        if (candidates.isEmpty()) {
+            // Every address in this batch is known mailbox-less. Ask as the
+            // first one anyway: "known bad" is a cache, not a certainty, and
+            // one 404 is cheaper than silently reporting the batch unknown.
+            candidates.add(batch.get(start));
         }
         return candidates;
     }
 
     /**
-     * One {@code getSchedule} call at 15-minute resolution.
-     *
-     * @return the raw schedule map for this batch, or {@code null} when
-     *         Graph failed (logged) — the caller then retries with another
-     *         caller mailbox, or leaves the batch unknown
+     * The three ways one batch probe can end. {@code schedules} non-null is
+     * success; the two booleans classify the failure so the caller knows
+     * whether trying a DIFFERENT mailbox could possibly help.
      */
-    private Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> probeBatch(
+    private record BatchOutcome(
+            Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules,
+            boolean mailboxLess,
+            boolean throttled,
+            Integer retryAfterSeconds) {
+
+        static BatchOutcome ok(Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules) {
+            return new BatchOutcome(schedules, false, false, null);
+        }
+
+        /** The caller address is not a mailbox in the tenant — try another. */
+        static BatchOutcome mailboxLessCaller() {
+            return new BatchOutcome(null, true, false, null);
+        }
+
+        /** Graph is rate-limiting us — waiting helps, switching mailbox does not. */
+        static BatchOutcome throttledFor(Integer retryAfterSeconds) {
+            return new BatchOutcome(null, false, true, retryAfterSeconds);
+        }
+
+        /** Anything else (5xx, timeout, surprise) — another caller may work. */
+        static BatchOutcome failed() {
+            return new BatchOutcome(null, false, false, null);
+        }
+    }
+
+    /**
+     * One {@code getSchedule} call at 15-minute resolution, under the
+     * per-mailbox concurrency permit and with bounded 429 backoff.
+     * <p>
+     * A 429 is retried ONCE against the same caller after honouring
+     * {@code Retry-After} (capped, and drawn from a sweep-wide budget), then
+     * given up: it is a statement about our call rate, so the only useful
+     * response is to wait or to stop, never to re-ask as somebody else.
+     *
+     * @return the outcome — never throws; a failed lookup is reported, not
+     *         raised, because scheduling must not break on calendar trouble
+     */
+    private BatchOutcome probeBatch(
             String caller,
             List<String> batch,
             LocalDateTime windowStart,
-            LocalDateTime windowEnd) {
+            LocalDateTime windowEnd,
+            SweepBudget budget) {
+        BatchOutcome first = probeBatchOnce(caller, batch, windowStart, windowEnd, budget);
+        if (!first.throttled()) {
+            return first;
+        }
+        long wait = budget.take(throttleWaitMillis(first.retryAfterSeconds()));
+        if (wait <= 0) {
+            log.warnv("Graph free/busy throttled asking as {0} and the sweep's blocking budget is spent — batch unresolved",
+                    caller);
+            return first;
+        }
+        sleeper.accept(wait);
+        return probeBatchOnce(caller, batch, windowStart, windowEnd, budget);
+    }
+
+    /** Graph's requested wait, capped; its default when it asked for none. */
+    private static long throttleWaitMillis(Integer retryAfterSeconds) {
+        if (retryAfterSeconds == null || retryAfterSeconds <= 0) {
+            return THROTTLE_DEFAULT_WAIT_MS;
+        }
+        return Math.min(retryAfterSeconds * 1000L, THROTTLE_MAX_WAIT_MS);
+    }
+
+    private BatchOutcome probeBatchOnce(
+            String caller,
+            List<String> batch,
+            LocalDateTime windowStart,
+            LocalDateTime windowEnd,
+            SweepBudget budget) {
+        // The wait comes out of the sweep's blocking budget: with ~8 batches
+        // on a 3-rung ladder an unbudgeted per-probe wait would be paid up to
+        // 24 times over. A spent budget still ATTEMPTS the acquire, it just
+        // does not wait for one.
+        if (!mailboxLimiter.tryAcquire(caller, budget.take(mailboxLimiter.permitWaitMillis()))) {
+            // We never asked, so we know nothing — and knowing nothing must
+            // read as unknown, never as free.
+            log.warnv("Graph free/busy: no concurrency permit for {0} within the wait — batch left unresolved",
+                    caller);
+            return BatchOutcome.failed();
+        }
         try {
             GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
                     caller,
@@ -797,7 +1113,7 @@ public class RecruitmentCalendarService {
                                     windowEnd.toString(), EVENT_TIME_ZONE),
                             AvailabilitySlotSuggester.INTERVAL_MINUTES));
             if (response == null || response.value() == null) {
-                return Map.of();
+                return BatchOutcome.ok(Map.of());
             }
             Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> batchResult = new HashMap<>();
             for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
@@ -808,11 +1124,41 @@ public class RecruitmentCalendarService {
                         new AvailabilitySlotSuggester.MailboxWindowSchedule(
                                 info.availabilityView(), toWorkingHours(info.workingHours())));
             }
-            return batchResult;
+            return BatchOutcome.ok(batchResult);
         } catch (Exception e) {
             log.warnv("Graph free/busy lookup failed asking as {0}: {1}", caller, e.getMessage());
-            return null;
+            if (isGraphThrottled(e)) {
+                return BatchOutcome.throttledFor(graphRetryAfterSeconds(e));
+            }
+            if (isGraphNotFound(e)) {
+                return BatchOutcome.mailboxLessCaller();
+            }
+            return BatchOutcome.failed();
+        } finally {
+            mailboxLimiter.release(caller);
         }
+    }
+
+    /** Graph's 429 {@code ApplicationThrottled}, whatever shape it arrives in. */
+    static boolean isGraphThrottled(Exception e) {
+        if (e instanceof dk.trustworks.intranet.sharepoint.client
+                .GraphResponseExceptionMapper.SharePointException graphError) {
+            return graphError.isThrottled();
+        }
+        if (e instanceof WebApplicationException webError) {
+            return webError.getResponse() != null
+                    && webError.getResponse().getStatus() == 429;
+        }
+        return false;
+    }
+
+    /** The {@code Retry-After} Graph asked for, when the client preserved it. */
+    static Integer graphRetryAfterSeconds(Exception e) {
+        if (e instanceof dk.trustworks.intranet.sharepoint.client
+                .GraphResponseExceptionMapper.SharePointException graphError) {
+            return graphError.getRetryAfterSeconds();
+        }
+        return null;
     }
 
     /**

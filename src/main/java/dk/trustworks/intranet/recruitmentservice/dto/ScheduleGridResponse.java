@@ -17,7 +17,8 @@ public record ScheduleGridResponse(
         LocalDate date,
         int intervalMinutes,
         String dayStart,
-        List<GridEntry> entries
+        List<GridEntry> entries,
+        boolean availabilityComplete
 ) {
 
     /**

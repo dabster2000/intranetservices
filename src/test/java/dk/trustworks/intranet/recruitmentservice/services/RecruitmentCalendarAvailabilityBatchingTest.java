@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
+import dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter;
+import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -14,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -48,44 +52,104 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     private RecruitmentCalendarService service;
     private GraphApiClient graph;
 
+    private List<Long> slept;
+
     @BeforeEach
     void setUp() {
         graph = mock(GraphApiClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;
+        // @Inject fields are null under a bare `new` — the limiter is on the
+        // hot path of every probe, so it has to be supplied here.
+        service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(2, 50);
+        // The caller anchor rotates and the cursor is shared across requests;
+        // pin it so batch→caller mapping is deterministic in tests.
+        service.callerCursor.set(0);
+        slept = new ArrayList<>();
+        service.sleeper = slept::add;
     }
 
     @Test
     void mailboxLessCallerAtBatchHead_costsNothing_everyoneStillResolves() {
         // 45 interviewers = 3 batches. u20 heads batch 2 and has no mailbox
-        // in the tenant: asking AS u20 404s. Before the fix that blanked
-        // batches 2 AND 3 — 20 of 45 marked.
+        // in the tenant: asking AS u20 404s. Before the 2026-08-11 fix that
+        // blanked batches 2 AND 3 — 20 of 45 marked.
         List<String> mailboxes = mailboxes(45);
         echoSchedulesUnlessCallerIs("u20@trustworks.dk");
 
-        Map<String, Boolean> result = service.interviewerAvailability(mailboxes, SLOT, 60);
+        var result = service.interviewerAvailability(mailboxes, SLOT, 60);
 
-        assertEquals(45, result.size(), "every probed mailbox resolves, invalid caller or not");
-        assertTrue(result.values().stream().allMatch(Boolean::booleanValue));
-        // Batch 1 proves u0 as a caller; batches 2 and 3 reuse it, so the
-        // mailbox-less user is never asked as caller at all.
-        verify(graph, times(3)).getSchedule(eq("u0@trustworks.dk"), any());
+        assertEquals(45, result.freeByMailbox().size(),
+                "every probed mailbox resolves, invalid caller or not");
+        assertTrue(result.freeByMailbox().values().stream().allMatch(Boolean::booleanValue));
+        assertTrue(result.complete(), "nothing went unasked");
         verify(graph, never()).getSchedule(eq("u20@trustworks.dk"), any());
     }
 
     @Test
     void mailboxLessFirstCaller_fallsBackToTheNextMailbox() {
-        // The invalid mailbox heads batch 1, so there is no proven caller to
-        // fall back on — the next address in the batch must take over.
+        // The invalid mailbox is the anchor for batch 1, so the ladder must
+        // step to the next address — a 404 says the ADDRESS is unusable, and
+        // another address is the only possible remedy.
         List<String> mailboxes = mailboxes(45);
         echoSchedulesUnlessCallerIs("u0@trustworks.dk");
 
-        Map<String, Boolean> result = service.interviewerAvailability(mailboxes, SLOT, 60);
+        var result = service.interviewerAvailability(mailboxes, SLOT, 60);
 
-        assertEquals(45, result.size());
+        assertEquals(45, result.freeByMailbox().size());
+        assertTrue(result.complete());
         verify(graph, times(1)).getSchedule(eq("u0@trustworks.dk"), any());
-        verify(graph, times(3)).getSchedule(eq("u1@trustworks.dk"), any());
+        verify(graph, times(1)).getSchedule(eq("u1@trustworks.dk"), any());
+    }
+
+    @Test
+    void callerAnchorRotatesAcrossBatches_ratherThanPinningOneMailbox() {
+        // The 2026-08-15 MailboxConcurrency incident: every batch of a sweep
+        // was asked AS the first mailbox that answered, so one request put 7-8
+        // sequential calls on a single mailbox — and because the roster is
+        // ordered by username, EVERY concurrent request picked the same one.
+        // Microsoft caps concurrency at 4 per mailbox; a few concurrent
+        // scheduling dialogs were enough to earn a 429.
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
+                echo(invocation.getArgument(1)));
+
+        service.interviewerAvailability(mailboxes(60), SLOT, 60);
+
+        ArgumentCaptor<String> callers = ArgumentCaptor.forClass(String.class);
+        verify(graph, times(3)).getSchedule(callers.capture(), any());
+        assertEquals(3, java.util.Set.copyOf(callers.getAllValues()).size(),
+                "three batches must not share one anchor mailbox");
+    }
+
+    @Test
+    void callerAnchorRotatesAcrossRequests_soConcurrentSweepsDoNotCollide() {
+        // The cursor is shared, so the NEXT request starts somewhere else —
+        // this is what stops several dialogs open at once from stacking their
+        // calls onto the same mailbox.
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
+                echo(invocation.getArgument(1)));
+
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+
+        ArgumentCaptor<String> callers = ArgumentCaptor.forClass(String.class);
+        verify(graph, times(2)).getSchedule(callers.capture(), any());
+        assertNotEquals(callers.getAllValues().get(0), callers.getAllValues().get(1),
+                "two sweeps of the same roster must not both anchor on the same mailbox");
+    }
+
+    @Test
+    void knownMailboxLessCaller_isNotAskedAgainOnALaterSweep() {
+        // Rotation would otherwise re-discover the same dead addresses on
+        // every sweep — the one thing the old sticky caller was good at.
+        echoSchedulesUnlessCallerIs("u0@trustworks.dk");
+
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+        service.callerCursor.set(0); // aim the next sweep at u0 again
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+
+        verify(graph, times(1)).getSchedule(eq("u0@trustworks.dk"), any());
     }
 
     @Test
@@ -102,12 +166,20 @@ class RecruitmentCalendarAvailabilityBatchingTest {
             return echo(request);
         });
 
-        Map<String, Boolean> result = service.interviewerAvailability(mailboxes, SLOT, 60);
+        var result = service.interviewerAvailability(mailboxes, SLOT, 60);
 
-        assertEquals(25, result.size(), "batch 1 (20) + batch 3 (5) survive");
-        assertEquals(Boolean.TRUE, result.get("u0@trustworks.dk"));
-        assertEquals(Boolean.TRUE, result.get("u44@trustworks.dk"), "the batch AFTER the failure");
-        assertNull(result.get("u20@trustworks.dk"), "the failed batch is unknown, not busy");
+        assertEquals(25, result.freeByMailbox().size(), "batch 1 (20) + batch 3 (5) survive");
+        assertEquals(Boolean.TRUE, result.freeByMailbox().get("u0@trustworks.dk"));
+        assertEquals(Boolean.TRUE, result.freeByMailbox().get("u44@trustworks.dk"),
+                "the batch AFTER the failure");
+        assertNull(result.freeByMailbox().get("u20@trustworks.dk"),
+                "the failed batch is unknown, not busy");
+        // ...and it says so, rather than letting the gap pass for an empty
+        // calendar.
+        assertFalse(result.complete());
+        assertTrue(result.unresolvedMailboxes().contains("u20@trustworks.dk"));
+        assertFalse(result.unresolvedMailboxes().contains("u0@trustworks.dk"),
+                "a batch that answered is not unresolved");
         // Bounded retries: 3 caller attempts on the failing batch, one each
         // on the two that work.
         verify(graph, times(RecruitmentCalendarService.CALLER_ATTEMPTS + 2))
@@ -119,7 +191,183 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         when(graph.getSchedule(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph API error 403 Forbidden"));
 
-        assertTrue(service.interviewerAvailability(mailboxes(45), SLOT, 60).isEmpty());
+        var result = service.interviewerAvailability(mailboxes(45), SLOT, 60);
+
+        assertTrue(result.freeByMailbox().isEmpty());
+        assertFalse(result.complete(), "wholly unread is reported as unread");
+    }
+
+    // ---- Graph 429 MailboxConcurrency (production 2026-08-15) ------------------
+
+    @Test
+    void throttled429_doesNotEscalateToAnotherCallerMailbox() {
+        // THE incident regression test. A 429 says nothing about the address
+        // we asked as — only about our own call rate. The old ladder treated
+        // it like a bad mailbox and immediately re-asked as the next address,
+        // with no delay, which RELOCATED the overload instead of shedding it:
+        // exactly the observed 7 failures on adam.hoppe then 3 on alberte.bang.
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(null));
+
+        var result = service.interviewerAvailability(mailboxes(20), SLOT, 60);
+
+        ArgumentCaptor<String> callers = ArgumentCaptor.forClass(String.class);
+        verify(graph, times(2)).getSchedule(callers.capture(), any());
+        assertEquals(1, java.util.Set.copyOf(callers.getAllValues()).size(),
+                "one caller, retried once — the ladder must not advance on a throttle");
+        assertTrue(result.freeByMailbox().isEmpty());
+        assertFalse(result.complete(), "throttled is unknown-and-flagged, never free");
+    }
+
+    @Test
+    void throttled429_honoursRetryAfter_cappedSoNoRequestHangs() {
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(3600));
+
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+
+        assertEquals(List.of(RecruitmentCalendarService.THROTTLE_MAX_WAIT_MS), slept,
+                "Graph may ask for an hour; a request behind a 60s idle timeout cannot give it");
+    }
+
+    @Test
+    void throttled429_withoutRetryAfter_usesTheDefaultWait() {
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(null));
+
+        service.interviewerAvailability(mailboxes(20), SLOT, 60);
+
+        assertEquals(List.of(RecruitmentCalendarService.THROTTLE_DEFAULT_WAIT_MS), slept);
+    }
+
+    @Test
+    void blockingBudget_isSharedAcrossTheWholeSweep() {
+        // 7 batches x a 5s wait each would walk a single request into the
+        // ALB's 60s idle timeout. The budget is per sweep, not per batch.
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(5));
+
+        service.interviewerAvailability(mailboxes(140), SLOT, 60);
+
+        assertTrue(slept.stream().mapToLong(Long::longValue).sum()
+                        <= RecruitmentCalendarService.BLOCKING_BUDGET_MS,
+                "total backoff must stay inside the sweep budget, got " + slept);
+    }
+
+    @Test
+    void blockingBudget_alsoCoversPermitWaits_notJustBackoff() {
+        // Permit waits are the OTHER blocking term, and they scale as
+        // batches x ladder rungs (~24 for the full roster). Budgeting only
+        // the 429 backoff would bound one term and still blow the sum: 8
+        // batches x 3 rungs x 1s = 24s of pure waiting before a single Graph
+        // round-trip is counted.
+        // Record the waits the sweep ASKS for rather than serving them: the
+        // claim under test is budget arithmetic, and making the test actually
+        // block for 10s to prove it would be its own small crime.
+        List<Long> requestedWaits = new ArrayList<>();
+        service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(1, 1000) {
+            @Override
+            public boolean tryAcquire(String mailbox, long waitMillis) {
+                requestedWaits.add(waitMillis);
+                return false; // permanently saturated
+            }
+        };
+
+        var result = service.interviewerAvailability(mailboxes(140), SLOT, 60);
+
+        assertTrue(result.freeByMailbox().isEmpty());
+        assertFalse(result.complete());
+        verify(graph, never()).getSchedule(anyString(), any());
+        assertTrue(requestedWaits.size() >= 14,
+                "the sweep really does attempt many probes: " + requestedWaits.size());
+        assertTrue(requestedWaits.stream().mapToLong(Long::longValue).sum()
+                        <= RecruitmentCalendarService.BLOCKING_BUDGET_MS,
+                "unbudgeted this is batches x rungs x 1000ms; asked for " + requestedWaits);
+    }
+
+    @Test
+    void windowSchedules_sharesOneBudgetAcrossChunks_andFlagsUnresolvedMailboxes() {
+        // Method B scans in 10-day chunks. A per-chunk budget would multiply
+        // the bound by the chunk count while an outbox transaction is open
+        // and the 1-minute sweep tick is being skipped.
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(5));
+
+        var probe = service.windowSchedules(List.of("u0@trustworks.dk", "u1@trustworks.dk"),
+                LocalDate.of(2026, 8, 17), LocalDate.of(2026, 10, 16)); // ~60 days = 7 chunks
+
+        assertTrue(probe.schedules().isEmpty());
+        assertTrue(probe.unresolvedMailboxes().contains("u0@trustworks.dk"),
+                "a mailbox whose chunk was throttled is unresolved, not merely absent");
+        assertTrue(probe.anyUnresolved(List.of("U0@Trustworks.dk")),
+                "anyUnresolved compares case-insensitively");
+        assertTrue(slept.stream().mapToLong(Long::longValue).sum()
+                        <= RecruitmentCalendarService.BLOCKING_BUDGET_MS,
+                "one budget for all chunks, not one per chunk; slept " + slept);
+    }
+
+    @Test
+    void windowSchedules_healthyMailboxes_areNotFlaggedUnresolved() {
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
+                echo(invocation.getArgument(1)));
+
+        var probe = service.windowSchedules(List.of("u0@trustworks.dk"),
+                LocalDate.of(2026, 8, 17), LocalDate.of(2026, 8, 21));
+
+        assertTrue(probe.complete(), "nothing went unasked");
+        assertFalse(probe.schedules().isEmpty());
+    }
+
+    @Test
+    void throttledInterviewer_suppressesSuggestions_ratherThanProposingBlind() {
+        // The silent gap itself: a throttled interviewer used to reach the
+        // suggester as an absent schedule, and absent means "unknown never
+        // counts as busy" — so we proposed times against a calendar we had
+        // never actually read.
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.getSchedule(anyString(), any())).thenThrow(throttled(null));
+
+        var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 2, LocalDateTime.of(2026, 8, 17, 7, 0));
+
+        assertTrue(suggestions.slots().isEmpty());
+        assertFalse(suggestions.availabilityComplete(),
+                "an empty chip row must be distinguishable from a genuinely full fortnight");
+    }
+
+    @Test
+    void mailboxLessInterviewer_stillSuggests_becauseAbsentIsNotUnresolved() {
+        // Guard against over-correcting: Graph ANSWERING without a mailbox is
+        // a permanent, ordinary condition (plenty of employees have none). If
+        // that suppressed suggestions, any team with one such member would
+        // lose the feature forever.
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
+            GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
+            return new GraphApiClient.ScheduleCollectionResponse(request.schedules().stream()
+                    .filter(mailbox -> !mailbox.equals("u1@trustworks.dk"))
+                    .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse
+                            .ScheduleInformation(mailbox, "0".repeat(15 * 24 * 4), null))
+                    .toList());
+        });
+
+        var suggestions = service.suggestedSlots(
+                List.of("u0@trustworks.dk", "u1@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 3, LocalDateTime.of(2026, 8, 17, 7, 0));
+
+        assertFalse(suggestions.slots().isEmpty(), "a mailbox-less colleague must not kill suggestions");
+        assertTrue(suggestions.availabilityComplete());
+    }
+
+    @Test
+    void noConcurrencyPermit_isUnknownNotFree_andNeverCallsGraph() {
+        service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(0, 1);
+        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+
+        var availability = service.interviewerAvailability(mailboxes(20), SLOT, 60);
+        var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 2, LocalDateTime.of(2026, 8, 17, 7, 0));
+
+        assertTrue(availability.freeByMailbox().isEmpty());
+        assertFalse(availability.complete());
+        assertTrue(suggestions.slots().isEmpty(), "a saturated limiter must not become a blind proposal");
+        assertFalse(suggestions.availabilityComplete());
+        verify(graph, never()).getSchedule(anyString(), any());
     }
 
     // ---- Raw schedules (day grid + suggestions, plan Phase 1) ------------------
@@ -140,7 +388,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         });
 
         Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules =
-                service.daySchedule(List.of("u0@trustworks.dk"), LocalDate.of(2026, 8, 17));
+                service.daySchedule(List.of("u0@trustworks.dk"), LocalDate.of(2026, 8, 17))
+                        .schedules();
 
         AvailabilitySlotSuggester.MailboxWindowSchedule schedule = schedules.get("u0@trustworks.dk");
         assertEquals("02".repeat(24), schedule.availabilityView(),
@@ -165,7 +414,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     void daySchedule_toggleOff_returnsEmpty_neverTouchesGraph() {
         service.calendarEnabled = false;
         assertTrue(service.daySchedule(List.of("u0@trustworks.dk"),
-                LocalDate.of(2026, 8, 17)).isEmpty());
+                LocalDate.of(2026, 8, 17)).schedules().isEmpty());
         verifyNoInteractions(graph);
     }
 
@@ -182,7 +431,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // Monday 2026-08-17 → the 10th business day is Friday 2026-08-28.
         List<AvailabilitySlotSuggester.Slot> slots = service.suggestedSlots(
                 List.of("u0@trustworks.dk", "u1@trustworks.dk"), 60,
-                LocalDate.of(2026, 8, 17), 3, LocalDateTime.of(2026, 8, 17, 7, 0));
+                LocalDate.of(2026, 8, 17), 3, LocalDateTime.of(2026, 8, 17, 7, 0)).slots();
 
         ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
@@ -203,8 +452,10 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         when(graph.getSchedule(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph API error 503"));
 
-        assertTrue(service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
-                LocalDate.of(2026, 8, 17), 2, LocalDateTime.of(2026, 8, 17, 7, 0)).isEmpty());
+        var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
+                LocalDate.of(2026, 8, 17), 2, LocalDateTime.of(2026, 8, 17, 7, 0));
+        assertTrue(suggestions.slots().isEmpty());
+        assertFalse(suggestions.availabilityComplete());
     }
 
     @Test
@@ -219,6 +470,14 @@ class RecruitmentCalendarAvailabilityBatchingTest {
 
     // ---- Helpers ---------------------------------------------------------------
 
+    /** The shape a 429 arrives in: the Graph client's mapper throws its own
+     * SharePointException, never a WebApplicationException (F18). */
+    private static SharePointException throttled(Integer retryAfterSeconds) {
+        return new SharePointException(
+                "Graph API error 429: Application is over its MailboxConcurrency limit",
+                429, retryAfterSeconds);
+    }
+
     private static List<String> mailboxes(int count) {
         List<String> mailboxes = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -230,13 +489,19 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     /**
      * Graph echoes every requested address as free — except when asked AS
      * {@code invalidCaller}, which answers the 404 a mailbox-less user gets.
+     * <p>
+     * The 404 is a {@link SharePointException}, not a bare RuntimeException:
+     * the Graph REST client's registered mapper throws its own type, so that
+     * IS the shape production sees (F18). Faking it as a plain
+     * RuntimeException hides the status code and makes the address-specific
+     * handling untestable.
      */
     private void echoSchedulesUnlessCallerIs(String invalidCaller) {
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
             String caller = invocation.getArgument(0);
             if (invalidCaller.equals(caller)) {
-                throw new RuntimeException("Graph API error 404 Not Found: "
-                        + "{\"error\":{\"code\":\"ErrorInvalidUser\"}}");
+                throw new SharePointException("Graph API error 404 Not Found: "
+                        + "{\"error\":{\"code\":\"ErrorInvalidUser\"}}", 404);
             }
             return echo(invocation.getArgument(1));
         });

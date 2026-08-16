@@ -22,6 +22,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -74,6 +75,12 @@ class RecruitmentCalendarServiceTest {
         graph = mock(GraphApiClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
+        // Hand-constructed: no CDI ran, so every @Inject field is null. The
+        // limiter is dereferenced on the first line of every free/busy probe,
+        // so leaving it out NPEs the whole availability half of this class.
+        service.mailboxLimiter =
+                new dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter(2, 50);
+        service.sleeper = millis -> { };
     }
 
     @AfterEach
@@ -385,7 +392,8 @@ class RecruitmentCalendarServiceTest {
     void interviewerAvailability_toggleOff_returnsEmpty_neverTouchesGraph() {
         service.calendarEnabled = false;
         assertTrue(service.interviewerAvailability(
-                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60).isEmpty());
+                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60)
+                .freeByMailbox().isEmpty());
         verifyNoInteractions(graph);
     }
 
@@ -403,7 +411,7 @@ class RecruitmentCalendarServiceTest {
 
         var result = service.interviewerAvailability(
                 List.of("free@example.com", "tentative@example.com", "busy@example.com"),
-                LocalDateTime.of(2026, 8, 1, 10, 0), 90);
+                LocalDateTime.of(2026, 8, 1, 10, 0), 90).freeByMailbox();
 
         assertEquals(Boolean.TRUE, result.get("free@example.com"));
         assertEquals(Boolean.FALSE, result.get("tentative@example.com"),
@@ -422,8 +430,10 @@ class RecruitmentCalendarServiceTest {
         service.calendarEnabled = true;
         when(graph.getSchedule(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
-        assertTrue(service.interviewerAvailability(
-                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60).isEmpty());
+        var result = service.interviewerAvailability(
+                List.of("a@example.com"), LocalDateTime.of(2026, 8, 1, 10, 0), 60);
+        assertTrue(result.freeByMailbox().isEmpty());
+        assertFalse(result.complete(), "a failed lookup reports itself as unread");
     }
 
     @Test
