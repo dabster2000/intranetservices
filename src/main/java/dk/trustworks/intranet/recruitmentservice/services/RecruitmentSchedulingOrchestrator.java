@@ -637,11 +637,26 @@ public class RecruitmentSchedulingOrchestrator {
         mailboxes.addAll(optionalEmails);
         rooms.forEach(room -> mailboxes.add(room.emailAddress()));
 
-        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules =
+        RecruitmentCalendarService.ScheduleProbe probe =
                 calendarService.windowSchedules(mailboxes, from, request.getWindowEnd());
+        Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> schedules = probe.schedules();
         if (schedules.isEmpty()) {
             // Graph answered nothing — blind proposals carry more trust
             // than they earned (the suggestedSlots posture). Retry later.
+            deferSearch(request, now);
+            return;
+        }
+        // Partial failures are the dangerous case, and they used to pass
+        // straight through here: with SOME mailboxes resolved the map is not
+        // empty, and a REQUIRED interviewer whose batch was throttled then
+        // reached the planner as an unconstrained calendar (the planner's
+        // "unknown never counts as busy" rule) — so we would propose, hold
+        // and mail out a time we never checked. Optional interviewers never
+        // block a slot, so their gaps do not defer; rooms are held to the
+        // strict rule and simply go unassigned.
+        if (probe.anyUnresolved(requiredEmails)) {
+            log.warnf("Method B request %s: free/busy unresolved for a required interviewer — deferring rather than proposing unchecked times",
+                    request.getUuid());
             deferSearch(request, now);
             return;
         }

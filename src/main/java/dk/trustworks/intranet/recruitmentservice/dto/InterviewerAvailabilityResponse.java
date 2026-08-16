@@ -8,10 +8,17 @@ import java.util.List;
  * from the same Graph {@code getSchedule} lookup the room picker uses.
  * Empty when the Graph calendar toggle is off or the lookup fails (the UI
  * then shows the interviewer list without availability markers).
+ * <p>
+ * {@code availabilityComplete} is false when some mailboxes were never
+ * successfully asked about (Graph throttled or errored). Their rows still
+ * carry {@code available = null} and must still render unmarked — the
+ * flag simply lets the UI say the picture is partial instead of implying
+ * those people have empty calendars.
  */
 public record InterviewerAvailabilityResponse(
         List<InterviewerAvailability> availability,
-        int totalCount
+        int totalCount,
+        boolean availabilityComplete
 ) {
 
     /** One interviewer's free/busy for the slot. Strictly free/busy — no

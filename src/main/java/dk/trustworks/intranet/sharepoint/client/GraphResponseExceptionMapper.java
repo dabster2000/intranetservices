@@ -19,14 +19,59 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
     public SharePointException toThrowable(Response response) {
         int status = response.getStatus();
         String statusInfo = response.getStatusInfo().getReasonPhrase();
+        // Headers must be read BEFORE the body: readResponseBody drains the
+        // entity stream, and a drained response is not a safe place to go
+        // looking for anything else.
+        Integer retryAfter = readRetryAfterSeconds(response);
         String responseBody = readResponseBody(response);
 
         log.errorf("Graph API error - Status: %d %s, Body: %s", status, statusInfo, responseBody);
 
         return new SharePointException(
             formatErrorMessage(status, statusInfo, responseBody),
-            status
+            status,
+            retryAfter
         );
+    }
+
+    /**
+     * Graph's throttling back-pressure, in seconds — the only part of a 429
+     * that tells us how long to wait (production 2026-08-15: the
+     * {@code MailboxConcurrency} burst was retried instantly because this
+     * header was discarded here).
+     * <p>
+     * Two spellings are read: the standard {@code Retry-After} (delta
+     * seconds) and Microsoft's {@code x-ms-retry-after-ms} (milliseconds,
+     * rounded UP so we never come back early). The HTTP-date form of
+     * {@code Retry-After} is deliberately NOT parsed — Graph does not send
+     * it for throttling, and guessing a clock offset is worse than falling
+     * back to the caller's own default. Never throws: a header we cannot
+     * read is simply absent.
+     */
+    private Integer readRetryAfterSeconds(Response response) {
+        try {
+            String retryAfter = response.getHeaderString("Retry-After");
+            if (retryAfter != null && !retryAfter.isBlank()) {
+                int seconds = Integer.parseInt(retryAfter.trim());
+                if (seconds >= 0) {
+                    return seconds;
+                }
+            }
+        } catch (NumberFormatException e) {
+            // HTTP-date or junk — fall through to the millisecond header.
+        }
+        try {
+            String retryAfterMs = response.getHeaderString("x-ms-retry-after-ms");
+            if (retryAfterMs != null && !retryAfterMs.isBlank()) {
+                long millis = Long.parseLong(retryAfterMs.trim());
+                if (millis >= 0) {
+                    return (int) ((millis + 999) / 1000);
+                }
+            }
+        } catch (NumberFormatException e) {
+            // Unreadable — absent.
+        }
+        return null;
     }
 
     @Override
@@ -80,14 +125,40 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
      */
     public static class SharePointException extends RuntimeException {
         private final int statusCode;
+        private final Integer retryAfterSeconds;
 
         public SharePointException(String message, int statusCode) {
+            this(message, statusCode, null);
+        }
+
+        public SharePointException(String message, int statusCode, Integer retryAfterSeconds) {
             super(message);
             this.statusCode = statusCode;
+            this.retryAfterSeconds = retryAfterSeconds;
         }
 
         public int getStatusCode() {
             return statusCode;
+        }
+
+        /**
+         * The {@code Retry-After} back-pressure Graph asked for, in seconds,
+         * or null when it sent none (or sent it in a form we do not parse).
+         * Callers must apply their own cap — Graph can ask for an hour, and
+         * no request-scoped caller may wait that long.
+         */
+        public Integer getRetryAfterSeconds() {
+            return retryAfterSeconds;
+        }
+
+        /**
+         * Graph is asking us to slow down (HTTP 429). Distinct from every
+         * other 4xx in one decisive way: it says nothing about the resource
+         * we asked for, only about our own call rate — so the remedy is to
+         * wait, never to try a different address.
+         */
+        public boolean isThrottled() {
+            return statusCode == 429;
         }
 
         /**

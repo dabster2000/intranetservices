@@ -324,7 +324,7 @@ public class RecruitmentInterviewResource {
         }
         int duration = requireDurationValid(durationMinutes);
         if (!calendarService.isEnabled()) {
-            return new InterviewerAvailabilityResponse(List.of(), 0);
+            return new InterviewerAvailabilityResponse(List.of(), 0, true);
         }
 
         List<User> users = userService.findUsersByDateAndStatusListAndTypes(
@@ -336,7 +336,9 @@ public class RecruitmentInterviewResource {
         // Graph echoes the requested address as scheduleId; compare
         // case-insensitively to be safe.
         Map<String, Boolean> freeByEmail = new java.util.HashMap<>();
-        calendarService.interviewerAvailability(emails, slotStart, duration)
+        RecruitmentCalendarService.AvailabilityProbe probe =
+                calendarService.interviewerAvailability(emails, slotStart, duration);
+        probe.freeByMailbox()
                 .forEach((email, free) -> freeByEmail.put(email.toLowerCase(Locale.ROOT), free));
 
         List<InterviewerAvailabilityResponse.InterviewerAvailability> availability = users.stream()
@@ -345,7 +347,8 @@ public class RecruitmentInterviewResource {
                         user.getEmail() == null ? null
                                 : freeByEmail.get(user.getEmail().toLowerCase(Locale.ROOT))))
                 .toList();
-        return new InterviewerAvailabilityResponse(availability, availability.size());
+        return new InterviewerAvailabilityResponse(availability, availability.size(),
+                probe.complete());
     }
 
     /**
@@ -429,7 +432,7 @@ public class RecruitmentInterviewResource {
         String dayStart = AvailabilitySlotSuggester.DAY_WINDOW_START.format(HH_MM);
         if (!calendarService.isEnabled()) {
             return new ScheduleGridResponse(day,
-                    AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, List.of());
+                    AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, List.of(), true);
         }
 
         Map<String, String> emailByUuid = new LinkedHashMap<>();
@@ -449,7 +452,8 @@ public class RecruitmentInterviewResource {
         // case-insensitively to be safe.
         Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> byEmail =
                 new java.util.HashMap<>();
-        calendarService.daySchedule(mailboxes, day)
+        RecruitmentCalendarService.ScheduleProbe probe = calendarService.daySchedule(mailboxes, day);
+        probe.schedules()
                 .forEach((email, schedule) -> byEmail.put(email.toLowerCase(Locale.ROOT), schedule));
 
         List<ScheduleGridResponse.GridEntry> entries = new ArrayList<>();
@@ -470,7 +474,7 @@ public class RecruitmentInterviewResource {
                     toWorkingHoursDto(schedule != null ? schedule.workingHours() : null)));
         }
         return new ScheduleGridResponse(day,
-                AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, entries);
+                AvailabilitySlotSuggester.INTERVAL_MINUTES, dayStart, entries, probe.complete());
     }
 
     /**
@@ -500,7 +504,7 @@ public class RecruitmentInterviewResource {
         int duration = requireDurationValid(durationMinutes);
         LocalDate fromDay = parseOptionalDate(from);
         if (!calendarService.isEnabled()) {
-            return new SuggestedSlotsResponse(List.of());
+            return new SuggestedSlotsResponse(List.of(), true);
         }
         LocalDateTime now = LocalDateTime.now(ZoneId.of("Europe/Copenhagen"));
         if (fromDay == null) {
@@ -513,13 +517,13 @@ public class RecruitmentInterviewResource {
                 .toList();
         // The candidate joins the interviewers in the room.
         int headcount = uuids.size() + 1;
-        List<AvailabilitySlotSuggester.Slot> slots =
+        RecruitmentCalendarService.SlotSuggestions suggestions =
                 calendarService.suggestedSlots(emails, duration, fromDay, headcount, now);
-        return new SuggestedSlotsResponse(slots.stream()
+        return new SuggestedSlotsResponse(suggestions.slots().stream()
                 .map(slot -> new SuggestedSlotsResponse.SuggestedSlot(
                         slot.start(), slot.durationMinutes(),
                         slot.roomEmail(), slot.roomDisplayName()))
-                .toList());
+                .toList(), suggestions.availabilityComplete());
     }
 
     // ---- Helpers ----------------------------------------------------------------------
