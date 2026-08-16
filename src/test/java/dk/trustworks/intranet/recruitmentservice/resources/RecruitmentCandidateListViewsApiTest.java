@@ -51,6 +51,7 @@ class RecruitmentCandidateListViewsApiTest {
     private String silverCandidate;
     private String partnerOnlyCandidate;
     private String noAppCandidate;
+    private String hiredCandidate;
 
     private String tagMarker;
     private String previousFlag;
@@ -68,6 +69,7 @@ class RecruitmentCandidateListViewsApiTest {
         silverCandidate = UUID.randomUUID().toString();
         partnerOnlyCandidate = UUID.randomUUID().toString();
         noAppCandidate = UUID.randomUUID().toString();
+        hiredCandidate = UUID.randomUUID().toString();
         tagMarker = "p8view-" + UUID.randomUUID().toString().substring(0, 8);
 
         QuarkusTransaction.requiringNew().run(() -> {
@@ -97,9 +99,16 @@ class RecruitmentCandidateListViewsApiTest {
                     "PII_SENTINEL Gro", "PII_SENTINEL Gram", "ACTIVE", null, null, hrUser);
             P8ProfileFixtures.insertCandidate(em, noAppCandidate,
                     "PII_SENTINEL Nul", "PII_SENTINEL Nyholm", "ACTIVE", null, null, hrUser);
+            P8ProfileFixtures.insertCandidate(em, hiredCandidate,
+                    "PII_SENTINEL Hans", "PII_SENTINEL Hyre", "HIRED", null, null, hrUser);
 
             P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
                     activeCandidate, normalPosition, "SCREENING");
+            // The converted hire: markHired sets stage HIRED and leaves
+            // terminal NULL — the exact row shape that used to keep hired
+            // people sitting in the Active-pipeline view forever.
+            P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
+                    hiredCandidate, normalPosition, "HIRED");
             P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
                     partnerOnlyCandidate, partnerPosition, "SCREENING");
             // A closed application alone does not make a pipeline row.
@@ -115,7 +124,7 @@ class RecruitmentCandidateListViewsApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(activeCandidate, pooledCandidate, silverCandidate,
-                            partnerOnlyCandidate, noAppCandidate),
+                            partnerOnlyCandidate, noAppCandidate, hiredCandidate),
                     List.of(normalPosition, partnerPosition),
                     List.of(hrUser, adminUser, circleHr),
                     practiceUuid);
@@ -134,6 +143,23 @@ class RecruitmentCandidateListViewsApiTest {
         assertFalse(uuids.contains(noAppCandidate), "no applications → not in pipeline");
         assertFalse(uuids.contains(partnerOnlyCandidate),
                 "partner-track-only stays excluded inside views (partner-row gap)");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void activePipelineView_excludesTheHiredStage() {
+        // HIRED is a stage, not a terminal — markHired leaves terminal NULL,
+        // so "terminal IS NULL" alone parked every converted hire in this
+        // view permanently. "Still in play" excludes the HIRED stage.
+        List<String> pipeline = listUuids(hrUser, "view", "ACTIVE_PIPELINE");
+        assertFalse(pipeline.contains(hiredCandidate),
+                "a hired candidate is no longer in an active pipeline");
+        assertTrue(pipeline.contains(activeCandidate),
+                "the exclusion must not take genuinely open applications with it");
+
+        // The row itself is untouched — it is only out of THIS view.
+        assertTrue(listUuids(hrUser, "view", "ALL").contains(hiredCandidate),
+                "the hired candidate still exists in the database");
     }
 
     @Test
@@ -188,6 +214,35 @@ class RecruitmentCandidateListViewsApiTest {
                 .extract().jsonPath().getList("data.uuid", String.class);
         assertFalse(poolTagged.contains(activeCandidate));
         assertFalse(poolTagged.contains(pooledCandidate));
+    }
+
+    // ---- Free-text search spans tags ------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void search_matchesTagsAsWellAsNameAndEmail() {
+        // Whole tag, and a substring of it — a search box that only did
+        // exact tags would make tags unusable for discovery.
+        assertTrue(listUuids(hrUser, "search", tagMarker).contains(activeCandidate),
+                "the full tag finds the candidate");
+        assertTrue(listUuids(hrUser, "search", tagMarker.substring(0, 8)).contains(activeCandidate),
+                "a tag prefix finds the candidate");
+        assertTrue(listUuids(hrUser, "search", tagMarker.toUpperCase()).contains(activeCandidate),
+                "tag search is case-insensitive");
+
+        // Name search still works, and the tag arm did not widen it.
+        List<String> byName = listUuids(hrUser, "search", "PII_SENTINEL Pool");
+        assertTrue(byName.contains(pooledCandidate));
+        assertFalse(byName.contains(activeCandidate));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void search_onJsonPunctuationMatchesNothing() {
+        // JSON_SEARCH looks inside the array ELEMENTS, so the column's own
+        // punctuation never turns a stray comma into "every tagged row".
+        assertFalse(listUuids(hrUser, "search", ",").contains(activeCandidate));
+        assertFalse(listUuids(hrUser, "search", "\"").contains(activeCandidate));
     }
 
     @Test

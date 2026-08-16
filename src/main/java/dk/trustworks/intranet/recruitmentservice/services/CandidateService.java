@@ -27,6 +27,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityCl
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -232,7 +233,10 @@ public class CandidateService {
      *
      * @param statusFilter    nullable; a {@link CandidateStatus} name
      *                        (case-insensitive) or {@code null}/blank for "all"
-     * @param search          nullable; case-insensitive {@code LIKE} on name/email
+     * @param search          nullable; case-insensitive substring match on
+     *                        first name, last name, email <b>and tags</b> —
+     *                        one box, the three things a recruiter looks a
+     *                        candidate up by
      * @param tag             nullable; exact tag membership
      * @param education       nullable; a {@link CandidateEducationLevel} name
      * @param experience      nullable; a {@link CandidateExperienceLevel} name
@@ -243,6 +247,11 @@ public class CandidateService {
      *                        P8 saved views (ACTIVE_PIPELINE / TALENT_POOL /
      *                        SILVER_MEDALISTS / ALL). Composable with every
      *                        other filter; unknown values answer 400.
+     *                        ACTIVE_PIPELINE means "still in play": an open
+     *                        (non-terminal) application that is NOT at the
+     *                        HIRED stage — a converted hire keeps a
+     *                        terminal-NULL application forever and must not
+     *                        linger in the pipeline view.
      * @param viewerUuid      nullable; the {@code X-Requested-By} user — when
      *                        present, each row carries its open applications
      *                        (visibility-filtered: partner-track applications
@@ -271,9 +280,20 @@ public class CandidateService {
         }
         if (view != null && !view.isBlank()) {
             switch (parseEnum(CandidateListView.class, view, "view")) {
-                case ACTIVE_PIPELINE -> where.append(
-                        " AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a"
-                                + " WHERE a.terminal IS NULL)");
+                case ACTIVE_PIPELINE -> {
+                    // "Still in play" is NOT the same as "not terminal".
+                    // HIRED is a STAGE, not a terminal: the conversion
+                    // bridge's RecruitmentApplication#markHired leaves
+                    // terminal NULL (the terminal enum has no HIRED value
+                    // and chk_ra_terminal_enum would refuse one), so a
+                    // bare "terminal IS NULL" keeps every converted hire
+                    // in this view forever. Exclude the HIRED stage
+                    // explicitly — exactly as markHired's contract demands.
+                    where.append(
+                            " AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a"
+                                    + " WHERE a.terminal IS NULL AND a.stage <> :viewClosedStage)");
+                    params.put("viewClosedStage", RecruitmentStage.HIRED);
+                }
                 case TALENT_POOL -> {
                     where.append(" AND status = :viewStatus");
                     params.put("viewStatus", CandidateStatus.POOLED);
@@ -311,7 +331,19 @@ public class CandidateService {
             params.put("partnerTrackOnly", partnerTrackOnly);
         }
         if (search != null && !search.isBlank()) {
-            where.append(" AND (LOWER(firstName) LIKE :q OR LOWER(lastName) LIKE :q OR LOWER(email) LIKE :q)");
+            // Free text spans name, email AND tags: a tag nobody can search
+            // for is a label nobody uses. Tags live in a JSON array column
+            // behind an AttributeConverter, so they are resolved natively
+            // first and OR'ed in as a uuid set (same trick as the exact-tag
+            // filter below, but a substring match — "front" finds
+            // "frontend", which is what a search box is for).
+            List<String> searchTagUuids = uuidsMatchingTagSearch(search);
+            where.append(" AND (LOWER(firstName) LIKE :q OR LOWER(lastName) LIKE :q OR LOWER(email) LIKE :q");
+            if (!searchTagUuids.isEmpty()) {
+                where.append(" OR uuid IN :searchTagUuids");
+                params.put("searchTagUuids", searchTagUuids);
+            }
+            where.append(")");
             params.put("q", "%" + search.toLowerCase() + "%");
         }
         if ((tag != null && !tag.isBlank()) || (specialization != null && !specialization.isBlank())) {
@@ -972,6 +1004,37 @@ public class CandidateService {
             query.setParameter("specializationLike", jsonElementLike(specialization, "specialization"));
         }
         return (List<String>) query.getResultList();
+    }
+
+    /**
+     * Candidate uuids carrying a tag that CONTAINS the free-text term
+     * (case-insensitive) — the tag half of the search box.
+     * <p>
+     * {@code JSON_SEARCH} (not a raw {@code LIKE} on the column) matches
+     * only the string ELEMENTS of the array, so the JSON punctuation never
+     * produces hits: searching {@code ,} or {@code "} finds nothing rather
+     * than every tagged candidate. Rows whose column is empty, NULL or not
+     * valid JSON yield NULL and drop out. LIKE wildcards in the user's term
+     * are escaped so they match literally.
+     *
+     * @return matching uuids, or an empty list when the term carries no
+     *         searchable characters
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> uuidsMatchingTagSearch(String search) {
+        String escaped = search.trim().toLowerCase(java.util.Locale.ROOT)
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+        if (escaped.isBlank()) {
+            return List.of();
+        }
+        return (List<String>) em.createNativeQuery(
+                        "SELECT uuid FROM recruitment_candidates"
+                                + " WHERE tags IS NOT NULL"
+                                + " AND JSON_SEARCH(LOWER(tags), 'one', :tagSearchLike) IS NOT NULL")
+                .setParameter("tagSearchLike", "%" + escaped + "%")
+                .getResultList();
     }
 
     /**
