@@ -1,5 +1,10 @@
 # Phase 10 golden baseline — delivery & people data scope (captured 2026-08-06)
 
+> **Read the 2026-08-16 amendment at the foot of this file before using the recruitment
+> rows.** The recruitment access-model go-live (V486) landed after this capture and changed
+> both the recruitment grant matrix and the hired-file role tier. The rest of the baseline —
+> timeregistration, teams, documents, conferences, the sentinels — is unaffected.
+
 Pre-change picture per phase-file step 10.8 / the 9.5 method, captured against the
 **production** database (read-only) before any Phase 10 deploy. Personal data never
 leaves the database: fixtures are role names, uuids already public inside the company,
@@ -82,3 +87,57 @@ guards land while the table is near-empty, which is the safest possible moment.
 - **The 10.7 guard retirements.** Each is its own commit, deployed only after the
   replacement is verified live in its domain; behaviour equality there is asserted by
   the FE unit suites pinning old-vs-new denial parity per route.
+
+---
+
+## Amendment 2026-08-16 — the recruitment access model changed after this capture
+
+The capture above is dated 2026-08-06 and is left intact as the record of what production
+looked like then. Between that date and the Phase 10 deploy, the **recruitment access-model
+go-live (V486, decisions D3/D6/D7)** shipped to production. Two parts of this baseline are
+superseded by it; everything else stands.
+
+### 1. The recruitment rows of the grant matrix are stale
+
+`recruitment:read` / `recruitment:write` no longer hold the audiences tabulated above —
+V486 rewrote them, and D7 removed `TECHPARTNER` from the recruitment module entirely.
+**Do not use the two recruitment rows as the pre-picture for the Phase 10 deploy.** Re-capture
+them against production immediately before the Phase 10 domain deploy. The non-recruitment
+rows (timeregistration, teams, crm, contracts, documents, conference) were not touched by
+V486 and remain valid.
+
+### 2. The hired-file tier is a different set than 10.5 assumed
+
+Phase 10.5 was written against `HIRED_FILE_ROLES = {HR, CXO, TECHPARTNER}`. The go-live
+changed that tier to `{HR, RECRUITMENT, DPO}`. On rebase (findings, 2026-08-16) the conflict
+was resolved as:
+
+```java
+static final Set<String> HIRED_FILE_ROLES = Set.of("HR", "RECRUITMENT");   // go-live's D3/D6/D7 membership
+// + holdsRecruitmentGdprGrant(viewerUuid)                                  // 10.5's DPO re-key
+```
+
+i.e. the go-live's membership is authoritative and Phase 10.5 contributes **only** the DPO
+re-key. Replaying 10.5's literal set would have put `CXO` and `TECHPARTNER` back into the
+recruitment module, reverting D7.
+
+### 3. What the equivalence argument still rests on
+
+The two load-bearing claims are code, not data, and are unaffected by V486:
+
+- ADMIN short-circuits before the hired-file check.
+- `HR` is in the tier both before and after, so an HR-holder's access is unchanged.
+
+The two **data** facts below were true on 2026-08-06 and are what make the re-key
+effect-preserving for the DPO specifically. Neither has been re-confirmed since V486/V497
+moved role grants around, so **both must be re-checked against production immediately before
+the Phase 10 deploy** — this is a deploy gate, not a formality:
+
+| Fact to re-confirm | Value at capture | Why it matters |
+|---|---|---|
+| `recruitment:gdpr` holders | ADMIN, DPO (seeded V465) | if DPO lost this grant, the re-key *removes* their hired-file access |
+| The sole DPO holder's own roles | include ADMIN **and** HR | if that changed, the DPO holder now depends on the grant alone |
+
+If both still hold, hired-file access before and after the re-key is identical for every
+production user, exactly as argued in the 2026-08-06 section. If either has changed, stop and
+re-decide the re-key — do not deploy 10.5 on the strength of the old capture.
