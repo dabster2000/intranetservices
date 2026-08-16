@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.utils.json.UtcInstant;
+
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -86,7 +88,14 @@ public record GdprQueueResponse(
     /** One completed anonymization (from the {@code CANDIDATE_ANONYMIZED} events). */
     public record AnonymizationRow(
             String candidateUuid,
-            LocalDateTime occurredAt,
+            /**
+             * UTC instant — the anonymization event's own timestamp. The statutory
+             * deadlines in this response ({@code deadline}, {@code retentionDeadline},
+             * {@code art14Deadline}) are deliberately NOT annotated: the DPO digest
+             * renders them naively as calendar days, so stamping them would make the
+             * console and the digest email disagree by a day.
+             */
+            @UtcInstant LocalDateTime occurredAt,
             /** AUTO (sweep) or ON_REQUEST (DPO erasure). */
             String mode,
             int eventsRewritten,
