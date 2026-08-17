@@ -22,6 +22,7 @@ import dk.trustworks.intranet.aggregates.invoice.services.InvoiceLedgerService;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.security.ScopeEnforced;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.ProjectSummary;
@@ -55,6 +56,12 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @RequestScoped
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"invoices:read"})
+// Phase 9.1: invoices have no per-person subject dimension (their natural scope is
+// client ownership, which the owner declined to build — access-intent Decision 5).
+// Every grant of invoices:read/invoices:write is ALL today, so this is behaviour-
+// preserving; it exists to make a future console scope-edit fail loudly (403) on
+// actor-carrying calls instead of silently serving a company-wide row set.
+@ScopeEnforced
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
 public class InvoiceResource {
 
