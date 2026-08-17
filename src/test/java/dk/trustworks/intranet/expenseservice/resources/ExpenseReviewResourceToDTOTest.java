@@ -8,6 +8,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,6 +44,24 @@ class ExpenseReviewResourceToDTOTest {
         assertEquals("missing receipt", dto.employeeJustification());
         assertEquals("rule-7", dto.aiRuleId());
         assertEquals(List.of(), dto.aiRuleIds());
+        assertFalse(dto.hasVoucher());
+    }
+
+    @Test
+    void daysWaitingAnchorsOnAttentionSince_notDatemodified() {
+        // P0 regression: decision churn resets datemodified; the queue age must not follow.
+        Expense e = new Expense();
+        e.setUuid("00000000-0000-0000-0000-000000000003");
+        e.setUseruuid(null);
+        e.setDatemodified(LocalDate.now());                                  // churned today
+        e.setAttentionSince(java.time.LocalDateTime.now().minusDays(30));    // entered a month ago
+        e.setVouchernumber(4711);
+
+        ExpenseReviewListItemDTO dto = resource.toDTO(e);
+
+        assertTrue(dto.daysWaiting() == 30 || dto.daysWaiting() == 31,
+                "age must come from attention_since, was " + dto.daysWaiting());
+        assertTrue(dto.hasVoucher());
     }
 
     @Test

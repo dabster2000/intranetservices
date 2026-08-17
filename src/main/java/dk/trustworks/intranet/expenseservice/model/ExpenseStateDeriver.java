@@ -20,6 +20,10 @@ public final class ExpenseStateDeriver {
     public static final String BOOKED          = "BOOKED";
     public static final String REJECTED        = "REJECTED";
     public static final String DELETED         = "DELETED";
+    /** Manual terminal (P0): resolved outside the pipeline — booked by hand in e-conomic
+     *  or written off. Used as BOTH the status and the state value, so the entity hook
+     *  keeps the two axes mirrored. */
+    public static final String CLOSED_MANUAL   = "CLOSED_MANUAL";
 
     // attention_owner (only when state = NEEDS_ATTENTION)
     public static final String OWNER_EMPLOYEE   = "EMPLOYEE";
@@ -106,6 +110,7 @@ public final class ExpenseStateDeriver {
             case "NO_FILE":
             case "NO_USER":           return new DerivedState(NEEDS_ATTENTION, OWNER_ACCOUNTING, KIND_TECHNICAL);
             case "VALIDATED":         return new DerivedState(APPROVED, null, null);
+            case "CLOSED_MANUAL":     return new DerivedState(CLOSED_MANUAL, null, null);
             case "DELETED":           return new DerivedState(DELETED, null, null);
             default:                  return new DerivedState(SUBMITTED, null, null);
         }
@@ -128,6 +133,7 @@ public final class ExpenseStateDeriver {
             case "NO_FILE":
             case "NO_USER":
             case "VALIDATED":
+            case "CLOSED_MANUAL":
                 return true;
             default:
                 return false;
