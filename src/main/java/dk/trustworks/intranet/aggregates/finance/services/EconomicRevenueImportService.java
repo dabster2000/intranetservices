@@ -262,14 +262,19 @@ public class EconomicRevenueImportService {
                 }
 
                 // Survivor: record per-company / per-account sums and either insert or count intent.
-                BigDecimal absAmount = v.sumAmount().abs();
-                perCompanyDkk.merge(v.companyUuid(), absAmount, BigDecimal::add);
-                perAccountDkk.merge(v.account(), absAmount, BigDecimal::add);
+                // Reported as the amount that WOULD BE STORED, not abs(): a dry run whose
+                // totals cannot go down hides every reversal in the batch, and abs() on the
+                // e-conomic amount is the same mistake this importer made for real until
+                // 2026-05.
+                BigDecimal storedAmount = deriveStoredAmount(v.sumAmount());
+                perCompanyDkk.merge(v.companyUuid(), storedAmount, BigDecimal::add);
+                perAccountDkk.merge(v.account(), storedAmount, BigDecimal::add);
                 totalIntendedInserts++;
 
                 if (dryRun) {
-                    log.infof("EconomicRevenueImportService DRY_RUN intended insert: company=%s acc=%d voucher=%d entry=%d amount=%s",
-                            v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber(), absAmount);
+                    log.infof("EconomicRevenueImportService DRY_RUN intended insert: company=%s acc=%d voucher=%d entry=%d entryAmount=%s storedAmount=%s",
+                            v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber(),
+                            v.sumAmount(), storedAmount);
                     continue;
                 }
 
@@ -696,6 +701,31 @@ public class EconomicRevenueImportService {
     // ------------------------------------------------------------------------
 
     /**
+     * The amount to store on the synthesized {@code invoiceitems} row for a voucher:
+     * the <b>exact negation</b> of the e-conomic entry's own signed amount.
+     *
+     * <p>e-conomic books revenue as a CREDIT, so {@code amountInBaseCurrency} is
+     * negative for a sale and positive for a reversal. {@code invoices} stores
+     * revenue positive — {@code buildGroupInvoiceRevenueSql} applies factor +1 to
+     * INVOICE/PHANTOM — so the importer must flip the sign. Negation preserves the
+     * reversal semantics for free: a reversing voucher (positive in e-conomic)
+     * lands as a negative-total PHANTOM and nets against the sale.
+     *
+     * <p>Neither previous version derived the sign from the entry. The original
+     * took {@code abs()}, which was right for sales and silently turned every
+     * reversal into more revenue; commit 09dca880 replaced it with the raw signed
+     * amount, which fixed reversals and inverted every sale from the 2026-05-04
+     * batch onward. Measured on production 2026-08-17: of 184 FY25/26 A/S
+     * PHANTOMs, 29 carried the wrong sign — 23 stored negative against an
+     * e-conomic credit and 6 stored positive against a debit — understating
+     * FY25/26 PHANTOM revenue by 4,671,870.08 DKK and making May and June 2026
+     * negative revenue months.
+     */
+    static BigDecimal deriveStoredAmount(BigDecimal entryAmount) {
+        return entryAmount.negate().setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
      * Inserts one {@code invoices} row (type=PHANTOM, status=CREATED,
      * invoicenumber=0) and one synthesized {@code invoiceitems} row
      * (hours=1, rate=amount (signed), origin=BASE) so
@@ -720,8 +750,18 @@ public class EconomicRevenueImportService {
         String itemUuid = UUID.randomUUID().toString();
         LocalDate invoiceDate = v.entryDate() != null ? v.entryDate() : LocalDate.now();
         LocalDate dueDate = invoiceDate;          // no payment terms on auto-imports
-        BigDecimal rate = v.sumAmount().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal rate = deriveStoredAmount(v.sumAmount());
         String description = "e-conomic entry " + v.minEntryNumber();
+
+        // Guard, not decoration: this is the invariant both previous versions broke,
+        // and breaking it silently mis-states revenue for months. Refuse the row
+        // rather than write one whose sign is not derived from the entry.
+        if (rate.add(v.sumAmount().setScale(2, RoundingMode.HALF_UP)).signum() != 0) {
+            throw new IllegalStateException(String.format(
+                    "PHANTOM import refused: stored amount %s is not the negation of e-conomic "
+                            + "entry amount %s (company=%s entry=%d voucher=%d)",
+                    rate, v.sumAmount(), v.companyUuid(), v.minEntryNumber(), v.voucherNumber()));
+        }
 
         try {
             Query q = em.createNativeQuery(

@@ -65,7 +65,11 @@ import static org.mockito.Mockito.when;
  *   <li>Insert path — {@link #testInsertPathProducesInvoiceAndItem()}</li>
  *   <li>Outcome shape — {@link #testDryRunOutcomeShape()}</li>
  *   <li>Aggregation — {@link #testAggregateByVoucherCollapsesReversals()}</li>
- *   <li>Negative amount — {@link #testNegativeAmountUsesAbs()}</li>
+ *   <li>Stored sign derived from the entry (D1) —
+ *       {@link #testNegativeAmountPreservesSign()} (reversal),
+ *       {@link #testCreditEntryIsStoredAsPositiveRevenue()} (sale),
+ *       {@link #testDeriveStoredAmountNegatesExactly()},
+ *       {@link #testGuardRejectsAnAmountNotDerivedFromTheEntry()}</li>
  *   <li>Sentinel write — {@link #testEmptyRefreshAdvancesSentinelTimestamp()}</li>
  * </ul>
  */
@@ -271,7 +275,7 @@ class EconomicRevenueImportServiceTest {
     // ------------------------------------------------------------------------
 
     @Test
-    @DisplayName("Insert path: 2 INSERTs captured; invoice uuid != item uuid; rate = ABS(amount); description = 'e-conomic entry N'")
+    @DisplayName("Insert path: 2 INSERTs captured; invoice uuid != item uuid; rate = -entry amount; description = 'e-conomic entry N'")
     void testInsertPathProducesInvoiceAndItem() throws Exception {
         // Capture both INSERTs separately.
         Query invoiceQ = mock(Query.class);
@@ -285,7 +289,7 @@ class EconomicRevenueImportServiceTest {
 
         AggregatedVoucher v = new AggregatedVoucher(
                 AS_UUID, "2024/2025", 2104, 5001,
-                new BigDecimal("12345.67"),
+                new BigDecimal("-12345.67"),          // e-conomic books revenue as a CREDIT
                 "Some text",
                 7001,
                 "ClientCo A/S",
@@ -322,7 +326,8 @@ class EconomicRevenueImportServiceTest {
         String itemUuid = (String) itemParams.get("itemUuid");
         assertEquals(invoiceUuid, itemParams.get("invoiceUuid"));
         assertEquals("e-conomic entry 7001", itemParams.get("description"));
-        assertEquals(new BigDecimal("12345.67"), itemParams.get("rate"));
+        assertEquals(new BigDecimal("12345.67"), itemParams.get("rate"),
+                "the stored amount is the negation of the e-conomic entry amount");
         assertNotEquals(invoiceUuid, itemUuid, "Item must have its own UUID");
     }
 
@@ -335,13 +340,13 @@ class EconomicRevenueImportServiceTest {
     void testDryRunOutcomeShape() {
         service.dryRun = true;
         List<AggregatedVoucher> sevenVouchers = List.of(
-                voucherAt(AS_UUID, 2104, 1001, 7001, "100.00"),
-                voucherAt(AS_UUID, 2104, 1002, 7002, "200.00"),
-                voucherAt(AS_UUID, 2105, 1003, 7003, "300.00"),
-                voucherAt(TECH_UUID, 3050, 1004, 7004, "400.00"),
-                voucherAt(TECH_UUID, 3050, 1005, 7005, "500.00"),
-                voucherAt(CYBER_UUID, 3050, 1006, 7006, "600.00"),
-                voucherAt(CYBER_UUID, 3055, 1007, 7007, "700.00")
+                voucherAt(AS_UUID, 2104, 1001, 7001, "-100.00"),
+                voucherAt(AS_UUID, 2104, 1002, 7002, "-200.00"),
+                voucherAt(AS_UUID, 2105, 1003, 7003, "-300.00"),
+                voucherAt(TECH_UUID, 3050, 1004, 7004, "-400.00"),
+                voucherAt(TECH_UUID, 3050, 1005, 7005, "-500.00"),
+                voucherAt(CYBER_UUID, 3050, 1006, 7006, "-600.00"),
+                voucherAt(CYBER_UUID, 3055, 1007, 7007, "-700.00")
         );
         EconomicRevenueImportService spy = spyWithoutNetwork(sevenVouchers);
         wireDedupAllMiss();
@@ -406,12 +411,14 @@ class EconomicRevenueImportServiceTest {
         when(em.createNativeQuery(contains("INSERT INTO invoices"))).thenReturn(invoiceQ);
         when(em.createNativeQuery(contains("INSERT INTO invoiceitems"))).thenReturn(itemQ);
 
-        AggregatedVoucher negV = new AggregatedVoucher(
+        // A REVERSAL in e-conomic is a DEBIT, i.e. a POSITIVE amount. It must land as a
+        // negative-total PHANTOM so it nets against the sale it reverses.
+        AggregatedVoucher reversal = new AggregatedVoucher(
                 AS_UUID, "2024/2025", 2104, 5001,
-                new BigDecimal("-12345.67"),
+                new BigDecimal("12345.67"),
                 "text", 7001, "ClientCo", LocalDate.of(2025, 1, 1), 0);
 
-        service.insertInvoiceAndItem(negV, LocalDateTime.now());
+        service.insertInvoiceAndItem(reversal, LocalDateTime.now());
 
         ArgumentCaptor<String> n = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<Object> v = ArgumentCaptor.forClass(Object.class);
@@ -419,7 +426,72 @@ class EconomicRevenueImportServiceTest {
         Map<String, Object> params = paramMap(n.getAllValues(), v.getAllValues());
 
         assertEquals(new BigDecimal("-12345.67"), params.get("rate"),
-                "rate must preserve the negative sign for a credit-note (reversed) voucher");
+                "an e-conomic DEBIT is a reversal and must store a negative amount so it nets");
+    }
+
+    // ------------------------------------------------------------------------
+    // D1: the stored sign is derived from the entry, in both directions
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("D1: a sale (e-conomic CREDIT, negative) is stored as positive revenue")
+    void testCreditEntryIsStoredAsPositiveRevenue() throws Exception {
+        Query invoiceQ = mock(Query.class);
+        Query itemQ = mock(Query.class);
+        when(invoiceQ.setParameter(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(invoiceQ);
+        when(itemQ.setParameter(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(itemQ);
+        when(invoiceQ.executeUpdate()).thenReturn(1);
+        when(itemQ.executeUpdate()).thenReturn(1);
+        when(em.createNativeQuery(contains("INSERT INTO invoices"))).thenReturn(invoiceQ);
+        when(em.createNativeQuery(contains("INSERT INTO invoiceitems"))).thenReturn(itemQ);
+
+        // June 2026 in production: e-conomic +1,943,851.28 of credits, stored -1,943,851.28.
+        // That inversion is what made June a negative revenue month on the dashboard.
+        AggregatedVoucher sale = new AggregatedVoucher(
+                AS_UUID, "2025_6_2026a", 2104, 2640,
+                new BigDecimal("-186480.00"),
+                "Faktura: 58484650279 - 06-2026 THG", 151631, "Vattenfall",
+                LocalDate.of(2026, 6, 1), 0);
+
+        service.insertInvoiceAndItem(sale, LocalDateTime.now());
+
+        ArgumentCaptor<String> n = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> v = ArgumentCaptor.forClass(Object.class);
+        verify(itemQ, atLeastOnce()).setParameter(n.capture(), v.capture());
+        Map<String, Object> params = paramMap(n.getAllValues(), v.getAllValues());
+
+        assertEquals(new BigDecimal("186480.00"), params.get("rate"),
+                "e-conomic books revenue as a credit; invoices stores revenue positive");
+    }
+
+    @Test
+    @DisplayName("D1: deriveStoredAmount is the exact negation, in both directions, at 2 decimals")
+    void testDeriveStoredAmountNegatesExactly() {
+        assertEquals(new BigDecimal("186480.00"),
+                EconomicRevenueImportService.deriveStoredAmount(new BigDecimal("-186480.00")));
+        assertEquals(new BigDecimal("-12345.67"),
+                EconomicRevenueImportService.deriveStoredAmount(new BigDecimal("12345.67")));
+        assertEquals(new BigDecimal("0.00"),
+                EconomicRevenueImportService.deriveStoredAmount(BigDecimal.ZERO));
+        assertEquals(new BigDecimal("1943851.28"),
+                EconomicRevenueImportService.deriveStoredAmount(new BigDecimal("-1943851.279")),
+                "rounds to øre, HALF_UP");
+    }
+
+    @Test
+    @DisplayName("D1: neither abs() nor the raw signed amount survives the guard")
+    void testGuardRejectsAnAmountNotDerivedFromTheEntry() {
+        // Both shipped regressions in one assertion: abs() (the original) and the raw
+        // signed amount (commit 09dca880) each violate stored == -entry for one sign.
+        BigDecimal credit = new BigDecimal("-186480.00");
+        assertEquals(EconomicRevenueImportService.deriveStoredAmount(credit).negate(), credit,
+                "stored and entry must be exact negations — the invariant the guard enforces");
+
+        BigDecimal debit = new BigDecimal("177600.00");
+        assertNotEquals(debit.abs(), EconomicRevenueImportService.deriveStoredAmount(debit),
+                "abs() would turn a reversal into revenue");
+        assertNotEquals(credit, EconomicRevenueImportService.deriveStoredAmount(credit),
+                "storing the raw signed amount would make a sale subtract from revenue");
     }
 
     @Test
@@ -449,13 +521,15 @@ class EconomicRevenueImportServiceTest {
     private AggregatedVoucher sampleVoucher(String companyUuid, int voucherNumber, int entryNumber, String text) {
         return new AggregatedVoucher(
                 companyUuid, "2024/2025", 2104, voucherNumber,
-                new BigDecimal("1000.00"), text, entryNumber,
+                new BigDecimal("-1000.00"), text, entryNumber,   // e-conomic books revenue as a CREDIT
                 "ClientCo", LocalDate.of(2025, 3, 15), 0);
     }
 
     private AggregatedVoucher voucherAt(String companyUuid, int account, int voucherNumber,
                                         int entryNumber, String amount) {
         return new AggregatedVoucher(
+                // amount is the e-conomic entry amount; callers pass revenue as a negative
+                // (credit), which the importer negates into a positive stored amount.
                 companyUuid, "2024/2025", account, voucherNumber,
                 new BigDecimal(amount), "text", entryNumber,
                 "ClientCo", LocalDate.of(2025, 3, 15), 0);
@@ -495,9 +569,10 @@ class EconomicRevenueImportServiceTest {
                     hit = findExistingByFakturaText(v);
                     if (hit.isPresent()) { skippedByLayer.merge(hit.get(), 1, Integer::sum); continue; }
 
-                    java.math.BigDecimal abs = v.sumAmount().abs();
-                    perCompanyDkk.merge(v.companyUuid(), abs, java.math.BigDecimal::add);
-                    perAccountDkk.merge(v.account(), abs, java.math.BigDecimal::add);
+                    // Mirrors the production derivation: stored amount = negated entry amount.
+                    java.math.BigDecimal storedAmount = deriveStoredAmount(v.sumAmount());
+                    perCompanyDkk.merge(v.companyUuid(), storedAmount, java.math.BigDecimal::add);
+                    perAccountDkk.merge(v.account(), storedAmount, java.math.BigDecimal::add);
                     totalIntendedInserts++;
 
                     if (dryRun) continue;
