@@ -444,6 +444,30 @@ class RecruitmentCandidateAiApiTest {
                 .body("error", equalTo("NO_OPEN_APPLICATION"));
     }
 
+    /**
+     * The hired candidate: stage HIRED with terminal still NULL, which is
+     * what {@code markHired} leaves behind. The button flag and the endpoint
+     * read that state through two different queries — they have to agree, or
+     * the UI offers a Regenerate that answers 400.
+     */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void regenerate_onAHiredApplication_is400_andTheButtonFlagAgrees() {
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                        "UPDATE recruitment_applications SET stage = 'HIRED' WHERE uuid = :u")
+                .setParameter("u", applicationUuid).executeUpdate());
+
+        given().header("X-Requested-By", hrUser)
+                .when().get("/recruitment/candidates/{uuid}/ai/state", candidateUuid)
+                .then().statusCode(200)
+                .body("regenerate.hasOpenApplication", equalTo(false));
+
+        given().header("X-Requested-By", hrUser)
+                .when().post("/recruitment/candidates/{uuid}/ai/regenerate", candidateUuid)
+                .then().statusCode(400)
+                .body("error", equalTo("NO_OPEN_APPLICATION"));
+    }
+
     // ---- authz --------------------------------------------------------------------
 
     @Test

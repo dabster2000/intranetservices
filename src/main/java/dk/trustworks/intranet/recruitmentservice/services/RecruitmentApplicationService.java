@@ -725,6 +725,13 @@ public class RecruitmentApplicationService {
     private CandidateStatus closeOutCandidateIfLastApplication(RecruitmentCandidate candidate,
                                                                CandidateStatus terminalStatus,
                                                                String reason, UUID actor) {
+        // Deliberately NOT "still in play": this one really does mean "is any
+        // row still non-terminal", so it counts HIRED applications too. Adding
+        // the usual "and stage <> HIRED" here would look like the fix applied
+        // everywhere else and be a regression — a candidate hired on position A
+        // who is later declined on position B would fall through and have the
+        // GDPR retention clock started on them, i.e. an employee stamped with a
+        // deletion deadline. Leave it counting hires.
         long stillOpen = RecruitmentApplication.count(
                 "candidateUuid = ?1 and terminal is null", candidate.getUuid());
         if (stillOpen > 0) {

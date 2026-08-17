@@ -578,13 +578,31 @@ public class RecruitmentLandingService {
     // Batched lookups
     // ------------------------------------------------------------------
 
+    /**
+     * Every application still IN PLAY on the given positions — the one fetch
+     * the KPI row, the pipeline board and the task rows are all built from.
+     * <p>
+     * {@code stage <> HIRED} is not optional: HIRED is a stage, not a
+     * terminal, so {@code markHired} leaves {@code terminal} NULL forever.
+     * Without it a converted hire kept inflating "Candidates in pipeline"
+     * and every per-position open/stage/idle count. The task rows already
+     * defended themselves with {@link #applicationInPlay}; the counts did
+     * not, which is exactly the half-fix this closes.
+     * <p>
+     * Safe to narrow here: {@code applicationsFor} / {@code positionsFor} /
+     * {@code candidatesFor} all backfill anything an interview references
+     * but this fetch no longer returns, so labels on the viewer's own
+     * upcoming interviews survive.
+     */
     private List<RecruitmentApplication> openApplicationsOn(
             List<RecruitmentPosition> positions) {
         if (positions.isEmpty()) {
             return List.of();
         }
-        return RecruitmentApplication.list("positionUuid in ?1 and terminal is null",
-                positions.stream().map(RecruitmentPosition::getUuid).toList());
+        return RecruitmentApplication.list(
+                "positionUuid in ?1 and terminal is null and stage <> ?2",
+                positions.stream().map(RecruitmentPosition::getUuid).toList(),
+                RecruitmentStage.HIRED);
     }
 
     /** Non-cancelled ROUND interviews for the union of own + decidable applications. */
@@ -729,6 +747,12 @@ public class RecruitmentLandingService {
     // Small helpers
     // ------------------------------------------------------------------
 
+    /**
+     * "Still in play": open AND not already hired. {@link #openApplicationsOn}
+     * now applies the same rule in SQL, so callers working off that fetch are
+     * already clean — this stays as the in-memory statement of the rule (and
+     * as cover for anything backfilled by {@code applicationsFor}).
+     */
     private static boolean applicationInPlay(RecruitmentApplication application) {
         return application.getTerminal() == null
                 && application.getStage() != RecruitmentStage.HIRED;

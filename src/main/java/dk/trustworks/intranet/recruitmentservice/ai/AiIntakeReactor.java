@@ -6,6 +6,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentReactor;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -132,11 +133,20 @@ public class AiIntakeReactor extends RecruitmentReactor {
                 AiIntakeGenerationService.ORIGIN_REACTOR, event.getSeq(), event.getVisibility());
     }
 
-    /** The candidate's most recently created open application (shared with the regenerate endpoint). */
+    /**
+     * The candidate's most recently created open application (shared with the
+     * regenerate endpoint).
+     * <p>
+     * Excludes the HIRED stage — it keeps {@code terminal} NULL by design, so
+     * without this a hired candidate still looked anchorable. Twin of
+     * {@code CandidateAiReadService.hasOpenApplication}, which gates the
+     * button; the two must agree or the UI offers a Regenerate that 400s.
+     */
     public static RecruitmentApplication latestOpenApplication(String candidateUuid) {
         return RecruitmentApplication.find(
-                        "candidateUuid = ?1 and terminal is null order by createdAt desc, uuid desc",
-                        candidateUuid)
+                        "candidateUuid = ?1 and terminal is null and stage <> ?2"
+                                + " order by createdAt desc, uuid desc",
+                        candidateUuid, RecruitmentStage.HIRED)
                 .firstResult();
     }
 

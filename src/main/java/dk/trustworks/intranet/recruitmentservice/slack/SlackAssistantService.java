@@ -552,9 +552,13 @@ public class SlackAssistantService {
                 .append(" — ").append(position.getStatus() == RecruitmentPositionStatus.OPEN
                         ? "open" : "closed");
         if (position.getStatus() == RecruitmentPositionStatus.OPEN) {
+            // "In play" is what the reply below literally says, so the query
+            // has to mean it: HIRED keeps terminal NULL (it is a stage, not
+            // a terminal), and a hired candidate is not in play.
             List<RecruitmentApplication> open = RecruitmentApplication
-                    .<RecruitmentApplication>list("positionUuid = ?1 and terminal is null",
-                            position.getUuid())
+                    .<RecruitmentApplication>list(
+                            "positionUuid = ?1 and terminal is null and stage <> ?2",
+                            position.getUuid(), RecruitmentStage.HIRED)
                     .stream()
                     .filter(application -> visibility.canReadApplication(actorUuid, application))
                     .toList();
