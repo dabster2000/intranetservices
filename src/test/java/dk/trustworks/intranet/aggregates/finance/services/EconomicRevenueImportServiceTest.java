@@ -464,6 +464,42 @@ class EconomicRevenueImportServiceTest {
                 "e-conomic books revenue as a credit; invoices stores revenue positive");
     }
 
+    // ------------------------------------------------------------------------
+    // D2: the intercompany management-fee accounts never become PHANTOMs
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("D2: A/S 2170/2175 are denied — the intranet already holds that run as INTERNAL_SERVICE")
+    void testIntercompanyManagementFeeAccountsAreDenied() {
+        // On 2026-08-17 these carried 0 booked entries and 7,039,435.31 DKK of unbooked
+        // drafts (the 30 June management-fee run), while the intranet already held the
+        // identical run as 24 CREATED INTERNAL_SERVICE invoices totalling 7,039,435.31.
+        // Importing either side would double-count and inject intercompany into group
+        // revenue. The deny-list protects the booked path too, for the day it is posted.
+        assertTrue(service.shouldSkipAccount(AS_UUID, 2170),
+                "A/S 2170 (management fee to Technology) is intercompany, not external revenue");
+        assertTrue(service.shouldSkipAccount(AS_UUID, 2175),
+                "A/S 2175 (management fee to Cyber) is intercompany, not external revenue");
+
+        // The neighbours must keep working — this is a two-account deny-list, not a range.
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2180), "2180 Kantineordning still imports");
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2104), "2104 Vattenfall still imports");
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2106), "2106 Energinet still imports");
+    }
+
+    @Test
+    @DisplayName("D2: a draft entry's customer invoice reference is parsed defensively")
+    void testParseCustomerInvoiceNumber() {
+        assertEquals(28233, EconomicRevenueImportService.parseCustomerInvoiceNumber("28233"));
+        assertEquals(28233, EconomicRevenueImportService.parseCustomerInvoiceNumber("  28233 "));
+        assertEquals(0, EconomicRevenueImportService.parseCustomerInvoiceNumber(null));
+        assertEquals(0, EconomicRevenueImportService.parseCustomerInvoiceNumber(""));
+        assertEquals(0, EconomicRevenueImportService.parseCustomerInvoiceNumber("Faktura 28233"),
+                "unparseable means no Layer-4 key, not a crash");
+        assertEquals(0, EconomicRevenueImportService.parseCustomerInvoiceNumber("999999999999999"),
+                "an overflowing reference must not blow up the import");
+    }
+
     @Test
     @DisplayName("D1: deriveStoredAmount is the exact negation, in both directions, at 2 decimals")
     void testDeriveStoredAmountNegatesExactly() {

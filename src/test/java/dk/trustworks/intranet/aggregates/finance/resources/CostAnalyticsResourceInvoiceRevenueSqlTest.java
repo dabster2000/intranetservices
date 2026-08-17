@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -29,15 +30,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CostAnalyticsResourceInvoiceRevenueSqlTest {
 
     private String groupSql(boolean workPeriod) throws Exception {
-        Method m = CostAnalyticsResource.class.getDeclaredMethod("buildGroupInvoiceRevenueSql", boolean.class);
+        return groupSql(workPeriod, CostSource.BOOKED);
+    }
+
+    private String groupSql(boolean workPeriod, CostSource costSource) throws Exception {
+        Method m = CostAnalyticsResource.class.getDeclaredMethod(
+                "buildGroupInvoiceRevenueSql", boolean.class, CostSource.class);
         m.setAccessible(true);
-        return (String) m.invoke(null, workPeriod);
+        return (String) m.invoke(null, workPeriod, costSource);
     }
 
     private String entitySql(boolean workPeriod) throws Exception {
-        Method m = CostAnalyticsResource.class.getDeclaredMethod("buildEntityInvoiceRevenueSql", boolean.class);
+        return entitySql(workPeriod, CostSource.BOOKED);
+    }
+
+    private String entitySql(boolean workPeriod, CostSource costSource) throws Exception {
+        Method m = CostAnalyticsResource.class.getDeclaredMethod(
+                "buildEntityInvoiceRevenueSql", boolean.class, CostSource.class);
         m.setAccessible(true);
-        return (String) m.invoke(null, workPeriod);
+        return (String) m.invoke(null, workPeriod, costSource);
     }
 
     @SuppressWarnings("unchecked")
@@ -136,6 +147,41 @@ class CostAnalyticsResourceInvoiceRevenueSqlTest {
                 "the rate must always be read through COALESCE, never bare");
         assertFalse(entitySql(false).contains("* i.exchange_rate"),
                 "the rate must always be read through COALESCE, never bare");
+    }
+
+    // ── D10: the cost-source toggle is symmetric ─────────────────────────────
+
+    @Test
+    void bookedOnly_excludesTheDraftRevenueMirror() throws Exception {
+        for (String sql : new String[]{groupSql(true, CostSource.BOOKED), entitySql(true, CostSource.BOOKED)}) {
+            assertTrue(sql.contains("i.economics_posting_status IS NULL OR i.economics_posting_status = 'BOOKED'"),
+                    "BOOKED must keep exactly the historical population — no draft-sourced rows");
+            assertFalse(sql.contains("'DRAFT'"),
+                    "BOOKED must not admit draft-sourced revenue");
+        }
+    }
+
+    @Test
+    void bookedPlusDraft_admitsTheDraftRevenueMirror() throws Exception {
+        // Before this, BOOKED_PLUS_DRAFT widened the posting-status filter on COST with
+        // no matching widening on REVENUE, so the toggle could only move the result down.
+        for (String sql : new String[]{groupSql(true, CostSource.BOOKED_PLUS_DRAFT),
+                                       entitySql(true, CostSource.BOOKED_PLUS_DRAFT)}) {
+            assertTrue(sql.contains("i.economics_posting_status IN ('BOOKED', 'DRAFT')"),
+                    "BOOKED_PLUS_DRAFT must admit draft-sourced revenue, mirroring the cost side");
+        }
+    }
+
+    @Test
+    void everyInvoiceNotFromTheImporter_survivesBothTogglepositions() throws Exception {
+        // economics_posting_status is NULL on every manually created invoice. If the gate
+        // were not null-safe, BOOKED would drop the entire real invoice population.
+        for (CostSource cs : CostSource.values()) {
+            assertTrue(groupSql(true, cs).contains("i.economics_posting_status IS NULL"),
+                    "the posting-status gate must always admit NULL: " + cs);
+            assertTrue(entitySql(true, cs).contains("i.economics_posting_status IS NULL"),
+                    "the posting-status gate must always admit NULL: " + cs);
+        }
     }
 
     // ── GL direct cost: external subcontractors only ─────────────────────────

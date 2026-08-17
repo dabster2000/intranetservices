@@ -91,6 +91,19 @@ class EconomicRevenueImportBatchletTest {
     // Happy path
     // ------------------------------------------------------------------
 
+    /**
+     * The scheduled run refreshes the DRAFT mirror (D2/V506) before the booked
+     * import. Stubbed so these tests exercise the booked path they are about,
+     * rather than the mirror's isolated failure branch.
+     */
+    @BeforeEach
+    void stubDraftMirror() {
+        org.mockito.Mockito.lenient()
+                .when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(new dk.trustworks.intranet.aggregates.finance.services
+                        .EconomicRevenueImportService.DraftMirrorOutcome(0, 0, BigDecimal.ZERO, true));
+    }
+
     @Test
     void scheduledRun_success_logsAndClearsAlertState() {
         batchlet.lastAlertSent.set(Instant.now());
