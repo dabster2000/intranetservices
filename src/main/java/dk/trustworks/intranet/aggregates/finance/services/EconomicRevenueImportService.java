@@ -397,6 +397,13 @@ public class EconomicRevenueImportService {
      * {@code fact_company_revenue*} views exclude them entirely — those views have
      * no posting-status concept and are the booked reconciliation reference.
      *
+     * <p><b>Atomic by design.</b> The wipe and every insert run inside this method's
+     * single transaction, so the mirror either fully reflects e-conomic's current
+     * drafts or is left exactly as it was. Do not "fix" this by routing the inserts
+     * through a self-proxy to make {@code REQUIRES_NEW} engage — per-voucher
+     * transactions would let a mid-run failure leave a half-rebuilt mirror, which
+     * for a delete-and-replace population means silently missing revenue.
+     *
      * <p>Measured on production 2026-08-17: 2,396,194.68 DKK of accrued
      * self-billing (14 entries on 2104/2106, all "periodiseret", 30 June 2026) that
      * no dashboard could see under any setting, plus the standing 2180 canteen
@@ -442,14 +449,31 @@ public class EconomicRevenueImportService {
                             deriveStoredAmount(v.sumAmount()));
                     continue;
                 }
+                // Deliberately NOT caught per voucher. The delete and every insert share
+                // this method's transaction — insertInvoiceAndItem's REQUIRES_NEW does not
+                // engage on a self-call — so the rebuild is atomic, which is exactly what a
+                // mirror wants: either it fully reflects e-conomic's current drafts, or it
+                // is left untouched. Swallowing a failure here would be worse than useless:
+                // the transaction would already be marked rollback-only, so the loop would
+                // keep counting "inserts" that can never commit and the wipe would roll back
+                // with them, reporting a healthy run over a mirror that never changed.
+                // The batchlet isolates this whole call, so a failure costs the mirror for
+                // one night and never the booked import.
+                //
+                // The constraint violation is rethrown UNCHECKED on purpose: JTA rolls back
+                // on unchecked exceptions only, so letting the checked one propagate would
+                // COMMIT the half-rebuilt mirror — the precise opposite of the intent.
                 try {
                     insertInvoiceAndItem(v, LocalDateTime.now(), PostingStatus.DRAFT.name());
-                    inserted++;
-                    total = total.add(deriveStoredAmount(v.sumAmount()));
-                } catch (Exception ex) {
-                    log.errorf(ex, "refreshDraftMirror: insert failed for company=%s voucher=%d — batch continues",
-                            companyUuid, v.voucherNumber());
+                } catch (SQLIntegrityConstraintViolationException collision) {
+                    throw new IllegalStateException(String.format(
+                            "draft mirror insert collided with an existing invoice "
+                                    + "(company=%s account=%d voucher=%d entry=%d) — rebuild aborted, "
+                                    + "previous mirror left intact",
+                            companyUuid, v.account(), v.voucherNumber(), v.minEntryNumber()), collision);
                 }
+                inserted++;
+                total = total.add(deriveStoredAmount(v.sumAmount()));
             }
         }
         log.infof("refreshDraftMirror: deleted=%d inserted=%d totalDkk=%s dryRun=%s", deleted, inserted, total, dryRun);
