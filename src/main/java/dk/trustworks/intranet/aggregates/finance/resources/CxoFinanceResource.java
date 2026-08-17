@@ -1846,6 +1846,8 @@ public class CxoFinanceResource {
                         a.year(),
                         a.month(),
                         a.glSalary(),
+                        a.draftSalary(),
+                        a.kind(salaryGLAnomalyCheck.thresholdPct()).name(),
                         a.intendedSalary(),
                         a.gapDkk(),
                         a.coveragePct()))
