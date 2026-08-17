@@ -12,6 +12,9 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.security.ScopeContext;
+import dk.trustworks.intranet.security.ScopeEnforced;
+import dk.trustworks.intranet.security.ScopeGuard;
+import dk.trustworks.intranet.security.ScopeResolution;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -52,6 +55,9 @@ public class YourPartOfTrustworksResource {
     ScopeContext scopeContext;
 
     @Inject
+    ScopeGuard scope;
+
+    @Inject
     SalaryRecalculationService salaryRecalculationService;
 
     /** Upper bound on users per bulk refresh (well above headcount) — guards against abusive payloads. */
@@ -66,10 +72,26 @@ public class YourPartOfTrustworksResource {
         LocalDate startDate = LocalDate.of(year, 7, 1);
         LocalDate endExclusive = startDate.plusYears(1);
 
-        List<BiDataPerDay> days = BiDataPerDay.list(
-                "documentDate >= ?1 and documentDate < ?2 and consultantType in (?3, ?4, ?5)",
-                startDate, endExclusive, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT
-        );
+        // Phase 9.3: per-employee row set, so a bounded actor's reach binds into
+        // the query (8.6) instead of denying — an employee gets exactly their own
+        // rows; empty reach returns nothing (fail closed). Headerless callers and
+        // ALL-scope holders (HR/ADMIN/PARTNER/TECHPARTNER) are byte-identical.
+        ScopeResolution reach = scope.reachOrNull("bonus:read");
+        List<BiDataPerDay> days;
+        if (reach == null || reach.unbounded()) {
+            days = BiDataPerDay.list(
+                    "documentDate >= ?1 and documentDate < ?2 and consultantType in (?3, ?4, ?5)",
+                    startDate, endExclusive, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT
+            );
+        } else if (reach.subjects().isEmpty()) {
+            return new ArrayList<>();
+        } else {
+            days = BiDataPerDay.list(
+                    "documentDate >= ?1 and documentDate < ?2 and consultantType in (?3, ?4, ?5) and user.uuid in ?6",
+                    startDate, endExclusive, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT,
+                    reach.subjects()
+            );
+        }
 
         Map<String, List<BiDataPerDay>> byUser = days.stream()
                 .collect(Collectors.groupingBy(d -> d.user.getUuid()));
@@ -128,6 +150,17 @@ public class YourPartOfTrustworksResource {
     @Path("/basis")
     public List<EmployeeBonusBasisDTO> findMonthlyBasis(@QueryParam("fiscalstartyear") int year,
                                                         @QueryParam("companyuuid") String companyUuid) {
+        // Phase 9.3: per-employee row set — a bounded actor's reach binds into the
+        // WHERE clause (8.6), never a post-filter. The every-employee consumers
+        // (dashboard "my part", profile bonus) previously received the company-wide
+        // basis and discarded all but the caller's record at the BFF; with the
+        // actor identified, that whole payload no longer leaves the backend.
+        ScopeResolution reach = scope.reachOrNull("bonus:read");
+        boolean bounded = reach != null && !reach.unbounded();
+        if (bounded && reach.subjects().isEmpty()) {
+            return new ArrayList<>(); // fail closed — empty reach never falls back
+        }
+
         String sql = """
             SELECT m.useruuid, m.companyuuid, m.year, m.month,
                    m.eligible_share, m.avg_salary, m.weighted_avg_salary
@@ -137,6 +170,10 @@ public class YourPartOfTrustworksResource {
 
         if (companyUuid != null && !companyUuid.isBlank()) {
             sql += " AND m.companyuuid = :companyUuid";
+        }
+
+        if (bounded) {
+            sql += " AND m.useruuid IN (:subjects)";
         }
 
         // Exclude employees terminated for entire fiscal year
@@ -156,6 +193,10 @@ public class YourPartOfTrustworksResource {
 
         if (companyUuid != null && !companyUuid.isBlank()) {
             query.setParameter("companyUuid", companyUuid);
+        }
+
+        if (bounded) {
+            query.setParameter("subjects", new ArrayList<>(reach.subjects()));
         }
 
         @SuppressWarnings("unchecked")
@@ -274,7 +315,8 @@ public class YourPartOfTrustworksResource {
             String representativeCareerLevel =
                     CareerMultiplierResolver.representative(monthWeights, monthMultipliers, levelNames).levelName();
 
-            out.add(new EmployeeBonusBasisDTO(user, year, months, terminatedBeforeYearEnd,
+            out.add(new EmployeeBonusBasisDTO(EmployeeBonusBasisDTO.BasisUser.from(user), year,
+                    months, terminatedBeforeYearEnd,
                     monthMultipliers, careerIneligible, representativeCareerLevel));
         }
 
@@ -302,6 +344,7 @@ public class YourPartOfTrustworksResource {
     @POST
     @Path("/recalc-salary")
     @RolesAllowed({"bonus:write"})
+    @ScopeEnforced
     public Response recalcSalaryBulk(@Valid SalaryRecalcRequest request) {
         if (request.getUserUuids() == null || request.getUserUuids().isEmpty()) {
             throw new BadRequestException("userUuids must not be empty");
@@ -323,6 +366,7 @@ public class YourPartOfTrustworksResource {
     @POST
     @Path("/recalc-salary/{useruuid}")
     @RolesAllowed({"bonus:write"})
+    @ScopeEnforced
     public Response recalcSalaryUser(@PathParam("useruuid") String useruuid, @Valid SalaryRecalcRequest request) {
         if (useruuid == null || useruuid.isBlank()) {
             throw new BadRequestException("useruuid is required");
