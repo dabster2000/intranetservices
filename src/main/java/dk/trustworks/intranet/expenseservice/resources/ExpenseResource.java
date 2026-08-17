@@ -17,6 +17,9 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseFileNotFoundExcepti
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.security.ScopeEnforced;
+import dk.trustworks.intranet.security.ScopeGuard;
+import dk.trustworks.intranet.security.ScopeResolution;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.security.identity.SecurityIdentity;
@@ -70,23 +73,40 @@ public class ExpenseResource {
     @Inject
     SecurityIdentity identity;
 
+    @Inject
+    ScopeGuard scope;
+
+    /** Phase 9.2 denial text — one message for every expense reach refusal. */
+    private static final String OUTSIDE_REACH = "This expense is outside your access scope";
+
     @GET
     @Path("/{uuid}")
     public Expense findByUuid(@PathParam("uuid") String uuid) {
-        return Expense.findById(uuid);
+        Expense expense = expenseService.findByUuid(uuid);
+        if (expense != null) {
+            // Phase 9.2: the acting human (when present) must reach the owner.
+            // OWN covers the employee reading their own expense — including the
+            // mobile flow, whose session resolves to the device owner.
+            scope.requireSubjectWhenActor("expenses:read", expense.getUseruuid(), OUTSIDE_REACH);
+        }
+        return expense;
     }
 
     @GET
     @Path("/{uuid}/decision-log")
     @RolesAllowed({"expenses:read", "expenses:review"})
     public java.util.List<ExpenseDecisionLogEntryDTO> decisionLog(@PathParam("uuid") String uuid) {
-        Expense e = Expense.findById(uuid);
+        Expense e = expenseService.findByUuid(uuid);
         if (e == null) throw new NotFoundException();
 
-        String caller = header.getUserUuid();
-        boolean isHR = identity.hasRole("expenses:review");
-        boolean isOwner = caller != null && caller.equals(e.getUseruuid());
-        if (!isHR && !isOwner) throw new ForbiddenException();
+        // Phase 9.2: with an actor, reach decides (owner via OWN, HR/ADMIN via ALL) —
+        // the client-credential probe below is meaningless for BFF traffic, whose
+        // system token always carries expenses:review regardless of the human.
+        if (scope.actorOrNull() != null) {
+            scope.requireSubjectWhenActor("expenses:read", e.getUseruuid(), OUTSIDE_REACH);
+        } else if (!identity.hasRole("expenses:review")) {
+            throw new ForbiddenException();
+        }
 
         return logs.findByExpense(uuid).stream().map(l ->
             new ExpenseDecisionLogEntryDTO(
@@ -107,6 +127,17 @@ public class ExpenseResource {
     @GET
     @Path("/file/{uuid}")
     public ExpenseFile getFileById(@PathParam("uuid") String uuid) {
+        // Phase 9.2: receipts are the route the phase file calls out — a list can
+        // be correctly scoped while the file route serves any receipt by UUID.
+        // The file shares the expense's uuid; the acting human must reach the
+        // owning expense's owner. No owning row → 404 for humans (fail closed).
+        if (scope.actorOrNull() != null) {
+            Expense owning = expenseService.findByUuid(uuid);
+            if (owning == null) {
+                throw new NotFoundException("No expense for receipt " + uuid);
+            }
+            scope.requireSubjectWhenActor("expenses:read", owning.getUseruuid(), OUTSIDE_REACH);
+        }
         try {
             return expenseFileService.getFileById(uuid);
         } catch (ExpenseFileNotFoundException e) {
@@ -127,6 +158,10 @@ public class ExpenseResource {
     @RolesAllowed({"expenses:read"})
     public KeyValueDTO validateExpense(@PathParam("uuid") String uuid) {
         log.infof("Validating expense receipt via REST API for uuid=%s", uuid);
+        Expense expense = expenseService.findByUuid(uuid);
+        if (expense != null) {
+            scope.requireSubjectWhenActor("expenses:read", expense.getUseruuid(), OUTSIDE_REACH);
+        }
         String validationMessage = expenseService.validateExpenseReceipt(uuid);
         return new KeyValueDTO(uuid, validationMessage);
     }
@@ -140,17 +175,31 @@ public class ExpenseResource {
         int pageInt = Integer.parseInt(page);
         int limitInt = Integer.parseInt(limit);
 
-        return Expense.find("useruuid = ?1 and status <> ?2", Sort.by("expensedate").descending(), useruuid, STATUS_DELETED)
-                .page(Page.of(pageInt, limitInt))
-                .list();
+        // Phase 9.2 (Phase 8 rule 8.6): scoped when the caller identifies a human
+        // actor; the subject set binds into the WHERE clause, never a post-filter.
+        // The employee's own ledger — web and mobile alike — is the OWN case:
+        // the actor always reaches themselves, so the flow is unchanged by
+        // construction.
+        ScopeResolution reach = scope.reachOrNull("expenses:read");
+        if (reach == null || reach.unbounded()) {
+            return expenseService.findVisibleByUser(useruuid, pageInt, limitInt, null);
+        }
+        if (!reach.permits(useruuid)) {
+            throw new ForbiddenException(OUTSIDE_REACH);
+        }
+        return expenseService.findVisibleByUser(useruuid, pageInt, limitInt, reach.subjects());
     }
 
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
         return Expense.find("useruuid = ?1 and status <> ?2", useruuid, STATUS_DELETED).list();
     }
 
+    // Phase 9.2: a project's expense list spans arbitrary owners — no subject
+    // filtering exists, so a bounded actor is refused outright (9.4 policy).
+    // No BFF route calls this today; machine callers are headerless and pass.
     @GET
     @Path("/project/{projectuuid}/search/period")
+    @ScopeEnforced
     public List<Expense> findByProjectAndPeriod(@PathParam("projectuuid") String projectuuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
@@ -163,12 +212,21 @@ public class ExpenseResource {
     public List<Expense> findByUserAndPeriod(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        return Expense.find("useruuid like ?1 and expensedate >= ?2 and expensedate <= ?3 and status <> ?4",
-                useruuid, localFromDate, localToDate, STATUS_DELETED).list();
+        ScopeResolution reach = scope.reachOrNull("expenses:read");
+        if (reach == null || reach.unbounded()) {
+            return expenseService.findVisibleByUserAndPeriod(useruuid, localFromDate, localToDate, null);
+        }
+        if (!reach.permits(useruuid)) {
+            throw new ForbiddenException(OUTSIDE_REACH);
+        }
+        return expenseService.findVisibleByUserAndPeriod(useruuid, localFromDate, localToDate, reach.subjects());
     }
 
+    // Phase 9.2: company-wide review list — bounded actors refused (9.4 policy);
+    // HR/ADMIN hold expenses:read at ALL and pass unchanged.
     @GET
     @Path("/search/period")
+    @ScopeEnforced
     public List<Expense> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
@@ -180,6 +238,7 @@ public class ExpenseResource {
 
     @GET
     @Path("/search/statuses")
+    @ScopeEnforced
     public List<Expense> findByStatuses(@QueryParam("statuses") String statusesParam) {
         if (statusesParam == null || statusesParam.isEmpty()) {
             return List.of();
@@ -234,6 +293,16 @@ public class ExpenseResource {
     @Transactional
     public Response saveExpense(@Valid CreateExpenseDTO dto) throws IOException {
         log.info("ExpenseResource.saveExpense");
+        // Phase 9.2: an acting human files expenses for themselves unless their
+        // expenses:review reach is unbounded (HR/ADMIN, e.g. View-as). PUT and
+        // DELETE always had an owner check; create was the gap. The BFF pins
+        // dto.useruuid to the session/mobile user, so legitimate flows are
+        // byte-identical; headerless machine flows are Phase 12 territory.
+        String creatingActor = scope.actorOrNull();
+        if (creatingActor != null && !creatingActor.equals(dto.getUseruuid())
+                && !scope.actorHasUnbounded("expenses:review")) {
+            throw new ForbiddenException("Expenses can only be filed for yourself");
+        }
         // Map the client-writable request DTO onto a fresh entity. Server-managed fields
         // (status/state/AI verdict/voucher triple/version/…) are absent from the DTO, so
         // they are structurally unbindable; processExpense still owns the workflow head.
@@ -292,13 +361,19 @@ public class ExpenseResource {
     @RolesAllowed({"expenses:write"})
     @Transactional
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
-        Expense existing = Expense.findById(uuid);
+        Expense existing = expenseService.findByUuid(uuid);
         if (existing == null) {
             throw new WebApplicationException("Expense not found", 404);
         }
 
-        String actorUuid = header.getUserUuid();
-        boolean isAccountingReviewer = identity.hasRole("expenses:review");
+        // Phase 9.2: with an actor, "reviewer" means the human's expenses:review
+        // reach is unbounded — the client-credential probe always passed for BFF
+        // traffic (the system token carries expenses:review for every request,
+        // whoever the human was). Headerless callers keep the credential probe.
+        String actorUuid = scope.actorOrNull();
+        boolean isAccountingReviewer = actorUuid != null
+                ? scope.actorHasUnbounded("expenses:review")
+                : identity.hasRole("expenses:review");
         boolean isOwner = actorUuid != null && actorUuid.equals(existing.getUseruuid());
         if (!isAccountingReviewer && !isOwner) {
             throw new ForbiddenException("not the expense owner");
@@ -351,13 +426,16 @@ public class ExpenseResource {
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
         log.info("Deleting expense with uuid: "+ uuid);
-        Expense expense = Expense.findById(uuid);
+        Expense expense = expenseService.findByUuid(uuid);
         if (expense == null) {
             throw new WebApplicationException("Expense not found", 404);
         }
 
-        String actorUuid = header.getUserUuid();
-        boolean isAccountingReviewer = identity.hasRole("expenses:review");
+        // Phase 9.2: same actor-aware reviewer branch as updateOne.
+        String actorUuid = scope.actorOrNull();
+        boolean isAccountingReviewer = actorUuid != null
+                ? scope.actorHasUnbounded("expenses:review")
+                : identity.hasRole("expenses:review");
         if (!isAccountingReviewer && (actorUuid == null || !actorUuid.equals(expense.getUseruuid()))) {
             throw new ForbiddenException("not the expense owner");
         }
