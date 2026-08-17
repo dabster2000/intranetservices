@@ -105,6 +105,39 @@ class CostAnalyticsResourceInvoiceRevenueSqlTest {
                 "INTERNAL status gate stays QUEUED/CREATED");
     }
 
+    // ── Foreign currency ─────────────────────────────────────────────────────
+
+    @Test
+    void bothBuilders_convertForeignCurrencyToDkk() throws Exception {
+        // Until V503 neither builder read invoices.currency, so a EUR or SEK invoice
+        // was summed at face value as kroner: FY25/26 understated Technology's 6 EUR
+        // invoices by 1,100,566 DKK and overstated A/S's 9 SEK invoices by 453,469.
+        for (String sql : new String[]{groupSql(true), groupSql(false), entitySql(true), entitySql(false)}) {
+            assertTrue(sql.contains("COALESCE(i.exchange_rate, 1)"),
+                    "every revenue builder must convert the line total at the invoice's own rate");
+        }
+    }
+
+    @Test
+    void fxFactor_appliesToTheLineTotalNotJustTheSign() throws Exception {
+        // The factor must multiply (rate*hours), not sit beside the +1/-1 type factor,
+        // or a credit note would convert while its invoice did not.
+        assertTrue(groupSql(false).contains("(ii.rate * ii.hours) * COALESCE(i.exchange_rate, 1)"),
+                "group builder converts the line total");
+        assertTrue(entitySql(false).contains("(ii.rate * ii.hours) * COALESCE(i.exchange_rate, 1)"),
+                "entity builder converts the line total");
+    }
+
+    @Test
+    void fxFactor_isNullSafeSoKroneInvoicesAreUnchanged() throws Exception {
+        // exchange_rate is NULL on every DKK invoice; without the COALESCE the whole
+        // revenue line would evaluate to NULL and the dashboard would read zero.
+        assertFalse(groupSql(false).contains("* i.exchange_rate"),
+                "the rate must always be read through COALESCE, never bare");
+        assertFalse(entitySql(false).contains("* i.exchange_rate"),
+                "the rate must always be read through COALESCE, never bare");
+    }
+
     // ── GL direct cost: external subcontractors only ─────────────────────────
 
     @Test

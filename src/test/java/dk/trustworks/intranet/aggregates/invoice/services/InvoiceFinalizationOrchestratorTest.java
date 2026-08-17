@@ -49,6 +49,9 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock BillingContextResolver            billingResolver;
     @Mock EconomicsAgreementResolver        agreements;
     @Mock InvoiceItemRecalculator           recalc;
+    // V503: createDraft stamps the DKK rate on foreign-currency invoices before
+    // touching e-conomic. Mocked here — these tests assert orchestration, not FX.
+    @Mock InvoiceExchangeRateService        exchangeRates;
     @Mock InvoiceAttributionService         attributionService;
     @Mock BonusService                      bonus;
     @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;

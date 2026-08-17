@@ -69,6 +69,19 @@ public class Invoice extends PanacheEntityBase {
     public String invoiceRefUuid;
     public int invoicenumber;
     public String currency;
+    /**
+     * DKK per one unit of {@link #currency}, as realised in e-conomic (V503).
+     *
+     * <p>{@code null} on DKK invoices and on any invoice whose rate could not be
+     * sourced; every reader COALESCEs it to 1, so revenue SQL is unchanged for
+     * kroner documents. Stamped at draft finalization by
+     * {@code InvoiceExchangeRateService}; historical rows backfilled by V504.
+     *
+     * <p>Before this column existed, revenue counted a EUR or SEK invoice at face
+     * value as kroner.
+     */
+    @Column(name = "exchange_rate")
+    public java.math.BigDecimal exchangeRate;
     public double vat;
     @Column(name = "referencenumber")
     public int referencenumber;
