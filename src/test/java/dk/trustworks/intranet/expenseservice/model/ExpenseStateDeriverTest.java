@@ -122,7 +122,8 @@ class ExpenseStateDeriverTest {
 
     @Test void isStatusDerivedState_trueForPipelineAndValidated_falseForHeadTerminal() {
         for (String s : new String[]{"PROCESSING","UPLOADED","VOUCHER_CREATED",
-                "VERIFIED_UNBOOKED","VERIFIED_BOOKED","UP_FAILED","NO_FILE","NO_USER","VALIDATED"}) {
+                "VERIFIED_UNBOOKED","VERIFIED_BOOKED","UP_FAILED","NO_FILE","NO_USER","VALIDATED",
+                "CLOSED_MANUAL"}) {
             assertTrue(isStatusDerivedState(s), s);
         }
         for (String s : new String[]{"CREATED","DELETED"}) {
@@ -130,6 +131,15 @@ class ExpenseStateDeriverTest {
         }
         assertFalse(isStatusDerivedState(null));
         assertFalse(isStatusDerivedState("PDF"));
+    }
+
+    @Test void closedManual_isTerminalMirroredOnBothAxes() {
+        // P0 manual terminal: status CLOSED_MANUAL derives state CLOSED_MANUAL with no
+        // attention fields, and is status-derived so the entity hook keeps the axes mirrored.
+        DerivedState d = deriveFromStatus(CLOSED_MANUAL);
+        assertEquals(CLOSED_MANUAL, d.state());
+        assertNull(d.owner());
+        assertNull(d.kind());
     }
 
     @Test void amountMismatchKindMapsToNeedsFixLegacyReviewState() {

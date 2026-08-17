@@ -54,7 +54,11 @@ public class ExpenseBatchDecisionResource {
             } catch (NotFoundException ex) {
                 skipped.add(new ExpenseBatchDecisionResultDTO.Skipped(uuid, "not found"));
             } catch (BadRequestException ex) {
-                skipped.add(new ExpenseBatchDecisionResultDTO.Skipped(uuid, "not awaiting a decision"));
+                // Carry the guard's own message (e.g. the P0 technical-row refusal) so batch
+                // approve reports WHY a row was skipped instead of a generic label.
+                String why = ex.getMessage() != null && !ex.getMessage().isBlank()
+                        ? ex.getMessage() : "not awaiting a decision";
+                skipped.add(new ExpenseBatchDecisionResultDTO.Skipped(uuid, why));
             }
         }
         return new ExpenseBatchDecisionResultDTO(updated, skipped);

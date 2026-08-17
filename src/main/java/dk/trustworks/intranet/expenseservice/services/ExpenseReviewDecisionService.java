@@ -24,10 +24,11 @@ public class ExpenseReviewDecisionService {
 
     @Inject ExpenseDecisionLogService logs;
 
-    /** Approve a single expense. Throws if not found / not NEEDS_ATTENTION. */
+    /** Approve a single expense. Throws if not found / not NEEDS_ATTENTION / TECHNICAL. */
     @Transactional
     public void approve(String uuid, String actorUuid, String reason) {
         Expense e = requireNeedsAttention(uuid);
+        requireApprovable(e);
         logs.recordHRApprove(e, actorUuid, reason);
         // Only advance CREATED → VALIDATED. Stranded rows whose status already moved past
         // CREATED (e.g. VERIFIED_UNBOOKED) already live in e-conomic; downgrading would
@@ -45,6 +46,7 @@ public class ExpenseReviewDecisionService {
     @Transactional
     public void reject(String uuid, String actorUuid, String reason) {
         Expense e = requireNeedsAttention(uuid);
+        requireRejectable(e);
         logs.recordHRReject(e, actorUuid, reason);
         e.setStatus("DELETED");                      // excludes from pipelines (status<>DELETED)
         e.setState(ExpenseStateDeriver.REJECTED);    // authoritative terminal (survives hr_decision drop)
@@ -60,5 +62,34 @@ public class ExpenseReviewDecisionService {
         if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState()))
             throw new BadRequestException("decision requires state=NEEDS_ATTENTION");
         return e;
+    }
+
+    /**
+     * P0 guard: approving a TECHNICAL row is structurally a no-op — the entity hook
+     * re-derives NEEDS_ATTENTION from UP_FAILED/NO_FILE/NO_USER in this same transaction,
+     * so only the audit row and a datemodified reset would survive (observed in prod:
+     * four "Accounting approved" entries on one 2024 receipt still in the queue).
+     * Thrown BEFORE the log write so no fictional approval is recorded.
+     * Package-private static for plain unit tests.
+     */
+    static void requireApprovable(Expense e) {
+        if (ExpenseStateDeriver.KIND_TECHNICAL.equals(e.getAttentionKind())) {
+            throw new BadRequestException(
+                    "technical pipeline failure — approve cannot fix it; use requeue or close instead");
+        }
+    }
+
+    /**
+     * P0 guard: rejecting a TECHNICAL row that already has an e-conomic voucher would
+     * soft-delete our row while the draft voucher lives on in e-conomic (the DELETE
+     * endpoint blocks the same case via ExpenseDeletePolicy). Close it instead, or
+     * remove the voucher in e-conomic first. Package-private static for plain unit tests.
+     */
+    static void requireRejectable(Expense e) {
+        if (ExpenseStateDeriver.KIND_TECHNICAL.equals(e.getAttentionKind()) && e.getVouchernumber() > 0) {
+            throw new BadRequestException(
+                    "a voucher already exists in e-conomic — close the expense (booked manually / written off) "
+                    + "or delete the voucher in e-conomic first");
+        }
     }
 }

@@ -156,6 +156,18 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "attention_kind")
     private String attentionKind;
 
+    /**
+     * When the row last entered NEEDS_ATTENTION — the review queue's age anchor (P0).
+     * Maintained by {@link #syncDerivedState()} and mirrored by
+     * {@code ExpenseService.updateStatus}'s bulk write: set on entry, preserved while the
+     * row stays in the inbox, cleared on exit. Deliberately NOT tied to
+     * {@code datemodified}, which every decision write resets — a failed decision must
+     * not zero the queue age or drop the row out of the Overdue segment.
+     */
+    @JsonIgnore
+    @Column(name = "attention_since")
+    private LocalDateTime attentionSince;
+
     // Unified AI tiers (Phase 1). Now populated, so serialized to the API.
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "ai_outcome")
@@ -219,6 +231,16 @@ public class Expense extends PanacheEntityBase {
             this.attentionKind = d.kind();
         }
         // else: head/terminal with an authoritative state already set → preserve.
+
+        // Queue-age anchor (P0): set when entering NEEDS_ATTENTION, preserved while in it
+        // (a reverted decision keeps the original entry time), cleared on exit.
+        if (ExpenseStateDeriver.NEEDS_ATTENTION.equals(this.state)) {
+            if (this.attentionSince == null) {
+                this.attentionSince = LocalDateTime.now();
+            }
+        } else {
+            this.attentionSince = null;
+        }
     }
 
     @Transient
