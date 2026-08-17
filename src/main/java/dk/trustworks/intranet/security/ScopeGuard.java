@@ -40,11 +40,17 @@ public class ScopeGuard {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
-    /** The acting human's uuid, or {@code null} for headerless (machine) callers. */
+    /**
+     * The acting human's uuid, or {@code null} for machine callers. By the time
+     * resource code runs, {@link HeaderInterceptor} has populated the holder and
+     * a headerless (machine) call carries the JWT client id or
+     * {@code "anonymous"} — never null/blank — so the human/machine
+     * discriminator is the {@link HumanActor} UUID shape, not presence
+     * (findings, 2026-08-17).
+     */
     public String actorOrNull() {
         try {
-            String actor = requestHeaderHolder.getUserUuid();
-            return (actor == null || actor.isBlank()) ? null : actor;
+            return HumanActor.uuidOrNull(requestHeaderHolder.getUserUuid());
         } catch (ContextNotActiveException e) {
             return null;
         }

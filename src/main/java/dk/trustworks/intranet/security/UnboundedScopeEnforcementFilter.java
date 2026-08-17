@@ -2,7 +2,6 @@ package dk.trustworks.intranet.security;
 
 import jakarta.annotation.Priority;
 import jakarta.annotation.security.RolesAllowed;
-import jakarta.enterprise.context.ContextNotActiveException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.Priorities;
@@ -29,7 +28,8 @@ import java.util.Set;
  *
  * <p>Decision table, in evaluation order:
  * <ol>
- *   <li>No {@code X-Requested-By} actor → pass (machine caller; Phase 12).</li>
+ *   <li>No {@code X-Requested-By} <em>human</em> actor — header absent or a
+ *       machine identity per {@link HumanActor} → pass (Phase 12).</li>
  *   <li>Any gating permission granted at {@code ALL} → pass.</li>
  *   <li>Otherwise → 403. This covers both the bounded grant (a console scope
  *       edit on a surface with no subject dimension) and the no-grant case,
@@ -37,6 +37,17 @@ import java.util.Set;
  *       {@link AuthorizationService#resolveReach} already resolves those to
  *       {@link ScopeResolution#none()}.</li>
  * </ol>
+ *
+ * <p>The actor is read from the <em>raw request header</em>, never from
+ * {@link RequestHeaderHolder}. Two independent reasons, both found live on
+ * staging at the 9.1 deploy (findings, 2026-08-17): the holder is populated by
+ * {@link HeaderInterceptor}, which runs at the JAX-RS default priority
+ * ({@code Priorities.USER}, 5000) — <em>after</em> this filter at
+ * {@code AUTHORIZATION + 100} — so reading the holder here always saw an empty
+ * bean and passed everyone; and once populated the holder never holds
+ * null/blank for machine callers — {@code HeaderInterceptor} back-fills the
+ * JWT client id or {@code "anonymous"} — so holder-based detection after the
+ * fact would flip the deliberate machine fail-open into a blanket deny.
  *
  * <p>Phase 12 replaces this with the general annotation-derived interceptor
  * (dial + shadow logging); until then the annotation is placed only on finance
@@ -55,12 +66,9 @@ public class UnboundedScopeEnforcementFilter implements ContainerRequestFilter {
     @Inject
     AuthorizationService authorizationService;
 
-    @Inject
-    RequestHeaderHolder requestHeaderHolder;
-
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        String actor = actorOrNull();
+        String actor = HumanActor.uuidOrNull(requestContext.getHeaderString("X-Requested-By"));
         if (actor == null) {
             return;
         }
@@ -102,14 +110,5 @@ public class UnboundedScopeEnforcementFilter implements ContainerRequestFilter {
         Method method = resourceInfo.getResourceMethod();
         return (clazz != null ? clazz.getSimpleName() : "?")
                 + "." + (method != null ? method.getName() : "?");
-    }
-
-    private String actorOrNull() {
-        try {
-            String actor = requestHeaderHolder.getUserUuid();
-            return (actor == null || actor.isBlank()) ? null : actor;
-        } catch (ContextNotActiveException e) {
-            return null;
-        }
     }
 }
