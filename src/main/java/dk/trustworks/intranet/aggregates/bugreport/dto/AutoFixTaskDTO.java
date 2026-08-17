@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.utils.json.UtcInstant;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.math.BigDecimal;
@@ -20,6 +21,13 @@ import java.util.Map;
  * <p>Includes computed getters that extract values from the {@code result} and
  * {@code usage_info} JSON columns. All computed getters handle null and
  * malformed JSON gracefully, returning null or empty defaults.
+ *
+ * <p>The four timestamps are UTC instants and carry a {@code Z} on the wire. Only two
+ * clocks ever write them, and both are UTC: this service (SQL {@code NOW(3)}, DB server
+ * timezone UTC — see {@code BugReportAutoFixService} and {@code AutoFixTaskReaper}) and the
+ * Fargate worker, whose {@code now_iso()} is
+ * {@code datetime.now(timezone.utc)} ({@code infra/claude-runner/worker/worker.py:183-185}).
+ * Nothing here is a calendar-day marker or a human-entered wall-clock time.
  */
 @JBossLog
 public class AutoFixTaskDTO {
@@ -58,13 +66,19 @@ public class AutoFixTaskDTO {
     @JsonProperty("requested_by")
     private String requestedBy;
 
+    /** UTC instant — {@code NOW(3)} at enqueue time. */
     @JsonProperty("created_at")
+    @UtcInstant
     private LocalDateTime createdAt;
 
+    /** UTC instant — written by the worker when it claims the task. */
     @JsonProperty("started_at")
+    @UtcInstant
     private LocalDateTime startedAt;
 
+    /** UTC instant — written by the worker, or by the reaper as {@code NOW(3)}. */
     @JsonProperty("completed_at")
+    @UtcInstant
     private LocalDateTime completedAt;
 
     // --- New fields from V249 columns ---
@@ -76,7 +90,14 @@ public class AutoFixTaskDTO {
     @JsonProperty("usage_info")
     private String usageInfo;
 
+    /**
+     * UTC instant — refreshed by the worker's heartbeat thread every 60s via {@code NOW(3)}.
+     * <p>Lease expiry is decided entirely in SQL ({@code lease_expires_at < NOW()} in
+     * {@code AutoFixTaskReaper}), so this value never round-trips through JSON on the path
+     * that reclaims a task. Here it only feeds the dashboard's "last seen" readout.
+     */
     @JsonProperty("heartbeat_at")
+    @UtcInstant
     private LocalDateTime heartbeatAt;
 
     // --- Getters and setters ---

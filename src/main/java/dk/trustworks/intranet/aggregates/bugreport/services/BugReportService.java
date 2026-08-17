@@ -15,7 +15,7 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
@@ -458,9 +458,16 @@ public class BugReportService {
             }
 
             // Return the current updatedAt for optimistic locking on submit
-            // (we don't modify the report during analyze, so this is still fresh)
+            // (we don't modify the report during analyze, so this is still fresh).
+            //
+            // Zone-designated to match BugReportDTO.updatedAt: this is the SAME concurrency
+            // token, and BugReportModal sends whichever of the two it happens to hold
+            // (`triageData?.updatedAt ?? report.updatedAt`). Both shapes are accepted by
+            // parseIfMatch, so a bare value would still work — but one token travelling in
+            // two shapes is a trap for the next reader that compares them as strings.
+            // Instant.toString() always emits Z, never "+00:00".
             String updatedAt = report.getUpdatedAt() != null
-                    ? report.getUpdatedAt().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                    ? report.getUpdatedAt().toInstant(ZoneOffset.UTC).toString()
                     : null;
 
             return new TriageResponse(

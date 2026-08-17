@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.bugreport.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.utils.json.UtcInstant;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -15,7 +16,8 @@ public record AutoFixStatsDTO(
     @JsonProperty("worker_status") String workerStatus,
     @JsonProperty("active_task_id") String activeTaskId,
     @JsonProperty("active_task_elapsed_seconds") Long activeTaskElapsedSeconds,
-    @JsonProperty("last_successful_fix_at") LocalDateTime lastSuccessfulFixAt,
+    /** UTC instant — {@code autofix_tasks.completed_at} of the newest COMPLETED task. */
+    @JsonProperty("last_successful_fix_at") @UtcInstant LocalDateTime lastSuccessfulFixAt,
     @JsonProperty("last_successful_pr_url") String lastSuccessfulPrUrl,
     @JsonProperty("last_successful_pr_number") Integer lastSuccessfulPrNumber,
     @JsonProperty("success_rate") double successRate,

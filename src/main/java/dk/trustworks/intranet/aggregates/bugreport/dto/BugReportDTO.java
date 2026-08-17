@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.bugreport.dto;
 
+import dk.trustworks.intranet.utils.json.UtcInstant;
+
 import java.time.LocalDateTime;
 
 public record BugReportDTO(
@@ -25,7 +27,16 @@ public record BugReportDTO(
     String userRoles,
     String aiRawResponse,
     Boolean previouslyWorked,
-    LocalDateTime createdAt,
-    LocalDateTime updatedAt,
+    /** UTC instant — stamped by {@code BugReport.createDraft} / {@code @PrePersist}. */
+    @UtcInstant LocalDateTime createdAt,
+    /**
+     * UTC instant — restamped by every state transition and by {@code @PreUpdate}.
+     * <p>Doubles as the {@code If-Match} concurrency token. Safe to zone-designate because
+     * {@code BugReportResource.parseIfMatch} reads it through
+     * {@link dk.trustworks.intranet.utils.TemporalParams#parseUtcInstant}, which accepts the
+     * bare shape and an explicit offset alike — so tabs opened before this change, and task
+     * revisions still serving the old shape during a rolling deploy, keep working.
+     */
+    @UtcInstant LocalDateTime updatedAt,
     long commentCount
 ) {}

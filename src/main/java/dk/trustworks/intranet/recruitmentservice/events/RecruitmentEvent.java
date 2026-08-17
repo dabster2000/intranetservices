@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.events;
 
+import dk.trustworks.intranet.utils.json.UtcInstant;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -69,6 +70,7 @@ public class RecruitmentEvent extends PanacheEntityBase {
 
     /** UTC, millisecond precision. Set by the recorder at append time. */
     @Column(name = "occurred_at", nullable = false, updatable = false, columnDefinition = "DATETIME(3)")
+    @UtcInstant
     LocalDateTime occurredAt;
 
     @Enumerated(EnumType.STRING)

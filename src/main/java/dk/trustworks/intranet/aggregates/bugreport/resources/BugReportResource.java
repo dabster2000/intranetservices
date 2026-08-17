@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.bugreport.services.BugReportS3Service;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
+import dk.trustworks.intranet.utils.TemporalParams;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -21,7 +22,6 @@ import lombok.extern.jbosslog.JBossLog;
 import java.net.URI;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -525,6 +525,19 @@ public class BugReportResource {
         return scopeContext.hasScope("bugreports:admin");
     }
 
+    /**
+     * Reads the optional {@code If-Match} precondition.
+     *
+     * <p>An ABSENT header legitimately means "no precondition" and yields {@code null}.
+     * A PRESENT but unparseable one is a client error and is rejected: returning
+     * {@code null} for it would make {@code checkOptimisticLock} skip the comparison
+     * entirely, silently turning off lost-update protection for that write.
+     *
+     * <p>Parsed via {@link TemporalParams#parseUtcInstant} so both the bare shape and an
+     * explicit zone designator are accepted — the client echoes back whatever
+     * {@code updatedAt} it was served, and that shape changes when the field becomes
+     * {@code @UtcInstant} (and differs between task revisions during a rolling deploy).
+     */
     private LocalDateTime parseIfMatch(String ifMatchHeader) {
         if (ifMatchHeader == null || ifMatchHeader.isBlank()) {
             return null;
@@ -532,10 +545,10 @@ public class BugReportResource {
         // Remove surrounding quotes if present
         String value = ifMatchHeader.replace("\"", "").trim();
         try {
-            return LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+            return TemporalParams.parseUtcInstant(value);
         } catch (Exception e) {
-            log.debugf("Could not parse If-Match header: %s", ifMatchHeader);
-            return null;
+            log.warnf("Unparseable If-Match header: %s", ifMatchHeader);
+            throw new BadRequestException("If-Match must be an ISO-8601 date-time");
         }
     }
 

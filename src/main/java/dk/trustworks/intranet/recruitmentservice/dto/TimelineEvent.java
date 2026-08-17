@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.dto;
 
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentActorType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
+import dk.trustworks.intranet.utils.json.UtcInstant;
 
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -19,7 +20,8 @@ public record TimelineEvent(
         long seq,
         String eventId,
         RecruitmentEventType eventType,
-        LocalDateTime occurredAt,
+        /** UTC instant — stamped by {@code RecruitmentEventRecorder} at append time. */
+        @UtcInstant LocalDateTime occurredAt,
         RecruitmentActorType actorType,
         String actorUuid,
         /** Resolved "First Last" for USER actors; null for SYSTEM/CANDIDATE. */

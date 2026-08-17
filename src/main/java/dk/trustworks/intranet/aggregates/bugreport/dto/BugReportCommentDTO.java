@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.bugreport.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.utils.json.UtcInstant;
+
 import java.time.LocalDateTime;
 
 public record BugReportCommentDTO(
@@ -10,5 +12,6 @@ public record BugReportCommentDTO(
     String authorName,
     String content,
     @JsonProperty("isSystem") boolean isSystem,
-    LocalDateTime createdAt
+    /** UTC instant — stamped by {@code BugReportComment.create} / {@code @PrePersist}. */
+    @UtcInstant LocalDateTime createdAt
 ) {}

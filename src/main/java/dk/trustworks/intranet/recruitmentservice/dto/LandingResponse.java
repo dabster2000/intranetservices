@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.utils.json.UtcInstant;
+
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -127,7 +129,8 @@ public record LandingResponse(
     public record LandingActivity(
             long seq,
             String eventType,
-            LocalDateTime occurredAt,
+            /** UTC instant — copied straight from {@code RecruitmentEvent.occurredAt}. */
+            @UtcInstant LocalDateTime occurredAt,
             String candidateUuid,
             String candidateName,
             String positionTitle,
