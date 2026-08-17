@@ -13,6 +13,8 @@ import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService.P
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsParameters;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
+import dk.trustworks.intranet.security.ScopeEnforced;
+import dk.trustworks.intranet.security.ScopeGuard;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -73,6 +75,27 @@ public class EmployeeDocumentResource {
     @Inject
     EntityManager em;
 
+    @Inject
+    ScopeGuard scope;
+
+    static final String READ_SCOPE = "documents:read";
+    static final String WRITE_SCOPE = "documents:write";
+
+    /**
+     * Phase 10.6 (access-intent Decision 13): a document's subject is its
+     * owning employee. USER reaches OWN, HR/ADMIN reach ALL (V473) — exactly
+     * the audience the BFF already enforces, so every guard here is
+     * behaviour-preserving on deploy. The document is resolved BEFORE the
+     * check so the verdict keys on the row actually served — the file-by-UUID
+     * routes are this batch's highest-risk item (phase file 10.6/F-11).
+     */
+    private EmployeeDocument requireDocumentReach(String documentUuid, String permissionKey) {
+        EmployeeDocument doc = employeeDocumentService.get(documentUuid);
+        scope.requireSubjectWhenActor(permissionKey, doc.getUserUuid(),
+                "Employee documents outside your reach");
+        return doc;
+    }
+
     // ── Serving ────────────────────────────────────────────────────────────
 
     /**
@@ -85,6 +108,7 @@ public class EmployeeDocumentResource {
     @Path("/{uuid}/content")
     @Produces(MediaType.APPLICATION_OCTET_STREAM)
     public Response content(@PathParam("uuid") String uuid) {
+        requireDocumentReach(uuid, READ_SCOPE);
         EmployeeDocumentService.DocumentContent content =
                 employeeDocumentService.download(uuid, requestHeaderHolder.getUserUuid());
         String encoded = URLEncoder.encode(content.filename(), StandardCharsets.UTF_8)
@@ -100,7 +124,7 @@ public class EmployeeDocumentResource {
     @GET
     @Path("/{uuid}")
     public EmployeeDocumentDTO get(@PathParam("uuid") String uuid) {
-        EmployeeDocument doc = employeeDocumentService.get(uuid);
+        EmployeeDocument doc = requireDocumentReach(uuid, READ_SCOPE);
         return EmployeeDocumentDTO.from(doc, UserEmployeeDocumentResource.resolveName(doc.getUploadedBy()));
     }
 
@@ -145,6 +169,7 @@ public class EmployeeDocumentResource {
     @RolesAllowed({"documents:write"})
     public EmployeeDocumentDTO patch(@PathParam("uuid") String uuid, PatchRequest request) {
         if (request == null) throw new BadRequestException("Request body is required");
+        requireDocumentReach(uuid, WRITE_SCOPE);
         EmployeeDocumentCategory category = null;
         if (request.category() != null && !request.category().isBlank()) {
             try {
@@ -226,6 +251,7 @@ public class EmployeeDocumentResource {
     @Path("/{uuid}")
     @RolesAllowed({"documents:write"})
     public Response delete(@PathParam("uuid") String uuid) {
+        requireDocumentReach(uuid, WRITE_SCOPE);
         employeeDocumentService.delete(uuid, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
@@ -235,6 +261,7 @@ public class EmployeeDocumentResource {
     /** All self-uploads pending HR categorization, across users (spec §6.4). */
     @GET
     @Path("/review-queue")
+    @ScopeEnforced
     public List<EmployeeDocumentDTO> reviewQueue() {
         return UserEmployeeDocumentResource.toDTOs(employeeDocumentService.reviewQueue());
     }
@@ -254,6 +281,7 @@ public class EmployeeDocumentResource {
     @POST
     @Path("/gdpr/users/{useruuid}/erase")
     @RolesAllowed({"documents:gdpr"})
+    @ScopeEnforced
     public Response erase(@PathParam("useruuid") String useruuid, EraseRequest request) {
         if (request == null || !"ERASE".equals(request.confirmation())) {
             throw new BadRequestException("Confirmation mismatch — type ERASE to confirm");
@@ -268,6 +296,7 @@ public class EmployeeDocumentResource {
     @GET
     @Path("/gdpr/users/{useruuid}/export")
     @RolesAllowed({"documents:gdpr"})
+    @ScopeEnforced
     @Produces("application/zip")
     public Response dsarExport(@PathParam("useruuid") String useruuid) {
         byte[] zip = employeeDocumentService.dsarExportZip(useruuid, requestHeaderHolder.getUserUuid());
@@ -283,6 +312,7 @@ public class EmployeeDocumentResource {
     /** Store stats for the settings tab's status strip (spec §6.7). */
     @GET
     @Path("/admin/stats")
+    @ScopeEnforced
     public Map<String, Object> stats() {
         long documentCount = EmployeeDocument.count();
         Long userCount = em.createQuery(
@@ -324,6 +354,7 @@ public class EmployeeDocumentResource {
      */
     @GET
     @Path("/admin/retention-preview")
+    @ScopeEnforced
     public Map<String, Object> retentionPreview() {
         int years = parameters.retentionYears();
         int cap = parameters.nightlyUserCap();
