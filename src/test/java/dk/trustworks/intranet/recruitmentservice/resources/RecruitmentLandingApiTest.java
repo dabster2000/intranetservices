@@ -61,6 +61,8 @@ class RecruitmentLandingApiTest {
     private String idleApplicationUuid;
     private String partnerCandidateUuid;
     private String partnerApplicationUuid;
+    private String hiredCandidateUuid;
+    private String hiredApplicationUuid;
     private String interviewUuid;
     private String referralUuid;
     private String pendingEmailUuid;
@@ -88,6 +90,8 @@ class RecruitmentLandingApiTest {
         idleApplicationUuid = UUID.randomUUID().toString();
         partnerCandidateUuid = UUID.randomUUID().toString();
         partnerApplicationUuid = UUID.randomUUID().toString();
+        hiredCandidateUuid = UUID.randomUUID().toString();
+        hiredApplicationUuid = UUID.randomUUID().toString();
         interviewUuid = UUID.randomUUID().toString();
         referralUuid = UUID.randomUUID().toString();
         pendingEmailUuid = UUID.randomUUID().toString();
@@ -123,6 +127,16 @@ class RecruitmentLandingApiTest {
             P8ProfileFixtures.backdateApplicationStageEntry(em, idleApplicationUuid, 10);
             P8ProfileFixtures.insertInterviewHoursAgo(em, interviewUuid, idleApplicationUuid,
                     "ROUND", 1, "[\"" + interviewerUser + "\"]", "HELD", 30);
+
+            // Someone already hired onto the same position, backdated so it
+            // would land in the idle bucket too if it were counted. markHired
+            // leaves terminal NULL, so only an explicit stage exclusion keeps
+            // this row out of the KPI row and the pipeline counts.
+            P8ProfileFixtures.insertCandidate(em, hiredCandidateUuid,
+                    marker, "Hired", "HIRED", null, null, recruiterUser);
+            P8ProfileFixtures.insertOpenApplication(em, hiredApplicationUuid,
+                    hiredCandidateUuid, teamPositionUuid, "HIRED");
+            P8ProfileFixtures.backdateApplicationStageEntry(em, hiredApplicationUuid, 10);
 
             // A partner-track position with its own candidate — invisible
             // outside the circle in every section.
@@ -183,7 +197,7 @@ class RecruitmentLandingApiTest {
             em.createNativeQuery("DELETE FROM team WHERE uuid = :t")
                     .setParameter("t", teamUuid).executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
-                    List.of(idleCandidateUuid, partnerCandidateUuid),
+                    List.of(idleCandidateUuid, partnerCandidateUuid, hiredCandidateUuid),
                     List.of(teamPositionUuid, partnerPositionUuid),
                     List.of(recruiterUser, teamleadUser, wideTeamleadUser, practiceLeadUser,
                             interviewerUser, employeeUser, circleOwnerUser),
@@ -226,6 +240,14 @@ class RecruitmentLandingApiTest {
 
     private static boolean hasPipeline(List<Map<String, Object>> pipelines, String positionUuid) {
         return pipelines.stream().anyMatch(p -> positionUuid.equals(p.get("positionUuid")));
+    }
+
+    private static Map<String, Object> pipeline(List<Map<String, Object>> pipelines,
+                                                String positionUuid) {
+        return pipelines.stream()
+                .filter(p -> positionUuid.equals(p.get("positionUuid")))
+                .findFirst().orElseThrow(() ->
+                        new AssertionError("no pipeline row for " + positionUuid));
     }
 
     // ---- Role fixtures (spec §7.2 matrix) --------------------------------------
@@ -274,6 +296,51 @@ class RecruitmentLandingApiTest {
         List<Map<String, Object>> pipelines = pipelines(response);
         assertTrue(hasPipeline(pipelines, teamPositionUuid));
         assertFalse(hasPipeline(pipelines, partnerPositionUuid));
+    }
+
+    // ---- Hired candidates are out of every "open" count -------------------------
+
+    /**
+     * The seed hires someone onto {@code teamPositionUuid} (stage HIRED,
+     * terminal NULL — what {@code markHired} leaves) and backdates them into
+     * the idle window. The board must not count them anywhere: the position
+     * carries exactly the one candidate still being processed.
+     * <p>
+     * The task rows already defended themselves with {@code applicationInPlay};
+     * these counts did not, which is what this pins.
+     */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void hiredCandidate_countsInNoPipelineNumber() {
+        Response response = landingFor(recruiterUser);
+        Map<String, Object> row = pipeline(pipelines(response), teamPositionUuid);
+
+        assertEquals(1, row.get("openCount"),
+                "the hire is no longer open on this position");
+        assertEquals(1, row.get("idleCount"),
+                "and does not join the idle bucket either, backdated or not");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> stageCounts = (List<Map<String, Object>>) row.get("stageCounts");
+        int staged = stageCounts.stream()
+                .mapToInt(s -> ((Number) s.get("count")).intValue())
+                .sum();
+        assertEquals(1, staged, "stage counts sum to the one candidate in play");
+        assertTrue(stageCounts.stream()
+                        .noneMatch(s -> "HIRED".equals(s.get("stage"))
+                                && ((Number) s.get("count")).intValue() > 0),
+                "no populated HIRED column on a pipeline board");
+    }
+
+    /** The hire must not show up as a task either — decision or idle. */
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void hiredCandidate_raisesNoTask() {
+        List<Map<String, Object>> tasks = tasks(landingFor(recruiterUser));
+        assertFalse(hasTask(tasks, "IDLE_CANDIDATE", "candidateUuid", hiredCandidateUuid),
+                "a hired candidate is not an idle candidate");
+        assertFalse(hasTask(tasks, "PENDING_DECISION", "candidateUuid", hiredCandidateUuid),
+                "nor is there a decision left to make about them");
     }
 
     // ---- "Your pipelines" scope (2026-08-11) ------------------------------------

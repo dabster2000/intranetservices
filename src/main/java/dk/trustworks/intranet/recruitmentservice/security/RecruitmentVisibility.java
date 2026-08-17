@@ -9,6 +9,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import io.quarkus.panache.common.Parameters;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
@@ -462,9 +463,21 @@ public class RecruitmentVisibility {
     }
 
     /**
-     * Batch variant for list pages: the visible OPEN applications of many
+     * Batch variant for list pages: the visible IN-PLAY applications of many
      * candidates in two queries plus one viewer-context resolution. Keys
      * with no visible open application are absent from the map.
+     * <p>
+     * "In play" excludes the HIRED stage as well as terminals — HIRED keeps
+     * {@code terminal} NULL by design. This feeds {@code CandidateSummary
+     * .activeApplications}, which the UI reads as a PREDICATE, not just a
+     * label: an empty list means "in no pipeline" (the grid's status badge
+     * derivation) and a non-empty one blocks attaching the candidate to a
+     * position (the one-open-application invariant). Leaving hires in made
+     * both of those lie, and disagreed with the invariant's own authority,
+     * {@code RecruitmentApplicationService.openApplicationOf}, which has
+     * always excluded HIRED. The cost is that a hired candidate's row no
+     * longer names the position they were hired onto — the Hired status
+     * badge already says the part that matters.
      */
     public Map<String, List<RecruitmentApplication>> filterOpenApplicationsByCandidate(
             String viewerUuid, Collection<String> candidateUuids) {
@@ -472,8 +485,8 @@ public class RecruitmentVisibility {
             return Map.of();
         }
         List<RecruitmentApplication> applications = RecruitmentApplication.list(
-                "candidateUuid in ?1 and terminal is null order by createdAt",
-                List.copyOf(candidateUuids));
+                "candidateUuid in ?1 and terminal is null and stage <> ?2 order by createdAt",
+                List.copyOf(candidateUuids), RecruitmentStage.HIRED);
         return filterApplicationsBatch(viewerUuid, applications).stream()
                 .collect(Collectors.groupingBy(RecruitmentApplication::getCandidateUuid));
     }

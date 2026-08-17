@@ -54,6 +54,7 @@ class RecruitmentApplicationVisibilityIntegrationTest {
     private String normalApplicationUuid;
     private String partnerApplicationUuid;
     private String terminalApplicationUuid; // rejected — excluded from open info
+    private String hiredApplicationUuid;    // stage HIRED, terminal NULL — also excluded
 
     @BeforeEach
     void seedFixtures() {
@@ -70,6 +71,7 @@ class RecruitmentApplicationVisibilityIntegrationTest {
         normalApplicationUuid = UUID.randomUUID().toString();
         partnerApplicationUuid = UUID.randomUUID().toString();
         terminalApplicationUuid = UUID.randomUUID().toString();
+        hiredApplicationUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             for (String user : List.of(adminUser, recruiterUser, circleUser,
@@ -93,6 +95,10 @@ class RecruitmentApplicationVisibilityIntegrationTest {
             insertApplication(normalApplicationUuid, candidateUuid, normalPositionUuid, null);
             insertApplication(partnerApplicationUuid, candidateUuid, partnerPositionUuid, null);
             insertApplication(terminalApplicationUuid, candidateUuid, normalPositionUuid, "REJECTED");
+            // The other way an application stops being "in play": markHired
+            // sets stage HIRED and leaves terminal NULL by design.
+            insertApplicationAtStage(hiredApplicationUuid, candidateUuid, normalPositionUuid,
+                    "HIRED", null);
         });
     }
 
@@ -155,7 +161,7 @@ class RecruitmentApplicationVisibilityIntegrationTest {
     // ---- Candidate-list open-application info -------------------------------------
 
     @Test
-    void openApplicationInfo_isViewerFiltered_andExcludesTerminals() {
+    void openApplicationInfo_isViewerFiltered_andExcludesTerminalsAndHires() {
         Map<String, List<CandidateApplicationInfo>> forRecruiter =
                 applicationService.openApplicationInfoByCandidate(
                         recruiterUser, List.of(candidateUuid));
@@ -164,6 +170,11 @@ class RecruitmentApplicationVisibilityIntegrationTest {
         assertTrue(uuids.contains(normalApplicationUuid));
         assertFalse(uuids.contains(partnerApplicationUuid), "partner app hidden outside the circle");
         assertFalse(uuids.contains(terminalApplicationUuid), "terminal apps are not 'active'");
+        // The UI reads this list as a predicate — empty means "in no
+        // pipeline", non-empty blocks a second attach. A HIRED application
+        // keeps terminal NULL, so it has to be excluded here or both lie.
+        assertFalse(uuids.contains(hiredApplicationUuid),
+                "a hired application is not 'active' either — HIRED is a stage, not a terminal");
 
         Map<String, List<CandidateApplicationInfo>> forCircle =
                 applicationService.openApplicationInfoByCandidate(
@@ -332,16 +343,22 @@ class RecruitmentApplicationVisibilityIntegrationTest {
 
     private void insertApplication(String uuid, String candidateUuid, String positionUuid,
                                    String terminal) {
+        insertApplicationAtStage(uuid, candidateUuid, positionUuid, "SCREENING", terminal);
+    }
+
+    private void insertApplicationAtStage(String uuid, String candidateUuid, String positionUuid,
+                                          String stage, String terminal) {
         em.createNativeQuery("""
                         INSERT INTO recruitment_applications
                             (uuid, candidate_uuid, position_uuid, stage, terminal,
                              stage_entered_at, created_at, updated_at, created_by)
-                        VALUES (:uuid, :candidate, :position, 'SCREENING', :terminal,
+                        VALUES (:uuid, :candidate, :position, :stage, :terminal,
                                 NOW(3), NOW(), NOW(), 'test')
                         """)
                 .setParameter("uuid", uuid)
                 .setParameter("candidate", candidateUuid)
                 .setParameter("position", positionUuid)
+                .setParameter("stage", stage)
                 .setParameter("terminal", terminal)
                 .executeUpdate();
     }

@@ -83,6 +83,8 @@ class SlackAssistantServiceTest {
     private String partnerCandidateUuid;
     private String normalApplicationUuid;
     private String partnerApplicationUuid;
+    private String hiredCandidateUuid;
+    private String hiredApplicationUuid;
 
     private String normalFirstName;
     private String partnerFirstName;
@@ -103,6 +105,8 @@ class SlackAssistantServiceTest {
         partnerCandidateUuid = UUID.randomUUID().toString();
         normalApplicationUuid = UUID.randomUUID().toString();
         partnerApplicationUuid = UUID.randomUUID().toString();
+        hiredCandidateUuid = UUID.randomUUID().toString();
+        hiredApplicationUuid = UUID.randomUUID().toString();
         normalFirstName = "AsstJens" + marker;
         partnerFirstName = "AsstPia" + marker;
         normalPositionTitle = "AsstConsultant " + marker;
@@ -131,6 +135,15 @@ class SlackAssistantServiceTest {
             P8ProfileFixtures.insertOpenApplication(em, partnerApplicationUuid,
                     partnerCandidateUuid, partnerPositionUuid, "SCREENING");
 
+            // Someone already hired on the SAME normal position. markHired
+            // leaves terminal NULL, so this row looks open to a naive query —
+            // it must not be counted "in play" by the position answer. This
+            // is why positionStatus_... below still expects exactly 1.
+            P8ProfileFixtures.insertCandidate(em, hiredCandidateUuid,
+                    "AsstHans" + marker, "Hyre", "HIRED", null, null, "test");
+            P8ProfileFixtures.insertOpenApplication(em, hiredApplicationUuid,
+                    hiredCandidateUuid, normalPositionUuid, "HIRED");
+
             // Sentinel prose on the timeline — must NEVER surface in a reply.
             P8ProfileFixtures.insertEvent(em, "NOTE_ADDED", normalCandidateUuid,
                     normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
@@ -158,7 +171,7 @@ class SlackAssistantServiceTest {
             em.createNativeQuery("DELETE FROM recruitment_slack_channels WHERE position_uuid = :p")
                     .setParameter("p", partnerPositionUuid).executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
-                    List.of(normalCandidateUuid, partnerCandidateUuid),
+                    List.of(normalCandidateUuid, partnerCandidateUuid, hiredCandidateUuid),
                     List.of(normalPositionUuid, partnerPositionUuid), List.of(), null);
             em.createNativeQuery("DELETE FROM practice WHERE uuid = :p")
                     .setParameter("p", practiceUuid).executeUpdate();
@@ -487,6 +500,23 @@ class SlackAssistantServiceTest {
         assertEquals(normalPositionUuid, event.getPositionUuid());
         assertTrue(event.getPayload().contains("\"outcome\":\"ANSWERED\""));
         RecruitmentEventPiiAssertions.assertNoPiiInPayload(event);
+    }
+
+    /**
+     * The seed puts a HIRED application on this very position. "In play" is
+     * what the reply says, so the hire must not appear in the count or as a
+     * stage line — HIRED keeps terminal NULL, so nothing but an explicit
+     * stage exclusion keeps it out.
+     */
+    @Test
+    void positionStatus_doesNotCountAHiredCandidateAsInPlay() {
+        mockIntent("POSITION_STATUS", null, normalPositionTitle);
+        service.answerMention(recruiterUuid, DM_CHANNEL, THREAD_TS,
+                "how is the " + normalPositionTitle + " position going?");
+        String reply = threadReply();
+        assertTrue(reply.contains("1 candidate in play"), reply);
+        assertFalse(reply.contains("2 candidates in play"), reply);
+        assertFalse(reply.contains("in Hired"), reply);
     }
 
     @Test

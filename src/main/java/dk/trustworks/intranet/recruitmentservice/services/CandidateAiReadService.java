@@ -12,6 +12,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibili
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -173,10 +174,21 @@ public class CandidateAiReadService {
         return generationIds.size();
     }
 
-    /** Whether the candidate can be resolved/regenerated against an open application. */
+    /**
+     * Whether the candidate can be resolved/regenerated against an open
+     * application.
+     * <p>
+     * Must stay the exact twin of {@code AiIntakeReactor.latestOpenApplication}
+     * — this drives the button, that one resolves the anchor the endpoint
+     * needs. If they disagree the UI offers a Regenerate that answers 400
+     * NO_OPEN_APPLICATION. Both exclude the HIRED stage: it keeps
+     * {@code terminal} NULL by design, and intake AI on someone already
+     * hired has nothing left to inform.
+     */
     public boolean hasOpenApplication(String candidateUuid) {
         return RecruitmentApplication.count(
-                "candidateUuid = ?1 and terminal is null", candidateUuid) > 0;
+                "candidateUuid = ?1 and terminal is null and stage <> ?2",
+                candidateUuid, RecruitmentStage.HIRED) > 0;
     }
 
     /**
