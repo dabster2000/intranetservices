@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.finance.dto.DryRunOutcome;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsJournalsAPI;
+import dk.trustworks.intranet.expenseservice.remote.JournalEntryResponse;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -126,6 +129,23 @@ public class EconomicRevenueImportService {
     /** TECH/CYBER intercompany revenue — would double-count INTERNAL flow. */
     static final int TECH_CYBER_INTERCOMPANY_REVENUE_ACCOUNT = 1040;
 
+    /**
+     * A/S management-fee revenue charged to the subsidiaries (2170 Technology,
+     * 2175 Cyber). Intercompany, and already carried by the invoice table on both
+     * sides as INTERNAL_SERVICE documents — the same principle that keeps accounts
+     * 3050/3055/3070/3075/1350 out of {@code buildMonthlyGlDirectCostSql}: an
+     * intercompany transfer price is sourced from invoices, never from the GL.
+     *
+     * <p>Not academic. On 2026-08-17 these two accounts carried ZERO booked entries
+     * and 7,039,435.31 DKK of UNBOOKED drafts (the 30 June management-fee run,
+     * vouchers 28233–28256), while the intranet already held the identical run as
+     * 24 CREATED INTERNAL_SERVICE invoices totalling 7,039,435.31. Importing either
+     * the drafts or — once the accountant posts them — the booked entries would
+     * double-count that sum AND inject an intercompany transfer into group revenue,
+     * which is supposed to eliminate.
+     */
+    static final Set<Integer> INTERCOMPANY_TRANSFER_REVENUE_ACCOUNTS = Set.of(2170, 2175);
+
     /** Layer 4 regex: matches free-text "Faktura 12345-67890" links e-conomic
      *  bookkeepers added manually to vouchers before V338. */
     static final Pattern FAKTURA_TEXT_PATTERN =
@@ -143,8 +163,17 @@ public class EconomicRevenueImportService {
     @ConfigProperty(name = "economics.import.dry-run", defaultValue = "true")
     boolean dryRun;
 
+    /** Same journals-API base URI the draft GL sync uses (EconomicsService). */
+    @ConfigProperty(name = "quarkus.rest-client.economics-journals-api.url",
+            defaultValue = "https://apis.e-conomic.com/journalsapi/v13.0.1")
+    URI journalsApiUri;
+
     @Inject
     EntityManager em;
+
+    /** Self-proxy so {@code @Transactional} engages on the draft mirror's write phase. */
+    @Inject
+    EconomicRevenueImportService self;
 
     /**
      * Walks the 3 companies × revenue accounts × accounting years in
@@ -262,14 +291,19 @@ public class EconomicRevenueImportService {
                 }
 
                 // Survivor: record per-company / per-account sums and either insert or count intent.
-                BigDecimal absAmount = v.sumAmount().abs();
-                perCompanyDkk.merge(v.companyUuid(), absAmount, BigDecimal::add);
-                perAccountDkk.merge(v.account(), absAmount, BigDecimal::add);
+                // Reported as the amount that WOULD BE STORED, not abs(): a dry run whose
+                // totals cannot go down hides every reversal in the batch, and abs() on the
+                // e-conomic amount is the same mistake this importer made for real until
+                // 2026-05.
+                BigDecimal storedAmount = deriveStoredAmount(v.sumAmount());
+                perCompanyDkk.merge(v.companyUuid(), storedAmount, BigDecimal::add);
+                perAccountDkk.merge(v.account(), storedAmount, BigDecimal::add);
                 totalIntendedInserts++;
 
                 if (dryRun) {
-                    log.infof("EconomicRevenueImportService DRY_RUN intended insert: company=%s acc=%d voucher=%d entry=%d amount=%s",
-                            v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber(), absAmount);
+                    log.infof("EconomicRevenueImportService DRY_RUN intended insert: company=%s acc=%d voucher=%d entry=%d entryAmount=%s storedAmount=%s",
+                            v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber(),
+                            v.sumAmount(), storedAmount);
                     continue;
                 }
 
@@ -336,6 +370,230 @@ public class EconomicRevenueImportService {
         log.infof("EconomicRevenueImportService.refresh complete: %s", outcome);
         return outcome;
     }
+
+    // ------------------------------------------------------------------------
+    // Draft mirror (D2)
+    // ------------------------------------------------------------------------
+
+    /**
+     * Re-syncs the UNBOOKED (draft) revenue mirror: deletes every draft-sourced
+     * PHANTOM, then re-imports whatever e-conomic currently holds as a draft.
+     *
+     * <p><b>Why a mirror and not an incremental import.</b> A year-end accrual is
+     * not a voucher that later "becomes booked" under the same identity — the
+     * typical "periodiseret" entry is reversed and the real invoice booked
+     * separately, often under a different entry number. Keying the created PHANTOM
+     * on the draft's entry number would therefore not dedupe reliably, and the
+     * failure mode is silent double-counted revenue. Deleting and re-importing the
+     * whole draft population every run makes double-counting impossible by
+     * construction rather than by matching: whatever e-conomic says is draft right
+     * now is exactly what the mirror holds. When a draft is booked it leaves the
+     * draft journal (draft and booked entries are disjoint sources — see
+     * {@code EconomicsService.loadDraftSupplierInvoices}), so it disappears from
+     * the mirror in the same pass that the booked importer picks it up.
+     *
+     * <p><b>Ordering matters.</b> Callers must delete the mirror BEFORE the booked
+     * pass runs, so a voucher that was drafted yesterday and booked today does not
+     * collide with its own mirror row in the Layer-2/3 dedup.
+     *
+     * <p>Rows are marked {@code economics_posting_status = 'DRAFT'}. The revenue
+     * builders admit them only under {@code costSource=BOOKED_PLUS_DRAFT}, and the
+     * {@code fact_company_revenue*} views exclude them entirely — those views have
+     * no posting-status concept and are the booked reconciliation reference.
+     *
+     * <p><b>Two phases, and the split is load-bearing.</b> Phase 1 (this method, no
+     * transaction) does the e-conomic fetches and the dedup reads; phase 2
+     * ({@link #replaceDraftMirror}, {@code @Transactional}) does the wipe and the
+     * inserts with no I/O inside it. The first staging run held one transaction across
+     * both and died on {@code LockTimeoutException} — the wipe's locks were held
+     * through three HTTP round-trips, past the 50s {@code innodb_lock_wait_timeout}.
+     * Never hold a row lock across a vendor call here.
+     *
+     * <p><b>Atomic by design.</b> Within phase 2 the wipe and every insert share one
+     * transaction, so the mirror either fully reflects e-conomic's current drafts or is
+     * left exactly as it was. Do not "fix" that by giving each insert its own
+     * transaction — a mid-run failure would leave a half-rebuilt mirror, which for a
+     * delete-and-replace population means silently missing revenue.
+     *
+     * <p>Measured on production 2026-08-17: 2,396,194.68 DKK of accrued
+     * self-billing (14 entries on 2104/2106, all "periodiseret", 30 June 2026) that
+     * no dashboard could see under any setting, plus the standing 2180 canteen
+     * drafts and minor corrections.
+     */
+    public DraftMirrorOutcome refreshDraftMirror(LocalDate from, LocalDate to) {
+        // ── Phase 1: e-conomic fetch + dedup reads. NO write transaction is open.
+        // This method is deliberately NOT @Transactional. It makes three HTTP calls to
+        // e-conomic, and holding the mirror's write locks across those is what broke the
+        // first staging run (2026-08-18 02:00Z: LockTimeoutException on the INSERT after
+        // the wipe's locks had been held through the fetches, innodb_lock_wait_timeout
+        // 50s). Same anti-pattern as the 2026-08-13 booking self-deadlock: never hold a
+        // row lock across a vendor round-trip.
+        List<AggregatedVoucher> survivors = new ArrayList<>();
+
+        for (String companyUuid : ALL_COMPANY_UUIDS) {
+            Company company = Company.findById(companyUuid);
+            if (company == null) continue;
+            IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(company);
+
+            List<EntryDto> drafts;
+            try {
+                drafts = fetchDraftEntries(keys, from, to);
+            } catch (Exception ex) {
+                log.errorf(ex, "refreshDraftMirror: draft fetch failed for company %s — skipping tenant", companyUuid);
+                continue;
+            }
+
+            List<EntryDto> filtered = new ArrayList<>();
+            for (EntryDto e : drafts) {
+                if (shouldSkipAccount(companyUuid, e.account())) continue;
+                if (e.entryDate() != null && (e.entryDate().isBefore(from) || e.entryDate().isAfter(to))) continue;
+                filtered.add(e);
+            }
+
+            for (AggregatedVoucher v : aggregateByVoucher(companyUuid, filtered)) {
+                // A draft that merely restates a document the intranet already holds
+                // (a Trustworks invoice, or a booked PHANTOM) must not be added again.
+                if (findExistingByVoucherColumns(v).isPresent()) continue;
+                if (findExistingByEntryNumber(v).isPresent()) continue;
+                if (findExistingByFakturaText(v).isPresent()) continue;
+                if (v.sumAmount().signum() == 0) continue;   // a netted-out draft is not revenue
+                survivors.add(v);
+            }
+        }
+
+        if (dryRun) {
+            BigDecimal intended = BigDecimal.ZERO;
+            for (AggregatedVoucher v : survivors) {
+                intended = intended.add(deriveStoredAmount(v.sumAmount()));
+                log.infof("refreshDraftMirror DRY_RUN: company=%s acc=%d voucher=%d entryAmount=%s storedAmount=%s",
+                        v.companyUuid(), v.account(), v.voucherNumber(), v.sumAmount(),
+                        deriveStoredAmount(v.sumAmount()));
+            }
+            log.infof("refreshDraftMirror DRY_RUN: %d voucher(s) would be mirrored, totalDkk=%s",
+                    survivors.size(), intended);
+            return new DraftMirrorOutcome(0, 0, intended, true);
+        }
+
+        // ── Phase 2: one short write transaction, no I/O of any kind inside it.
+        return self.replaceDraftMirror(survivors);
+    }
+
+    /**
+     * Swaps the draft-sourced PHANTOM population for {@code survivors} in a single
+     * short transaction. Pure DB work — every e-conomic call already happened in
+     * phase 1, so the locks taken here are held for milliseconds, not for the length
+     * of three HTTP round-trips.
+     *
+     * <p>Atomic on purpose: the wipe and every insert share this transaction
+     * ({@code insertInvoiceAndItem}'s REQUIRES_NEW does not engage on a self-call), so
+     * the mirror either fully reflects e-conomic's current drafts or is left exactly as
+     * it was. No per-voucher catch — once a statement fails the transaction is
+     * rollback-only, so continuing would count inserts that can never commit and report
+     * a healthy run over a mirror that never changed.
+     *
+     * <p>The constraint violation is rethrown UNCHECKED deliberately: JTA rolls back on
+     * unchecked exceptions only, so letting the checked one propagate would COMMIT a
+     * half-rebuilt mirror.
+     */
+    @Transactional
+    public DraftMirrorOutcome replaceDraftMirror(List<AggregatedVoucher> survivors) {
+        int deleted = deleteDraftMirror();
+        int inserted = 0;
+        BigDecimal total = BigDecimal.ZERO;
+        LocalDateTime now = LocalDateTime.now();
+
+        for (AggregatedVoucher v : survivors) {
+            try {
+                insertInvoiceAndItem(v, now, PostingStatus.DRAFT.name());
+            } catch (SQLIntegrityConstraintViolationException collision) {
+                throw new IllegalStateException(String.format(
+                        "draft mirror insert collided with an existing invoice "
+                                + "(company=%s account=%d voucher=%d entry=%d) — rebuild aborted, "
+                                + "previous mirror left intact",
+                        v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber()), collision);
+            }
+            inserted++;
+            total = total.add(deriveStoredAmount(v.sumAmount()));
+        }
+        log.infof("refreshDraftMirror: deleted=%d inserted=%d totalDkk=%s dryRun=false", deleted, inserted, total);
+        return new DraftMirrorOutcome(deleted, inserted, total, false);
+    }
+
+    /**
+     * Drops the whole draft-sourced PHANTOM population. Items first — there is no
+     * FK cascade from {@code invoiceitems} to {@code invoices}, so deleting the
+     * invoice first would orphan its line.
+     */
+    int deleteDraftMirror() {
+        if (dryRun) return 0;
+        em.createNativeQuery(
+                        "DELETE ii FROM invoiceitems ii "
+                                + "JOIN invoices i ON i.uuid = ii.invoiceuuid "
+                                + "WHERE i.type = 'PHANTOM' AND i.economics_posting_status = 'DRAFT'")
+                .executeUpdate();
+        return em.createNativeQuery(
+                        "DELETE FROM invoices WHERE type = 'PHANTOM' AND economics_posting_status = 'DRAFT'")
+                .executeUpdate();
+    }
+
+    /**
+     * All UNBOOKED journal entries in {@code [from,to]} for one agreement, mapped
+     * onto the same {@link EntryDto} the booked path uses so both share the voucher
+     * aggregation, the account filter and the dedup layers.
+     *
+     * <p>Same endpoint and same date-filter syntax as
+     * {@code EconomicsService.loadDraftEntries}, which already populates the DRAFT
+     * rows in {@code finance_details} nightly.
+     */
+    List<EntryDto> fetchDraftEntries(IntegrationKey.IntegrationKeyValue keys, LocalDate from, LocalDate to) {
+        List<EntryDto> out = new ArrayList<>();
+        String filter = "date$gte:" + from + "$and:date$lte:" + to;
+        try (EconomicsJournalsAPI api = RestClientBuilder.newBuilder()
+                .baseUri(journalsApiUri)
+                .register(new EconomicsDynamicHeaderFilter(keys.appSecretToken(), keys.agreementGrantToken()))
+                .build(EconomicsJournalsAPI.class)) {
+            String cursor = null;
+            int pages = 0;
+            do {
+                JournalEntryResponse response = api.getDraftEntries(filter, cursor, 1000);
+                List<JournalEntryResponse.Entry> entries =
+                        response != null && response.entries() != null ? response.entries() : List.of();
+                for (JournalEntryResponse.Entry e : entries) {
+                    int account = e.resolvedAccountNumber();
+                    if (account == 0) continue;
+                    out.add(new EntryDto(
+                            e.entryNumber,
+                            e.voucherNumber,
+                            "draftEntry",
+                            "",                                  // accounting year is not on a draft entry
+                            BigDecimal.valueOf(e.amount),
+                            e.text != null ? e.text : "",
+                            account,
+                            null,
+                            "",
+                            parseDate(e.date),
+                            parseCustomerInvoiceNumber(e.customerInvoiceNumber)));
+                }
+                cursor = response != null ? response.cursor : null;
+            } while (cursor != null && !cursor.isBlank() && ++pages < 50);
+        } catch (Exception ex) {
+            log.warnf(ex, "fetchDraftEntries failed — returning what was collected (%d entries)", out.size());
+        }
+        return out;
+    }
+
+    /** e-conomic exposes the customer invoice reference as free text on a draft entry. */
+    static int parseCustomerInvoiceNumber(String raw) {
+        if (raw == null || raw.isBlank()) return 0;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    /** Result of one draft-mirror pass. */
+    public record DraftMirrorOutcome(int deleted, int inserted, BigDecimal totalDkk, boolean dryRun) {}
 
     // ------------------------------------------------------------------------
     // e-conomic API helpers
@@ -523,6 +781,7 @@ public class EconomicRevenueImportService {
         if (AS_COMPANY_UUIDS.contains(companyUuid)) {
             if (accountNumber < 2100 || accountNumber >= 2200) return true;
             if (accountNumber == AS_BOOKED_INVOICE_ACCOUNT) return true;
+            if (INTERCOMPANY_TRANSFER_REVENUE_ACCOUNTS.contains(accountNumber)) return true;
             return VMS_DENY_LIST.contains(accountNumber);
         }
         if (TECH_CYBER_COMPANY_UUIDS.contains(companyUuid)) {
@@ -696,6 +955,31 @@ public class EconomicRevenueImportService {
     // ------------------------------------------------------------------------
 
     /**
+     * The amount to store on the synthesized {@code invoiceitems} row for a voucher:
+     * the <b>exact negation</b> of the e-conomic entry's own signed amount.
+     *
+     * <p>e-conomic books revenue as a CREDIT, so {@code amountInBaseCurrency} is
+     * negative for a sale and positive for a reversal. {@code invoices} stores
+     * revenue positive — {@code buildGroupInvoiceRevenueSql} applies factor +1 to
+     * INVOICE/PHANTOM — so the importer must flip the sign. Negation preserves the
+     * reversal semantics for free: a reversing voucher (positive in e-conomic)
+     * lands as a negative-total PHANTOM and nets against the sale.
+     *
+     * <p>Neither previous version derived the sign from the entry. The original
+     * took {@code abs()}, which was right for sales and silently turned every
+     * reversal into more revenue; commit 09dca880 replaced it with the raw signed
+     * amount, which fixed reversals and inverted every sale from the 2026-05-04
+     * batch onward. Measured on production 2026-08-17: of 184 FY25/26 A/S
+     * PHANTOMs, 29 carried the wrong sign — 23 stored negative against an
+     * e-conomic credit and 6 stored positive against a debit — understating
+     * FY25/26 PHANTOM revenue by 4,671,870.08 DKK and making May and June 2026
+     * negative revenue months.
+     */
+    static BigDecimal deriveStoredAmount(BigDecimal entryAmount) {
+        return entryAmount.negate().setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
      * Inserts one {@code invoices} row (type=PHANTOM, status=CREATED,
      * invoicenumber=0) and one synthesized {@code invoiceitems} row
      * (hours=1, rate=amount (signed), origin=BASE) so
@@ -716,12 +1000,34 @@ public class EconomicRevenueImportService {
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void insertInvoiceAndItem(AggregatedVoucher v, LocalDateTime refreshedAt)
             throws SQLIntegrityConstraintViolationException {
+        insertInvoiceAndItem(v, refreshedAt, PostingStatus.BOOKED.name());
+    }
+
+    /**
+     * As above, tagging the row with the e-conomic posting status it came from.
+     * {@code BOOKED} rows are the historical population and feed every revenue
+     * reader; {@code DRAFT} rows are the re-synced mirror (D2) and are admitted
+     * only under {@code costSource=BOOKED_PLUS_DRAFT}.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void insertInvoiceAndItem(AggregatedVoucher v, LocalDateTime refreshedAt, String postingStatus)
+            throws SQLIntegrityConstraintViolationException {
         String invoiceUuid = UUID.randomUUID().toString();
         String itemUuid = UUID.randomUUID().toString();
         LocalDate invoiceDate = v.entryDate() != null ? v.entryDate() : LocalDate.now();
         LocalDate dueDate = invoiceDate;          // no payment terms on auto-imports
-        BigDecimal rate = v.sumAmount().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal rate = deriveStoredAmount(v.sumAmount());
         String description = "e-conomic entry " + v.minEntryNumber();
+
+        // Guard, not decoration: this is the invariant both previous versions broke,
+        // and breaking it silently mis-states revenue for months. Refuse the row
+        // rather than write one whose sign is not derived from the entry.
+        if (rate.add(v.sumAmount().setScale(2, RoundingMode.HALF_UP)).signum() != 0) {
+            throw new IllegalStateException(String.format(
+                    "PHANTOM import refused: stored amount %s is not the negation of e-conomic "
+                            + "entry amount %s (company=%s entry=%d voucher=%d)",
+                    rate, v.sumAmount(), v.companyUuid(), v.minEntryNumber(), v.voucherNumber()));
+        }
 
         try {
             Query q = em.createNativeQuery(
@@ -729,14 +1035,14 @@ public class EconomicRevenueImportService {
                             "  uuid, type, status, invoicenumber, year, month, companyuuid, " +
                             "  clientname, currency, invoicedate, duedate, " +
                             "  economics_voucher_number, economics_entry_number, economics_accounting_year, " +
-                            "  economics_entry_refreshed_at, " +
+                            "  economics_entry_refreshed_at, economics_posting_status, " +
                             "  invoice_ref, vat, discount, " +
                             "  internal_invoice_skip" +
                             ") VALUES (" +
                             "  :uuid, 'PHANTOM', 'CREATED', 0, :year, :month, :companyUuid, " +
                             "  :clientname, 'DKK', :invoiceDate, :dueDate, " +
                             "  :voucherNumber, :entryNumber, :accountingYear, " +
-                            "  :refreshedAt, " +
+                            "  :refreshedAt, :postingStatus, " +
                             "  0, 0.0, 0.0, " +
                             "  false" +
                             ")");
@@ -751,6 +1057,7 @@ public class EconomicRevenueImportService {
             q.setParameter("entryNumber", v.minEntryNumber());
             q.setParameter("accountingYear", v.accountingYear());
             q.setParameter("refreshedAt", refreshedAt);
+            q.setParameter("postingStatus", postingStatus);
             q.executeUpdate();
 
             Query q2 = em.createNativeQuery(

@@ -82,6 +82,25 @@ public class EconomicRevenueImportBatchlet {
         try {
             LocalDate to = LocalDate.now();
             LocalDate from = to.minusMonths(24);
+
+            // Draft mirror FIRST, so a voucher that was a draft yesterday and is booked
+            // today does not collide with its own mirror row in the booked pass's
+            // voucher/entry dedup. The mirror is deleted and rebuilt wholesale, so a
+            // booked voucher simply stops appearing in it.
+            //
+            // Isolated from the booked import, like the attribution derivation below: the
+            // mirror is supplementary revenue visible only under BOOKED_PLUS_DRAFT, and a
+            // journals-API outage must never fail or alert the import that feeds the
+            // booked numbers.
+            try {
+                var draftMirror = refreshService.refreshDraftMirror(from, to);
+                log.infof("e-conomic draft revenue mirror: dryRun=%s deleted=%d inserted=%d totalDkk=%s window=[%s..%s]",
+                        draftMirror.dryRun(), draftMirror.deleted(), draftMirror.inserted(),
+                        draftMirror.totalDkk(), from, to);
+            } catch (Exception me) {
+                log.errorf(me, "e-conomic draft revenue mirror failed — booked import continues");
+            }
+
             DryRunOutcome outcome = refreshService.refresh(from, to);
             log.infof("e-conomic revenue import complete: dryRun=%s intended=%d actual=%d perCompany=%s perAccount=%s skipped=%s window=[%s..%s]",
                     outcome.dryRun(),

@@ -651,8 +651,8 @@ public class CostAnalyticsResource {
         //     (seller +, buyer −), NEVER from the GL (buildEntityInvoiceRevenueSql).
         boolean groupInvoiceRevenue = (companies == null || companies.isEmpty());
         String invoiceRevenueSql = groupInvoiceRevenue
-                ? buildGroupInvoiceRevenueSql(workPeriod)
-                : buildEntityInvoiceRevenueSql(workPeriod);
+                ? buildGroupInvoiceRevenueSql(workPeriod, costSource)
+                : buildEntityInvoiceRevenueSql(workPeriod, costSource);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
         invQuery.setParameter("currentMonth", actualEndExclusiveKey);
@@ -1003,6 +1003,48 @@ public class CostAnalyticsResource {
     }
 
     /**
+     * Converts a line total from the invoice's own currency to DKK.
+     *
+     * <p>{@code invoices.exchange_rate} (V503) is DKK per unit of
+     * {@code invoices.currency}, as realised in e-conomic; it is NULL for DKK
+     * invoices, so the COALESCE makes this a no-op for all but the 73 non-DKK
+     * documents in the table. Before V503 no rate was stored anywhere and both
+     * builders counted a EUR or SEK invoice at face value as kroner — for FY25/26
+     * that understated Technology's 6 EUR invoices by 1,100,566 DKK and overstated
+     * A/S's 9 SEK invoices by 453,469 DKK.
+     *
+     * <p>The identical factor is applied inside {@code fact_company_revenue} and
+     * {@code fact_company_revenue_workperiod} by V503. The two must stay in step:
+     * a single-company figure from these builders is documented to equal that
+     * company's {@code fact_company_revenue} net revenue to the øre.
+     */
+    private static final String FX_FACTOR = "COALESCE(i.exchange_rate, 1)";
+
+    /**
+     * Posting-status gate on the revenue side, so the {@code costSource} toggle is
+     * symmetric (D10).
+     *
+     * <p>Before this, {@code BOOKED_PLUS_DRAFT} widened the posting-status filter on
+     * COST with no matching widening on REVENUE, so the toggle could only ever move
+     * the result DOWN and neither position was a complete picture of the year. It
+     * now admits draft-sourced PHANTOMs — the D2 mirror of e-conomic's unbooked
+     * revenue — in the same position that admits draft cost.
+     *
+     * <p>{@code economics_posting_status} is NULL on every invoice that did not come
+     * from the e-conomic importer, so BOOKED keeps exactly the historical population.
+     *
+     * <p>Note that this is the one place where the dashboard deliberately parts from
+     * {@code fact_company_revenue}: those views have no posting-status concept and
+     * stay booked-only, so the documented "single company equals fact_company_revenue
+     * to the øre" invariant holds under BOOKED, not under BOOKED_PLUS_DRAFT.
+     */
+    private static String postingStatusGate(CostSource costSource) {
+        return costSource == CostSource.BOOKED_PLUS_DRAFT
+                ? "AND (i.economics_posting_status IS NULL OR i.economics_posting_status IN ('BOOKED', 'DRAFT')) "
+                : "AND (i.economics_posting_status IS NULL OR i.economics_posting_status = 'BOOKED') ";
+    }
+
+    /**
      * <b>Group invoice revenue</b> (all-companies / consolidated view; {@code companies}
      * null or empty). External only: every INTERNAL document has both issuer and debtor
      * inside the group, so it nets to zero — this builder simply omits INTERNAL and internal
@@ -1021,7 +1063,7 @@ public class CostAnalyticsResource {
      * {@code fact_company_revenue_workperiod} (V384, work-period). Month bucketing:
      * WORK_PERIOD = service period ({@code i.year/i.month}); INVOICED = {@code invoicedate}.
      */
-    private static String buildGroupInvoiceRevenueSql(boolean workPeriod) {
+    private static String buildGroupInvoiceRevenueSql(boolean workPeriod, CostSource costSource) {
         String monthKeyExpr = workPeriod
                 ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
                 : "CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0'))";
@@ -1031,7 +1073,7 @@ public class CostAnalyticsResource {
         return "SELECT " + monthKeyExpr + " AS month_key, " +
                 yearExpr + " AS year, " + monthExpr + " AS month_number, " +
                 "ROUND(SUM( " +
-                "  (ii.rate * ii.hours) * " +
+                "  (ii.rate * ii.hours) * " + FX_FACTOR + " * " +
                 "  (CASE " +
                 "     WHEN i.type IN ('INVOICE', 'PHANTOM') THEN 1 " +
                 "     WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL THEN -1 " +
@@ -1041,6 +1083,7 @@ public class CostAnalyticsResource {
                 "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
                 "WHERE ( (i.type IN ('INVOICE', 'PHANTOM') AND i.status = 'CREATED') " +
                 "     OR (i.type = 'CREDIT_NOTE' AND i.status = 'CREATED' AND i.debtor_companyuuid IS NULL) ) " +
+                postingStatusGate(costSource) +
                 "AND " + monthKeyExpr + " >= :ttmStart AND " + monthKeyExpr + " < :currentMonth " +
                 "GROUP BY " + monthKeyExpr + ", " + yearExpr + ", " + monthExpr + " " +
                 "ORDER BY month_key";
@@ -1071,7 +1114,7 @@ public class CostAnalyticsResource {
      * and applies to both the seller and buyer legs, so a purchase reduces the buyer's revenue
      * in the same period the sale raised the seller's.
      */
-    private static String buildEntityInvoiceRevenueSql(boolean workPeriod) {
+    private static String buildEntityInvoiceRevenueSql(boolean workPeriod, CostSource costSource) {
         String monthKeyExpr = workPeriod
                 ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
                 : "CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0'))";
@@ -1093,13 +1136,14 @@ public class CostAnalyticsResource {
 
         return "SELECT " + monthKeyExpr + " AS month_key, " +
                 yearExpr + " AS year, " + monthExpr + " AS month_number, " +
-                "ROUND(SUM( (ii.rate * ii.hours) * " + factor + " ), 2) AS net_revenue " +
+                "ROUND(SUM( (ii.rate * ii.hours) * " + FX_FACTOR + " * " + factor + " ), 2) AS net_revenue " +
                 "FROM invoices i " +
                 "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
                 "WHERE ( (i.type IN ('INVOICE', 'PHANTOM') AND i.status = 'CREATED') " +
                 "     OR (i.type = 'INTERNAL'            AND i.status IN ('QUEUED', 'CREATED')) " +
                 "     OR (i.type = 'CREDIT_NOTE'         AND i.status = 'CREATED') ) " +
                 "AND (i.companyuuid IN (:companyIds) OR i.debtor_companyuuid IN (:companyIds)) " +
+                postingStatusGate(costSource) +
                 "AND " + monthKeyExpr + " >= :ttmStart AND " + monthKeyExpr + " < :currentMonth " +
                 "GROUP BY " + monthKeyExpr + ", " + yearExpr + ", " + monthExpr + " " +
                 "ORDER BY month_key";

@@ -12,6 +12,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.io.IOException;
@@ -105,6 +107,7 @@ public class BubbleService {
     @Transactional
     public void addBubbleMember(String bubbleuuid, String useruuid) {
         Bubble bubble = Bubble.findById(bubbleuuid);
+        if(bubble == null) throw new NotFoundException("Bubble not found: " + bubbleuuid);
         addBubbleMember(bubble, useruuid);
     }
 
@@ -112,17 +115,23 @@ public class BubbleService {
     public void addBubbleMember(Bubble bubble, String useruuid) {
         log.info("BubbleService.addBubbleMember");
         log.info("bubbleuuid = " + bubble.getUuid() + ", useruuid = " + useruuid);
+        User user = userService.findById(useruuid, true);
+        if(user == null) throw new NotFoundException("User not found: " + useruuid);
         if(BubbleMember.find("useruuid like ?1 and bubble = ?2", useruuid, bubble).singleResultOptional().isPresent()) return;
         BubbleMember bubbleMember = new BubbleMember(UUID.randomUUID().toString(), useruuid, bubble);
-        slackService.addUserToChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
+        slackService.addUserToChannel(user, bubble.getSlackchannel());
         BubbleMember.persist(bubbleMember);
     }
 
     public void applyForBubble(String bubbleuuid, String useruuid) {
         Bubble bubble = Bubble.findById(bubbleuuid);
+        if(bubble == null) throw new NotFoundException("Bubble not found: " + bubbleuuid);
+        User applicant = userService.findById(useruuid, true);
+        if(applicant == null) throw new NotFoundException("User not found: " + useruuid);
         User owner = userService.findById(bubble.getOwner(), true);
+        if(owner == null) throw new WebApplicationException("Owner not found for bubble: " + bubbleuuid, 409);
         try {
-            slackService.sendMessage(owner, "Hi "+owner.getFirstname()+", *"+userService.findById(useruuid, true).getUsername()+"* would like to join your bubble "+bubble.getName()+"!");
+            slackService.sendMessage(owner, "Hi "+owner.getFirstname()+", *"+applicant.getUsername()+"* would like to join your bubble "+bubble.getName()+"!");
         } catch (SlackApiException | IOException e) {
             throw new RuntimeException(e);
         }
@@ -133,7 +142,11 @@ public class BubbleService {
         log.info("BubbleService.removeBubbleMember");
         log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
         Bubble bubble = Bubble.findById(bubbleuuid);
-        slackService.removeUserFromChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
+        if(bubble == null) throw new NotFoundException("Bubble not found: " + bubbleuuid);
+        User user = userService.findById(useruuid, true);
+        // A membership row can outlive its user; still remove the row, just skip Slack.
+        if(user != null) slackService.removeUserFromChannel(user, bubble.getSlackchannel());
+        else log.warn("Removing bubble member with no matching user: " + useruuid);
         BubbleMember.delete("bubble = ?1 and useruuid like ?2", bubble, useruuid);
     }
 

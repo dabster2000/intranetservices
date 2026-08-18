@@ -12,9 +12,12 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.context.ManagedExecutor;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,7 +37,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * functions if the view is missing or renamed.
  *
  * <p>For each (companyuuid × year × month) cell over the last 6 months, the
- * check tallies row count and {@code SUM(ABS(amount))} (= misposted DKK).
+ * check tallies row count and the negated signed sum (= misposted DKK, net of
+ * reversals).
  * Steady state (the historic ~5.29M DKK / 38 rows baseline) is silent in
  * Slack; only NET growth across consecutive runs fires a Slack alert.
  *
@@ -89,6 +93,10 @@ public class IntercompanyClassificationCheck {
     @Inject
     ManagedExecutor managedExecutor;
 
+    /** Self-proxy so {@code @Transactional} engages on the baseline read/write. */
+    @Inject
+    IntercompanyClassificationCheck self;
+
     @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
     String opsAlertChannel;
 
@@ -96,16 +104,10 @@ public class IntercompanyClassificationCheck {
     boolean alertOnGrowth;
 
     /**
-     * Snapshot of misposted DKK per (tenant × month) cell from the most recent
-     * detect-pass. {@code null} on the first run after boot — meaning we
-     * record a baseline and do NOT alert. Subsequent runs compare against
-     * this snapshot to detect cells that have grown (≥1 DKK).
-     */
-    final AtomicReference<Snapshot> lastSnapshot = new AtomicReference<>(null);
-
-    /**
-     * Wall-clock of the last Slack alert. Separate from {@link #lastSnapshot}
+     * Wall-clock of the last Slack alert. Separate from the persisted baseline
      * so a repeated growth event waiting on accounting doesn't spam Slack.
+     * In-memory on purpose: at worst a restart costs one extra Slack message,
+     * which is the safe direction to fail.
      */
     final AtomicReference<Instant> lastAlertSent = new AtomicReference<>(null);
 
@@ -118,10 +120,8 @@ public class IntercompanyClassificationCheck {
     }
 
     /**
-     * Package-private snapshot value object — a defensive copy of per-cell
-     * misposted DKK keyed by {@code "{companyUuid}/{year}-{month}"}. Immutable
-     * by convention (we never mutate the map after storing it in
-     * {@link #lastSnapshot}).
+     * Per-cell misposted DKK keyed by {@code "{companyUuid}/{year}-{month}"},
+     * as last persisted to {@code intercompany_classification_baseline}.
      */
     record Snapshot(Map<String, Long> mispostedDkkByCell) {
     }
@@ -132,9 +132,10 @@ public class IntercompanyClassificationCheck {
      * without waiting for the 04:15 UTC cron. Useful for sanity-checking
      * after a deploy. Mirrors {@code SalaryGLAnomalyCheck#onStart}.
      *
-     * <p>Subject to the same 6h Slack alert rate-limit — but on the very
-     * first boot, {@link #lastSnapshot} is {@code null} so the run records
-     * the baseline silently regardless.
+     * <p>Since V502 the baseline lives in the database, so this boot-time run
+     * compares against the last persisted state rather than re-arming a
+     * first-run path. Drift that occurred across the restart is caught here
+     * instead of being silently adopted as the new normal.
      */
     void onStart(@Observes StartupEvent ev) {
         log.info("IntercompanyClassificationCheck: scheduling one-shot startup detection on worker thread");
@@ -165,10 +166,11 @@ public class IntercompanyClassificationCheck {
                     misclassifications.size(), totalDkk);
 
             Snapshot current = buildSnapshot(misclassifications);
-            Snapshot previous = lastSnapshot.getAndSet(current);
+            Snapshot previous = self.loadBaseline();
+            self.saveBaseline(misclassifications);
 
-            if (previous == null) {
-                log.infof("intercompany-classification-check: first run after boot — recorded baseline of %d cells / %.2f DKK / %d rows, no alert",
+            if (previous.mispostedDkkByCell().isEmpty()) {
+                log.infof("intercompany-classification-check: no persisted baseline yet — recorded %d cells / %.2f DKK / %d rows, no alert",
                         misclassifications.size(), totalDkk, totalRows);
                 return;
             }
@@ -208,35 +210,54 @@ public class IntercompanyClassificationCheck {
      * on staging 2026-05-13. A failed detect logs WARN and returns an empty
      * list; the next scheduled run retries.
      */
+    // Bare predicate against finance_details — intentionally does NOT read
+    // v_finance_details_logical. Keeps this check independent of the view at
+    // runtime; same identification rule, evaluated inline.
+    //
+    // EXISTS, not JOIN. `invoices.invoicenumber` is NOT unique per company —
+    // every PHANTOM and draft carries the placeholder 0, and 52 of the FY25/26
+    // 1010 rows carry 0 on the finance_details side too, so an inner JOIN matched
+    // each of those against all 13 (TECH) / 5 (CYBER) zero-numbered invoice rows.
+    // That fan-out turned 224 GL rows into 680 and inflated the FY25/26 figure
+    // from 29.8M to 101.3M DKK. A semi-join asks the only question the rule
+    // actually poses — "is this GL row's invoice billed to A/S?" — and counts
+    // each GL row exactly once.
+    //
+    // SUM(fd.amount) signed, not SUM(ABS(fd.amount)): account 1010 carries the
+    // revenue credit AND its reversals/credit notes as debits. ABS added the two
+    // instead of netting them, counting a reversed invoice twice — 29.2M gross
+    // against a 13.1M net for FY25/26 BOOKED. Negated so the reported figure is
+    // positive misposted revenue, keeping growth comparisons monotonic in "more
+    // revenue on the wrong account".
+    //
+    // Package-private constant rather than a local so the shape can be asserted
+    // without a database — see IntercompanyClassificationCheckTest.
+    static final String DETECT_SQL = """
+            SELECT
+                fd.companyuuid,
+                YEAR(fd.expensedate) AS y,
+                MONTH(fd.expensedate) AS m,
+                COUNT(*) AS rows_n,
+                -SUM(fd.amount) AS misposted_dkk
+              FROM finance_details fd
+             WHERE fd.accountnumber = 1010
+               AND fd.companyuuid IN (:techUuid, :cyberUuid)
+               AND fd.expensedate >= :fromDate
+               AND EXISTS (SELECT 1
+                             FROM invoices inv
+                            WHERE inv.invoicenumber = fd.invoicenumber
+                              AND inv.companyuuid   = fd.companyuuid
+                              AND inv.cvr           = '35648941')
+             GROUP BY fd.companyuuid, y, m
+             ORDER BY fd.companyuuid, y, m
+            """;
+
     @Transactional(Transactional.TxType.SUPPORTS)
     List<Misclassification> detect() {
         LocalDate fromDate = LocalDate.now().minusMonths(LOOKBACK_MONTHS);
-
-        // Bare predicate against finance_details JOIN invoices — intentionally
-        // does NOT read v_finance_details_logical. Keeps this check independent
-        // of the view at runtime; same identification rule, evaluated inline.
-        String sql = """
-                SELECT
-                    fd.companyuuid,
-                    YEAR(fd.expensedate) AS y,
-                    MONTH(fd.expensedate) AS m,
-                    COUNT(*) AS rows_n,
-                    SUM(ABS(fd.amount)) AS misposted_dkk
-                  FROM finance_details fd
-                  JOIN invoices inv
-                    ON inv.invoicenumber = fd.invoicenumber
-                   AND inv.companyuuid   = fd.companyuuid
-                 WHERE fd.accountnumber = 1010
-                   AND fd.companyuuid IN (:techUuid, :cyberUuid)
-                   AND inv.cvr = '35648941'
-                   AND fd.expensedate >= :fromDate
-                 GROUP BY fd.companyuuid, y, m
-                 ORDER BY fd.companyuuid, y, m
-                """;
-
         try {
             @SuppressWarnings("unchecked")
-            List<Object[]> rows = em.createNativeQuery(sql)
+            List<Object[]> rows = em.createNativeQuery(DETECT_SQL)
                     .setParameter("techUuid", TECH_UUID)
                     .setParameter("cyberUuid", CYBER_UUID)
                     .setParameter("fromDate", fromDate)
@@ -255,6 +276,68 @@ public class IntercompanyClassificationCheck {
         } catch (RuntimeException ex) {
             log.warnf(ex, "intercompany-classification-check: detect query failed — returning empty list, will retry next run");
             return List.of();
+        }
+    }
+
+    /**
+     * Reads the persisted baseline (V502). An empty map means no cell has ever
+     * been observed — the only case in which a run is allowed to stay silent.
+     *
+     * <p>Defensive against a missing table (a rollback of V502, or a fresh test
+     * schema): a failure logs WARN and yields an empty baseline, which degrades
+     * to the pre-V502 "record and stay quiet" behaviour rather than failing the run.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    Snapshot loadBaseline() {
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                            "SELECT companyuuid, year, month, misposted_dkk "
+                                    + "FROM intercompany_classification_baseline")
+                    .getResultList();
+            Map<String, Long> map = new LinkedHashMap<>(rows.size());
+            for (Object[] row : rows) {
+                map.put(cellKey((String) row[0], ((Number) row[1]).intValue(), ((Number) row[2]).intValue()),
+                        ((Number) row[3]).longValue());
+            }
+            return new Snapshot(map);
+        } catch (RuntimeException ex) {
+            log.warnf(ex, "intercompany-classification-check: could not read persisted baseline — treating as first run");
+            return new Snapshot(Map.of());
+        }
+    }
+
+    /**
+     * Upserts the current observation so the next run — in this process or a
+     * later one — compares against it. This is what makes a deploy stop
+     * disarming the detector.
+     *
+     * <p>Cells that vanished from the detect window are deliberately left in
+     * place: the row is a high-water mark for that (tenant × month), and
+     * deleting it would let the same drift re-alert once the 6-month window
+     * rolls past and back.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    void saveBaseline(List<Misclassification> misclassifications) {
+        LocalDateTime now = LocalDateTime.now();
+        try {
+            for (Misclassification m : misclassifications) {
+                em.createNativeQuery(
+                                "INSERT INTO intercompany_classification_baseline "
+                                        + "  (companyuuid, year, month, misposted_dkk, rows_count, observed_at) "
+                                        + "VALUES (:company, :year, :month, :dkk, :rows, :now) "
+                                        + "ON DUPLICATE KEY UPDATE misposted_dkk = :dkk, "
+                                        + "  rows_count = :rows, observed_at = :now")
+                        .setParameter("company", m.companyUuid())
+                        .setParameter("year", m.year())
+                        .setParameter("month", m.month())
+                        .setParameter("dkk", BigDecimal.valueOf(m.mispostedDkk()).setScale(2, RoundingMode.HALF_UP))
+                        .setParameter("rows", m.rowsCount())
+                        .setParameter("now", now)
+                        .executeUpdate();
+            }
+        } catch (RuntimeException ex) {
+            log.warnf(ex, "intercompany-classification-check: could not persist baseline — next run may re-alert");
         }
     }
 

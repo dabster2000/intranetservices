@@ -87,6 +87,9 @@ public class InvoiceFinalizationOrchestrator {
     InvoiceItemRecalculator recalc;
 
     @Inject
+    InvoiceExchangeRateService exchangeRates;
+
+    @Inject
     InvoiceAttributionService attributionService;
 
     @Inject
@@ -172,6 +175,12 @@ public class InvoiceFinalizationOrchestrator {
             throw new BadRequestException(
                     "PHANTOM invoices do not interact with e-conomic: " + invoiceUuid);
         }
+
+        // Foreign-currency invoices carry the DKK rate from here on, so revenue never
+        // has to guess. Before V503 nothing stored a rate and a EUR or SEK invoice was
+        // counted at face value as kroner. Non-fatal: a currency-service outage leaves
+        // the rate null and logs a WARN rather than blocking the invoice.
+        exchangeRates.stampIfForeignCurrency(inv);
 
         // Step-1 reversible side effects — before the API call so a failure doesn't
         // leave the invoice in a partially mutated state
