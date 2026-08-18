@@ -29,8 +29,10 @@ import java.util.Map;
  *   <li>{@code RETRY_EXHAUSTED} — retry_count reached the upload job's cap; nothing retries it anymore</li>
  * </ul>
  *
- * Terminal rows (DELETED / REJECTED / CLOSED_MANUAL) are excluded — the board is
- * work, not history.
+ * Terminal rows are excluded — the board is work, not history. That includes
+ * BOOKED: prod carries ~3,350 successfully-booked rows with a stale
+ * {@code is_orphaned} flag (nothing clears the flag once the voucher verifies),
+ * and a booked row is never actionable here.
  */
 @JBossLog
 @Path("/expenses/pipeline")
@@ -48,7 +50,7 @@ public class ExpensePipelineBoardResource {
         List<Expense> rows = Expense.list(
             "(status in ('UP_FAILED','NO_FILE','NO_USER') or isOrphaned = true or syncMissCount > 0) " +
             "and status <> 'DELETED' " +
-            "and (state is null or state not in ('REJECTED','CLOSED_MANUAL','DELETED'))",
+            "and (state is null or state not in ('REJECTED','CLOSED_MANUAL','DELETED','BOOKED'))",
             Sort.by("datemodified", Sort.Direction.Ascending));
 
         Map<String, String> nameCache = new HashMap<>();
