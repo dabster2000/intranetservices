@@ -114,11 +114,11 @@ class ExpenseAIValidationServiceNormalizeTest {
         public RuleView getRule(String ruleId) {
             if ("R_MEAL_COST_PER_PERSON".equals(ruleId)) {
                 return new RuleView(ruleId, "Meal cost", "Meal cap", "REJECT",
-                        "JUDGMENT", 30, true, "BLOCK", 0.0);
+                        "JUDGMENT", 30, true, "BLOCK", 0.0, false);
             }
             if ("R_MERCHANT_ALLOW_TOP_LEVEL".equals(ruleId)) {
                 return new RuleView(ruleId, "Allow top", "Allowed merchant", "REJECT",
-                        "JUDGMENT", 20, true, "BLOCK", 0.0);
+                        "JUDGMENT", 20, true, "BLOCK", 0.0, false);
             }
             return null;
         }
