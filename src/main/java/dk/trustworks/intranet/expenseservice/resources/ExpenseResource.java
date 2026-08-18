@@ -76,8 +76,28 @@ public class ExpenseResource {
     @Inject
     ScopeGuard scope;
 
+    @Inject
+    dk.trustworks.intranet.expenseservice.services.AIConfigSnapshot aiConfig;
+
     /** Phase 9.2 denial text — one message for every expense reach refusal. */
     private static final String OUTSIDE_REACH = "This expense is outside your access scope";
+
+    /** W2: employee-readable policy display for the justification form. */
+    public record RuleDisplayDTO(String ruleId, String displayName, String sentence) {}
+
+    /**
+     * W2: the fired rule's policy sentence with live parameter values (e.g. the actual
+     * per-person meal limit) so the employee can address the real threshold in their
+     * justification. Read-only, no internal config beyond the rule's own description.
+     */
+    @GET
+    @Path("/rules/{ruleId}/display")
+    public RuleDisplayDTO ruleDisplay(@PathParam("ruleId") String ruleId) {
+        var rule = aiConfig.getRule(ruleId);
+        if (rule == null) throw new WebApplicationException("Rule not found", 404);
+        return new RuleDisplayDTO(rule.ruleId(), rule.displayName(),
+                aiConfig.renderedRuleDescription(ruleId));
+    }
 
     @GET
     @Path("/{uuid}")
@@ -348,11 +368,15 @@ public class ExpenseResource {
         logs.recordEmployeeJustification(e, caller, body.justification());
 
         e.setEmployeeJustification(body.justification());
-        // Hand to accounting for a decision.
+        // Hand to accounting for a decision. This stays the synchronous default so the
+        // W2 AI pass fails closed: if the review never runs, a human already owns it.
         e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
         e.setAttentionOwner(ExpenseStateDeriver.OWNER_ACCOUNTING);
         e.setAttentionKind(ExpenseStateDeriver.KIND_POLICY);
         e.setDatemodified(java.time.LocalDate.now());
+        // W2: after commit, one cheap AI pass judges the justification; accept
+        // auto-approves, refer keeps it here with the AI's reservation attached.
+        expenseService.queueJustificationAiReview(uuid);
         return Response.noContent().build();
     }
 

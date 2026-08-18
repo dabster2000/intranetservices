@@ -41,6 +41,34 @@ public class ExpenseDecisionLogService {
                e.getStatus(), e.getStatus(), e.getState(), "PENDING_HR", null, justification);
     }
 
+    /** W2: the justification-AI accepted the employee's reason — auto-approve. */
+    @Transactional
+    public void recordAIAcceptedJustification(Expense e, String reason) {
+        append(e, "AI", null, "AI_ACCEPTED_JUSTIFICATION",
+               e.getStatus(), "VALIDATED", e.getState(), null, e.getAiRuleId(), reason);
+    }
+
+    /** W2: the justification-AI (or a guardrail) kept the item with the controller. */
+    @Transactional
+    public void recordAIReferredJustification(Expense e, String reservation) {
+        append(e, "AI", null, "AI_REFERRED_JUSTIFICATION",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), reservation);
+    }
+
+    /** W5: a sampled auto-cleared item was looked at and waved through. */
+    @Transactional
+    public void recordSpotCheckCleared(Expense e, String actorUuid) {
+        append(e, "HR", actorUuid, "SPOT_CHECK_CLEARED",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), null);
+    }
+
+    /** W5: a sampled item is already posted, so it can only be flagged for follow-up. */
+    @Transactional
+    public void recordSpotCheckFlagged(Expense e, String actorUuid, String reason) {
+        append(e, "HR", actorUuid, "SPOT_CHECK_FLAGGED",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), reason);
+    }
+
     @Transactional
     public void recordHRApprove(Expense e, String actorUuid, String reason) {
         append(e, "HR", actorUuid, "HR_APPROVED",

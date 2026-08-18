@@ -18,5 +18,7 @@ public record AIRuleDTO(
     @Pattern(regexp = "BLOCK|SOFT_FLAG|OFF", message = "outcomeMode must be BLOCK, SOFT_FLAG, or OFF")
     String outcomeMode,
     @DecimalMin("0.0") @DecimalMax("1.0") Double confidenceThreshold,
+    /** W2: the justification-AI must always refer this rule's items to a human. */
+    boolean alwaysHuman,
     OffsetDateTime updatedAt,
     String updatedBy) {}
