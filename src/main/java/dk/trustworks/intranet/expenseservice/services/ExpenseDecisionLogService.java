@@ -55,6 +55,20 @@ public class ExpenseDecisionLogService {
                e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), reservation);
     }
 
+    /** W5: a sampled auto-cleared item was looked at and waved through. */
+    @Transactional
+    public void recordSpotCheckCleared(Expense e, String actorUuid) {
+        append(e, "HR", actorUuid, "SPOT_CHECK_CLEARED",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), null);
+    }
+
+    /** W5: a sampled item is already posted, so it can only be flagged for follow-up. */
+    @Transactional
+    public void recordSpotCheckFlagged(Expense e, String actorUuid, String reason) {
+        append(e, "HR", actorUuid, "SPOT_CHECK_FLAGGED",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), reason);
+    }
+
     @Transactional
     public void recordHRApprove(Expense e, String actorUuid, String reason) {
         append(e, "HR", actorUuid, "HR_APPROVED",
