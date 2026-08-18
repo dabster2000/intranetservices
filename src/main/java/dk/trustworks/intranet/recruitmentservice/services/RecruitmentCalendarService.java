@@ -151,6 +151,11 @@ public class RecruitmentCalendarService {
     @Inject
     GraphMailboxConcurrencyLimiter mailboxLimiter;
 
+    /** Which rooms automation may book, and in what order (V513). One-way
+     * edge: the policy bean takes rooms as input and never calls back here. */
+    @Inject
+    RecruitmentMeetingRoomPolicyService roomPolicyService;
+
     /**
      * Rotates which mailbox anchors the {@code getSchedule} URL. Shared
      * across requests — the whole point is that two concurrent sweeps do
@@ -176,6 +181,12 @@ public class RecruitmentCalendarService {
             Thread.currentThread().interrupt();
         }
     };
+
+    /** Rooms requested per Graph places page. */
+    private static final int ROOM_PAGE_SIZE = 100;
+    /** Runaway guard on room pagination — a tenant with 10 000 rooms is a
+     * bug somewhere, not a room list worth waiting for. */
+    private static final int ROOM_PAGE_LIMIT = 100;
 
     @ConfigProperty(name = "dk.trustworks.recruitment.graph.calendar.enabled", defaultValue = "false")
     boolean calendarEnabled;
@@ -632,21 +643,9 @@ public class RecruitmentCalendarService {
         if (!calendarEnabled) {
             return List.of();
         }
-        List<MeetingRoomsResponse.MeetingRoom> rooms;
-        try {
-            GraphApiClient.RoomCollectionResponse response = graph().listRooms();
-            if (response == null || response.value() == null) {
-                return List.of();
-            }
-            rooms = response.value().stream()
-                    .filter(room -> room.emailAddress() != null && !room.emailAddress().isBlank())
-                    .map(room -> new MeetingRoomsResponse.MeetingRoom(
-                            room.displayName(), room.emailAddress(),
-                            room.capacity(), room.building(), null))
-                    .toList();
-        } catch (Exception e) {
-            log.warnv("Graph rooms lookup failed: {0} — returning no rooms", e.getMessage());
-            return List.of();
+        List<MeetingRoomsResponse.MeetingRoom> rooms = allGraphRooms().rooms();
+        if (rooms.isEmpty()) {
+            return rooms;
         }
         if (start == null || rooms.isEmpty()) {
             return rooms;
@@ -660,6 +659,132 @@ public class RecruitmentCalendarService {
                         room.capacity(), room.building(),
                         freeByRoom.get(room.emailAddress())))
                 .toList();
+    }
+
+    /**
+     * Every room the tenant has, following {@code @odata.nextLink} to the
+     * end. Graph pages the places collection, and the old single unpaged
+     * call meant rooms past the first page existed but could never be
+     * suggested — invisible, with no error anywhere to say so.
+     * <p>
+     * Failures degrade to the pages already collected rather than to
+     * nothing: a throttled continuation should cost the tail of the list,
+     * not the whole room picker. {@link #ROOM_PAGE_LIMIT} is a runaway
+     * guard, not an expected bound — hitting it is logged.
+     */
+    private RoomLookup allGraphRooms() {
+        List<MeetingRoomsResponse.MeetingRoom> rooms = new ArrayList<>();
+        String skipToken = null;
+        int page = 0;
+        boolean complete = true;
+        do {
+            GraphApiClient.RoomCollectionResponse response;
+            try {
+                response = graph().listRoomsPaged(ROOM_PAGE_SIZE, skipToken);
+            } catch (Exception e) {
+                log.warnv("Graph rooms lookup failed on page {0}: {1} — continuing with {2} room(s)",
+                        page, e.getMessage(), rooms.size());
+                complete = false;
+                break;
+            }
+            if (response == null || response.value() == null) {
+                // No page at all on the FIRST request is a failed lookup, not
+                // an empty tenant; a null continuation page is a truncation.
+                complete = false;
+                break;
+            }
+            response.value().stream()
+                    .filter(room -> room.emailAddress() != null && !room.emailAddress().isBlank())
+                    .map(room -> new MeetingRoomsResponse.MeetingRoom(
+                            room.displayName(), room.emailAddress(),
+                            room.capacity(), room.building(), null))
+                    .forEach(rooms::add);
+            String nextLink = response.odataNextLink();
+            skipToken = parseSkipToken(nextLink);
+            if (nextLink != null && !nextLink.isBlank() && skipToken == null) {
+                // Graph says there is more but names the continuation in a way
+                // we do not read. Truncating silently here is how a room list
+                // quietly stops being the whole list.
+                log.warnv("Graph rooms @odata.nextLink carried no readable continuation — list truncated at {0} room(s)",
+                        rooms.size());
+                complete = false;
+            }
+            page++;
+            if (skipToken != null && page >= ROOM_PAGE_LIMIT) {
+                log.warnv("Graph rooms pagination hit the {0}-page guard with {1} room(s) — list truncated",
+                        ROOM_PAGE_LIMIT, rooms.size());
+                complete = false;
+                break;
+            }
+        } while (skipToken != null);
+        return new RoomLookup(List.copyOf(rooms), complete);
+    }
+
+    /**
+     * The tenant's rooms plus whether that list is the WHOLE list.
+     * <p>
+     * The distinction is the difference between "this tenant has no rooms"
+     * and "we could not ask" — indistinguishable from an empty list alone,
+     * and the settings page states one of them as fact.
+     */
+    public record RoomLookup(List<MeetingRoomsResponse.MeetingRoom> rooms, boolean complete) {
+    }
+
+    /**
+     * As {@link #listRooms()}, but reporting whether the Graph lookup
+     * actually completed. Used by the room-policy settings surface, which
+     * must not render a failed lookup as "the tenant has no rooms".
+     */
+    public RoomLookup roomLookup() {
+        if (!calendarEnabled) {
+            return new RoomLookup(List.of(), false);
+        }
+        return allGraphRooms();
+    }
+
+    /**
+     * The {@code $skiptoken} out of an {@code @odata.nextLink}, or null when
+     * there is no next page (or the link is unparseable, which stops
+     * pagination rather than looping). Mirrors the migration crawler's
+     * helper — same Graph convention, same posture.
+     */
+    static String parseSkipToken(String nextLink) {
+        if (nextLink == null || nextLink.isBlank()) {
+            return null;
+        }
+        try {
+            String query = java.net.URI.create(nextLink).getRawQuery();
+            if (query == null) {
+                return null;
+            }
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                String key = java.net.URLDecoder.decode(pair.substring(0, eq),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                if (key.equalsIgnoreCase("$skiptoken") || key.equalsIgnoreCase("skiptoken")) {
+                    return java.net.URLDecoder.decode(pair.substring(eq + 1),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        } catch (Exception e) {
+            log.warnv("Could not parse rooms @odata.nextLink — stopping pagination: {0}",
+                    e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * The rooms AUTOMATION may book, best-first — {@link #listRooms()}
+     * filtered to the admin's enabled set and ordered by priority (V513).
+     * Used by the two automatic planners only; the manual room picker keeps
+     * using {@link #listRooms()} and sees every room, because disabling a
+     * room is a statement about the AI, not about people.
+     */
+    public List<MeetingRoomsResponse.MeetingRoom> bookableRoomsInPriorityOrder() {
+        return roomPolicyService.enabledRoomsInPriorityOrder(listRooms());
     }
 
     /**
@@ -828,7 +953,10 @@ public class RecruitmentCalendarService {
         if (!calendarEnabled) {
             return SlotSuggestions.none(true);
         }
-        List<MeetingRoomsResponse.MeetingRoom> rooms = listRooms();
+        // The admin's enabled set, best-first (V513). Only these rooms are
+        // probed and only these can be suggested — the manual picker still
+        // gets the full list from listRooms().
+        List<MeetingRoomsResponse.MeetingRoom> rooms = bookableRoomsInPriorityOrder();
         List<String> mailboxes = new ArrayList<>(interviewerEmails);
         rooms.forEach(room -> mailboxes.add(room.emailAddress()));
         if (mailboxes.isEmpty()) {

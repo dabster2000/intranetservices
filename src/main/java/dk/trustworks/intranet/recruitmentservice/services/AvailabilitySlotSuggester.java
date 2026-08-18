@@ -6,7 +6,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -22,8 +21,10 @@ import java.util.Set;
  * it lies inside the intersection of the interviewers' working hours,
  * and it falls on a weekday. Candidate starts step on 30-minute
  * boundaries inside the 07:00–19:00 probe window. Each slot carries the
- * smallest free room that seats the headcount, when one exists —
- * a missing room never disqualifies the slot.
+ * highest-preference free room that seats the headcount, when one exists
+ * ({@link MeetingRoomPicker} — the caller passes {@code rooms} already
+ * filtered to the admin-enabled set and ordered by priority) — a missing
+ * room never disqualifies the slot.
  * <p>
  * Unknown availability follows the house free/busy posture ("unknown
  * never counts as busy"): an interviewer mailbox absent from the
@@ -31,7 +32,8 @@ import java.util.Set;
  * block suggestions, and digits beyond a truncated view count as free.
  * Rooms are held to the opposite rule: a room is only suggested when its
  * schedule is known and free, because a suggested room reads as a
- * booking promise.
+ * booking promise. Room capacity is a floor, not a ranking key — see
+ * {@link MeetingRoomPicker}.
  * <p>
  * Working hours are interpreted as wall-clock in the probe window's own
  * zone (Europe/Copenhagen). Graph reports them in each mailbox's own
@@ -78,13 +80,29 @@ public final class AvailabilitySlotSuggester {
                                String timeZoneName) {
     }
 
-    /** A bookable room candidate (capacity nullable = unknown, never fits). */
+    /**
+     * A bookable room candidate. {@code capacity} is nullable = Graph has no
+     * capacity for the room, which never disqualifies it: capacity is only a
+     * floor, so an unknown one simply cannot rule the room out
+     * ({@link MeetingRoomPicker}).
+     */
     public record RoomOption(String email, String displayName, Integer capacity) {
     }
 
-    /** One ranked suggestion; room fields are null when no room fits. */
+    /**
+     * One ranked suggestion; room fields are null when no room fits.
+     * {@code roomReason} explains a non-obvious room choice ("preference 2 —
+     * 1 preferred room was busy") and is null when the top-preference room
+     * simply won — see {@link MeetingRoomPicker.Pick#reason()}.
+     */
     public record Slot(LocalDateTime start, int durationMinutes,
-                       String roomEmail, String roomDisplayName) {
+                       String roomEmail, String roomDisplayName, String roomReason) {
+
+        /** Convenience for callers that do not care about the explanation. */
+        public Slot(LocalDateTime start, int durationMinutes,
+                    String roomEmail, String roomDisplayName) {
+            this(start, durationMinutes, roomEmail, roomDisplayName, null);
+        }
     }
 
     /**
@@ -131,11 +149,12 @@ public final class AvailabilitySlotSuggester {
                 if (!slotStart.isBefore(notBefore)
                         && allInterviewersAvailable(windowStart, schedules,
                                 interviewerEmails, slotStart, durationMinutes)) {
-                    RoomOption room = smallestFittingFreeRoom(windowStart, schedules,
-                            rooms, slotStart, durationMinutes, headcount);
+                    MeetingRoomPicker.Pick pick = MeetingRoomPicker.pick(windowStart,
+                            schedules, rooms, slotStart, durationMinutes, headcount);
                     slots.add(new Slot(slotStart, durationMinutes,
-                            room != null ? room.email() : null,
-                            room != null ? room.displayName() : null));
+                            pick != null ? pick.room().email() : null,
+                            pick != null ? pick.room().displayName() : null,
+                            pick != null ? pick.reason() : null));
                     found++;
                 }
                 slotStart = slotStart.plusMinutes(STEP_MINUTES);
@@ -164,26 +183,6 @@ public final class AvailabilitySlotSuggester {
             }
         }
         return true;
-    }
-
-    private static RoomOption smallestFittingFreeRoom(LocalDateTime windowStart,
-                                                      Map<String, MailboxWindowSchedule> schedules,
-                                                      List<RoomOption> rooms,
-                                                      LocalDateTime slotStart,
-                                                      int durationMinutes,
-                                                      int headcount) {
-        return rooms.stream()
-                .filter(room -> room.capacity() != null && room.capacity() >= headcount)
-                .filter(room -> {
-                    MailboxWindowSchedule schedule = schedules.get(room.email());
-                    // Rooms need a KNOWN free schedule — a suggested room
-                    // reads as a promise, unknown must not make one.
-                    return schedule != null && schedule.availabilityView() != null
-                            && viewFree(windowStart, schedule.availabilityView(),
-                                    slotStart, durationMinutes, false);
-                })
-                .min(Comparator.comparingInt(RoomOption::capacity))
-                .orElse(null);
     }
 
     /**

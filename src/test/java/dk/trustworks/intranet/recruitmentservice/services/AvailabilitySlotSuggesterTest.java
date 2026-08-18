@@ -176,7 +176,11 @@ class AvailabilitySlotSuggesterTest {
     // ---- Rooms -----------------------------------------------------------------
 
     @Test
-    void smallestFreeRoomThatSeatsEveryone_winsTheSlot() {
+    void highestPreferenceFreeRoomThatSeatsEveryone_winsTheSlot() {
+        // The offered list IS the admin's preference order (V513). Capacity
+        // is only a floor: "Small" cannot seat 4 and drops out, and the
+        // NEXT preference wins — not the smallest survivor, which is what
+        // used to make one room win every interview forever.
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
                 "small@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
@@ -190,13 +194,35 @@ class AvailabilitySlotSuggesterTest {
         List<Slot> slots = AvailabilitySlotSuggester.suggest(
                 MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 4, WINDOW_OPEN);
 
-        assertEquals("medium@trustworks.dk", slots.get(0).roomEmail(),
-                "capacity 2 cannot seat 4; 6 beats 20");
-        assertEquals("Medium", slots.get(0).roomDisplayName());
+        assertEquals("large@trustworks.dk", slots.get(0).roomEmail(),
+                "capacity 2 cannot seat 4; the next PREFERENCE wins, not the smallest fit");
+        assertEquals("Large", slots.get(0).roomDisplayName());
     }
 
     @Test
-    void busyRoom_fallsBackToTheNextFittingRoom() {
+    void preferenceOrderDecides_evenWhenAnotherRoomFitsBetter() {
+        // The regression this feature exists for: with the old rule the
+        // smallest fitting room won every time and no one could say
+        // otherwise. Preferring the big room must now be expressible.
+        Map<String, MailboxWindowSchedule> schedules = Map.of(
+                "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
+                "big@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
+                "snug@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
+        List<RoomOption> rooms = List.of(
+                new RoomOption("big@trustworks.dk", "Havnepakhuset Stor", 20),
+                new RoomOption("snug@trustworks.dk", "HP3", 4));
+
+        List<Slot> slots = AvailabilitySlotSuggester.suggest(
+                MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 2, WINDOW_OPEN);
+
+        assertEquals("big@trustworks.dk", slots.get(0).roomEmail(),
+                "a 2-person interview lands in the preferred big room, not the snuggest fit");
+        assertNull(slots.get(0).roomReason(),
+                "the top preference winning needs no explanation");
+    }
+
+    @Test
+    void busyRoom_fallsBackToTheNextPreference_andSaysSo() {
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
                 "medium@trustworks.dk", schedule(busyBetween("07:00", "08:00")),
@@ -209,16 +235,39 @@ class AvailabilitySlotSuggesterTest {
                 MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 4, WINDOW_OPEN);
 
         assertEquals("large@trustworks.dk", slots.get(0).roomEmail(),
-                "07:00: Medium is busy, Large takes the slot");
+                "07:00: the first preference is busy, the second takes the slot");
+        assertEquals("preference 2 — 1 preferred room was unavailable",
+                slots.get(0).roomReason(),
+                "the fallback is explained rather than looking arbitrary");
         assertEquals("medium@trustworks.dk", slots.get(2).roomEmail(),
-                "08:00: Medium is free again and smaller");
+                "08:00: the first preference is free again and takes it back");
+        assertNull(slots.get(2).roomReason());
+    }
+
+    @Test
+    void roomWithoutCapacity_isEligible_notSilentlyInvisible() {
+        // Graph reports no capacity for a room whose Exchange resource never
+        // had one set. The old rule dropped those outright, so rooms nobody
+        // had finished configuring could never be suggested — with nothing
+        // anywhere saying why.
+        Map<String, MailboxWindowSchedule> schedules = Map.of(
+                "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
+                "nocap@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
+        List<RoomOption> rooms = List.of(
+                new RoomOption("nocap@trustworks.dk", "NoCapacity", null));
+
+        List<Slot> slots = AvailabilitySlotSuggester.suggest(
+                MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 8, WINDOW_OPEN);
+
+        assertEquals("nocap@trustworks.dk", slots.get(0).roomEmail(),
+                "unknown capacity cannot prove the room too small, so it never excludes it");
     }
 
     @Test
     void noFittingRoom_leavesTheSlotRoomless_notDropped() {
-        // Unknown room schedules and too-small rooms never earn a
-        // suggestion (a suggested room reads as a booking promise), but the
-        // slot itself survives.
+        // A too-small room and a room whose schedule we could not read never
+        // earn a suggestion (a suggested room reads as a booking promise),
+        // but the slot itself survives.
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
                 "small@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
@@ -231,7 +280,8 @@ class AvailabilitySlotSuggesterTest {
                 MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 4, WINDOW_OPEN);
 
         assertEquals(50, slots.size());
-        assertNull(slots.get(0).roomEmail());
+        assertNull(slots.get(0).roomEmail(),
+                "Small is too small; Ghost and NoCapacity have no readable schedule");
         assertNull(slots.get(0).roomDisplayName());
     }
 

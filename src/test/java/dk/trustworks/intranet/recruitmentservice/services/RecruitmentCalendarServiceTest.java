@@ -263,7 +263,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_toggleOn_mapsRooms_skippingRoomsWithoutMailbox() {
         service.calendarEnabled = true;
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
                 new GraphApiClient.RoomCollectionResponse.Room(
@@ -281,7 +281,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_graphFailure_returnsEmpty_neverThrows() {
         service.calendarEnabled = true;
-        when(graph.listRooms())
+        when(graph.listRoomsPaged(any(), any()))
                 .thenThrow(new RuntimeException("Graph 403: missing Place.Read.All"));
         assertTrue(service.listRooms().isEmpty());
     }
@@ -289,7 +289,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withoutStart_noFreeBusyLookup_availableNull() {
         service.calendarEnabled = true;
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
 
@@ -303,7 +303,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStart_marksFreeAndBusy_fromOneGetScheduleCall() {
         service.calendarEnabled = true;
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
                 new GraphApiClient.RoomCollectionResponse.Room(
@@ -335,7 +335,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStart_freeBusyFailure_roomsStillReturned_availableNull() {
         service.calendarEnabled = true;
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any()))
@@ -369,7 +369,7 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStartAndDuration_freeBusyWindowMatchesDuration() {
         service.calendarEnabled = true;
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any()))

@@ -24,15 +24,24 @@ public record SuggestedSlotsResponse(List<SuggestedSlot> slots,
 
     /**
      * One suggestion. {@code start} is wall-clock Europe/Copenhagen.
-     * {@code roomEmail}/{@code roomDisplayName} carry the smallest free
-     * room that seats everyone, or {@code null} when no known-free room
-     * fits — the slot is still valid, the scheduler picks a location.
+     * {@code roomEmail}/{@code roomDisplayName} carry the highest-PREFERENCE
+     * free room that seats everyone — the admin's ordered whitelist from
+     * {@code recruitment_meeting_room_policy} (V513), walked top-down — or
+     * {@code null} when no known-free room fits; the slot is still valid and
+     * the scheduler picks a location.
+     * <p>
+     * {@code roomReason} explains a room that is NOT the top preference
+     * ("preference 2 — 1 preferred room was unavailable"), and is null when
+     * the first choice simply won. Without it the fallback reads as an
+     * arbitrary machine decision, which is exactly the complaint this
+     * feature answers.
      */
     public record SuggestedSlot(
             LocalDateTime start,
             int durationMinutes,
             String roomEmail,
-            String roomDisplayName
+            String roomDisplayName,
+            String roomReason
     ) {
     }
 }

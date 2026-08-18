@@ -629,8 +629,12 @@ public class RecruitmentSchedulingOrchestrator {
         // F2 (owner decision 2026-08-14): requireRoom=false means rooms
         // are never touched — no opportunistic assignment, no hold. An
         // online interview must not block a physical room.
+        //
+        // V513: the enabled set in the admin's preference order, not the raw
+        // Graph list. Order matters downstream — MeetingRoomPicker takes the
+        // FIRST acceptable room, so this list IS the preference.
         List<MeetingRoomsResponse.MeetingRoom> rooms = request.isRequireRoom()
-                ? calendarService.listRooms()
+                ? calendarService.bookableRoomsInPriorityOrder()
                 : List.of();
 
         List<String> mailboxes = new ArrayList<>(requiredEmails);

@@ -416,8 +416,36 @@ public interface GraphApiClient {
     @Produces(MediaType.APPLICATION_JSON)
     RoomCollectionResponse listRooms();
 
+    /**
+     * As {@link #listRooms()}, with explicit paging. Graph returns rooms a
+     * page at a time and signals more with {@code @odata.nextLink}; the
+     * unpaged call above silently sees only the first page, which for the
+     * scheduler means rooms that exist but can never be suggested. Same
+     * {@code Place.Read.All} permission.
+     *
+     * @param top       page size
+     * @param skipToken continuation token parsed from
+     *                  {@code @odata.nextLink}; null for the first page
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/place-list">List places</a>
+     */
+    @GET
+    @Path("/places/microsoft.graph.room")
+    @Produces(MediaType.APPLICATION_JSON)
+    RoomCollectionResponse listRoomsPaged(
+        @jakarta.ws.rs.QueryParam("$top") Integer top,
+        @jakarta.ws.rs.QueryParam("$skiptoken") String skipToken
+    );
+
     /** Graph places response — the subset of the room resource we use. */
-    record RoomCollectionResponse(@JsonProperty("value") java.util.List<Room> value) {
+    record RoomCollectionResponse(
+        @JsonProperty("value") java.util.List<Room> value,
+        @JsonProperty("@odata.nextLink") String odataNextLink) {
+
+        /** A single, final page — no continuation. */
+        public RoomCollectionResponse(java.util.List<Room> value) {
+            this(value, null);
+        }
+
         public record Room(
             String id,
             String displayName,

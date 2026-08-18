@@ -63,6 +63,18 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // @Inject fields are null under a bare `new` — the limiter is on the
         // hot path of every probe, so it has to be supplied here.
         service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(2, 50);
+        // Ditto the room policy (V513): suggestedSlots asks it which rooms
+        // automation may book. These tests are about mailbox batching, so the
+        // policy is a pass-through that enables every room Graph returns —
+        // the pre-V513 behaviour, which is what their assertions describe.
+        service.roomPolicyService = new RecruitmentMeetingRoomPolicyService() {
+            @Override
+            public java.util.List<dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse.MeetingRoom>
+                    enabledRoomsInPriorityOrder(
+                            java.util.List<dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse.MeetingRoom> graphRooms) {
+                return graphRooms == null ? java.util.List.of() : graphRooms;
+            }
+        };
         // The caller anchor rotates and the cursor is shared across requests;
         // pin it so batch→caller mapping is deterministic in tests.
         service.callerCursor.set(0);
@@ -319,7 +331,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // suggester as an absent schedule, and absent means "unknown never
         // counts as busy" — so we proposed times against a calendar we had
         // never actually read.
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
         when(graph.getSchedule(anyString(), any())).thenThrow(throttled(null));
 
         var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
@@ -336,7 +348,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // a permanent, ordinary condition (plenty of employees have none). If
         // that suppressed suggestions, any team with one such member would
         // lose the feature forever.
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
             GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
             return new GraphApiClient.ScheduleCollectionResponse(request.schedules().stream()
@@ -357,7 +369,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     @Test
     void noConcurrencyPermit_isUnknownNotFree_andNeverCallsGraph() {
         service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(0, 1);
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
 
         var availability = service.interviewerAvailability(mailboxes(20), SLOT, 60);
         var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
@@ -422,7 +434,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     void suggestedSlots_fetchesOneMultiDayWindow_notOneCallPerDay() {
         // The ALB idle-timeout guard: a 10-business-day scan must be ONE
         // getSchedule window per 20-mailbox batch.
-        when(graph.listRooms()).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
                 new GraphApiClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
@@ -448,7 +460,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
 
     @Test
     void suggestedSlots_graphFullyDown_returnsEmpty_notBlindSuggestions() {
-        when(graph.listRooms()).thenThrow(new RuntimeException("Graph API error 503"));
+        when(graph.listRoomsPaged(any(), any())).thenThrow(new RuntimeException("Graph API error 503"));
         when(graph.getSchedule(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph API error 503"));
 
@@ -484,6 +496,113 @@ class RecruitmentCalendarAvailabilityBatchingTest {
             mailboxes.add("u" + i + "@trustworks.dk");
         }
         return mailboxes;
+    }
+
+    // ---- Room pagination -------------------------------------------------------
+    //
+    // These live in the DB-free tier deliberately: the sibling
+    // RecruitmentCalendarServiceTest is a @QuarkusTest and so is NOT run by the
+    // deploy gate, which would leave the pagination fix uncovered where it
+    // matters.
+
+    @Test
+    void rooms_followsOdataNextLink_soPageTwoRoomsAreNotInvisible() {
+        // The unpaged call saw only page one: rooms past it existed in the
+        // tenant, could never be suggested, and nothing anywhere said so.
+        service.calendarEnabled = true;
+        when(graph.listRoomsPaged(any(), any()))
+                .thenReturn(new GraphApiClient.RoomCollectionResponse(
+                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                                "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
+                        "https://graph.microsoft.com/v1.0/places/microsoft.graph.room?$skiptoken=TOKEN2"))
+                .thenReturn(new GraphApiClient.RoomCollectionResponse(
+                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                                "p2", "Room Two", "two@trustworks.dk", 8, "HQ"))));
+
+        var rooms = service.listRooms();
+
+        assertEquals(2, rooms.size(), "both pages are collected");
+        assertEquals("one@trustworks.dk", rooms.get(0).emailAddress());
+        assertEquals("two@trustworks.dk", rooms.get(1).emailAddress());
+        verify(graph).listRoomsPaged(any(), eq((String) null));
+        verify(graph).listRoomsPaged(any(), eq("TOKEN2"));
+    }
+
+    @Test
+    void rooms_continuationFailure_keepsThePagesAlreadyCollected() {
+        // A throttled continuation should cost the tail of the list, not the
+        // whole room picker.
+        service.calendarEnabled = true;
+        when(graph.listRoomsPaged(any(), any()))
+                .thenReturn(new GraphApiClient.RoomCollectionResponse(
+                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                                "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
+                        "https://graph.microsoft.com/v1.0/places/microsoft.graph.room?$skiptoken=TOKEN2"))
+                .thenThrow(new RuntimeException("Graph 429: throttled"));
+
+        var rooms = service.listRooms();
+
+        assertEquals(1, rooms.size(), "page one survives the failed continuation");
+        assertEquals("one@trustworks.dk", rooms.get(0).emailAddress());
+    }
+
+    @Test
+    void roomLookup_reportsIncomplete_whenGraphFails_soEmptyIsNotReadAsNoRooms() {
+        // "The tenant has no rooms" and "we could not ask" are the same empty
+        // list. The settings page states the first as fact, so the difference
+        // has to survive to the caller.
+        service.calendarEnabled = true;
+        when(graph.listRoomsPaged(any(), any()))
+                .thenThrow(new RuntimeException("Graph 503"));
+
+        var lookup = service.roomLookup();
+
+        assertTrue(lookup.rooms().isEmpty());
+        assertFalse(lookup.complete(), "a failed lookup is not an empty tenant");
+    }
+
+    @Test
+    void roomLookup_reportsComplete_whenGraphAnswersEveryPage() {
+        service.calendarEnabled = true;
+        when(graph.listRoomsPaged(any(), any())).thenReturn(
+                new GraphApiClient.RoomCollectionResponse(List.of(
+                        new GraphApiClient.RoomCollectionResponse.Room(
+                                "p1", "Room One", "one@trustworks.dk", 4, "HQ"))));
+
+        var lookup = service.roomLookup();
+
+        assertEquals(1, lookup.rooms().size());
+        assertTrue(lookup.complete());
+    }
+
+    @Test
+    void roomLookup_reportsIncomplete_whenTheContinuationIsUnreadable() {
+        // Graph says there is more but names the continuation in a form we do
+        // not parse. Truncating silently is how a room list quietly stops
+        // being the whole list.
+        service.calendarEnabled = true;
+        when(graph.listRoomsPaged(any(), any())).thenReturn(
+                new GraphApiClient.RoomCollectionResponse(
+                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                                "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
+                        "https://graph.microsoft.com/v1.0/places?$unknowncursor=ABC"));
+
+        var lookup = service.roomLookup();
+
+        assertEquals(1, lookup.rooms().size());
+        assertFalse(lookup.complete(), "an unread continuation is a truncation, not a complete list");
+    }
+
+    @Test
+    void parseSkipToken_readsTheContinuationOrStopsCleanly() {
+        assertEquals("ABC123", RecruitmentCalendarService.parseSkipToken(
+                "https://graph.microsoft.com/v1.0/places/microsoft.graph.room?$skiptoken=ABC123"));
+        assertEquals("ABC123", RecruitmentCalendarService.parseSkipToken(
+                "https://graph.microsoft.com/v1.0/places?$top=100&skiptoken=ABC123"));
+        assertNull(RecruitmentCalendarService.parseSkipToken(null));
+        assertNull(RecruitmentCalendarService.parseSkipToken(""));
+        assertNull(RecruitmentCalendarService.parseSkipToken(
+                "https://graph.microsoft.com/v1.0/places/microsoft.graph.room"));
     }
 
     /**
