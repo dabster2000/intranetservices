@@ -114,11 +114,21 @@ public class UserService {
         return users;
     }
 
+    /**
+     * @return the matching user, or {@code null} when no user carries that username.
+     *
+     * The null return is load-bearing. This used to {@code orElse(new User())}, and
+     * {@link User#User()} mints a random UUID — so a miss came back as a well-formed
+     * User carrying an identity that exists nowhere. Callers that only asked "did I
+     * get a uuid?" (BFF login resolution and user-resolver) accepted that phantom as
+     * the signed-in user, which silently detached anyone whose Azure login prefix no
+     * longer matched {@code user.username} from their own data.
+     */
     public User findByUsername(String username, boolean shallow) {
         User user = User.<User>find("username = ?1", username)  // '=' not 'like'
                 .firstResultOptional()
-                .orElse(new User());
-        if (!shallow) addChildrenToUser(user);
+                .orElse(null);
+        if (user != null && !shallow) addChildrenToUser(user);
         return user;
     }
 
