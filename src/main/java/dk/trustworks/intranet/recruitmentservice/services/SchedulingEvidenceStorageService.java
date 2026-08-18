@@ -51,29 +51,68 @@ public class SchedulingEvidenceStorageService {
                 .build();
     }
 
-    /** The object key of one evidence image — never logged with content. */
+    /**
+     * How many images one evidence row may own. One Slack message now produces
+     * ONE evidence row carrying every attached image (the model reads them
+     * together), so the deleter has to sweep this many keys.
+     * <p>
+     * DERIVED, never a second literal. Security review 2026-08-18 (finding 3):
+     * as two independent constants, lowering this one while the ingest cap
+     * stayed at 3 would have left the higher-index S3 objects orphaned forever —
+     * a GDPR deletion-sweep miss with no error, no log and no alert. The
+     * invariant is pinned by {@code SchedulingEvidenceStorageKeyTest}.
+     */
+    public static final int MAX_IMAGES_PER_EVIDENCE =
+            AvailabilityMessageService.IMAGES_PER_MESSAGE_MAX;
+
+    /**
+     * The object key of one evidence image — never logged with content. Index 0
+     * keeps the historical unsuffixed key so objects written before
+     * multi-image support stay addressable by the same deleter.
+     */
     public String keyOf(String evidenceUuid) {
-        return "recruitment/scheduling-evidence/" + environmentId + "/" + evidenceUuid;
+        return keyOf(evidenceUuid, 0);
+    }
+
+    /** The object key of the {@code index}-th image of one evidence row. */
+    public String keyOf(String evidenceUuid, int index) {
+        String base = "recruitment/scheduling-evidence/" + environmentId + "/" + evidenceUuid;
+        return index <= 0 ? base : base + "-" + index;
     }
 
     /** Store one validated image (bytes already magic-byte-gated). */
     public void store(String evidenceUuid, byte[] bytes, String contentType) {
+        store(evidenceUuid, 0, bytes, contentType);
+    }
+
+    /** Store the {@code index}-th image of one evidence row. */
+    public void store(String evidenceUuid, int index, byte[] bytes, String contentType) {
         s3.putObject(PutObjectRequest.builder()
                         .bucket(bucketName)
-                        .key(keyOf(evidenceUuid))
+                        .key(keyOf(evidenceUuid, index))
                         .contentType(contentType)
                         .serverSideEncryption(ServerSideEncryption.AES256)
                         .build(),
                 RequestBody.fromBytes(bytes));
-        log.infof("Stored scheduling evidence image evidence=%s size=%d", evidenceUuid, bytes.length);
+        log.infof("Stored scheduling evidence image evidence=%s index=%d size=%d",
+                evidenceUuid, index, bytes.length);
     }
 
-    /** Delete one evidence image (D10). Idempotent at the S3 layer. */
+    /**
+     * Delete EVERY image of one evidence row (D10). Idempotent at the S3 layer,
+     * so sweeping all {@value #MAX_IMAGES_PER_EVIDENCE} slots is safe whether
+     * the row owned one image or three — a delete of an absent key succeeds.
+     * That idempotence is what lets the deleter stay keyed on the evidence uuid
+     * alone; it never has to know how many images arrived.
+     */
     public void delete(String evidenceUuid) {
-        s3.deleteObject(DeleteObjectRequest.builder()
-                .bucket(bucketName)
-                .key(keyOf(evidenceUuid))
-                .build());
-        log.infof("Deleted scheduling evidence image evidence=%s", evidenceUuid);
+        for (int index = 0; index < MAX_IMAGES_PER_EVIDENCE; index++) {
+            s3.deleteObject(DeleteObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(keyOf(evidenceUuid, index))
+                    .build());
+        }
+        log.infof("Deleted scheduling evidence images evidence=%s slots=%d",
+                evidenceUuid, MAX_IMAGES_PER_EVIDENCE);
     }
 }

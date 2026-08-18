@@ -103,7 +103,8 @@ public class SchedulingEvidenceDmExecutor implements SchedulingOutboxExecutor {
             return null; // answered/withdrawn before the card went out
         }
         List<RecruitmentAvailabilityConstraint> constraints =
-                RecruitmentAvailabilityConstraint.list("evidenceUuid = ?1", evidence.getUuid());
+                RecruitmentAvailabilityConstraint.list(
+                        "evidenceUuid = ?1 order by startAt, endAt", evidence.getUuid());
         return new Payload(interviewer, evidence, constraints,
                 status == EvidenceConfirmationStatus.PENDING, null);
     }

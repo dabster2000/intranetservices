@@ -100,7 +100,8 @@ public class SlackEvidenceConfirmHandler implements SlackInboundHandler {
             return;
         }
         List<RecruitmentAvailabilityConstraint> constraints =
-                RecruitmentAvailabilityConstraint.list("evidenceUuid = ?1", evidence.getUuid());
+                RecruitmentAvailabilityConstraint.list(
+                        "evidenceUuid = ?1 order by startAt, endAt", evidence.getUuid());
         slackService.updateMessage(channel, ts,
                 "Tilgængelighed bekræftet",
                 SlackAvailabilityViews.confirmedCard(evidence, constraints));

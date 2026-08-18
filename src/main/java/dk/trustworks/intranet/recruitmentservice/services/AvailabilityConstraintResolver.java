@@ -4,6 +4,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityCo
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence;
 import dk.trustworks.intranet.recruitmentservice.model.enums.AvailabilityConstraintType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceConfirmationStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceSourceType;
 import dk.trustworks.intranet.recruitmentservice.services.MultiSlotPlanner.ExternalConstraint;
 
 import java.time.LocalDate;
@@ -97,7 +98,13 @@ public final class AvailabilityConstraintResolver {
             restrictedFrom = coveredFrom != null ? coveredFrom : start.toLocalDate();
             restrictedTo = coveredTo != null ? coveredTo : end.toLocalDate();
         }
-        return new ExternalConstraint(row.getType(), start, end, restrictedFrom, restrictedTo);
+        // Owner decision 2026-08-18: an AVAILABLE_ONLY window read out of a
+        // calendar IMAGE restricts the day but must NOT override the O365
+        // calendar the way a typed statement does (F1a). A picture is not a
+        // person promising to move the conflicting meeting.
+        boolean overridesCalendar = evidence.getSourceType() != EvidenceSourceType.IMAGE;
+        return new ExternalConstraint(row.getType(), start, end, restrictedFrom, restrictedTo,
+                overridesCalendar);
     }
 
     /**
@@ -115,15 +122,21 @@ public final class AvailabilityConstraintResolver {
                 result.add(constraint);
             }
         }
-        // Group by restricted window; merge each group's sorted intervals.
-        LinkedHashSet<List<LocalDate>> windows = new LinkedHashSet<>();
+        // Group by restricted window AND by whether the window may override the
+        // calendar: merging a typed claim into an image-derived one would
+        // silently hand the image the override the owner decided it must not
+        // have.
+        LinkedHashSet<List<Object>> windows = new LinkedHashSet<>();
         for (ExternalConstraint constraint : availableOnly) {
-            windows.add(List.of(constraint.restrictedFrom(), constraint.restrictedTo()));
+            windows.add(List.of(constraint.restrictedFrom(), constraint.restrictedTo(),
+                    constraint.overridesCalendar()));
         }
-        for (List<LocalDate> window : windows) {
+        for (List<Object> window : windows) {
+            boolean overrides = (Boolean) window.get(2);
             List<ExternalConstraint> group = availableOnly.stream()
                     .filter(c -> c.restrictedFrom().equals(window.get(0))
-                            && c.restrictedTo().equals(window.get(1)))
+                            && c.restrictedTo().equals(window.get(1))
+                            && c.overridesCalendar() == overrides)
                     .sorted(Comparator.comparing(ExternalConstraint::start))
                     .toList();
             ExternalConstraint current = null;
@@ -133,7 +146,8 @@ public final class AvailabilityConstraintResolver {
                 } else if (!next.start().isAfter(current.end())) {
                     if (next.end().isAfter(current.end())) {
                         current = new ExternalConstraint(current.type(), current.start(),
-                                next.end(), current.restrictedFrom(), current.restrictedTo());
+                                next.end(), current.restrictedFrom(), current.restrictedTo(),
+                                current.overridesCalendar());
                     }
                 } else {
                     result.add(current);

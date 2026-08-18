@@ -85,6 +85,23 @@ public class RecruitmentAvailabilityEvidence extends PanacheEntityBase {
     @Column(name = "covered_to")
     private LocalDate coveredTo;
 
+    /**
+     * IMAGE only (v2): comma-separated ISO dates the vision pass could not read
+     * and that were DISCARDED rather than guessed. Lets the card tell "read as
+     * free" apart from "could not read" — the distinction that made a
+     * fabricated busy day indistinguishable from an omitted one in v1.
+     */
+    @Column(name = "unreadable_days", length = 255)
+    private String unreadableDays;
+
+    /**
+     * IMAGE only (v2): comma-separated deterministic trust codes from
+     * {@code AvailabilityImageReading.assess} plus NOT_CORROBORATED. Audit and
+     * card disclosure only — it never blocks (the path stays frictionless).
+     */
+    @Column(name = "read_trust", length = 160)
+    private String readTrust;
+
     @Column(name = "timezone", length = 50, nullable = false)
     private String timezone = "Europe/Copenhagen";
 

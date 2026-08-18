@@ -8,6 +8,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityConstraint;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentAvailabilityEvidence;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSchedulingRequest;
 import dk.trustworks.intranet.recruitmentservice.model.enums.EvidenceConfirmationStatus;
@@ -15,6 +16,8 @@ import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSchedulingF
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
+
+import java.util.List;
 
 /**
  * The summary card's <b>Ret</b> button (plan §12.4): the interviewer
@@ -60,6 +63,36 @@ public class SlackEvidenceCorrectHandler implements SlackInboundHandler {
             return SlackInboundResponse.handled(SlackEvidenceConfirmHandler.GONE_TEXT);
         }
 
+        // v2: open the reading PREFILLED for editing instead of discarding it
+        // and asking for a retype. Nothing is cancelled until the edit is
+        // submitted — abandoning the modal must leave the reading exactly as it
+        // was, or pressing Ret to "have a look" would silently drop it.
+        List<RecruitmentAvailabilityConstraint> constraints =
+                RecruitmentAvailabilityConstraint.list(
+                        "evidenceUuid = ?1 order by startAt, endAt", evidence.getUuid());
+        try {
+            slackService.openView(request.triggerId(),
+                    SlackAvailabilityViews.correctModal(evidence.getUuid(),
+                            SlackAvailabilityViews.correctionPrefill(evidence, constraints),
+                            "en".equals(evidence.getLanguage())));
+            return SlackInboundResponse.handled(null);
+        } catch (Exception e) {
+            // No modal (expired trigger, Slack down): fall back to the pre-v2
+            // behaviour so the interviewer is never stuck with a reading they
+            // have told us is wrong.
+            log.warnf("Ret modal could not be opened, falling back to discard: %s",
+                    e.getMessage());
+            cancel(evidence, actor.getUuid());
+            updateCard(evidence, request);
+            return SlackInboundResponse.handled(
+                    "en".equals(evidence.getLanguage())
+                            ? "The reading was discarded — please write your availability again."
+                            : "Læsningen blev kasseret — skriv din tilgængelighed igen.");
+        }
+    }
+
+    /** Discard one reading and let the planner move on. */
+    void cancel(RecruitmentAvailabilityEvidence evidence, String actorUuid) {
         evidence.setConfirmationStatus(EvidenceConfirmationStatus.CANCELLED);
         RecruitmentSchedulingRequest schedulingRequest =
                 RecruitmentSchedulingRequest.findById(evidence.getRequestUuid());
@@ -69,10 +102,7 @@ public class SlackEvidenceCorrectHandler implements SlackInboundHandler {
             // fresh-pending-evidence search grace and replan now.
             schedulingRequest.setNextActionAt(null);
         }
-        record(schedulingRequest, evidence, actor.getUuid());
-
-        updateCard(evidence, request);
-        return SlackInboundResponse.handled(null);
+        record(schedulingRequest, evidence, actorUuid);
     }
 
     private void record(RecruitmentSchedulingRequest schedulingRequest,
