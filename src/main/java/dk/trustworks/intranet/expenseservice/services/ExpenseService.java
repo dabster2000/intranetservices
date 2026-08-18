@@ -51,6 +51,7 @@ public class ExpenseService {
     public static final String STATUS_NO_USER = "NO_USER";           // User account issue
     public static final String STATUS_UP_FAILED = "UP_FAILED";       // Upload failed
     public static final String STATUS_DELETED = "DELETED";           // Deleted in e-conomics
+    public static final String STATUS_CLOSED_MANUAL = "CLOSED_MANUAL"; // Manual terminal: booked by hand or written off (P0)
 
     @Inject
     ExpenseFileService expenseFileService;
@@ -440,15 +441,23 @@ public class ExpenseService {
             // reader re-posts the expense every hour and it never reaches BOOKED (also leaves rows
             // stranded in PROCESSING when an UP_FAILED update is clobbered). Syncing the entity makes
             // the flush a no-op overwrite; on an outer rollback the committed values here still win.
+            // Queue-age anchor mirror (P0): the bulk update below bypasses the entity hook,
+            // so maintain attention_since here with the hook's exact semantics — set on
+            // entry into NEEDS_ATTENTION, preserved while in it, cleared on exit.
+            LocalDateTime attentionSince = ExpenseStateDeriver.NEEDS_ATTENTION.equals(derived.state())
+                    ? (expense.getAttentionSince() != null ? expense.getAttentionSince() : LocalDateTime.now())
+                    : null;
+
             expense.setStatus(status);
             expense.setErrorMessage(errorMessage);
             expense.setState(derived.state());
             expense.setAttentionOwner(derived.owner());
             expense.setAttentionKind(derived.kind());
+            expense.setAttentionSince(attentionSince);
 
-            // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?14 = derived state columns.
-            // ?12–?14 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
-            // If you add a field, do NOT renumber ?11–?14 without updating both the SQL and the argument order.
+            // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?15 = derived state columns.
+            // ?12–?15 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
+            // If you add a field, do NOT renumber ?11–?15 without updating both the SQL and the argument order.
             Expense.update("status = ?1, " +
                     "vouchernumber = ?2, " +
                     "journalnumber = ?3, " +
@@ -461,7 +470,8 @@ public class ExpenseService {
                     "accountantNotes = ?10, " +
                     "state = ?12, " +
                     "attentionOwner = ?13, " +
-                    "attentionKind = ?14 " +
+                    "attentionKind = ?14, " +
+                    "attentionSince = ?15 " +
                     "WHERE uuid like ?11 ",
                     status,
                     expense.getVouchernumber(),
@@ -476,7 +486,8 @@ public class ExpenseService {
                     expense.getUuid(),
                     derived.state(),
                     derived.owner(),
-                    derived.kind());
+                    derived.kind(),
+                    attentionSince);
             log.infof("Updated expense uuid=%s -> status=%s, state=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
                     expense.getUuid(), status, derived.state(),
                     expense.getJournalnumber(), expense.getAccountingyear(), expense.getVouchernumber(),

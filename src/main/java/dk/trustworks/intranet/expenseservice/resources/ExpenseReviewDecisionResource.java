@@ -44,6 +44,12 @@ public class ExpenseReviewDecisionResource {
                              @Valid ExpenseReviewSendBackDTO body) {
         Expense e = Expense.findById(uuid);
         requireAccountingOwned(e);
+        if (ExpenseStateDeriver.KIND_TECHNICAL.equals(e.getAttentionKind())) {
+            // P0 guard: the employee cannot fix a pipeline failure, and the entity hook
+            // would revert this owner hand-off in the same transaction anyway.
+            throw new BadRequestException(
+                    "technical pipeline failure — the employee can't fix it; use requeue or close instead");
+        }
         logs.recordHRSendBack(e, header.getUserUuid(), body.comment());
         // Hand the ball back to the employee for a justification.
         e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);

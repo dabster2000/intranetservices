@@ -91,6 +91,20 @@ public class ExpenseDecisionLogService {
                e.getStatus(), e.getStatus(), e.getState(), null, e.getAiRuleId(), null);
     }
 
+    /** P0 pipeline requeue. Called BEFORE the caller mutates the entity (from-values intact). */
+    @Transactional
+    public void recordPipelineRequeue(Expense e, String actorUuid, String toStatus, String reason) {
+        append(e, "ACCOUNTING", actorUuid, "PIPELINE_REQUEUED",
+               e.getStatus(), toStatus, e.getState(), null, e.getAiRuleId(), reason);
+    }
+
+    /** P0 manual terminal. Called BEFORE the caller mutates the entity (from-values intact). */
+    @Transactional
+    public void recordPipelineClosed(Expense e, String actorUuid, String resolution, String reason) {
+        append(e, "ACCOUNTING", actorUuid, "PIPELINE_CLOSED_" + resolution,
+               e.getStatus(), ExpenseStateDeriver.CLOSED_MANUAL, e.getState(), null, e.getAiRuleId(), reason);
+    }
+
     private void append(Expense e, String actorRole, String actorUuid, String action,
                         String fromStatus, String toStatus,
                         String fromReview,  String toReview,

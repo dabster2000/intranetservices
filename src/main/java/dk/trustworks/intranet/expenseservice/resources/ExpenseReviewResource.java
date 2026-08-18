@@ -21,6 +21,7 @@ import jakarta.ws.rs.core.MediaType;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -74,27 +75,37 @@ public class ExpenseReviewResource {
         }
 
         List<Expense> rows = switch (seg) {
-            // Your decision: accounting-owned exceptions.
-            case "ACCOUNTING" -> listInbox(ExpenseStateDeriver.OWNER_ACCOUNTING, null, from, to);
+            // Your decision: accounting-owned POLICY/JUSTIFICATION exceptions. TECHNICAL
+            // rows are excluded (P0): approve/send-back are structurally no-ops on them —
+            // the entity hook re-derives NEEDS_ATTENTION from UP_FAILED/NO_FILE/NO_USER —
+            // so they get their own segment with pipeline actions instead.
+            case "ACCOUNTING" -> listInbox(ExpenseStateDeriver.OWNER_ACCOUNTING, null, true, null, from, to);
+            // Pipeline failures: requeue / close, never approve.
+            case "TECHNICAL"  -> listInbox(ExpenseStateDeriver.OWNER_ACCOUNTING,
+                    ExpenseStateDeriver.KIND_TECHNICAL, false, null, from, to);
             // Waiting on employee: read-only context for accounting.
-            case "EMPLOYEE"   -> listInbox(ExpenseStateDeriver.OWNER_EMPLOYEE, null, from, to);
-            // Overdue: anything in the inbox older than 7 days (replaces "STUCK").
-            case "OVERDUE"    -> listInbox(null, LocalDate.now().minusDays(7), from, to);
+            case "EMPLOYEE"   -> listInbox(ExpenseStateDeriver.OWNER_EMPLOYEE, null, false, null, from, to);
+            // Overdue: decisions waiting more than 7 days, anchored on attention_since
+            // (queue entry) so decision churn can't reset the clock. Technical rows are
+            // excluded — their age shows in the TECHNICAL segment itself.
+            case "OVERDUE"    -> listInbox(null, null, true, LocalDateTime.now().minusDays(7), from, to);
             // All open exceptions.
-            case "ALL"        -> listInbox(null, null, from, to);
+            case "ALL"        -> listInbox(null, null, false, null, from, to);
             default -> throw new BadRequestException(
-                    "segment must be ACCOUNTING, EMPLOYEE, OVERDUE, or ALL");
+                    "segment must be ACCOUNTING, TECHNICAL, EMPLOYEE, OVERDUE, or ALL");
         };
 
         return rows.stream().map(this::toDTO).toList();
     }
 
     /**
-     * One inbox query over {@code state=NEEDS_ATTENTION}. {@code owner} filters by
-     * attention_owner when non-null; {@code olderThan} adds a datemodified ceiling
-     * (overdue) when non-null. Always excludes DELETED defensively.
+     * One inbox query over {@code state=NEEDS_ATTENTION}. {@code owner}/{@code kind} filter
+     * by attention_owner/attention_kind when non-null; {@code excludeTechnical} drops
+     * TECHNICAL rows (decision segments); {@code olderThan} adds an attention_since ceiling
+     * (overdue). Always excludes DELETED defensively.
      */
-    private List<Expense> listInbox(String owner, LocalDate olderThan, LocalDate from, LocalDate to) {
+    private List<Expense> listInbox(String owner, String kind, boolean excludeTechnical,
+                                    LocalDateTime olderThan, LocalDate from, LocalDate to) {
         StringBuilder query = new StringBuilder("state = ?1 and status <> ?2");
         List<Object> params = new ArrayList<>();
         params.add(ExpenseStateDeriver.NEEDS_ATTENTION);
@@ -103,12 +114,20 @@ public class ExpenseReviewResource {
             query.append(" and attentionOwner = ?").append(params.size() + 1);
             params.add(owner);
         }
+        if (kind != null) {
+            query.append(" and attentionKind = ?").append(params.size() + 1);
+            params.add(kind);
+        }
+        if (excludeTechnical) {
+            query.append(" and (attentionKind is null or attentionKind <> ?").append(params.size() + 1).append(")");
+            params.add(ExpenseStateDeriver.KIND_TECHNICAL);
+        }
         if (olderThan != null) {
-            query.append(" and datemodified < ?").append(params.size() + 1);
+            query.append(" and attentionSince < ?").append(params.size() + 1);
             params.add(olderThan);
         }
         appendExpenseDateFilters(query, params, from, to);
-        return Expense.list(query.toString(), Sort.by("datemodified", Sort.Direction.Ascending), params.toArray());
+        return Expense.list(query.toString(), Sort.by("attentionSince", Sort.Direction.Ascending), params.toArray());
     }
 
     private void appendExpenseDateFilters(StringBuilder query, List<Object> params, LocalDate from, LocalDate to) {
@@ -135,9 +154,14 @@ public class ExpenseReviewResource {
         String name = u != null ? (u.getFirstname() + " " + u.getLastname()) : null;
         // photoUrl is fetched separately by the frontend via /files/photo/{useruuid}; leave null here
         String photo = null;
-        LocalDate base = e.getDatemodified() != null ? e.getDatemodified() : e.getDatecreated();
+        // Age anchor (P0): time since the row entered NEEDS_ATTENTION. Decision churn used
+        // to reset datemodified and make a 2024 receipt read "0d"; attention_since is
+        // immune. Fallbacks cover rows written before the V508 backfill ran.
+        LocalDate base = e.getAttentionSince() != null ? e.getAttentionSince().toLocalDate()
+                : (e.getDatemodified() != null ? e.getDatemodified() : e.getDatecreated());
         int days = base != null ? (int) ChronoUnit.DAYS.between(base, LocalDate.now()) : 0;
         return new ExpenseReviewListItemDTO(e, name, photo,
-                e.getEmployeeJustification(), e.getAiRuleId(), e.getAiRuleIds(), days);
+                e.getEmployeeJustification(), e.getAiRuleId(), e.getAiRuleIds(), days,
+                e.getVouchernumber() > 0);
     }
 }
