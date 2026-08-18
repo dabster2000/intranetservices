@@ -808,6 +808,43 @@ public class OpenAIService {
                 jsonSchema, schemaName, refusalFallbackJson, modelOverride, maxOutputTokensOverride, store);
     }
 
+    /** One image for the multi-image vision overload. */
+    public record ImageInput(String base64, String mimeType) {
+    }
+
+    /**
+     * Vision + structured output with the two knobs the single-image overloads
+     * cannot express, plus support for SEVERAL images in ONE call:
+     * <ul>
+     *   <li>{@code reasoningEffort} — reasoning-class vision models need a
+     *       thinking budget for spatial tasks (reading a calendar grid). MUST be
+     *       null for the gpt-4o family, which rejects the node. Raise
+     *       {@code maxOutputTokensOverride} whenever this is non-null, or the
+     *       model spends the whole budget thinking and returns empty structured
+     *       output — the documented {@code openai.vision-model} trap.</li>
+     *   <li>{@code imageDetail} — {@code "high"} stops the API downsampling a
+     *       dense screenshot before the model sees its gridlines. Null omits the
+     *       field (API default).</li>
+     * </ul>
+     * Passing several images lets the model reason across them (adjacent weeks,
+     * a multi-day band continuing past one crop) instead of once per image.
+     */
+    public String askWithSchemaAndImages(String system,
+                                         String userInstructionText,
+                                         java.util.List<ImageInput> images,
+                                         ObjectNode jsonSchema,
+                                         String schemaName,
+                                         String refusalFallbackJson,
+                                         String modelOverride,
+                                         int maxOutputTokensOverride,
+                                         boolean store,
+                                         String reasoningEffort,
+                                         String imageDetail) {
+        return askWithSchemaAndImagesInternal(system, userInstructionText, images, jsonSchema,
+                schemaName, refusalFallbackJson, modelOverride, maxOutputTokensOverride, store,
+                reasoningEffort, imageDetail);
+    }
+
     private String askWithSchemaAndImageInternal(String system,
                                                  String userInstructionText,
                                                  String base64Image,
@@ -818,10 +855,29 @@ public class OpenAIService {
                                                  String modelOverride,
                                                  int maxOutputTokensOverride,
                                                  Boolean store) {
+        // Existing callers keep the previous request shape verbatim: no
+        // reasoning node, no detail field.
+        return askWithSchemaAndImagesInternal(system, userInstructionText,
+                java.util.List.of(new ImageInput(base64Image, mimeType)), jsonSchema, schemaName,
+                refusalFallbackJson, modelOverride, maxOutputTokensOverride, store, null, null);
+    }
+
+    private String askWithSchemaAndImagesInternal(String system,
+                                                  String userInstructionText,
+                                                  java.util.List<ImageInput> images,
+                                                  ObjectNode jsonSchema,
+                                                  String schemaName,
+                                                  String refusalFallbackJson,
+                                                  String modelOverride,
+                                                  int maxOutputTokensOverride,
+                                                  Boolean store,
+                                                  String reasoningEffort,
+                                                  String imageDetail) {
         String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
             ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
-                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096,
+                    reasoningEffort);
             if (store != null) {
                 req.put("store", store);
             }
@@ -842,15 +898,20 @@ public class OpenAIService {
             textPart.put("type", "input_text");
             textPart.put("text", userInstructionText == null ? "" : userInstructionText);
 
-            ObjectNode imagePart = content.addObject();
-            imagePart.put("type", "input_image");
-            String dataUrl = toDataUrl(base64Image, mimeType);
-            imagePart.put("image_url", dataUrl);
+            for (ImageInput image : images) {
+                ObjectNode imagePart = content.addObject();
+                imagePart.put("type", "input_image");
+                imagePart.put("image_url", toDataUrl(image.base64(), image.mimeType()));
+                if (imageDetail != null && !imageDetail.isBlank()) {
+                    imagePart.put("detail", imageDetail.trim());
+                }
+            }
 
             user.set("content", content);
 
             String body = objectMapper.writeValueAsString(req);
-            log.debugf("[OpenAIService] Sending response (json_schema + image). model=%s, bodySize=%d", chosenModel, body.length());
+            log.debugf("[OpenAIService] Sending response (json_schema + image). model=%s, images=%d, detail=%s, effort=%s, bodySize=%d",
+                    chosenModel, images.size(), imageDetail, reasoningEffort, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);

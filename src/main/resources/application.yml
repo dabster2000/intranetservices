@@ -517,6 +517,37 @@ dk:
         # cvtool.password already demonstrate in this file) — the defaultValue
         # does NOT rescue it, because the raw value is present.
         extraction-reasoning-effort: ${DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_REASONING_EFFORT:low}
+        # ---- Calendar-image availability reading (Method B, Phase 13 v2) ----
+        # Deliberately NOT the global openai.vision-model. That property is
+        # SHARED with expense receipt OCR and is pinned to gpt-4o-mini because,
+        # until 2026-08-18, the vision + strict-schema path in OpenAIService
+        # could not send a reasoning node at all (it called the four-argument
+        # baseSchemaRequest). Reading a calendar grid is spatial arithmetic —
+        # find the hour gutter, measure each block's edges against it — and on
+        # a mini tier at the API's default image detail it failed badly in
+        # production: two genuinely empty weekdays came back fully booked, and
+        # not one returned boundary landed on a :15/:30/:45 against a calendar
+        # full of them. This path therefore gets its own reasoning-class model.
+        # Volume is a handful of images a month, so the tier is a quality
+        # choice, not a cost one. Override per env with
+        # DK_TRUSTWORKS_RECRUITMENT_AI_IMAGE_MODEL.
+        image-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_IMAGE_MODEL:gpt-5.6-terra}
+        # reasoning.effort for the image transcription. Medium, not low: the
+        # measuring IS the hard part here, unlike CV fact extraction. An EMPTY
+        # value omits the node entirely — REQUIRED if image-model is ever
+        # pointed at a gpt-4o-family model, which rejects it. Optional<String>
+        # for the same SRCFG00040 reason as extraction-reasoning-effort above.
+        #
+        # WARNING: this and IMAGE_MAX_OUTPUT_TOKENS in
+        # AvailabilityExtractionService move TOGETHER. A reasoning model spends
+        # the same max_output_tokens budget on hidden reasoning first, so
+        # raising the model or the effort without the budget reproduces exactly
+        # the empty-structured-output failure documented on openai.vision-model.
+        image-reasoning-effort: ${DK_TRUSTWORKS_RECRUITMENT_AI_IMAGE_REASONING_EFFORT:medium}
+        # input_image detail. "high" stops the Responses API downsampling a
+        # dense ~1300x800 screenshot before the model can see its gridlines and
+        # quarter-hour edges. An EMPTY value omits the field (API default).
+        image-detail: ${DK_TRUSTWORKS_RECRUITMENT_AI_IMAGE_DETAIL:high}
       # P17 SLA sweep (recruitment-sla-sweep, daily 07:00 UTC): kill switch
       # for the nudge DMs. The sweep is additionally a no-op while the
       # recruitment.interviews.enabled app setting is off; the three

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.recruitmentservice.ai.AvailabilitySchedulingPrompts;
 import dk.trustworks.intranet.recruitmentservice.dto.SlackInboundRequest;
@@ -66,8 +67,24 @@ public class AvailabilityMessageService {
     static final int PENDING_TIMEOUT_HOURS = 48;
 
     /** Images processed per message (spec §11.1 allows several; three
-     * calendar screenshots cover any realistic week). */
-    static final int IMAGES_PER_MESSAGE_MAX = 3;
+     * calendar screenshots cover any realistic week). The S3 deletion sweep
+     * derives its slot count from this — see
+     * {@code SchedulingEvidenceStorageService.MAX_IMAGES_PER_EVIDENCE}. */
+    public static final int IMAGES_PER_MESSAGE_MAX = 3;
+
+    /**
+     * Image submissions one scheduling request may run through the vision
+     * pipeline. Security review 2026-08-18 (finding 4): each submission now
+     * costs 2-4 reasoning-model calls carrying up to three high-detail images,
+     * and nothing bounded how often a (possibly compromised) interviewer account
+     * could repeat that for the days a request stays open.
+     * <p>
+     * Set FAR above real use — a genuine interviewer sends one to three images
+     * once or twice — precisely so it never becomes friction for the people this
+     * path is built for (owner decision 2026-08-18). It is a cost backstop, not
+     * a throttle.
+     */
+    static final int IMAGE_SUBMISSIONS_PER_REQUEST_MAX = 20;
 
     @Inject
     RecruitmentSchedulingFeatureFlag methodBFlag;
@@ -222,15 +239,19 @@ public class AvailabilityMessageService {
     private void processImages(String actorUuid, String channelId, String messageTs,
                                String text, Correlation correlation,
                                List<SlackInboundRequest.FileRef> files) {
-        int processed = 0;
+        // v2: ALL images of one message go into ONE model call and ONE evidence
+        // row. Reading them together is what lets an all-day band that starts
+        // in one crop and continues past the edge of the next resolve at all;
+        // per-image calls structurally could not see it.
+        List<byte[]> payloads = new ArrayList<>();
+        List<String> mimes = new ArrayList<>();
         for (SlackInboundRequest.FileRef file : files) {
-            if (processed >= IMAGES_PER_MESSAGE_MAX) {
+            if (payloads.size() >= IMAGES_PER_MESSAGE_MAX) {
                 break;
             }
             if (file.urlPrivateDownload() == null || file.urlPrivateDownload().isBlank()) {
                 continue;
             }
-            processed++;
             byte[] bytes;
             try {
                 bytes = slackService.downloadFile(file.urlPrivateDownload(),
@@ -245,54 +266,82 @@ public class AvailabilityMessageService {
                 reply(channelId, SlackAvailabilityViews.unsupportedImageText());
                 continue;
             }
-            String evidenceUuid = java.util.UUID.randomUUID().toString();
-            String sha256 = sha256Hex(bytes);
+            payloads.add(bytes);
+            mimes.add(mime);
+        }
+        if (payloads.isEmpty()) {
+            // Every attachment failed; the per-file replies already said so.
+            return;
+        }
+        // Cost backstop (security review finding 4). Counted BEFORE the model
+        // calls, and deliberately generous: a real interviewer never reaches it.
+        long alreadySubmitted = QuarkusTransaction.requiringNew().call(() ->
+                RecruitmentAvailabilityEvidence.count(
+                        "requestUuid = ?1 and userUuid = ?2 and sourceType = ?3",
+                        correlation.requestUuid(), actorUuid, EvidenceSourceType.IMAGE));
+        if (alreadySubmitted >= IMAGE_SUBMISSIONS_PER_REQUEST_MAX) {
+            log.warnf("Method B image submission cap reached request=%s submissions=%d",
+                    correlation.requestUuid(), alreadySubmitted);
+            reply(channelId, SlackAvailabilityViews.imageCapReachedText());
+            return;
+        }
 
-            AvailabilityExtractionService.Validated validated;
-            try {
-                AvailabilityExtractionService.Extraction extraction =
-                        extractionService.extractFromImage(LocalDate.now(),
-                                correlation.windowStart(), correlation.windowEnd(),
-                                text, bytes, mime);
-                AvailabilityExtractionService.Validated gated =
-                        AvailabilityExtractionService.validate(extraction,
-                                correlation.windowStart(), correlation.windowEnd());
-                // D9: image-derived constraints ALWAYS confirm — no
-                // confidence-threshold shortcut, whatever the model said.
-                validated = new AvailabilityExtractionService.Validated(gated.intent(),
-                        gated.language(), gated.timezone(), gated.coveredFrom(),
-                        gated.coveredTo(), gated.constraints(), true,
-                        gated.minConfidence(), gated.ambiguities(),
-                        gated.clarifyingQuestion(), gated.rejectReason());
-            } catch (Exception e) {
-                // AI down (§27 scenario 11): a REJECTED row for the
-                // manual-review list, the deterministic template, and —
-                // because nothing was stored — no orphan (F11).
-                log.warnf("Method B image extraction failed — treating as UNKNOWN: %s",
-                        e.getMessage());
-                validated = AvailabilityExtractionService.validate(
-                        AvailabilityExtractionService.Extraction.unknown(),
-                        correlation.windowStart(), correlation.windowEnd());
+        String evidenceUuid = java.util.UUID.randomUUID().toString();
+        String sha256 = combinedSha256Hex(payloads);
+
+        List<OpenAIService.ImageInput> images = new ArrayList<>();
+        for (int i = 0; i < payloads.size(); i++) {
+            images.add(new OpenAIService.ImageInput(
+                    java.util.Base64.getEncoder().encodeToString(payloads.get(i)), mimes.get(i)));
+        }
+
+        AvailabilityExtractionService.Validated validated;
+        AvailabilityExtractionService.ImageReading reading = null;
+        try {
+            reading = extractionService.readImages(LocalDate.now(),
+                    correlation.windowStart(), correlation.windowEnd(), text, images);
+            validated = AvailabilityExtractionService.validateImage(reading,
+                    correlation.windowStart(), correlation.windowEnd());
+            if (reading.trust().suspicious()) {
+                // Frictionless by owner decision (2026-08-18): a low-trust
+                // reading costs the interviewer nothing extra — it is recorded
+                // for the audit trail and shown on the card, never turned into
+                // a question or a block.
+                log.infof("Method B image reading flagged low-trust reasons=%s passes=%d",
+                        reading.trust().reasons(), reading.passes());
             }
-            AvailabilityExtractionService.Validated disposable = validated;
+        } catch (Exception e) {
+            // AI down (§27 scenario 11): a REJECTED row for the manual-review
+            // list, the deterministic template, and — because nothing was
+            // stored — no orphan (F11).
+            log.warnf("Method B image extraction failed — treating as UNKNOWN: %s",
+                    e.getMessage());
+            validated = AvailabilityExtractionService.validate(
+                    AvailabilityExtractionService.Extraction.unknown(),
+                    correlation.windowStart(), correlation.windowEnd());
+        }
+        AvailabilityExtractionService.Validated disposable = validated;
+        AvailabilityImageReading.Derived derived =
+                reading == null ? null : reading.derived();
 
-            Outcome outcome = QuarkusTransaction.requiringNew()
-                    .call(() -> disposeImage(actorUuid, channelId, messageTs, text,
-                            correlation.requestUuid(), evidenceUuid, sha256, disposable));
-            if (outcome.disposition() == Disposition.SUMMARY_QUEUED) {
-                // The reading is persisted and awaits confirmation — NOW
-                // the original earns its (evidence-row-tracked) S3 slot.
-                // A failed put leaves a row without an object; the D10
-                // deleter is S3-idempotent, so that never dangles.
+        Outcome outcome = QuarkusTransaction.requiringNew()
+                .call(() -> disposeImage(actorUuid, channelId, messageTs, text,
+                        correlation.requestUuid(), evidenceUuid, sha256, disposable, derived));
+        if (outcome.disposition() == Disposition.SUMMARY_QUEUED) {
+            // The reading is persisted and awaits confirmation — NOW the
+            // originals earn their (evidence-row-tracked) S3 slots. A failed
+            // put leaves a row without an object; the D10 deleter sweeps every
+            // slot idempotently, so nothing dangles.
+            for (int i = 0; i < payloads.size(); i++) {
                 try {
-                    storageService.store(evidenceUuid, bytes, mime);
+                    storageService.store(evidenceUuid, i, payloads.get(i), mimes.get(i));
                 } catch (Exception e) {
                     log.warnf("Method B evidence image store failed: %s", e.getMessage());
                 }
             }
-            answer(channelId, outcome, disposable, actorUuid,
-                    correlation.requestUuid(), text);
         }
+        answer(channelId, outcome, disposable, actorUuid,
+                correlation.requestUuid(), text);
     }
 
     /**
@@ -306,7 +355,8 @@ public class AvailabilityMessageService {
     Outcome disposeImage(String actorUuid, String channelId, String messageTs,
                          String text, String requestUuid, String evidenceUuid,
                          String sha256,
-                         AvailabilityExtractionService.Validated validated) {
+                         AvailabilityExtractionService.Validated validated,
+                         AvailabilityImageReading.Derived derived) {
         RecruitmentSchedulingRequest request =
                 RecruitmentSchedulingRequest.findById(requestUuid);
         if (request == null || request.getStatus().isTerminal()) {
@@ -321,6 +371,12 @@ public class AvailabilityMessageService {
         evidence.setUuid(evidenceUuid);
         evidence.setSourceType(EvidenceSourceType.IMAGE);
         evidence.setFileSha256(sha256);
+        if (derived != null && !derived.discardedDays().isEmpty()) {
+            evidence.setUnreadableDays(derived.discardedDays().stream()
+                    .map(LocalDate::toString)
+                    .collect(java.util.stream.Collectors.joining(",")));
+        }
+        evidence.setReadTrust(validated.readTrust());
         if (rejected) {
             evidence.setConfirmationStatus(EvidenceConfirmationStatus.REJECTED);
         }
@@ -352,6 +408,23 @@ public class AvailabilityMessageService {
         // F12: a calendar image answers the open proposals too.
         return new Outcome(Disposition.SUMMARY_QUEUED,
                 resolveOpenProposals(request, actorUuid));
+    }
+
+    /**
+     * One evidence row now owns several images, but {@code file_sha256} is a
+     * single column. Hash the concatenation of the per-image digests: still a
+     * fixed 64 hex chars, still provable after the originals are deleted (D10),
+     * and order-sensitive so the set of images is pinned exactly.
+     */
+    static String combinedSha256Hex(List<byte[]> payloads) {
+        if (payloads.size() == 1) {
+            return sha256Hex(payloads.getFirst());
+        }
+        StringBuilder concatenated = new StringBuilder(payloads.size() * 64);
+        for (byte[] bytes : payloads) {
+            concatenated.append(sha256Hex(bytes));
+        }
+        return sha256Hex(concatenated.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private static String sha256Hex(byte[] bytes) {

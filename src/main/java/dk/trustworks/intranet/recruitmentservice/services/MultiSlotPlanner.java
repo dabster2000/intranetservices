@@ -61,12 +61,30 @@ public final class MultiSlotPlanner {
      *       days OUTSIDE the range are untouched (covered-range-only).</li>
      *   <li>PREFERRED/AVOID only move {@code preferenceScore} — never a
      *       hard exclusion.</li>
+     *   <li>{@code overridesCalendar} — whether fitting an AVAILABLE_ONLY
+     *       window may beat an O365 busy digit (F1a). TRUE for a human's
+     *       typed statement; FALSE when the claim was read out of a calendar
+     *       IMAGE (owner decision 2026-08-18): a picture is not a person
+     *       promising to move a conflicting meeting, so an image-derived
+     *       window restricts the day but still has to respect the real
+     *       calendar.</li>
      * </ul>
      * {@code restrictedFrom/To} are non-null exactly for AVAILABLE_ONLY.
      */
     public record ExternalConstraint(AvailabilityConstraintType type,
                                      LocalDateTime start, LocalDateTime end,
-                                     LocalDate restrictedFrom, LocalDate restrictedTo) {
+                                     LocalDate restrictedFrom, LocalDate restrictedTo,
+                                     boolean overridesCalendar) {
+
+        /**
+         * Pre-v2 shape: a stated AVAILABLE_ONLY window overrides the O365
+         * calendar (F1a). Keeps every existing call site and test compiling.
+         */
+        public ExternalConstraint(AvailabilityConstraintType type,
+                                  LocalDateTime start, LocalDateTime end,
+                                  LocalDate restrictedFrom, LocalDate restrictedTo) {
+            this(type, start, end, restrictedFrom, restrictedTo, true);
+        }
         boolean overlaps(LocalDateTime otherStart, LocalDateTime otherEnd) {
             return otherStart.isBefore(end) && start.isBefore(otherEnd);
         }
@@ -345,6 +363,7 @@ public final class MultiSlotPlanner {
                                            LocalDateTime slotStart, LocalDateTime slotEnd) {
         boolean dayRestricted = false;
         boolean fitsRestriction = false;
+        boolean fitsWithoutOverride = false;
         LocalDate slotDate = slotStart.toLocalDate();
         for (ExternalConstraint constraint : constraints) {
             switch (constraint.type()) {
@@ -359,6 +378,11 @@ public final class MultiSlotPlanner {
                         dayRestricted = true;
                         if (constraint.contains(slotStart, slotEnd)) {
                             fitsRestriction = true;
+                            if (!constraint.overridesCalendar()) {
+                                // Image-derived: restrict the day, but let the
+                                // O365 calendar still have the final say.
+                                fitsWithoutOverride = true;
+                            }
                         }
                     }
                 }
@@ -368,8 +392,13 @@ public final class MultiSlotPlanner {
             }
         }
         if (dayRestricted) {
-            return fitsRestriction
-                    ? ExternalVerdict.AVAILABLE_OVERRIDE : ExternalVerdict.BLOCKED;
+            if (!fitsRestriction) {
+                return ExternalVerdict.BLOCKED;
+            }
+            // A window read out of an image restricts the day but does not
+            // license overriding the calendar — fall through to O365.
+            return fitsWithoutOverride
+                    ? ExternalVerdict.NEUTRAL : ExternalVerdict.AVAILABLE_OVERRIDE;
         }
         return ExternalVerdict.NEUTRAL;
     }

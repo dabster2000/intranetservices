@@ -37,7 +37,13 @@ class SlackAvailabilityViewsTest {
 
         String text = ((SectionBlock) blocks.get(0)).getText().getText();
         assertTrue(text.contains("Jeg har læst din besked sådan:"), text);
-        assertTrue(text.contains("tirsdag den 18. august kl. 09.00–12.00: optaget"), text);
+        // v2 renders EVERY covered day, not just the busy ones: listing only
+        // busy intervals made a fabricated busy day and an omitted busy day
+        // indistinguishable to the reviewer (production misread 2026-08-18).
+        assertTrue(text.contains("tirsdag den 18. august: optaget kl. 09.00–12.00"), text);
+        assertTrue(text.contains("onsdag den 19. august: fri"), text);
+        assertTrue(text.contains("torsdag den 20. august: fri"), text);
+        assertTrue(text.contains("fredag den 21. august: fri"), text);
         assertTrue(text.contains("Er det korrekt?"), text);
 
         ActionsBlock actions = (ActionsBlock) blocks.get(1);
