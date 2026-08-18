@@ -47,6 +47,44 @@ import java.util.TreeMap;
  */
 @ApplicationScoped
 @JBossLog
+/**
+ * Per-company OPEX + salary for the executive dashboard, with Trustworks A/S's
+ * shared services allocated out to the subsidiaries by headcount.
+ *
+ * <h2>The allocation ALWAYS applies (changed 2026-08-18)</h2>
+ *
+ * This class used to switch per month: a month with a finalized INTERNAL_SERVICE
+ * invoice counted as "settled" and was read from raw {@code fact_opex_mat}, on the
+ * assumption that the management-fee settlement had replaced the synthetic
+ * allocation with a real GL charge. That assumption never held, for two
+ * independent reasons:
+ *
+ * <ol>
+ *   <li>The settlement's GL legs are not booked. Measured 2026-08-18: the
+ *       subsidiaries' account 1350 carried 4,321,854.57 (Technology) and
+ *       2,717,580.77 (Cyber) for FY25/26 as <b>DRAFT</b> vouchers only.</li>
+ *   <li>Even fully booked it would change nothing here — A/S 2170/2175 and the
+ *       subsidiaries' 1350 are all mapped {@code cost_type='IGNORE'}, so they never
+ *       enter {@code fact_opex} at all.</li>
+ * </ol>
+ *
+ * So the switch <b>deleted</b> the allocation instead of replacing it. Because the
+ * whole year's management-fee invoices are raised in one bulk run every 30 June,
+ * all twelve months flipped to "settled" at once and the subsidiaries silently
+ * stopped carrying any shared-services cost for the year.
+ *
+ * <p>Measured effect on FY25/26 per-company EBITDA: Technology +3.93M and Cyber
+ * +2.23M overstated, Trustworks A/S 6.16M understated. The GROUP total is
+ * unaffected — the allocation only moves cost between entities — which is exactly
+ * why it went unnoticed: A/S read 12.0M and Technology 5.5M, against 18.2M and
+ * 1.6M with the allocation applied.
+ *
+ * <p><b>If the settlement is ever made real in the GL</b> — the vouchers posted AND
+ * 1350 / 2170 / 2175 mapped to real cost types — this must be revisited, because
+ * allocating AND counting a booked settlement would double-count.
+ * {@link #findSettledMonths} is retained as the diagnostic for that decision; it no
+ * longer routes anything.
+ */
 public class DistributionAwareOpexProvider {
 
     @Inject
@@ -59,9 +97,9 @@ public class DistributionAwareOpexProvider {
     /**
      * Returns OPEX rows for the given month range and optional filters.
      *
-     * <p>Months with a finalized INTERNAL_SERVICE invoice are served from
-     * {@code fact_opex_mat} (raw GL). All other months are served from
-     * {@code fact_opex_distribution_mat} which the nightly refresh batch populates.
+     * <p>Every month is served from {@code fact_opex_distribution_mat}, i.e. the
+     * shared-services allocation ALWAYS applies. See the class note on why the
+     * former per-month "settled" switch to raw {@code fact_opex_mat} was removed.
      *
      * @param fromMonthKey     start month inclusive, format YYYYMM
      * @param toMonthKey       end month inclusive, format YYYYMM
@@ -92,54 +130,11 @@ public class DistributionAwareOpexProvider {
         log.debugf("getDistributionAwareOpex: from=%s to=%s companies=%s costSource=%s",
                 fromMonthKey, toMonthKey, companyIds, source);
 
-        YearMonth from = parseMonthKey(fromMonthKey);
-        YearMonth to   = parseMonthKey(toMonthKey);
-
-        Set<YearMonth> settledMonths = findSettledMonths(from, to);
-
-        // Build contiguous-range monthKey strings for the two paths. The settled
-        // path queries fact_opex_mat by [min, max] range; the unsettled path queries
-        // fact_opex_distribution_mat the same way. We use min..max (not a list) because:
-        //   - it preserves the IN-clause-free SQL shape we already have for fact_opex_mat
-        //   - filter by `WHERE month_key IN settledKeys` inline after the fetch handles
-        //     the rare non-contiguous case
-        List<String> settledKeys   = new ArrayList<>();
-        List<String> unsettledKeys = new ArrayList<>();
-        for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
-            (settledMonths.contains(ym) ? settledKeys : unsettledKeys)
-                    .add(formatMonthKey(ym));
-        }
-
-        List<OpexRow> result = new ArrayList<>();
-        if (!settledKeys.isEmpty()) {
-            String prevFrom = settledKeys.getFirst();
-            String prevTo   = settledKeys.getLast();
-            List<OpexRow> rawRows = queryFactOpexMat(prevFrom, prevTo,
-                    companyIds, costCenters, expenseCategories, source);
-            // Keep only settled months (covers the non-contiguous case).
-            for (OpexRow row : rawRows) {
-                if (settledMonths.contains(parseMonthKey(row.monthKey()))) {
-                    result.add(row);
-                }
-            }
-        }
-        if (!unsettledKeys.isEmpty()) {
-            String distFrom = unsettledKeys.getFirst();
-            String distTo   = unsettledKeys.getLast();
-            List<OpexRow> distRows = queryFactOpexDistributionMat(distFrom, distTo,
-                    companyIds, costCenters, expenseCategories, source);
-            // Same non-contiguous filter, in case a settled month sits between
-            // two unsettled ones.
-            Set<YearMonth> unsettledSet = new HashSet<>();
-            for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
-                if (!settledMonths.contains(ym)) unsettledSet.add(ym);
-            }
-            for (OpexRow row : distRows) {
-                if (unsettledSet.contains(parseMonthKey(row.monthKey()))) {
-                    result.add(row);
-                }
-            }
-        }
+        // Every month goes through the distribution — see the class note. The former
+        // per-month switch to raw fact_opex_mat for "settled" months silently deleted
+        // the shared-services allocation instead of replacing it.
+        List<OpexRow> result = new ArrayList<>(queryFactOpexDistributionMat(
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories, source));
 
         result.sort(java.util.Comparator.comparing(OpexRow::monthKey));
         return result;
@@ -253,81 +248,13 @@ public class DistributionAwareOpexProvider {
         return result;
     }
 
-    // -----------------------------------------------------------------------
-    // Settled months: query fact_opex_mat
-    // -----------------------------------------------------------------------
-
-    @SuppressWarnings("unchecked")
-    private List<OpexRow> queryFactOpexMat(
-            String fromMonthKey,
-            String toMonthKey,
-            Set<String> companyIds,
-            Set<String> costCenters,
-            Set<String> expenseCategories,
-            CostSource costSource) {
-
-        StringBuilder sql = new StringBuilder(
-                "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
-                "  SUM(opex_amount_dkk) AS opex_amount, " +
-                "  SUM(invoice_count) AS invoice_count, " +
-                "  MAX(is_payroll_flag) AS is_payroll " +
-                "FROM fact_opex_mat " +
-                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey " +
-                "AND posting_status IN (:postingStatuses) "
-        );
-
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND company_id IN (:companyIds) ");
-        }
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("AND cost_center_id IN (:costCenters) ");
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            sql.append("AND expense_category_id IN (:expenseCategories) ");
-        }
-        sql.append("GROUP BY company_id, cost_center_id, expense_category_id, cost_type, month_key " +
-                   "ORDER BY month_key ASC");
-
-        var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromMonthKey", fromMonthKey);
-        query.setParameter("toMonthKey", toMonthKey);
-        query.setParameter("postingStatuses", costSource.postingStatusNames());
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-        if (costCenters != null && !costCenters.isEmpty()) {
-            query.setParameter("costCenters", costCenters);
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            query.setParameter("expenseCategories", expenseCategories);
-        }
-
-        List<Tuple> rows = query.getResultList();
-        List<OpexRow> result = new ArrayList<>(rows.size());
-        for (Tuple row : rows) {
-            double amount = row.get("opex_amount") != null ? ((Number) row.get("opex_amount")).doubleValue() : 0.0;
-            if (amount == 0.0) continue;
-            result.add(new OpexRow(
-                    (String) row.get("company_id"),
-                    (String) row.get("cost_center_id"),
-                    (String) row.get("expense_category_id"),
-                    (String) row.get("month_key"),
-                    amount,
-                    row.get("invoice_count") != null ? ((Number) row.get("invoice_count")).intValue() : 0,
-                    "SALARIES".equals(row.get("cost_type")),
-                    OpexRow.SOURCE_ERP_GL
-            ));
-        }
-        return result;
-    }
-
     /**
-     * Reads OPEX rows for the given months from {@code fact_opex_distribution_mat}.
-     * Mirror of {@link #queryFactOpexMat}, but for distribution-computed rows that
-     * the nightly batchlet writes. Result rows carry {@code OpexRow.SOURCE_DISTRIBUTION}.
+     * Reads OPEX rows for the given months from {@code fact_opex_distribution_mat},
+     * the post-allocation table the nightly batchlet writes. Result rows carry
+     * {@code OpexRow.SOURCE_DISTRIBUTION}.
      *
-     * <p>Callers (in particular {@link #getDistributionAwareOpex}) decide which
-     * months go to which table based on settlement state.
+     * <p>This is now the ONLY source {@link #getDistributionAwareOpex} reads — the
+     * shared-services allocation applies to every month. See the class note.
      */
     @SuppressWarnings("unchecked")
     private List<OpexRow> queryFactOpexDistributionMat(

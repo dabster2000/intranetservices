@@ -21,15 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Spec: docs/superpowers/specs/2026-05-11-fact-opex-distribution-mat-design.md §5 (PR 2, Task 13)
  *
- * <p>These tests guard the settlement-aware routing introduced in Tasks 10–12:
- * <ul>
- *   <li>Unsettled months (no finalized INTERNAL_SERVICE invoice for the month) read
- *       from {@code fact_opex_distribution_mat} → rows carry {@link OpexRow#SOURCE_DISTRIBUTION}.</li>
- *   <li>Settled months read directly from {@code fact_opex_mat} → rows carry
- *       {@link OpexRow#SOURCE_ERP_GL}.</li>
- * </ul>
- * The intent is to fail in CI if a future change accidentally re-introduces the old
- * calendar-based switch or bypasses the materialized table on the hot path.
+ * <p><b>Settlement-aware routing was removed on 2026-08-18.</b> EVERY month is now
+ * served from {@code fact_opex_distribution_mat}, so the shared-services allocation
+ * always applies and every row carries {@link OpexRow#SOURCE_DISTRIBUTION}. The old
+ * "settled months read raw fact_opex_mat" branch silently deleted the allocation
+ * rather than replacing it with a real GL charge — the settlement's accounts
+ * (A/S 2170/2175, subsidiary 1350) are mapped IGNORE and never reach fact_opex, and
+ * the vouchers were not even booked. See the provider's class note.
+ *
+ * <p>These tests now guard the opposite invariant: that nothing re-introduces a
+ * per-month switch, and that the hot path still reads the materialized table.
  *
  * <p>Uses JUnit Jupiter assertions because AssertJ is not on this project's classpath.
  */
@@ -66,40 +67,35 @@ class DistributionAwareOpexProviderReadPathIT {
     }
 
     @Test
-    void settledMonthRange_returnsRowsFromFactOpexMat() {
-        // 2025-01 is settled (CREATED INTERNAL_SERVICE invoices exist per the
-        // production data inspected during brainstorming).
+    void settledMonth_stillCarriesTheAllocation() {
+        // 2025-01 HAS a finalized INTERNAL_SERVICE invoice, so the old routing served
+        // it raw from fact_opex_mat and the subsidiaries carried no shared-services
+        // cost for it. It must now come from the distribution like every other month.
         List<OpexRow> rows = provider.getDistributionAwareOpex(
                 "202501", "202501", null, null, null);
 
-        // Either the test DB has this month populated or it doesn't; allow
-        // empty but if non-empty, source must be ERP_GL.
         if (!rows.isEmpty()) {
-            assertTrue(rows.stream().allMatch(r -> OpexRow.SOURCE_ERP_GL.equals(r.dataSource())),
-                    "settled months must come from fact_opex_mat");
+            assertTrue(rows.stream().allMatch(r -> OpexRow.SOURCE_DISTRIBUTION.equals(r.dataSource())),
+                    "a settled month must still be allocated — the settlement never reaches fact_opex");
         }
     }
 
     @Test
-    void mixedWindow_returnsBothSources() {
-        // Jan 2025 (settled) → Jul 2025 (unsettled, FY start) — covers the boundary.
+    void mixedWindow_isUniformlyAllocated() {
+        // Jan 2025 (settled under the old rule) → Jul 2025 (unsettled) — the boundary
+        // that used to produce two different sources in one window. A window must no
+        // longer change cost model halfway through.
         List<OpexRow> rows = provider.getDistributionAwareOpex(
                 "202501", "202507", null, null, null);
 
         Set<String> sources = new HashSet<>();
         for (OpexRow r : rows) sources.add(r.dataSource());
 
-        // The spec's stricter assertion (`doesNotContain("DISTRIBUTION_ONLY")`)
-        // is a misformed AssertJ check; the practical invariant is: Jan-Jun rows
-        // must never be SOURCE_DISTRIBUTION, even when the test DB lacks current-FY
-        // data (i.e. sources may be {} or {ERP_GL} or {ERP_GL, DISTRIBUTION}).
+        assertTrue(sources.size() <= 1,
+                "one window must use one cost model, got sources=" + sources);
         for (OpexRow r : rows) {
-            YearMonth ym = YearMonth.parse(r.monthKey(),
-                    java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
-            if (ym.getYear() == 2025 && ym.getMonthValue() <= 6) {
-                assertFalse(OpexRow.SOURCE_DISTRIBUTION.equals(r.dataSource()),
-                        "settled month " + ym + " must not be SOURCE_DISTRIBUTION");
-            }
+            assertTrue(OpexRow.SOURCE_DISTRIBUTION.equals(r.dataSource()),
+                    "every month must be allocated, including " + r.monthKey());
         }
     }
 
