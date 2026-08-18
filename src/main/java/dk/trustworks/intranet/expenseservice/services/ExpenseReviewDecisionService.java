@@ -23,6 +23,30 @@ import java.time.LocalDate;
 public class ExpenseReviewDecisionService {
 
     @Inject ExpenseDecisionLogService logs;
+    @Inject ExpenseAccountSuggestionService accountSuggestions;
+
+    /**
+     * W3: assign the GL account and approve in one decision — the one-click action of
+     * the "Assign account" micro-queue (classifier-fallback rows). Validates the
+     * account against the employee's current company before touching anything.
+     */
+    @Transactional
+    public void assignAccountAndApprove(String uuid, String actorUuid, int account) {
+        Expense e = requireNeedsAttention(uuid);
+        requireApprovable(e);
+        var accountRow = accountSuggestions.requireAssignable(e.getUseruuid(), account);
+        e.setAccount(String.valueOf(account));
+        e.setAccountname(accountRow.getAccountName());
+        logs.recordHRApprove(e, actorUuid,
+                "Account assigned: " + account + " " + accountRow.getAccountName());
+        if ("CREATED".equals(e.getStatus())) {
+            e.setStatus("VALIDATED");
+        }
+        e.setState(ExpenseStateDeriver.APPROVED);
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setDatemodified(LocalDate.now());
+    }
 
     /** Approve a single expense. Throws if not found / not NEEDS_ATTENTION / TECHNICAL. */
     @Transactional

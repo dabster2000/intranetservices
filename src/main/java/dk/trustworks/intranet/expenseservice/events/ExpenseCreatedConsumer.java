@@ -144,6 +144,9 @@ public class ExpenseCreatedConsumer {
                     managedExpense.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
                     managedExpense.setAttentionOwner(ExpenseStateDeriver.OWNER_ACCOUNTING);
                     managedExpense.setAttentionKind(ExpenseStateDeriver.KIND_POLICY);
+                    // W3: the row's only problem is the classifier fallback — route it to
+                    // the one-click "Assign account" micro-queue, not the judgment inbox.
+                    managedExpense.setFinanceReviewOnly(Boolean.TRUE);
                     log.infof("Expense %s cleared by AI but routed to ACCOUNTING/POLICY (finance review).",
                             expense.getUuid());
                 } else {
@@ -152,6 +155,7 @@ public class ExpenseCreatedConsumer {
                     managedExpense.setState(ExpenseStateDeriver.APPROVED);
                     managedExpense.setAttentionOwner(null);
                     managedExpense.setAttentionKind(null);
+                    managedExpense.setFinanceReviewOnly(Boolean.FALSE);
                     log.infof("Expense %s APPROVED by AI (outcome=%s). Reason: %s",
                             expense.getUuid(), result.outcome(), result.reason());
                 }
@@ -176,6 +180,7 @@ public class ExpenseCreatedConsumer {
                 managedExpense.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
                 managedExpense.setAttentionOwner(owner);
                 managedExpense.setAttentionKind(kind);
+                managedExpense.setFinanceReviewOnly(Boolean.FALSE); // W3: a rule block is a judgment call
                 managedExpense.setAiRuleId(primaryRuleId);
                 managedExpense.setAiRuleIdsJson(serializeRuleIds(firedRuleIds));
                 log.infof("Expense %s BLOCKED → NEEDS_ATTENTION %s/%s (rule=%s). Reason: %s",
