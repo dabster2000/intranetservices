@@ -46,19 +46,29 @@ class RecruitmentEventSingleWriterArchTest {
                             + "append events via RecruitmentEventRecorder.record(builder) (spec §3.2)");
 
     @ArchTest
-    static final ArchRule nobody_but_the_anonymizer_deletes_or_bulk_updates_recruitment_events =
+    static final ArchRule only_two_reviewed_classes_delete_or_bulk_update_recruitment_events =
             noClasses()
                     .that().doNotHaveFullyQualifiedName(
                             dk.trustworks.intranet.recruitmentservice.services
                                     .RecruitmentAnonymizerService.class.getName())
+                    .and().doNotHaveFullyQualifiedName(
+                            dk.trustworks.intranet.recruitmentservice.services
+                                    .RecruitmentCandidateDeleteCascade.class.getName())
                     .should().callMethodWhere(
                             target(owner(equivalentTo(RecruitmentEvent.class)))
                                     .and(target(nameMatching("delete.*|update.*"))))
-                    .because("the event stream is append-only; the single permitted mutation is "
-                            + "GDPR pii anonymization (P19) — RecruitmentAnonymizerService "
-                            + "rewrites pii/pii_state and NOTHING else (no deletes, no payload "
-                            + "edits; its referral-leg native query is part of the same "
-                            + "reviewed path)");
+                    .because("the event stream is append-only; exactly two mutations are "
+                            + "permitted, both reviewed. (1) GDPR pii anonymization (P19) — "
+                            + "RecruitmentAnonymizerService rewrites pii/pii_state and NOTHING "
+                            + "else (no deletes, no payload edits; its referral-leg native query "
+                            + "is part of the same reviewed path). (2) The ADMIN candidate hard "
+                            + "delete (change C) — RecruitmentCandidateDeleteCascade removes the "
+                            + "deleted candidate's own rows, because leaving them would leave the "
+                            + "person counted in every report forever (rebuild() replays the "
+                            + "stream, so the event IS the statistic). It deliberately uses the "
+                            + "Panache delete rather than a native query, which this rule does "
+                            + "not match, so the destructive path stays visible to the rule that "
+                            + "exists to make it visible");
 
     @ArchTest
     static final ArchRule only_the_recorder_instantiates_recruitment_events =

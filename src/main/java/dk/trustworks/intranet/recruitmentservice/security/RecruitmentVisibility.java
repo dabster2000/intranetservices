@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -71,6 +73,14 @@ public class RecruitmentVisibility {
      * (see {@link #POSITION_READ_ROLES}) but decides narrowly.
      */
     static final Set<String> RECRUITER_TIER_ROLES = Set.of("HR", "RECRUITMENT");
+    /**
+     * {@code AuditEntityListener}'s fallback for {@code created_by} /
+     * {@code modified_by} when no {@code X-Requested-By} header is present:
+     * the public {@code /apply} funnel, batch imports and startup jobs. Not a
+     * user uuid, so {@link #rolesOf} can never resolve it — it is matched by
+     * literal in {@link #creatorConfersHire}.
+     */
+    static final String SYSTEM_ACTOR = "system";
     /**
      * Roles that <em>read</em> every non-partner position without needing
      * involvement (go-live decision D3): the recruiter tier plus
@@ -127,6 +137,29 @@ public class RecruitmentVisibility {
         try {
             return effectivePermissionService.effectivePermissions(viewerUuid)
                     .contains("recruitment:gdpr");
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the viewer holds {@code recruitment:intake} through the
+     * permission catalogue (ALL-scope grants only — the Phase 8 boolean
+     * projection). Fail-closed: any resolution failure reads as "does not
+     * hold it".
+     *
+     * <p>Deliberately a byte-for-byte mirror of
+     * {@link #holdsRecruitmentGdprGrant}: the grant is console-governed, so
+     * revoking {@code (TEAMLEAD, recruitment:intake)} removes intake without
+     * a code change.</p>
+     */
+    boolean holdsRecruitmentIntakeGrant(String viewerUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return false;
+        }
+        try {
+            return effectivePermissionService.effectivePermissions(viewerUuid)
+                    .contains("recruitment:intake");
         } catch (RuntimeException e) {
             return false;
         }
@@ -275,6 +308,72 @@ public class RecruitmentVisibility {
         Set<String> roles = rolesOf(userUuid);
         return roles.contains(ROLE_ADMIN)
                 || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains);
+    }
+
+    /**
+     * Whether the viewer may create a candidate (and attach one to a
+     * position) — the recruiter tier, plus anyone holding the narrower
+     * {@code recruitment:intake} grant.
+     *
+     * <p>{@link #isRecruiterTier} stays in the OR deliberately:
+     * ADMIN/HR/RECRUITMENT must never depend on a {@code role_permission}
+     * row surviving a staging refresh or a console edit to keep creating
+     * candidates.</p>
+     *
+     * <p>This is the <em>per-user</em> gate. {@code @RolesAllowed} on the
+     * resource gates the API client, not the person: the BFF's system token
+     * carries {@code admin:*} and {@code AdminScopeAugmentor} expands it to
+     * every key, so an annotation alone lets every employee request through.
+     * Resources must call this explicitly.</p>
+     */
+    public boolean canCreateCandidate(String viewerUuid) {
+        return isRecruiterTier(viewerUuid) || holdsRecruitmentIntakeGrant(viewerUuid);
+    }
+
+    /**
+     * Whether the viewer holds {@code recruitment:admin} through the
+     * permission catalogue (ALL-scope grants only — the Phase 8 boolean
+     * projection). Fail-closed: any resolution failure reads as "does not
+     * hold it".
+     *
+     * <p>Mirrors {@link #holdsRecruitmentGdprGrant} exactly.</p>
+     */
+    boolean holdsRecruitmentAdminGrant(String viewerUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return false;
+        }
+        try {
+            return effectivePermissionService.effectivePermissions(viewerUuid)
+                    .contains("recruitment:admin");
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the viewer may irreversibly hard-delete a candidate — holding
+     * {@code recruitment:admin}, which V465 grants to ADMIN and to no other
+     * role.
+     *
+     * <p>The <em>per-user</em> gate, and the only one that gates a person:
+     * {@code @RolesAllowed({"recruitment:admin"})} on the endpoint gates the
+     * API client, and the BFF's system token carries {@code admin:*}, which
+     * {@code AdminScopeAugmentor} expands to every key.</p>
+     *
+     * <p><b>Known property, stated rather than hidden:</b> unlike
+     * {@code isRecruiterTier}, this has no role fallback and no protection
+     * against a runtime rebind. {@code recruitment:admin} does not match
+     * {@code ProtectedPermissions.PROTECTED_PREFIXES}
+     * ({@code admin:}, {@code salaries:}), so an admin-console user can bind
+     * it to another role with no deploy and no review, and that is all it
+     * takes to reach an irreversible PII delete. That is a deliberate
+     * consequence of governing the key from the console; if the owner wants
+     * the gate frozen, the change is to add a destructive prefix to
+     * {@code ProtectedPermissions} — a decision, not an implementation
+     * detail.</p>
+     */
+    public boolean canHardDeleteCandidate(String viewerUuid) {
+        return holdsRecruitmentAdminGrant(viewerUuid);
     }
 
     /** Whether the viewer is a member of the position's circle (any role). */
@@ -968,31 +1067,154 @@ public class RecruitmentVisibility {
      * practice they run ({@link #ownPractices}) — the candidate-level twin
      * of the ownership routes in {@link #canDecideOnApplication}.
      * <p>
-     * One query. Partner-track positions never qualify through the practice
-     * route; the named-owner route keeps its existing reach, and the
-     * dossier caller composes this with {@link #canReadCandidateProfile}, so
-     * the circle filter and the HIRED cutoff still apply on top.
+     * <b>The application must be one the viewer did not file themselves</b>
+     * ({@link #creatorConfersHire}, 2026-08-19). Until {@code
+     * recruitment:intake} existed, attaching a candidate to a position was
+     * an ADMIN/HR/RECRUITMENT act, so "an application exists on a position I
+     * run" was always someone else's statement about the viewer. Intake
+     * handed that write to the whole {@code TEAMLEAD} population, and
+     * without this clause a team lead could manufacture their own dossier
+     * read: attach any candidate they can already see — a dossier-only
+     * candidate from the legacy HR flow, or one whose application went
+     * terminal after an offer was drafted — to a position in their own
+     * practice, and the contract PDF (salary, terms, start date) opens.
+     * That is exactly what the 2026-08-11 decision recorded on
+     * {@link #canReadDossier} refused to do directly.
+     * <p>
+     * Two clauses (see {@link #creatorConfersHire} for the exact order):
+     * <ol>
+     *   <li>the creator is not the viewer — no self-service;</li>
+     *   <li>the creator is not <em>another</em> intake-only actor — so two
+     *       team leads sharing a practice cannot file for each other and
+     *       both walk in.</li>
+     * </ol>
+     * Clause 2 is keyed on the {@code recruitment:intake} grant rather than
+     * on the {@code TEAMLEAD} role, so a future console grant to some other
+     * role is covered without a code change. It is deliberately <em>not</em>
+     * "the creator must be recruiter tier": that phrasing reads the same
+     * until you notice it denies every row whose {@code created_by} no
+     * longer resolves — {@code system}, batch imports, migration literals,
+     * decommissioned accounts, {@code 'test'} — and quietly revokes the
+     * 2026-08-12 practice-lead grant on real historical data. (It does: it
+     * broke {@code RecruitmentDossierEndpointAuthzApiTest} the first time it
+     * was written that way.) Nothing is lost by conferring there, because an
+     * unresolvable creator is by definition not a live intake holder — every
+     * such actor authenticates, and {@code created_by} comes from the
+     * session-set {@code X-Requested-By}, never from the caller's body.
+     * <p>
+     * One query, plus a roles lookup and at most one grant lookup per
+     * distinct creator (in practice one).
+     * Partner-track positions never qualify through the practice route; the
+     * named-owner route keeps its existing reach, and the dossier caller
+     * composes this with {@link #canReadCandidateProfile}, so the circle
+     * filter and the HIRED cutoff still apply on top.
      */
     public boolean isHiringOwnerForCandidate(String viewerUuid, String candidateUuid) {
         if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
             return false;
         }
+        for (String creator : hiringOwnerApplicationCreators(viewerUuid, candidateUuid)) {
+            if (creatorConfersHire(creator, viewerUuid, () -> rolesOf(creator),
+                    () -> holdsRecruitmentIntakeGrant(creator))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The {@code created_by} of every application of this candidate that puts
+     * the viewer on the position — named hiring owner, or a non-partner
+     * position in a practice they run. Split out of
+     * {@link #isHiringOwnerForCandidate} so the creator rule above it can be
+     * exercised without a database (the test subclasses this).
+     */
+    protected List<String> hiringOwnerApplicationCreators(String viewerUuid, String candidateUuid) {
         Set<String> practices = ownPractices(viewerUuid);
         String practiceClause = practices.isEmpty() ? ""
                 : " OR (p.hiring_track <> 'PARTNER' AND p.practice_uuid IN (:practices))";
         var query = em.createNativeQuery("""
-                        SELECT 1 FROM recruitment_applications a
+                        SELECT DISTINCT a.created_by FROM recruitment_applications a
                         JOIN recruitment_positions p ON p.uuid = a.position_uuid
                         WHERE a.candidate_uuid = :candidate
                           AND (p.hiring_owner_uuid = :viewer%s)
-                        LIMIT 1
                         """.formatted(practiceClause))
                 .setParameter("candidate", candidateUuid)
                 .setParameter("viewer", viewerUuid);
         if (!practices.isEmpty()) {
             query.setParameter("practices", practices);
         }
-        return !query.getResultList().isEmpty();
+        @SuppressWarnings("unchecked")
+        List<String> creators = query.getResultList();
+        return creators;
+    }
+
+    /**
+     * Does an application filed by {@code creatorUuid} count as somebody
+     * <em>else's</em> statement that {@code viewerUuid} runs this hire? See
+     * {@link #isHiringOwnerForCandidate} for why the question is asked at
+     * all.
+     *
+     * <p>The order matters and is the rule:</p>
+     * <ol>
+     *   <li>an unattributed row confers — {@code created_by} is
+     *       {@code NOT NULL} in the schema, so blank means damaged data, not
+     *       an actor;</li>
+     *   <li>the viewer's own row never confers, whatever roles they hold:
+     *       this is the self-service clause, and it must not be escapable by
+     *       collecting a role;</li>
+     *   <li>{@value #SYSTEM_ACTOR} confers — {@code AuditEntityListener}'s
+     *       fallback for public {@code /apply}, batch imports and startup
+     *       jobs;</li>
+     *   <li>a recruiter-tier or ADMIN filer confers — the normal production
+     *       flow, and the only one that existed before intake;</li>
+     *   <li>anyone else holding {@code recruitment:intake} does NOT confer —
+     *       the cross-filing clause;</li>
+     *   <li>everyone else confers. Reached by rows whose creator no longer
+     *       resolves to anything: departed accounts, imports, fixtures. They
+     *       are not live intake holders, so conferring opens nothing, and
+     *       denying would revoke the 2026-08-12 grant on historical data.</li>
+     * </ol>
+     *
+     * <p>The two lookups are suppliers so the ordering above is also a
+     * statement about cost: a self-filed row is refused without touching the
+     * database, and the grant store is only asked about a filer who already
+     * failed the recruiter-tier check.</p>
+     *
+     * @param creatorUuid  {@code recruitment_applications.created_by}: a user
+     *                     uuid, or {@value #SYSTEM_ACTOR} when the row was
+     *                     written without an {@code X-Requested-By} header
+     * @param viewerUuid   the user asking to read the dossier
+     * @param creatorRoles the filer's <em>current</em> roles, lazily
+     * @param creatorHoldsIntake whether the filer currently holds
+     *                     {@code recruitment:intake}, lazily
+     */
+    static boolean creatorConfersHire(String creatorUuid, String viewerUuid,
+                                      Supplier<Set<String>> creatorRoles,
+                                      BooleanSupplier creatorHoldsIntake) {
+        if (creatorUuid == null || creatorUuid.isBlank()) {
+            return true;
+        }
+        if (SYSTEM_ACTOR.equals(creatorUuid)) {
+            return true;
+        }
+        // Recruiter tier is checked BEFORE the self clause, deliberately.
+        // ADMIN/HR/RECRUITMENT could already file an application and be the
+        // named hiring owner long before recruitment:intake existed, so a
+        // self-filed row has always conferred for them. Denying it here would
+        // not close the escalation (which is reachable only through the new
+        // intake grant) — it would newly 403 a recruiter who reads that
+        // dossier today under D18. That regression shape has bitten this
+        // codebase before; do not "simplify" this ordering away.
+        Set<String> roles = creatorRoles.get();
+        if (roles != null && (roles.contains(ROLE_ADMIN)
+                || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains))) {
+            return true;
+        }
+        if (creatorUuid.equals(viewerUuid)) {
+            return false;
+        }
+        return !creatorHoldsIntake.getAsBoolean();
     }
 
     /**
@@ -1018,6 +1240,14 @@ public class RecruitmentVisibility {
      * the dossier endpoints did until 2026-08-11 — would have handed the
      * whole contract flow to 20 people at the backend, with only the BFF's
      * role array standing in the way.
+     * <p>
+     * Nor may a viewer <em>create</em> the fact this gate reads. Since
+     * {@code recruitment:intake} let team leads attach candidates,
+     * {@link #isHiringOwnerForCandidate} ignores applications the viewer
+     * filed themselves — otherwise one attach to a position in your own
+     * practice is a self-service grant to the contract PDF. That clause is
+     * the whole reason the method takes a second query; do not "simplify" it
+     * back to {@code SELECT 1}.
      */
     public boolean canReadDossier(String viewerUuid, RecruitmentCandidate candidate) {
         if (viewerUuid == null || viewerUuid.isBlank() || candidate == null) {

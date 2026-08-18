@@ -34,10 +34,21 @@ class CandidateDedupeServiceIntegrationTest {
     private String candidateEmail;
     private String employeeEmail;
 
+    /**
+     * The dedupe check filters candidate matches through
+     * {@code canReadCandidateProfile}, so these fixtures need a viewer who
+     * can actually see the seeded candidate. ADMIN is the shortest such
+     * viewer and keeps these tests about matching, not authorization — the
+     * filter itself is proven by
+     * {@code CandidateDedupeVisibilityFilterTest}.
+     */
+    private String viewerUuid;
+
     @BeforeEach
     void seed() {
         candidateUuid = UUID.randomUUID().toString();
         employeeUuid = UUID.randomUUID().toString();
+        viewerUuid = UUID.randomUUID().toString();
         candidateEmail = "dedupe-" + candidateUuid.substring(0, 8) + "@example.com";
         employeeEmail = "dedupe-emp-" + employeeUuid.substring(0, 8) + "@example.com";
         QuarkusTransaction.requiringNew().run(() -> {
@@ -63,6 +74,10 @@ class CandidateDedupeServiceIntegrationTest {
                     .setParameter("email", employeeEmail)
                     .setParameter("username", employeeUuid)
                     .executeUpdate();
+            em.createNativeQuery("INSERT INTO roles (uuid, role, useruuid) VALUES (:uuid, 'ADMIN', :user)")
+                    .setParameter("uuid", UUID.randomUUID().toString())
+                    .setParameter("user", viewerUuid)
+                    .executeUpdate();
         });
     }
 
@@ -73,12 +88,14 @@ class CandidateDedupeServiceIntegrationTest {
                     .setParameter("uuid", candidateUuid).executeUpdate();
             em.createNativeQuery("DELETE FROM user WHERE uuid = :uuid")
                     .setParameter("uuid", employeeUuid).executeUpdate();
+            em.createNativeQuery("DELETE FROM roles WHERE useruuid = :uuid")
+                    .setParameter("uuid", viewerUuid).executeUpdate();
         });
     }
 
     @Test
     void sameEmail_matchesCandidate_caseInsensitively() {
-        DedupeCheckResponse result = dedupeService.check(candidateEmail.toUpperCase(), null);
+        DedupeCheckResponse result = dedupeService.check(candidateEmail.toUpperCase(), null, viewerUuid);
 
         List<DedupeMatch> candidateMatches = result.matches().stream()
                 .filter(m -> m.type() == DedupeMatch.MatchType.CANDIDATE).toList();
@@ -95,7 +112,7 @@ class CandidateDedupeServiceIntegrationTest {
                 "linkedin.com/in/Dedupe-Fixture-1A2B3C?utm_source=share",
                 "https://dk.linkedin.com/in/dedupe-fixture-1a2b3c/",
                 "dedupe-fixture-1a2b3c")) {
-            DedupeCheckResponse result = dedupeService.check(null, variant);
+            DedupeCheckResponse result = dedupeService.check(null, variant, viewerUuid);
             assertTrue(result.matches().stream().anyMatch(m ->
                             m.type() == DedupeMatch.MatchType.CANDIDATE
                                     && m.uuid().equals(candidateUuid)
@@ -106,7 +123,7 @@ class CandidateDedupeServiceIntegrationTest {
 
     @Test
     void employeeEmailMatch_isFlaggedDistinctly() {
-        DedupeCheckResponse result = dedupeService.check(employeeEmail, null);
+        DedupeCheckResponse result = dedupeService.check(employeeEmail, null, viewerUuid);
 
         List<DedupeMatch> employeeMatches = result.matches().stream()
                 .filter(m -> m.type() == DedupeMatch.MatchType.EMPLOYEE).toList();
@@ -119,7 +136,7 @@ class CandidateDedupeServiceIntegrationTest {
     @Test
     void matchingBothIdentifiers_returnsTheCandidateOnce() {
         DedupeCheckResponse result = dedupeService.check(
-                candidateEmail, "https://www.linkedin.com/in/dedupe-fixture-1a2b3c/");
+                candidateEmail, "https://www.linkedin.com/in/dedupe-fixture-1a2b3c/", viewerUuid);
         long occurrences = result.matches().stream()
                 .filter(m -> m.uuid().equals(candidateUuid)).count();
         assertEquals(1, occurrences, "a candidate matching on email AND LinkedIn appears once");
@@ -129,7 +146,8 @@ class CandidateDedupeServiceIntegrationTest {
     void unknownIdentifiers_matchNothing() {
         DedupeCheckResponse result = dedupeService.check(
                 "nobody-" + UUID.randomUUID() + "@example.com",
-                "https://www.linkedin.com/in/no-such-profile-" + UUID.randomUUID());
+                "https://www.linkedin.com/in/no-such-profile-" + UUID.randomUUID(),
+                viewerUuid);
         assertTrue(result.matches().isEmpty());
     }
 }

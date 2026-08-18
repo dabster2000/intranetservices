@@ -34,6 +34,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferral
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralRelation;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentReferralStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentPositionAccess;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -702,7 +703,11 @@ public class ReferralService {
                 referral.getReferrerUuid(), referral.getExternalReferrerName(),
                 sponsoringPartnerUuid, trimToNull(request.relevantTeamleadUuid()),
                 null, null, null, experienceLevel, null, null, null,
-                null, null), actor);
+                null, null,
+                // positionUuid stays null here: this leg attaches explicitly
+                // below (requireDecidablePosition first), so the atomic
+                // create-with-position overload would double-attach.
+                null), actor);
 
         boolean attached = false;
         String positionUuid = trimToNull(request.positionUuid());
@@ -777,16 +782,8 @@ public class ReferralService {
      * mirroring the attach endpoint exactly.
      */
     private RecruitmentPosition requireDecidablePosition(String positionUuid, UUID actor) {
-        RecruitmentPosition position = RecruitmentPosition.findById(positionUuid);
-        if (position == null || !visibility.canReadPosition(actor.toString(), position)) {
-            throw new NotFoundException("Position not found: " + positionUuid);
-        }
-        if (!visibility.canDecideOnApplication(actor.toString(), position)) {
-            throw new WebApplicationException(
-                    "Only the recruiter, the hiring owner or the position's teamlead may attach to this position",
-                    Response.Status.FORBIDDEN);
-        }
-        return position;
+        return RecruitmentPositionAccess.requireDecidablePosition(
+                visibility, actor.toString(), positionUuid);
     }
 
     // ---- Unsolicited triage queue (the P5 carry-over) ---------------------------

@@ -31,9 +31,14 @@ class PermissionsCatalogueTest {
      * 89 since the SKI 7.b competence module added {@code competence:read},
      * {@code :write} and {@code :approve} (2026-08-14) — deliberately not
      * reusing {@code knowledge:*}, which gates elective CKO courses rather
-     * than mandatory, assessed compliance training.
+     * than mandatory, assessed compliance training;
+     * 90 since team-lead candidate intake added {@code recruitment:intake}
+     * (2026-08-18) — the create-and-attach slice of the candidate database,
+     * split out of {@code recruitment:manage} so a team lead can put a name
+     * into the funnel without also getting edit, delete, pool/unpool, bulk
+     * tag, candidate e-mail, templates, the dossier or record-check outcomes.
      */
-    private static final int EXPECTED_PERMISSIONS = 89;
+    private static final int EXPECTED_PERMISSIONS = 90;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {

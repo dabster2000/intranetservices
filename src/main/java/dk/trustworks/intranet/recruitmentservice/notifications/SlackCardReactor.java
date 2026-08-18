@@ -374,6 +374,64 @@ public class SlackCardReactor extends RecruitmentReactor {
         }
     }
 
+    /**
+     * Force the redacted rendering of every living root card of a candidate,
+     * for the ADMIN hard delete (change C). Must be called <b>before</b> the
+     * cascade transaction: it reads {@code recruitment_applications} and
+     * {@code recruitment_slack_threads}, both of which the cascade removes.
+     * It performs remote Slack I/O, so it must also be called <b>outside</b>
+     * any recruitment transaction (the 2026-08-11 deadlock rule on
+     * {@code RecruitmentReactor}).
+     *
+     * <p>This is NOT {@link #redactRootCards}, and the difference is the
+     * whole point. That method re-renders from the LIVE candidate row and
+     * only substitutes the placeholder when the row's status is already
+     * {@code ANONYMIZED} ({@link CardState#of}); running it ahead of a hard
+     * delete would therefore rewrite every card with the candidate's REAL
+     * name and then destroy the rows needed to ever fix it. This method
+     * never reads the candidate at all — {@link CardState#redacted} forces
+     * the anonymized rendering — so the name cannot leak even if the row is
+     * still there.</p>
+     *
+     * <p>Never throws. Flag-independent, like the anonymization redaction:
+     * erasure outlives convenience features.</p>
+     *
+     * @return the application uuids whose root card could NOT be redacted —
+     *         residue for the deletion ledger, not an error
+     */
+    public List<String> redactRootCardsForHardDelete(String candidateUuid) {
+        List<String> failed = new java.util.ArrayList<>();
+        if (candidateUuid == null || candidateUuid.isBlank()) {
+            return failed;
+        }
+        List<RecruitmentApplication> applications;
+        try {
+            applications = RecruitmentApplication.list("candidateUuid = ?1", candidateUuid);
+        } catch (RuntimeException e) {
+            log.warnf(e, "Could not load applications for Slack redaction of candidate %s: %s",
+                    candidateUuid, e.getMessage());
+            return List.of("<application lookup failed>");
+        }
+        for (RecruitmentApplication application : applications) {
+            RecruitmentSlackThread thread = RecruitmentSlackThread.findById(application.getUuid());
+            if (thread == null) {
+                continue;
+            }
+            try {
+                RecruitmentPosition position = application.getPositionUuid() == null ? null
+                        : RecruitmentPosition.findById(application.getPositionUuid());
+                CardState state = CardState.redacted(position, application);
+                slackService.updateMessageStrict(thread.getChannelId(), thread.getRootTs(),
+                        state.fallbackText(), state.blocks(baseUrl));
+            } catch (Exception e) {
+                log.warnf(e, "Slack root-card redaction failed for application %s: %s",
+                        application.getUuid(), e.getMessage());
+                failed.add(application.getUuid());
+            }
+        }
+        return failed;
+    }
+
     // ------------------------------------------------------------------
     // Channel resolution — partner track NEVER falls back to a shared channel
     // ------------------------------------------------------------------
@@ -440,6 +498,22 @@ public class SlackCardReactor extends RecruitmentReactor {
             return new CardState(facts, anonymized,
                     application.getStage() == null ? null : application.getStage().name(),
                     terminal, reason, days, countScorecards(application.getUuid()));
+        }
+
+        /**
+         * The card as it must render once the candidate is <em>gone</em>
+         * (change C's hard delete): {@code anonymized} is forced true rather
+         * than read from the candidate row, and the candidate is not loaded
+         * at all — so neither the name nor the source can reach Slack even
+         * while the row still exists. Contrast {@link #of}, which derives
+         * {@code anonymized} from live state and therefore renders the real
+         * name for anything that is not already ANONYMIZED.
+         */
+        static CardState redacted(RecruitmentPosition position,
+                                  RecruitmentApplication application) {
+            CardState live = of(null, position, application);
+            return new CardState(live.facts(), true, live.stageCode(), live.terminalCode(),
+                    live.rejectionReason(), live.daysInStage(), live.scorecardsIn());
         }
 
         private static long countScorecards(String applicationUuid) {
