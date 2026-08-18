@@ -19,7 +19,8 @@ public class AIConfigSnapshot {
     public record RuleView(String ruleId, String displayName, String description,
                            String severity, String resolutionType,
                            int priority, boolean active,
-                           String outcomeMode, Double confidenceThreshold) {}
+                           String outcomeMode, Double confidenceThreshold,
+                           boolean alwaysHuman) {}
 
     private static final class State {
         final List<RuleView> rulesByPriority;
@@ -50,7 +51,8 @@ public class AIConfigSnapshot {
             .map(r -> new RuleView(r.ruleId, r.displayName, r.description,
                                    r.severity, r.resolutionType, r.priority, r.active,
                                    r.outcomeMode != null ? r.outcomeMode : "BLOCK",
-                                   r.confidenceThreshold != null ? r.confidenceThreshold : 0.0))
+                                   r.confidenceThreshold != null ? r.confidenceThreshold : 0.0,
+                                   r.alwaysHuman))
             .toList();
 
         Map<String,String> params = new HashMap<>();
@@ -75,6 +77,21 @@ public class AIConfigSnapshot {
 
     public String getParameter(String key, String fallback) {
         return state.get().parameters.getOrDefault(key, fallback);
+    }
+
+    /**
+     * W2: a rule's description with {@code {{parameter_key}}} chips resolved from the
+     * live parameter values — the employee-readable policy sentence. Null when the
+     * rule is unknown.
+     */
+    public String renderedRuleDescription(String ruleId) {
+        RuleView rule = getRule(ruleId);
+        if (rule == null || rule.description() == null) return null;
+        String out = rule.description();
+        for (var entry : getParameters().entrySet()) {
+            out = out.replace("{{" + entry.getKey() + "}}", entry.getValue());
+        }
+        return out;
     }
     public int getIntParameter(String key, int fallback) {
         try { return Integer.parseInt(getParameter(key, String.valueOf(fallback))); }

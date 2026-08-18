@@ -159,6 +159,7 @@ public class AIConfigResource {
         r.active = d.active();
         r.outcomeMode = d.outcomeMode() != null ? d.outcomeMode() : "BLOCK";
         r.confidenceThreshold = d.confidenceThreshold() != null ? d.confidenceThreshold() : 0.0;
+        r.alwaysHuman = d.alwaysHuman();
     }
 
     private AIRuleDTO toDTO(AIRuleCatalog r) {
@@ -166,6 +167,7 @@ public class AIConfigResource {
             r.resolutionType, r.priority, r.active,
             r.outcomeMode != null ? r.outcomeMode : "BLOCK",
             r.confidenceThreshold != null ? r.confidenceThreshold : 0.0,
+            r.alwaysHuman,
             r.updatedAt.atOffset(ZoneOffset.UTC), r.updatedBy);
     }
 

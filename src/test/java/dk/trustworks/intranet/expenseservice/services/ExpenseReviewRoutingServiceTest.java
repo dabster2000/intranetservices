@@ -24,9 +24,9 @@ class ExpenseReviewRoutingServiceTest {
 
     private AIConfigSnapshot.RuleView rule(String id, String resolutionType, int prio) {
         // RuleView(ruleId, displayName, description, severity, resolutionType, priority,
-        //          active, outcomeMode, confidenceThreshold)
+        //          active, outcomeMode, confidenceThreshold, alwaysHuman)
         return new AIConfigSnapshot.RuleView(id, id, "", "REJECT", resolutionType, prio,
-                true, "BLOCK", 0.0);
+                true, "BLOCK", 0.0, false);
     }
 
     @Test void autoFix_routesToEmployeeReceipt_needsFix() {

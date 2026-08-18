@@ -83,6 +83,19 @@ public class ExpenseService {
      * is published immediately.
      */
     private void publishValidateEventAfterCommit(String expenseUuid) {
+        publishAfterCommit("expense.validate", expenseUuid);
+    }
+
+    /**
+     * W2: queue the after-commit justification-AI review. Public so the
+     * justification endpoint can call it — the AI pass must never run inside
+     * the JTA transaction (OpenAI latency + rollback semantics).
+     */
+    public void queueJustificationAiReview(String expenseUuid) {
+        publishAfterCommit("expense.justification.review", expenseUuid);
+    }
+
+    private void publishAfterCommit(String address, String expenseUuid) {
         try {
             txSyncRegistry.registerInterposedSynchronization(new Synchronization() {
                 @Override
@@ -92,15 +105,15 @@ public class ExpenseService {
                 public void afterCompletion(int status) {
                     if (status == Status.STATUS_COMMITTED) {
                         try {
-                            eventBus.publish("expense.validate", expenseUuid);
+                            eventBus.publish(address, expenseUuid);
                         } catch (Exception ex) {
-                            log.error("Failed to publish expense.validate after commit for uuid=" + expenseUuid, ex);
+                            log.error("Failed to publish " + address + " after commit for uuid=" + expenseUuid, ex);
                         }
                     }
                 }
             });
         } catch (Exception e) {
-            eventBus.publish("expense.validate", expenseUuid);
+            eventBus.publish(address, expenseUuid);
         }
     }
 

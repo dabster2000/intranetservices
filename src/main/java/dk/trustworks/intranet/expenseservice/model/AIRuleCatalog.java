@@ -17,6 +17,8 @@ public class AIRuleCatalog extends PanacheEntityBase {
     public boolean active;
     @Column(name = "outcome_mode")         public String outcomeMode;
     @Column(name = "confidence_threshold") public Double confidenceThreshold;
+    /** W2: the justification-AI must always refer this rule's items to a human. */
+    @Column(name = "always_human")         public boolean alwaysHuman;
     @Column(name = "updated_at")      public LocalDateTime updatedAt;
     @Column(name = "updated_by")      public String updatedBy;
 
