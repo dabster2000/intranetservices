@@ -251,7 +251,7 @@ public class ExpenseService {
     }
 
     // Constants for retry management
-    private static final int MAX_RETRY_ATTEMPTS = 3;
+    public static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int MIN_MINUTES_BETWEEN_RETRIES = 10;
 
     /**
