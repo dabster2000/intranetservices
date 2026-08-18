@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewApproveDTO;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewAssignAccountDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewRejectDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewSendBackDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
@@ -33,6 +34,16 @@ public class ExpenseReviewDecisionResource {
     public Response approve(@PathParam("uuid") String uuid,
                             @Valid ExpenseReviewApproveDTO body) {
         decisions.approve(uuid, header.getUserUuid(), body.reason());
+        return Response.noContent().build();
+    }
+
+    /** W3: one-click decision of the Assign-account micro-queue — set the GL account and approve. */
+    @POST
+    @Path("/assign-account")
+    @RolesAllowed({"expenses:review"})
+    public Response assignAccount(@PathParam("uuid") String uuid,
+                                  @Valid ExpenseReviewAssignAccountDTO body) {
+        decisions.assignAccountAndApprove(uuid, header.getUserUuid(), body.account());
         return Response.noContent().build();
     }
 

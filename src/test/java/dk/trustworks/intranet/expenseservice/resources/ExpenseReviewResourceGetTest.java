@@ -91,6 +91,48 @@ class ExpenseReviewResourceGetTest {
           .body("expense.uuid", not(hasItem(deleted)));
     }
 
+    /** W3: seed a NEEDS_ATTENTION(ACCOUNTING, POLICY) row with the classifier-fallback flag. */
+    private String seedFallbackExpense() {
+        String uuid = seedExpense("ACCOUNTING", "POLICY", java.time.LocalDate.now());
+        QuarkusTransaction.requiringNew().run(() -> {
+            Expense e = Expense.findById(uuid);
+            e.setFinanceReviewOnly(Boolean.TRUE);
+        });
+        return uuid;
+    }
+
+    @Test
+    @TestSecurity(user = "accounting-user", roles = {"expenses:review"})
+    void accountAssignSegmentReturnsOnlyClassifierFallbackRows() {
+        String fallback = seedFallbackExpense();
+        String judgment = seedExpense("ACCOUNTING", "POLICY", java.time.LocalDate.now());
+
+        given()
+          .queryParam("segment", "ACCOUNT_ASSIGN")
+        .when()
+          .get("/expenses/review")
+        .then()
+          .statusCode(200)
+          .body("expense.uuid", hasItem(fallback))
+          .body("expense.uuid", not(hasItem(judgment)));
+    }
+
+    @Test
+    @TestSecurity(user = "accounting-user", roles = {"expenses:review"})
+    void accountingSegmentExcludesClassifierFallbackRows() {
+        String fallback = seedFallbackExpense();
+        String judgment = seedExpense("ACCOUNTING", "POLICY", java.time.LocalDate.now());
+
+        given()
+          .queryParam("segment", "ACCOUNTING")
+        .when()
+          .get("/expenses/review")
+        .then()
+          .statusCode(200)
+          .body("expense.uuid", hasItem(judgment))
+          .body("expense.uuid", not(hasItem(fallback)));
+    }
+
     @Test
     void unauthorizedReturnsForbidden() {
         given()
