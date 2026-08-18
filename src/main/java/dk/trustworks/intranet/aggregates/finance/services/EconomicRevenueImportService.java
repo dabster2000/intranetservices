@@ -171,6 +171,10 @@ public class EconomicRevenueImportService {
     @Inject
     EntityManager em;
 
+    /** Self-proxy so {@code @Transactional} engages on the draft mirror's write phase. */
+    @Inject
+    EconomicRevenueImportService self;
+
     /**
      * Walks the 3 companies × revenue accounts × accounting years in
      * {@code [from..to]}, runs the 4-layer dedup, and inserts surviving
@@ -397,23 +401,34 @@ public class EconomicRevenueImportService {
      * {@code fact_company_revenue*} views exclude them entirely — those views have
      * no posting-status concept and are the booked reconciliation reference.
      *
-     * <p><b>Atomic by design.</b> The wipe and every insert run inside this method's
-     * single transaction, so the mirror either fully reflects e-conomic's current
-     * drafts or is left exactly as it was. Do not "fix" this by routing the inserts
-     * through a self-proxy to make {@code REQUIRES_NEW} engage — per-voucher
-     * transactions would let a mid-run failure leave a half-rebuilt mirror, which
-     * for a delete-and-replace population means silently missing revenue.
+     * <p><b>Two phases, and the split is load-bearing.</b> Phase 1 (this method, no
+     * transaction) does the e-conomic fetches and the dedup reads; phase 2
+     * ({@link #replaceDraftMirror}, {@code @Transactional}) does the wipe and the
+     * inserts with no I/O inside it. The first staging run held one transaction across
+     * both and died on {@code LockTimeoutException} — the wipe's locks were held
+     * through three HTTP round-trips, past the 50s {@code innodb_lock_wait_timeout}.
+     * Never hold a row lock across a vendor call here.
+     *
+     * <p><b>Atomic by design.</b> Within phase 2 the wipe and every insert share one
+     * transaction, so the mirror either fully reflects e-conomic's current drafts or is
+     * left exactly as it was. Do not "fix" that by giving each insert its own
+     * transaction — a mid-run failure would leave a half-rebuilt mirror, which for a
+     * delete-and-replace population means silently missing revenue.
      *
      * <p>Measured on production 2026-08-17: 2,396,194.68 DKK of accrued
      * self-billing (14 entries on 2104/2106, all "periodiseret", 30 June 2026) that
      * no dashboard could see under any setting, plus the standing 2180 canteen
      * drafts and minor corrections.
      */
-    @Transactional
     public DraftMirrorOutcome refreshDraftMirror(LocalDate from, LocalDate to) {
-        int deleted = deleteDraftMirror();
-        int inserted = 0;
-        BigDecimal total = BigDecimal.ZERO;
+        // ── Phase 1: e-conomic fetch + dedup reads. NO write transaction is open.
+        // This method is deliberately NOT @Transactional. It makes three HTTP calls to
+        // e-conomic, and holding the mirror's write locks across those is what broke the
+        // first staging run (2026-08-18 02:00Z: LockTimeoutException on the INSERT after
+        // the wipe's locks had been held through the fetches, innodb_lock_wait_timeout
+        // 50s). Same anti-pattern as the 2026-08-13 booking self-deadlock: never hold a
+        // row lock across a vendor round-trip.
+        List<AggregatedVoucher> survivors = new ArrayList<>();
 
         for (String companyUuid : ALL_COMPANY_UUIDS) {
             Company company = Company.findById(companyUuid);
@@ -442,42 +457,66 @@ public class EconomicRevenueImportService {
                 if (findExistingByEntryNumber(v).isPresent()) continue;
                 if (findExistingByFakturaText(v).isPresent()) continue;
                 if (v.sumAmount().signum() == 0) continue;   // a netted-out draft is not revenue
-
-                if (dryRun) {
-                    log.infof("refreshDraftMirror DRY_RUN: company=%s acc=%d voucher=%d entryAmount=%s storedAmount=%s",
-                            companyUuid, v.account(), v.voucherNumber(), v.sumAmount(),
-                            deriveStoredAmount(v.sumAmount()));
-                    continue;
-                }
-                // Deliberately NOT caught per voucher. The delete and every insert share
-                // this method's transaction — insertInvoiceAndItem's REQUIRES_NEW does not
-                // engage on a self-call — so the rebuild is atomic, which is exactly what a
-                // mirror wants: either it fully reflects e-conomic's current drafts, or it
-                // is left untouched. Swallowing a failure here would be worse than useless:
-                // the transaction would already be marked rollback-only, so the loop would
-                // keep counting "inserts" that can never commit and the wipe would roll back
-                // with them, reporting a healthy run over a mirror that never changed.
-                // The batchlet isolates this whole call, so a failure costs the mirror for
-                // one night and never the booked import.
-                //
-                // The constraint violation is rethrown UNCHECKED on purpose: JTA rolls back
-                // on unchecked exceptions only, so letting the checked one propagate would
-                // COMMIT the half-rebuilt mirror — the precise opposite of the intent.
-                try {
-                    insertInvoiceAndItem(v, LocalDateTime.now(), PostingStatus.DRAFT.name());
-                } catch (SQLIntegrityConstraintViolationException collision) {
-                    throw new IllegalStateException(String.format(
-                            "draft mirror insert collided with an existing invoice "
-                                    + "(company=%s account=%d voucher=%d entry=%d) — rebuild aborted, "
-                                    + "previous mirror left intact",
-                            companyUuid, v.account(), v.voucherNumber(), v.minEntryNumber()), collision);
-                }
-                inserted++;
-                total = total.add(deriveStoredAmount(v.sumAmount()));
+                survivors.add(v);
             }
         }
-        log.infof("refreshDraftMirror: deleted=%d inserted=%d totalDkk=%s dryRun=%s", deleted, inserted, total, dryRun);
-        return new DraftMirrorOutcome(deleted, inserted, total, dryRun);
+
+        if (dryRun) {
+            BigDecimal intended = BigDecimal.ZERO;
+            for (AggregatedVoucher v : survivors) {
+                intended = intended.add(deriveStoredAmount(v.sumAmount()));
+                log.infof("refreshDraftMirror DRY_RUN: company=%s acc=%d voucher=%d entryAmount=%s storedAmount=%s",
+                        v.companyUuid(), v.account(), v.voucherNumber(), v.sumAmount(),
+                        deriveStoredAmount(v.sumAmount()));
+            }
+            log.infof("refreshDraftMirror DRY_RUN: %d voucher(s) would be mirrored, totalDkk=%s",
+                    survivors.size(), intended);
+            return new DraftMirrorOutcome(0, 0, intended, true);
+        }
+
+        // ── Phase 2: one short write transaction, no I/O of any kind inside it.
+        return self.replaceDraftMirror(survivors);
+    }
+
+    /**
+     * Swaps the draft-sourced PHANTOM population for {@code survivors} in a single
+     * short transaction. Pure DB work — every e-conomic call already happened in
+     * phase 1, so the locks taken here are held for milliseconds, not for the length
+     * of three HTTP round-trips.
+     *
+     * <p>Atomic on purpose: the wipe and every insert share this transaction
+     * ({@code insertInvoiceAndItem}'s REQUIRES_NEW does not engage on a self-call), so
+     * the mirror either fully reflects e-conomic's current drafts or is left exactly as
+     * it was. No per-voucher catch — once a statement fails the transaction is
+     * rollback-only, so continuing would count inserts that can never commit and report
+     * a healthy run over a mirror that never changed.
+     *
+     * <p>The constraint violation is rethrown UNCHECKED deliberately: JTA rolls back on
+     * unchecked exceptions only, so letting the checked one propagate would COMMIT a
+     * half-rebuilt mirror.
+     */
+    @Transactional
+    public DraftMirrorOutcome replaceDraftMirror(List<AggregatedVoucher> survivors) {
+        int deleted = deleteDraftMirror();
+        int inserted = 0;
+        BigDecimal total = BigDecimal.ZERO;
+        LocalDateTime now = LocalDateTime.now();
+
+        for (AggregatedVoucher v : survivors) {
+            try {
+                insertInvoiceAndItem(v, now, PostingStatus.DRAFT.name());
+            } catch (SQLIntegrityConstraintViolationException collision) {
+                throw new IllegalStateException(String.format(
+                        "draft mirror insert collided with an existing invoice "
+                                + "(company=%s account=%d voucher=%d entry=%d) — rebuild aborted, "
+                                + "previous mirror left intact",
+                        v.companyUuid(), v.account(), v.voucherNumber(), v.minEntryNumber()), collision);
+            }
+            inserted++;
+            total = total.add(deriveStoredAmount(v.sumAmount()));
+        }
+        log.infof("refreshDraftMirror: deleted=%d inserted=%d totalDkk=%s dryRun=false", deleted, inserted, total);
+        return new DraftMirrorOutcome(deleted, inserted, total, false);
     }
 
     /**

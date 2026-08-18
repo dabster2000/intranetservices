@@ -30,6 +30,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -485,6 +486,27 @@ class EconomicRevenueImportServiceTest {
         assertFalse(service.shouldSkipAccount(AS_UUID, 2180), "2180 Kantineordning still imports");
         assertFalse(service.shouldSkipAccount(AS_UUID, 2104), "2104 Vattenfall still imports");
         assertFalse(service.shouldSkipAccount(AS_UUID, 2106), "2106 Energinet still imports");
+    }
+
+    @Test
+    @DisplayName("D2: the mirror's fetch phase holds no transaction; only the write phase does")
+    void testDraftMirrorKeepsNetworkOutOfTheWriteTransaction() throws Exception {
+        // The first staging run (2026-08-18 02:00Z) died on LockTimeoutException because
+        // one @Transactional method spanned the wipe, three e-conomic HTTP fetches and the
+        // inserts — locks held past the 50s innodb_lock_wait_timeout. The fetch phase must
+        // therefore carry NO transaction, and the short write phase must carry one.
+        assertNull(EconomicRevenueImportService.class
+                        .getMethod("refreshDraftMirror", LocalDate.class, LocalDate.class)
+                        .getAnnotation(jakarta.transaction.Transactional.class),
+                "refreshDraftMirror does the e-conomic fetches — it must not hold a transaction");
+
+        jakarta.transaction.Transactional writePhase = EconomicRevenueImportService.class
+                .getMethod("replaceDraftMirror", List.class)
+                .getAnnotation(jakarta.transaction.Transactional.class);
+        assertNotNull(writePhase,
+                "replaceDraftMirror must be transactional — the wipe and the inserts are one atomic swap");
+        assertEquals(jakarta.transaction.Transactional.TxType.REQUIRED, writePhase.value(),
+                "the write phase owns the transaction the wipe and inserts share");
     }
 
     @Test
