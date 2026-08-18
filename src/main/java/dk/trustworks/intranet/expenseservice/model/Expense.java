@@ -185,6 +185,16 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "soft_flags", columnDefinition = "json")
     private String softFlags;
 
+    /**
+     * W3: TRUE when the row entered the inbox only because the classifier fallback
+     * requires Finance review (the AI cleared the receipt itself). Drives the
+     * "Assign account" micro-queue. Set by ExpenseCreatedConsumer at routing time;
+     * NULL on rows routed before V509 that the evidence backfill could not classify.
+     */
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "finance_review_only")
+    private Boolean financeReviewOnly;
+
     @jakarta.persistence.Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;
