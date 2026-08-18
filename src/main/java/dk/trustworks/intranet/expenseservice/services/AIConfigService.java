@@ -47,6 +47,7 @@ public class AIConfigService {
         existing.active         = incoming.active;
         existing.outcomeMode = incoming.outcomeMode;
         existing.confidenceThreshold = incoming.confidenceThreshold;
+        existing.alwaysHuman = incoming.alwaysHuman;
         existing.updatedAt = LocalDateTime.now();
         existing.updatedBy = actor;
         appendHistory("RULE", existing.ruleId,
