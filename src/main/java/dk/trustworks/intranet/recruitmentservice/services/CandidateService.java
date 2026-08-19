@@ -15,9 +15,11 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateEducationLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateExperienceLevel;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateLawfulBasis;
@@ -27,6 +29,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityCl
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import io.quarkus.panache.common.Page;
@@ -123,9 +126,48 @@ public class CandidateService {
      */
     @Transactional
     public CandidateResponse createCandidate(CandidateRequest req, UUID actor) {
+        return createCandidate(req, actor, null);
+    }
+
+    /**
+     * {@link #createCandidate(CandidateRequest, UUID)} plus an atomic attach
+     * to {@code position} — the "pick the req while you type the name" flow.
+     *
+     * <h3>Why the composition lives here and not in the resource</h3>
+     * Both this method and {@link RecruitmentApplicationService#create} are
+     * {@code @Transactional} at the default REQUIRED propagation, so the
+     * inner call <b>joins</b> this transaction: if the attach throws — the
+     * position closed between the picker's read and the submit, the
+     * candidate already has an open application, any of the §4.2 invariants
+     * — the candidate row and its {@code CANDIDATE_CREATED} event roll back
+     * with it. Callers get "nothing happened", not a stranded candidate.
+     * {@code RecruitmentResource.createCandidate} carries no
+     * {@code @Transactional}, so composing there would commit the candidate
+     * and then fail the attach. This is the same composition
+     * {@code ReferralService.triageCreate} has run in production since P14.
+     *
+     * <h3>Authorization is the caller's job</h3>
+     * This method does not check who may create or who may attach — the
+     * resource does, in order, before calling
+     * ({@code canCreateCandidate} → dossier gate → position 404 →
+     * {@code canDecideOnApplication}). Keeping the checks in the resource
+     * keeps one enforcement point instead of two that can drift.
+     *
+     * @param position the position to attach to, or {@code null} for the
+     *                 plain positionless create (talent pool, Airtable
+     *                 import, public {@code /apply}, dossier-only)
+     * @return the created candidate; {@link CandidateResponse#applicationUuid()}
+     *         carries the new application when {@code position} was supplied
+     */
+    @Transactional
+    public CandidateResponse createCandidate(CandidateRequest req, UUID actor,
+                                             RecruitmentPosition position) {
         Objects.requireNonNull(req, "req must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
-        boolean dossierPath = req.templateUuid() != null && !req.templateUuid().isBlank();
+        // The SAME predicate the resource's A3 authorization gate uses. Never
+        // re-derive it here: two predicates that "obviously" agree is exactly
+        // how the gate came to be bypassable (CandidateRequest.opensDossier).
+        boolean dossierPath = req.opensDossier();
         if (dossierPath) {
             requirePresent(req.email(),
                     "email is required when creating a candidate with an offer dossier");
@@ -184,6 +226,7 @@ public class CandidateService {
 
         RecruitmentEventBuilder event = candidateEvent(RecruitmentEventType.CANDIDATE_CREATED, candidate, actor)
                 .payload("source", candidate.getSource() != null ? candidate.getSource().name() : null)
+                .payload("position_uuid", position != null ? position.getUuid() : null)
                 .payload("dossier_opened", dossierPath)
                 .payload("referred_by_user_uuid", candidate.getReferredByUserUuid())
                 .payload("sponsoring_partner_uuid", candidate.getSponsoringPartnerUuid())
@@ -209,12 +252,33 @@ public class CandidateService {
             // blob is treated as personal data (spec §4.1).
             event.pii("source_detail", candidate.getSourceDetail());
         }
+        if (position != null && position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            // Partner secrecy for the atomic path. BOTH stamps are load-bearing:
+            // CIRCLE alone is not enough, because the readers of a CIRCLE event
+            // (RecruitmentTimelineService.isVisible, RecruitmentLandingService)
+            // resolve the circle FROM the event's position — a CIRCLE event with
+            // a null position fails closed for everyone, including the recruiter
+            // who just created the candidate. Same pairing as
+            // RecruitmentApplicationService.applicationEvent.
+            event.position(position.getUuid())
+                    .visibility(RecruitmentEventVisibility.CIRCLE);
+        }
         eventRecorder.record(event);
 
-        log.infof("Created candidate uuid=%s source=%s dossier=%s by actor=%s",
-                candidate.getUuid(), candidate.getSource(), dossierPath, actor);
+        // The attach, inside this same transaction (see the method javadoc):
+        // a refusal here rolls the candidate above back. Event order is
+        // therefore exactly CANDIDATE_CREATED then APPLICATION_CREATED —
+        // byte-identical to the two-step create-then-attach flow.
+        String applicationUuid = null;
+        if (position != null) {
+            applicationUuid = applicationService.create(candidate, position, actor).getUuid();
+        }
 
-        return toResponse(candidate, Optional.empty());
+        log.infof("Created candidate uuid=%s source=%s dossier=%s position=%s by actor=%s",
+                candidate.getUuid(), candidate.getSource(), dossierPath,
+                position != null ? position.getUuid() : "none", actor);
+
+        return toResponse(candidate, Optional.empty(), applicationUuid);
     }
 
     public Optional<CandidateResponse> findById(UUID candidateUuid) {
@@ -878,6 +942,16 @@ public class CandidateService {
      * not be referenced from elsewhere.
      */
     private CandidateResponse toResponse(RecruitmentCandidate c, Optional<RevisionSummary> latest) {
+        return toResponse(c, latest, null);
+    }
+
+    /**
+     * {@link #toResponse(RecruitmentCandidate, Optional)} carrying the
+     * create receipt: {@code applicationUuid} is non-null only on the
+     * atomic create-with-position path.
+     */
+    private CandidateResponse toResponse(RecruitmentCandidate c, Optional<RevisionSummary> latest,
+                                         String applicationUuid) {
         return new CandidateResponse(
                 c.getUuid(),
                 c.getFirstName(),
@@ -915,7 +989,8 @@ public class CandidateService {
                 c.getCreatedByUseruuid(),
                 c.getCreatedAt(),
                 c.getUpdatedAt(),
-                latest.orElse(null)
+                latest.orElse(null),
+                applicationUuid
         );
     }
 

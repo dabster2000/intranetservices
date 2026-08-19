@@ -149,6 +149,62 @@ public class CandidateDiscussionSlackNotifier {
         return rootTs;
     }
 
+    /**
+     * The redacted text of a discussion root, once its candidate is gone.
+     * No name, no deep link — the link would 404 anyway.
+     */
+    static final String DELETED_ROOT_TEXT = "Discussion: (candidate deleted)";
+
+    /**
+     * Rewrite every discussion-thread root of a candidate to
+     * {@link #DELETED_ROOT_TEXT}, for the ADMIN hard delete (change C).
+     *
+     * <p>Call BEFORE the cascade transaction — the rows this reads are among
+     * the ones it deletes (the {@code recruitment_discussion_threads} FK is
+     * the module's only {@code ON DELETE CASCADE}, V482) — and OUTSIDE any
+     * transaction, since it does remote Slack I/O.</p>
+     *
+     * <p><b>Honest limitation.</b> This reaches the thread ROOT only. Each
+     * note posted a thread REPLY reading "{author} commented on {name} — …"
+     * ({@link #postThreadReply}) and each mention sent a DM
+     * ({@link #dmMention}); neither message's {@code ts} is stored anywhere,
+     * so neither can be addressed by the Slack API afterwards. Those replies
+     * and DMs keep the candidate's name permanently, and the caller records
+     * that as residue. This is the same documented residual the anonymizer
+     * carries (SlackCardReactor class javadoc, "Thread replies and DMs are
+     * not rewritten").</p>
+     *
+     * <p>Never throws. Flag-independent: erasure outlives convenience
+     * features.</p>
+     *
+     * @return the discussion-thread uuids whose root could NOT be redacted
+     */
+    public List<String> redactDiscussionRootsForHardDelete(String candidateUuid) {
+        List<String> failed = new java.util.ArrayList<>();
+        if (candidateUuid == null || candidateUuid.isBlank()) {
+            return failed;
+        }
+        List<RecruitmentDiscussionThread> threads;
+        try {
+            threads = RecruitmentDiscussionThread.list("candidateUuid = ?1", candidateUuid);
+        } catch (RuntimeException e) {
+            log.warnf(e, "Could not load discussion threads for candidate %s: %s",
+                    candidateUuid, e.getMessage());
+            return List.of("<discussion thread lookup failed>");
+        }
+        for (RecruitmentDiscussionThread thread : threads) {
+            try {
+                slackService.updateMessageStrict(thread.getChannelId(), thread.getRootTs(),
+                        DELETED_ROOT_TEXT, null);
+            } catch (Exception e) {
+                log.warnf(e, "Discussion root redaction failed for thread %s: %s",
+                        thread.getUuid(), e.getMessage());
+                failed.add(thread.getUuid());
+            }
+        }
+        return failed;
+    }
+
     // ---- Mention DMs -----------------------------------------------------------
 
     private void dmMention(String mentionUuid, String authorName,

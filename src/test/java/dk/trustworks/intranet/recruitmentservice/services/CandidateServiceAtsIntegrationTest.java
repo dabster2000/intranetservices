@@ -475,6 +475,10 @@ class CandidateServiceAtsIntegrationTest {
                     securityClearance,
                     securityRelevant,
                     null,
+                    null,
+                    // positionUuid — the service-layer fixtures exercise the
+                    // positionless create; the atomic create-with-position
+                    // path is covered by the resource-level tests.
                     null);
         }
     }

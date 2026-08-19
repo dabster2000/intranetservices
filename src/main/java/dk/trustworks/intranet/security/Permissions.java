@@ -213,6 +213,14 @@ public final class Permissions {
             // pool/decline/withdraw, e-mail candidates, manage templates and
             // the resource library. Those are ADMIN/HR/RECRUITMENT only.
             new Permission("recruitment:manage", "Recruitment — manage candidates", "Recruitment"),
+            // Candidate intake for team leads (2026-08-18). Deliberately far
+            // narrower than recruitment:manage: it buys creating a candidate
+            // and attaching one to a position, and nothing else — no edit, no
+            // delete, no pool/unpool, no bulk tag, no candidate e-mail, no
+            // templates, no dossier and no record-check outcomes. It exists so
+            // a team lead can put a name into the funnel without being handed
+            // the whole recruiter tier.
+            new Permission("recruitment:intake", "Recruitment — candidate intake", "Recruitment"),
             new Permission("recruitment:admin", "Recruitment — admin", "Recruitment"),
 
             // Admin

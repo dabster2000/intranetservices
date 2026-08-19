@@ -17,6 +17,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.DeclineRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DedupeCheckRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.HardDeleteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.PoolRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
@@ -31,8 +32,10 @@ import dk.trustworks.intranet.recruitmentservice.dto.WithdrawRequest;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentPositionAccess;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentSecuredResponse;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateConversionUseCase;
@@ -46,6 +49,7 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService.RecipientInfo;
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.PromotionStagingRestoreService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCandidateHardDeleteService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
@@ -173,6 +177,9 @@ public class RecruitmentResource {
     CandidateDedupeService dedupeService;
 
     @Inject
+    RecruitmentCandidateHardDeleteService hardDeleteService;
+
+    @Inject
     RecruitmentSpecializationCatalog specializationCatalog;
 
     @Inject
@@ -298,17 +305,80 @@ public class RecruitmentResource {
         return Response.ok(new BulkTagsResponse(updated)).build();
     }
 
+    /**
+     * Create a candidate — optionally attaching them to a position in the
+     * same transaction ({@code positionUuid} in the body).
+     *
+     * <h3>Gate order, and why it is this order</h3>
+     * <ol>
+     *   <li>{@code enforceFlag()} — the dossier flag, as before. When a
+     *       position is supplied, {@code enforcePipelineFlag()} too: the
+     *       attach is an ATS-expansion surface and must stay dark with the
+     *       rest of the pipeline.</li>
+     *   <li>{@code currentActor()} → 400. Everything below is per-user, so
+     *       there is nothing to decide without one.</li>
+     *   <li>{@code visibility.canCreateCandidate} → 403. The per-user gate;
+     *       {@code @RolesAllowed} gates the API client, not the person (the
+     *       BFF's token carries {@code admin:*}, which
+     *       {@code AdminScopeAugmentor} expands to every key).</li>
+     *   <li><b>Dossier gate</b> → 403. {@code templateUuid} in the body
+     *       opens a {@code CandidateDossier} — the offer/contract surface,
+     *       which is ADMIN/HR (+ recruiter tier) only. Without this check
+     *       the narrow {@code recruitment:intake} grant would silently buy
+     *       the contract flow through a body field, which go-live decision
+     *       D17 denies the team lead explicitly. Checked BEFORE any write.</li>
+     *   <li>Position resolution → <b>404, never 403</b>: an invisible
+     *       partner-track req must be indistinguishable from a nonexistent
+     *       one. Then decision rights → 403
+     *       ({@link RecruitmentPositionAccess}).</li>
+     * </ol>
+     * Body validation stays in {@link CandidateService} where both create
+     * paths already share it (bean validation is inert in this backend).
+     */
     @POST
     @Path("/candidates")
     @RolesAllowed({"recruitment:write"})
     public Response createCandidate(@Valid CandidateRequest request) {
         enforceFlag();
         Objects.requireNonNull(request, "request body must not be null");
+        String positionUuid = trimToNull(request.positionUuid());
+        if (positionUuid != null) {
+            enforcePipelineFlag();
+        }
         UUID actor = currentActor();
-        CandidateResponse created = candidateService.createCandidate(request, actor);
+        if (!visibility.canCreateCandidate(actor.toString())) {
+            throw new WebApplicationException(
+                    "Creating candidates is reserved for the recruiter tier and holders of "
+                            + "the candidate-intake grant",
+                    Response.Status.FORBIDDEN);
+        }
+        if (request.opensDossier() && !visibility.isRecruiterTier(actor.toString())) {
+            // A3: the dossier path is the offer/contract surface. The
+            // "is a template present?" question is answered by
+            // CandidateRequest.opensDossier() and nowhere else — the service
+            // branches on the SAME call, so this gate cannot be walked past
+            // by a value the two sides read differently (see that javadoc).
+            throw new WebApplicationException(
+                    "The offer and contract are handled by HR — create the candidate without a "
+                            + "template and hand over from there.",
+                    Response.Status.FORBIDDEN);
+        }
+        RecruitmentPosition position = positionUuid == null
+                ? null
+                : RecruitmentPositionAccess.requireDecidablePosition(
+                        visibility, actor.toString(), positionUuid);
+        CandidateResponse created = candidateService.createCandidate(request, actor, position);
         return Response.created(URI.create("/recruitment/candidates/" + created.uuid()))
                 .entity(created)
                 .build();
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     @GET
@@ -357,6 +427,110 @@ public class RecruitmentResource {
         return Response.ok(result).build();
     }
 
+    /**
+     * Irreversibly delete a candidate and everything that hangs off them —
+     * the ADMIN undo of a mis-creation (change C).
+     *
+     * <p>This is NOT the GDPR tool. Anonymization
+     * ({@code POST /recruitment/gdpr/candidates/{uuid}/anonymize}) remains
+     * the compliant erasure path; it just cannot fix the two numbers a
+     * mistaken candidate permanently inflates — the reports Source-mix
+     * candidate series and the candidate-grid total.</p>
+     *
+     * <p>POST, not DELETE: it carries a body, and the anonymize precedent
+     * this copies its confirmation contract from is a POST.</p>
+     *
+     * <h3>Gate order</h3>
+     * <ol>
+     *   <li>{@code enforceFlag()} — module convention.</li>
+     *   <li>{@code currentActor()} → 400. An unattributable irreversible
+     *       delete is not a thing this endpoint offers.</li>
+     *   <li>{@code visibility.canHardDeleteCandidate} → 403. The
+     *       {@code @RolesAllowed} above gates the API <em>client</em>; the
+     *       BFF's system token carries {@code admin:*} and
+     *       {@code AdminScopeAugmentor} expands it to every key, so without
+     *       this check every employee's request would pass.</li>
+     *   <li>{@code reason} validation → 400. Before the candidate is loaded:
+     *       the caller is already proven ADMIN, so there is nothing to leak
+     *       by ordering it this way, and it keeps a malformed body from
+     *       reaching a destructive path.</li>
+     *   <li>{@code requireVisibleCandidate} → 404.</li>
+     *   <li>Typed full name → 400 {@code CONFIRMATION_MISMATCH}, the exact
+     *       contract {@code RecruitmentGdprResource.anonymize} uses.</li>
+     *   <li>Refusals ({@code HIRED_OR_CONVERTED}, {@code SIGNED}) → 409 with
+     *       a machine-readable code, raised by the service.</li>
+     * </ol>
+     * Not {@code @Transactional}: the service orchestrates external
+     * redaction before, and S3 plus the reporting rebuild after, one
+     * transaction it owns itself.
+     */
+    @POST
+    @Path("/candidates/{uuid}/hard-delete")
+    @RolesAllowed({"recruitment:admin"})
+    public Response hardDeleteCandidate(@PathParam("uuid") UUID uuid,
+                                        HardDeleteRequest request) {
+        enforceFlag();
+        UUID actor = currentActor();
+        if (!visibility.canHardDeleteCandidate(actor.toString())) {
+            throw new WebApplicationException(
+                    "Deleting a candidate is an administrator action.",
+                    Response.Status.FORBIDDEN);
+        }
+        String reason = requireDeletionReason(request);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
+        requireTypedFullName(candidate.getFirstName(), candidate.getLastName(),
+                request == null ? null : request.confirmText());
+        return Response.ok(
+                hardDeleteService.hardDelete(candidate, actor.toString(), reason)).build();
+    }
+
+    /**
+     * The typed-confirmation guard, copied from
+     * {@code RecruitmentGdprResource.anonymize} verbatim including the
+     * response shape: the caller must have typed the candidate's exact
+     * {@code firstName + " " + lastName}. A candidate with no name at all
+     * cannot be confirmed and therefore cannot be deleted here — the same
+     * (deliberate) behaviour the anonymize path has.
+     * <p>
+     * Static and free of entities so it can be unit-tested without a
+     * database; the resource passes the two name columns in.
+     */
+    static void requireTypedFullName(String firstName, String lastName, String confirmText) {
+        String expected = ((firstName == null ? "" : firstName) + " "
+                + (lastName == null ? "" : lastName)).trim();
+        String confirmed = confirmText == null ? "" : confirmText.trim();
+        if (expected.isEmpty() || !expected.equals(confirmed)) {
+            throw new WebApplicationException(Response.status(400)
+                    .type(MediaType.APPLICATION_JSON_TYPE)
+                    .entity("{\"error\":\"CONFIRMATION_MISMATCH\"}")
+                    .build());
+        }
+    }
+
+    /** Minimum length of a hard-delete reason — enough to exclude "x" and "-". */
+    static final int MIN_DELETION_REASON_LENGTH = 10;
+
+    /**
+     * The reason is required and must be non-trivial: after the cascade it is
+     * the only explanation of the deletion that survives anywhere, so a
+     * one-character placeholder would make the ledger useless. Bean
+     * validation is inert in this backend, so this is checked in Java.
+     */
+    static String requireDeletionReason(HardDeleteRequest request) {
+        String reason = request == null ? null : trimToNull(request.reason());
+        if (reason == null || reason.length() < MIN_DELETION_REASON_LENGTH) {
+            throw new WebApplicationException(Response.status(400)
+                    .type(MediaType.APPLICATION_JSON_TYPE)
+                    .entity("{\"error\":\"REASON_REQUIRED\",\"message\":\"Say why this candidate "
+                            + "is being deleted — it is the only record that survives.\"}")
+                    .build());
+        }
+        if (reason.length() > 1000) {
+            reason = reason.substring(0, 1000);
+        }
+        return reason;
+    }
+
     // ---- ATS candidate endpoints (plan §P3) -------------------------------------
     //
     // Gated by recruitment.pipeline.enabled (not the dossier flag): these are
@@ -368,6 +542,15 @@ public class RecruitmentResource {
      * candidates AND employees. Advisory — the UI shows matches and asks for
      * confirmation; creation is never blocked. POST so identifiers stay out
      * of URLs and access logs.
+     *
+     * <p><b>Per-viewer filtered.</b> The check takes an arbitrary email or
+     * LinkedIn URL and answers with a candidate uuid and full name, which
+     * makes it an identity oracle unless it obeys the same rule as every
+     * other candidate read. It resolves the actor and drops matches the
+     * actor could not open ({@code canReadCandidateProfile}) — partner-track
+     * candidates outside their circle, and hired files. The response shape
+     * is unchanged; a hidden duplicate simply does not appear, and the
+     * create proceeds as if there were none.
      */
     @POST
     @Path("/candidates/dedupe-check")
@@ -381,7 +564,9 @@ public class RecruitmentResource {
                     "Provide an email or a LinkedIn URL to check for duplicates",
                     Response.Status.BAD_REQUEST);
         }
-        return Response.ok(dedupeService.check(request.email(), request.linkedinUrl())).build();
+        UUID actor = currentActor();
+        return Response.ok(
+                dedupeService.check(request.email(), request.linkedinUrl(), actor.toString())).build();
     }
 
     /** Move a candidate into the talent pool (bucket defaults to PROSPECT). */

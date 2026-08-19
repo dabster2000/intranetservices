@@ -845,6 +845,49 @@ public class OpenAIService {
                 reasoningEffort, imageDetail);
     }
 
+    /**
+     * Single-image vision + structured output WITH the two knobs the older
+     * single-image overloads cannot express. Same request shape as
+     * {@link #askWithSchemaAndImages} — this is that method with a one-element
+     * image list, kept as its own overload so the many single-image callers do
+     * not have to build a list:
+     * <ul>
+     *   <li>{@code reasoningEffort} — reasoning-class models need a thinking
+     *       budget before they can answer a hard visual question (reading a
+     *       receipt photographed at an angle). MUST be null for the gpt-4o
+     *       family, which rejects the {@code reasoning} node with HTTP 400.
+     *       Config-driven callers must inject it as {@code Optional<String>}: a
+     *       plain {@code String} property cannot carry an empty value without
+     *       failing startup (SRCFG00040).</li>
+     *   <li>{@code imageDetail} — {@code "high"} stops the API downsampling a
+     *       dense image before the model sees its fine print. Null omits the
+     *       field (API default).</li>
+     * </ul>
+     * WARNING: {@code reasoningEffort} and {@code maxOutputTokensOverride} move
+     * TOGETHER. A reasoning-class model spends the same {@code max_output_tokens}
+     * budget on hidden reasoning FIRST, so raising the model or the effort without
+     * raising the budget reproduces exactly the empty-structured-output failure
+     * documented on {@code openai.vision-model}: a 2xx response with no output
+     * text (see {@link #logEmptyOutputDiagnostics}).
+     */
+    public String askWithSchemaAndImage(String system,
+                                        String userInstructionText,
+                                        String base64Image,
+                                        String mimeType,
+                                        ObjectNode jsonSchema,
+                                        String schemaName,
+                                        String refusalFallbackJson,
+                                        String modelOverride,
+                                        int maxOutputTokensOverride,
+                                        boolean store,
+                                        String reasoningEffort,
+                                        String imageDetail) {
+        return askWithSchemaAndImagesInternal(system, userInstructionText,
+                java.util.List.of(new ImageInput(base64Image, mimeType)), jsonSchema, schemaName,
+                refusalFallbackJson, modelOverride, maxOutputTokensOverride, store,
+                reasoningEffort, imageDetail);
+    }
+
     private String askWithSchemaAndImageInternal(String system,
                                                  String userInstructionText,
                                                  String base64Image,

@@ -10,6 +10,8 @@ import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseClassification;
+import dk.trustworks.intranet.expenseservice.model.ExpenseReceiptAnalysis;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -143,6 +145,40 @@ public class ExpenseAIValidationService {
     /** Decoded-size cap for vision calls — OpenAI rejects images above 20 MB. */
     private static final long MAX_RECEIPT_IMAGE_BYTES = 20L * 1024 * 1024;
 
+    // Prose sentinels returned by extractExpenseData when the receipt was never read at all.
+    // They are constants (not inline literals) because the policy call must be able to tell them
+    // apart from a real receipt description — see isUnreadableReceiptText.
+    static final String SENTINEL_NO_CONTENT = "Receipt image not provided or empty.";
+    static final String SENTINEL_PDF =
+            "Receipt file is a PDF document, not an image. The receipt content could not be read automatically.";
+    static final String SENTINEL_UNSUPPORTED_FORMAT =
+            "Receipt file is not a readable image (unsupported or corrupt file format). The receipt content could not be read automatically.";
+    static final String SENTINEL_TOO_LARGE =
+            "Receipt image is too large to analyze automatically. The receipt content could not be read automatically.";
+    /** Prefix of both error sentinels ("Error: Unable to extract…" / "Error: Exception during…"). */
+    static final String SENTINEL_ERROR_PREFIX = "Error:";
+
+    /**
+     * True when {@code extractedReceiptText} is one of the sentinels {@link #extractExpenseData}
+     * returns instead of a receipt description — a PDF, an unsupported/corrupt file, an oversized
+     * image, a missing file, or a vision error.
+     *
+     * <p>On those rows no receipt was ever read, so there is no independent reading for the policy
+     * call to agree with and nothing to anchor it to: the entered amount can safely be disclosed,
+     * which is what keeps R_IT_EQUIPMENT_LIMIT and R_MEAL_COST_PER_PERSON answerable. A PDF is
+     * precisely the receipt format of an online IT purchase, so withholding the amount there would
+     * silently retire the IT-equipment limit.
+     */
+    static boolean isUnreadableReceiptText(String extractedReceiptText) {
+        if (extractedReceiptText == null) return false;
+        String text = extractedReceiptText.trim();
+        return text.startsWith(SENTINEL_ERROR_PREFIX)
+                || text.equals(SENTINEL_NO_CONTENT)
+                || text.equals(SENTINEL_PDF)
+                || text.equals(SENTINEL_UNSUPPORTED_FORMAT)
+                || text.equals(SENTINEL_TOO_LARGE);
+    }
+
     /**
      * Extracts comprehensive unstructured text description from a RECEIPT IMAGE (base64).
      * Uses vision API without web search to describe everything visible in the receipt.
@@ -157,7 +193,7 @@ public class ExpenseAIValidationService {
             log.infof("[AI-Extract] Starting comprehensive extraction from image. base64 len=%d", contentLen);
             if (base64ReceiptImage == null || base64ReceiptImage.isEmpty()) {
                 log.warn("No image content provided for AI extraction");
-                return "Receipt image not provided or empty.";
+                return SENTINEL_NO_CONTENT;
             }
 
             // The upload flow discards the client MIME type, so the stored bytes are the only
@@ -166,17 +202,17 @@ public class ExpenseAIValidationService {
             String detectedMime = sniffReceiptMime(base64ReceiptImage);
             if ("application/pdf".equals(detectedMime)) {
                 log.warnf("[AI-Extract] Receipt is a PDF (base64 len=%d) — skipping vision extraction", contentLen);
-                return "Receipt file is a PDF document, not an image. The receipt content could not be read automatically.";
+                return SENTINEL_PDF;
             }
             if (detectedMime == null) {
                 log.warnf("[AI-Extract] Receipt is not a supported image format (base64 len=%d) — skipping vision extraction", contentLen);
-                return "Receipt file is not a readable image (unsupported or corrupt file format). The receipt content could not be read automatically.";
+                return SENTINEL_UNSUPPORTED_FORMAT;
             }
             long approxDecodedBytes = (long) contentLen * 3 / 4;
             if (approxDecodedBytes > MAX_RECEIPT_IMAGE_BYTES) {
                 log.warnf("[AI-Extract] Receipt image too large for vision extraction (~%d bytes, mime=%s) — skipping",
                         approxDecodedBytes, detectedMime);
-                return "Receipt image is too large to analyze automatically. The receipt content could not be read automatically.";
+                return SENTINEL_TOO_LARGE;
             }
 
             // System prompt for comprehensive unstructured extraction (loaded from AIConfigSnapshot)
@@ -199,7 +235,7 @@ public class ExpenseAIValidationService {
             // Validate response
             if (result.isEmpty() || result.equals("{}") || result.startsWith("Validation error:")) {
                 log.warnf("[AI-Extract] Invalid or empty response: %s", resultPreview);
-                return "Error: Unable to extract information from receipt image. " + result;
+                return SENTINEL_ERROR_PREFIX + " Unable to extract information from receipt image. " + result;
             }
 
             log.infof("[AI-Extract] Extraction complete, description length=%d characters", result.length());
@@ -207,7 +243,7 @@ public class ExpenseAIValidationService {
 
         } catch (Exception e) {
             log.error("Failed to extract expense data via OpenAI (vision)", e);
-            return "Error: Exception during receipt extraction - " + e.getMessage();
+            return SENTINEL_ERROR_PREFIX + " Exception during receipt extraction - " + e.getMessage();
         }
     }
 
@@ -239,12 +275,25 @@ public class ExpenseAIValidationService {
                 return AIResult.error("Validation error: No receipt description available");
             }
 
+            // Resolved before the model call so the comparison afterwards is interpretable:
+            // an amount accepted verbatim from the pre-submit pre-fill was never read by a human.
+            AmountEvidence amountEvidence = resolveAmountEvidence(expense);
+
+            // A sentinel means no receipt was read at all, which decides both whether the entered
+            // amount may be disclosed and which amount paragraph the prompt carries.
+            boolean receiptUnreadable = isUnreadableReceiptText(extractedReceiptText);
+            if (receiptUnreadable) {
+                log.infof("[AI-Validate] Receipt was never read (sentinel description) — disclosing "
+                        + "amountFieldDKK so amount-dependent rules stay evaluable. expenseUuid=%s",
+                        expense.getUuid());
+            }
+
             LocalDate contextDate = deriveContextDate(expense);
             String officeAddress = "Pustervig 3, 1126 København K";
             String homeAddress = formatHomeAddress(contact);
 
             String contextText = buildValidationContext(expense, user, contact, bi,
-                    budgetsForDay, contextDate, officeAddress, homeAddress);
+                    budgetsForDay, contextDate, officeAddress, homeAddress, receiptUnreadable);
 
             // System prompt now carries the full rule catalog (sourced from AIConfigSnapshot);
             // the user prompt only carries the receipt + structured context.
@@ -265,6 +314,23 @@ public class ExpenseAIValidationService {
                 - Judge whether the receipt was readable and complete.
                 - Analyze line items (food vs. alcohol, software, number of meals, etc.).
                 - Use web search if needed to verify store locations, distances, or venue types.
+
+                """);
+            userPrompt.append(receiptUnreadable ? """
+                The receipt could not be read automatically, so there is no receipt total in the
+                description above. Because of that — and only in this case — the amount the employee
+                typed is disclosed below as 'amountFieldDKK'; evaluate every amount-dependent rule
+                against it. Still report 'extracted.amountInclTax' as null unless the description
+                itself states a total: never copy 'amountFieldDKK' into it.
+
+                """ : """
+                The amount the employee typed into the expense form is deliberately WITHHELD from
+                this prompt. Report 'extracted.amountInclTax' strictly as the grand total printed on
+                the receipt, and evaluate every amount-dependent rule against that total. Whether
+                the receipt total matches the typed amount is compared outside this call: do not
+                guess the typed amount, and do not report the typed amount's absence from this
+                prompt as a finding. If the RECEIPT TOTAL itself is unreadable, that IS a finding —
+                say so via R_RECEIPT_READABLE and return 'extracted.amountInclTax' as null.
 
                 """);
             userPrompt.append(contextText)
@@ -324,10 +390,11 @@ public class ExpenseAIValidationService {
 
             // Phase 1: the receipt is audit evidence, not the data source. An unreadable photo no
             // longer hard-blocks; the real signal is extracted != entered amount (AMOUNT_MISMATCH),
-            // handled inside normalizePolicyVerdict via the outcome combiner.
+            // handled inside normalizePolicyVerdict via the outcome combiner. That comparison is
+            // only meaningful because this call was never shown the entered amount.
             AIResult normalized = normalizePolicyVerdict(
                     root, approved, userMessage, extractedMerchant,
-                    extractedAmount, expense.getAmount());
+                    extractedAmount, expense.getAmount(), amountEvidence);
             log.infof("[AI-Validate] Final decision -> outcome=%s, approved=%s, confidence=%s, msg=%s, ruleIds=%s, soft=%s",
                     normalized.outcome(), normalized.approved(), normalized.confidence(),
                     normalized.reason(), normalized.ruleIds(), normalized.softFlags());
@@ -358,14 +425,22 @@ public class ExpenseAIValidationService {
         return val == null ? "0" : val.toPlainString();
     }
 
-    private String buildValidationContext(Expense expense,
+    /**
+     * Package-private so the (non-)disclosure of the entered amount is unit-testable.
+     *
+     * @param receiptUnreadable {@link #isUnreadableReceiptText} for the extracted description —
+     *                          when true the entered amount IS disclosed, because there is no
+     *                          independent receipt reading it could anchor to
+     */
+    String buildValidationContext(Expense expense,
                                           User user,
                                           UserContactinfo contact,
                                           BiDataPerDay bi,
                                           List<EmployeeBudgetPerDayAggregate> budgetsForDay,
                                           LocalDate contextDate,
                                           String officeAddress,
-                                          String homeAddress) {
+                                          String homeAddress,
+                                          boolean receiptUnreadable) {
         StringBuilder ctx = new StringBuilder();
 
         String dayOfWeek = contextDate != null ? contextDate.getDayOfWeek().name() : "UNKNOWN";
@@ -379,11 +454,25 @@ public class ExpenseAIValidationService {
                 .append(mapLine("homeAddress", homeAddress))
                 .append("\n");
 
+        // amountFieldDKK is NOT disclosed when the receipt was actually read. The pre-submit vision
+        // pass pre-fills the employee's amount field, so showing this call the submitted number let
+        // it agree with an earlier reading of its own instead of reading the receipt: the
+        // AMOUNT_MISMATCH guard was comparing a number against itself. The amount-dependent rules
+        // (per-person meal cap, IT equipment limit) read the total from the receipt description
+        // above, which is what those rules are actually about.
+        //
+        // When the receipt was never read (PDF, unsupported/corrupt file, oversized image, vision
+        // error) there is no earlier reading to anchor to, so withholding the amount would only
+        // leave the amount-dependent rules with nothing to evaluate — R_IT_EQUIPMENT_LIMIT and
+        // R_MEAL_COST_PER_PERSON could then only answer NOT_APPLICABLE, and a PDF is the usual
+        // receipt format of exactly the online IT purchase R_IT_EQUIPMENT_LIMIT exists for.
         ctx.append("Expense record:\n")
                 .append(mapLine("uuid", expense.getUuid()))
-                .append(mapLine("useruuid", expense.getUseruuid()))
-                .append(mapLine("amountFieldDKK", String.valueOf(expense.getAmount())))
-                .append(mapLine("expensedateField", String.valueOf(expense.getExpensedate())))
+                .append(mapLine("useruuid", expense.getUseruuid()));
+        if (receiptUnreadable) {
+            ctx.append(mapLine("amountFieldDKK", String.valueOf(expense.getAmount())));
+        }
+        ctx.append(mapLine("expensedateField", String.valueOf(expense.getExpensedate())))
                 .append(mapLine("account", expense.getAccount()))
                 .append(mapLine("description", expense.getDescription()))
                 .append("\n");
@@ -677,12 +766,85 @@ public class ExpenseAIValidationService {
         return merchantAllowList.matches(ruleId, merchant);
     }
 
+    /**
+     * What is known about the amount the employee submitted, resolved from rows that already
+     * exist. {@code prefilledAmount}/{@code receiptCurrency} are carried for logging only —
+     * only {@code provenance} reaches the decision.
+     */
+    record AmountEvidence(ExpenseAIOutcomeCombiner.AmountProvenance provenance,
+                          Double prefilledAmount, String receiptCurrency) {
+
+        static final AmountEvidence UNKNOWN =
+                new AmountEvidence(ExpenseAIOutcomeCombiner.AmountProvenance.UNKNOWN, null, null);
+    }
+
+    /**
+     * Resolves what the pre-submit vision pass offered the employee, so the post-submit amount
+     * comparison can be read for what it is worth.
+     *
+     * <p>No new column is needed for this: {@code expense_classification.analysis_id} already
+     * links the submitted expense to the {@code expense_receipt_analysis} row whose
+     * {@code receipt_facts_json} holds that pass's amount and currency, and the classification
+     * row is written before the {@code expense.validate} event fires. The {@code ai_used} /
+     * {@code ai_ignored} columns on that same row describe the question-tree answers, not the
+     * amount, so they cannot answer this on their own.
+     *
+     * <p>Returns {@link AmountEvidence#UNKNOWN} when the expense did not come through the
+     * classification wizard at all — nothing was offered and nothing was recorded.
+     */
+    AmountEvidence resolveAmountEvidence(Expense expense) {
+        if (expense == null || expense.getAmount() == null) return AmountEvidence.UNKNOWN;
+        ExpenseClassification classification =
+                ExpenseClassification.find("expenseUuid", expense.getUuid()).firstResult();
+        if (classification == null) return AmountEvidence.UNKNOWN;
+        if (classification.analysisId == null || classification.analysisId.isBlank()) {
+            // The wizard ran without an AI analysis, so nothing was ever pre-filled.
+            return new AmountEvidence(ExpenseAIOutcomeCombiner.AmountProvenance.HUMAN_ENTERED, null, null);
+        }
+        ExpenseReceiptAnalysis analysis = ExpenseReceiptAnalysis.findById(classification.analysisId);
+        if (analysis == null) return AmountEvidence.UNKNOWN;
+
+        JsonNode facts = parseReceiptFacts(analysis.receiptFactsJson);
+        JsonNode amountNode = facts.path("amount");
+        // The wizard only pre-fills a positive amount, so anything else was never offered.
+        Double prefilled = (amountNode.isNumber() && amountNode.asDouble() > 0) ? amountNode.asDouble() : null;
+        JsonNode currencyNode = facts.path("currency");
+        String currency = currencyNode.isTextual() ? currencyNode.asText().trim() : null;
+
+        return new AmountEvidence(
+                ExpenseAIOutcomeCombiner.classifyProvenance(prefilled, expense.getAmount()),
+                prefilled, currency);
+    }
+
+    /** Parses a stored {@code receipt_facts_json} blob; an unreadable blob yields an empty node. */
+    private JsonNode parseReceiptFacts(String receiptFactsJson) {
+        if (receiptFactsJson == null || receiptFactsJson.isBlank()) return MAPPER.createObjectNode();
+        try {
+            return MAPPER.readTree(receiptFactsJson);
+        } catch (Exception e) {
+            log.warnf("[AI-Validate] Unreadable receipt_facts_json for amount provenance: %s", e.getMessage());
+            return MAPPER.createObjectNode();
+        }
+    }
+
+    /** Back-compat overload: normalize without provenance evidence about the entered amount. */
     AIResult normalizePolicyVerdict(JsonNode root,
                                     boolean approved,
                                     String userMessage,
                                     String extractedMerchant,
                                     Double extractedAmount,
                                     Double enteredAmount) {
+        return normalizePolicyVerdict(root, approved, userMessage, extractedMerchant,
+                extractedAmount, enteredAmount, AmountEvidence.UNKNOWN);
+    }
+
+    AIResult normalizePolicyVerdict(JsonNode root,
+                                    boolean approved,
+                                    String userMessage,
+                                    String extractedMerchant,
+                                    Double extractedAmount,
+                                    Double enteredAmount,
+                                    AmountEvidence amountEvidence) {
         java.util.Set<String> suppressedRuleIds = new java.util.LinkedHashSet<>();
         java.util.List<ExpenseAIOutcomeCombiner.FiredRule> fired = new java.util.ArrayList<>();
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
@@ -757,7 +919,38 @@ public class ExpenseAIValidationService {
         ExpenseAIOutcomeCombiner.AmountSignal amountSignal =
                 ExpenseAIOutcomeCombiner.classifyAmount(extractedAmount, enteredAmount, softPct, blockPct);
 
-        ExpenseAIOutcomeCombiner.Outcome o = ExpenseAIOutcomeCombiner.combine(fired, amountSignal);
+        AmountEvidence evidence = amountEvidence == null ? AmountEvidence.UNKNOWN : amountEvidence;
+        if (amountSignal != ExpenseAIOutcomeCombiner.AmountSignal.NONE) {
+            // Logged in full because the two numbers now come from independent reads: the
+            // currency is the first thing to check when a mismatch looks absurd.
+            log.infof("[AI-Validate] Amount signal=%s — receiptRead=%s entered=%s prefilled=%s "
+                            + "receiptCurrency=%s provenance=%s (softPct=%s blockPct=%s)",
+                    amountSignal, extractedAmount, enteredAmount, evidence.prefilledAmount(),
+                    evidence.receiptCurrency(), evidence.provenance(), softPct, blockPct);
+        }
+
+        // A foreign-currency receipt makes the delta an exchange rate, not an error: the receipt
+        // total is printed in the receipt's own currency (the pre-submit pass is instructed never
+        // to convert), while expense.amount is DKK. An employee who converts 100 EUR correctly to
+        // 745 DKK would otherwise be BLOCKED for a ~7x "mismatch". Downgraded to a soft signal
+        // rather than dropped, so the row is still visible in the spot-check sample.
+        boolean currencyUncomparable = amountSignal != ExpenseAIOutcomeCombiner.AmountSignal.NONE
+                && !ExpenseAIOutcomeCombiner.isCurrencyComparable(evidence.receiptCurrency());
+        if (currencyUncomparable) {
+            log.infof("[AI-Validate] Amount comparison is cross-currency (receiptCurrency=%s vs DKK) "
+                            + "— suppressing the amount block, flagging %s instead",
+                    evidence.receiptCurrency(), ExpenseAIOutcomeCombiner.FLAG_AMOUNT_CURRENCY_UNCOMPARABLE);
+            amountSignal = ExpenseAIOutcomeCombiner.AmountSignal.SOFT;
+        }
+
+        ExpenseAIOutcomeCombiner.Outcome o =
+                ExpenseAIOutcomeCombiner.combine(fired, amountSignal, evidence.provenance());
+        if (currencyUncomparable) {
+            java.util.List<String> softFlags = new java.util.ArrayList<>(o.softFlags());
+            softFlags.add(ExpenseAIOutcomeCombiner.FLAG_AMOUNT_CURRENCY_UNCOMPARABLE);
+            o = new ExpenseAIOutcomeCombiner.Outcome(o.outcome(), o.confidence(), o.blockingRuleIds(),
+                    java.util.List.copyOf(softFlags), o.attentionOwner(), o.attentionKind());
+        }
 
         boolean isApproved = !AIResult.OUTCOME_BLOCK.equals(o.outcome());
         if (!approved && AIResult.OUTCOME_APPROVE.equals(o.outcome())) {

@@ -238,7 +238,10 @@ public class PublicApplyService {
      */
     private CandidateResolution resolveCandidate(PublicApplySubmission submission,
                                                  PracticeRef practice) {
-        for (DedupeMatch match : dedupeService.check(
+        // The UNFILTERED check on purpose: there is no viewer on a public
+        // submission, and this decides whether to reuse a row, not what to
+        // show anyone. Nothing from the match escapes this method.
+        for (DedupeMatch match : dedupeService.checkForSystemReuse(
                 submission.email(), submission.linkedinUrl()).matches()) {
             if (match.type() != DedupeMatch.MatchType.CANDIDATE
                     || match.matchedOn() != DedupeMatch.MatchedOn.EMAIL) {

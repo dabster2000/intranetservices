@@ -10,6 +10,8 @@ import dk.trustworks.intranet.recruitmentservice.dto.InterviewResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScheduleRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewerAvailabilityResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomPolicyRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomPolicyResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MeetingRoomsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ScheduleGridResponse;
@@ -25,15 +27,18 @@ import dk.trustworks.intranet.recruitmentservice.services.AvailabilitySlotSugges
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCalendarService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentMeetingRoomPolicyService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -56,6 +61,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -124,6 +130,9 @@ public class RecruitmentInterviewResource {
 
     @Inject
     RecruitmentCalendarService calendarService;
+
+    @Inject
+    RecruitmentMeetingRoomPolicyService roomPolicyService;
 
     @Inject
     UserService userService;
@@ -295,6 +304,64 @@ public class RecruitmentInterviewResource {
         int duration = requireDurationValid(durationMinutes);
         List<MeetingRoomsResponse.MeetingRoom> rooms = calendarService.listRooms(slotStart, duration);
         return new MeetingRoomsResponse(rooms, rooms.size());
+    }
+
+    /**
+     * The meeting-room policy for AI-assisted scheduling: which rooms the
+     * automatic planners may book and in what order they prefer them (V513).
+     * Returns every room Graph reports plus any policy row whose room has
+     * since been deleted, ordered exactly as the planners consider them.
+     * <p>
+     * {@code recruitment:admin}, not the write tier: this is an org-wide
+     * booking policy, not a per-interview decision. Ordinary recruiters do
+     * not see the settings card at all.
+     * <p>
+     * Reading can WRITE, once: an empty policy is seeded from Graph with
+     * every room enabled, so deploying this feature never leaves the AI with
+     * no rooms to book. The seed is idempotent and guarded inside its own
+     * transaction — see {@code RecruitmentMeetingRoomPolicyBootstrap}.
+     */
+    @GET
+    @Path("/interviews/rooms/policy")
+    @RolesAllowed({"recruitment:admin"})
+    public MeetingRoomPolicyResponse roomPolicy() {
+        enforceFlag();
+        // roomLookup(), not listRooms(): the settings page states "no rooms
+        // exist" as fact, so it must be able to tell an empty tenant from a
+        // lookup we never completed.
+        RecruitmentCalendarService.RoomLookup lookup = calendarService.roomLookup();
+        return roomPolicyService.currentPolicy(lookup.rooms(), lookup.complete());
+    }
+
+    /**
+     * Replace the meeting-room policy. Position in
+     * {@code orderedRoomEmails} is the preference (most preferred first);
+     * {@code enabledRoomEmails} is the subset automation may book and must be
+     * a subset of the order. Whole-list replacement — a drag-and-drop reorder
+     * changes many priorities at once and must commit as one decision.
+     * <p>
+     * Rooms omitted from the order keep their row but are switched off and
+     * pushed below everything ranked: a Graph blip mid-save must never be
+     * able to silently erase the admin's list.
+     */
+    @PUT
+    @Path("/interviews/rooms/policy")
+    @RolesAllowed({"recruitment:admin"})
+    public MeetingRoomPolicyResponse saveRoomPolicy(@Valid MeetingRoomPolicyRequest request) {
+        enforceFlag();
+        if (request == null) {
+            throw badRequest("A room policy body is required");
+        }
+        RecruitmentCalendarService.RoomLookup lookup = calendarService.roomLookup();
+        // Set.copyOf NPEs on a null element, and a null inside a JSON array
+        // passes @NotNull on the list itself — that is a malformed request,
+        // which must answer 400, not 500.
+        Set<String> enabled = request.enabledRoomEmails() == null ? Set.of()
+                : request.enabledRoomEmails().stream()
+                        .filter(Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return roomPolicyService.replacePolicy(
+                request.orderedRoomEmails(), enabled, lookup.rooms(), lookup.complete());
     }
 
     /**
@@ -522,7 +589,7 @@ public class RecruitmentInterviewResource {
         return new SuggestedSlotsResponse(suggestions.slots().stream()
                 .map(slot -> new SuggestedSlotsResponse.SuggestedSlot(
                         slot.start(), slot.durationMinutes(),
-                        slot.roomEmail(), slot.roomDisplayName()))
+                        slot.roomEmail(), slot.roomDisplayName(), slot.roomReason()))
                 .toList(), suggestions.availabilityComplete());
     }
 

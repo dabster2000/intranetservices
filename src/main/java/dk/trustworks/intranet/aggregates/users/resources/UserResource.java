@@ -178,7 +178,12 @@ public class UserResource {
                               @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
         return username
-                .map(s -> Collections.singletonList(userAPI.findByUsername(s, shallowFlag)))
+                .map(s -> {
+                    // An unknown username answers [], never a one-element list holding a
+                    // fabricated User — see UserService.findByUsername.
+                    User user = userAPI.findByUsername(s, shallowFlag);
+                    return user == null ? List.<User>of() : List.of(user);
+                })
                 .orElseGet(() -> userAPI.listAll(shallowFlag));
     }
 

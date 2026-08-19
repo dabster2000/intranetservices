@@ -12,6 +12,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,6 +33,46 @@ class RecruitmentCandidateAtsContractTest {
         assertEquals("/candidates/dedupe-check", m.getAnnotation(Path.class).value());
         assertNull(m.getAnnotation(RolesAllowed.class),
                 "dedupe-check inherits the class-level recruitment:read");
+    }
+
+    /**
+     * The create endpoint had no contract assertion at all until the atomic
+     * create-with-position landed — nothing in CI pinned its verb, path or
+     * scope. Added here rather than assumed: these reflection contracts are
+     * hand-enumerated allowlists, so an endpoint nobody names is an endpoint
+     * nobody checks.
+     */
+    @Test
+    void createCandidate_isPost_atExpectedPath_writeScoped() {
+        Method m = requireMethod("createCandidate");
+        assertNotNull(m.getAnnotation(POST.class));
+        assertEquals("/candidates", m.getAnnotation(Path.class).value());
+        assertRequiresWrite(m);
+    }
+
+    /**
+     * The hard delete is the one endpoint on this resource that does not use
+     * {@code recruitment:write}, and it is the one where a wrong annotation is
+     * unrecoverable: {@code recruitment:write} is held by every team lead
+     * (V486), so a copy-paste of the neighbouring endpoints would hand an
+     * irreversible PII delete to twenty people. Nothing else in CI would
+     * catch that — these contract tests are hand-enumerated allowlists, so an
+     * endpoint nobody names is an endpoint nobody checks.
+     */
+    @Test
+    void hardDelete_isPost_atExpectedPath_adminScoped() {
+        Method m = requireMethod("hardDeleteCandidate");
+        assertNotNull(m.getAnnotation(POST.class),
+                "POST, not DELETE — it carries a confirmation body, and the anonymize "
+                        + "precedent it copies is a POST");
+        assertEquals("/candidates/{uuid}/hard-delete", m.getAnnotation(Path.class).value());
+
+        RolesAllowed roles = m.getAnnotation(RolesAllowed.class);
+        assertNotNull(roles, "hardDeleteCandidate must override the class-level scope");
+        assertTrue(Arrays.asList(roles.value()).contains("recruitment:admin"),
+                "hard delete requires recruitment:admin (V465 grants it to ADMIN only)");
+        assertFalse(Arrays.asList(roles.value()).contains("recruitment:write"),
+                "recruitment:write is held by every team lead — it must not appear here");
     }
 
     @Test

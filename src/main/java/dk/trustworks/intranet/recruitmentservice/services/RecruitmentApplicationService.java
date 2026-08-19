@@ -130,7 +130,7 @@ public class RecruitmentApplicationService {
         Objects.requireNonNull(actor, "actor must not be null");
         return createCore(candidate, position,
                 builder -> builder.actorUser(actor.toString()),
-                "manual", false, actor, actor.toString());
+                "manual", false, actor, actor.toString(), actor.toString());
     }
 
     /**
@@ -149,7 +149,10 @@ public class RecruitmentApplicationService {
                                                        boolean dedupeReview) {
         return createCore(candidate, position,
                 RecruitmentEventBuilder::actorCandidate,
-                "public_form", dedupeReview, PUBLIC_FORM_DOMAIN_ACTOR, "candidate(public_form)");
+                "public_form", dedupeReview, PUBLIC_FORM_DOMAIN_ACTOR, "candidate(public_form)",
+                // No viewer: the public applicant is not an intranet user, so
+                // the conflict message must never name another position.
+                null);
     }
 
     /**
@@ -163,7 +166,7 @@ public class RecruitmentApplicationService {
                                               RecruitmentPosition position,
                                               EventActor eventActor, String origin,
                                               boolean dedupeReview, UUID domainActor,
-                                              String actorForLog) {
+                                              String actorForLog, String viewerUuid) {
         candidate = managedCandidate(candidate);
         // HIRED and ANONYMIZED remain hard blocks — a hire has left the
         // recruitment regime, and anonymization is irreversible. DECLINED and
@@ -188,13 +191,8 @@ public class RecruitmentApplicationService {
         // {@link #moveToPosition}, not a second application.
         RecruitmentApplication openElsewhere = openApplicationOf(candidate.getUuid());
         if (openElsewhere != null) {
-            throw new BusinessRuleViolation(openElsewhere.getPositionUuid().equals(position.getUuid())
-                    ? "Candidate %s already has an open application on position %s"
-                            .formatted(candidate.getUuid(), position.getUuid())
-                    : ("Candidate %s already has an open application on position %s — a candidate is in "
-                            + "one process at a time. Move that application to this position instead of "
-                            + "attaching a second one.")
-                            .formatted(candidate.getUuid(), openElsewhere.getPositionUuid()));
+            throw new BusinessRuleViolation(
+                    conflictMessage(candidate, position, openElsewhere, viewerUuid));
         }
 
         // Pool → pipeline: attaching a pooled candidate implies re-activation.
@@ -680,6 +678,47 @@ public class RecruitmentApplicationService {
             throw new BusinessRuleViolation("Candidate no longer exists: " + detached.getUuid());
         }
         return managed;
+    }
+
+    /**
+     * The one-open-application 409, worded for who is reading it.
+     *
+     * <p>The detailed form names the position that is blocking the attach,
+     * which is what makes the refusal actionable ("move that application
+     * here"). But that position uuid is also a disclosure: it links a named
+     * person to a req the caller may have no right to know exists. A
+     * confidential PARTNER position blocked by a terminal-but-reconsiderable
+     * application is exactly the case — the caller could otherwise learn the
+     * position uuid, and its linkage to this candidate, without ever holding
+     * a circle seat.
+     *
+     * <p>So the position is named only when the caller could have read that
+     * application anyway ({@code canReadApplication}); otherwise the same
+     * refusal ships without it. The remedy sentence survives either way — a
+     * 409 that refuses without saying what to do next is how "wrong req"
+     * became two live pipelines in the first place. The position the caller
+     * just supplied is always safe to name back to them.
+     *
+     * @param viewerUuid the acting user, or {@code null} on the public-intake
+     *                   path (no intranet viewer → never name a position)
+     */
+    private String conflictMessage(RecruitmentCandidate candidate, RecruitmentPosition position,
+                                   RecruitmentApplication openElsewhere, String viewerUuid) {
+        if (openElsewhere.getPositionUuid().equals(position.getUuid())) {
+            return "Candidate %s already has an open application on position %s"
+                    .formatted(candidate.getUuid(), position.getUuid());
+        }
+        boolean mayName = viewerUuid != null && !viewerUuid.isBlank()
+                && visibility.canReadApplication(viewerUuid, openElsewhere);
+        if (mayName) {
+            return ("Candidate %s already has an open application on position %s — a candidate is in "
+                    + "one process at a time. Move that application to this position instead of "
+                    + "attaching a second one.")
+                    .formatted(candidate.getUuid(), openElsewhere.getPositionUuid());
+        }
+        return ("Candidate %s already has an open application — a candidate is in one process at a "
+                + "time. Move that application to this position instead of attaching a second one.")
+                .formatted(candidate.getUuid());
     }
 
     /**

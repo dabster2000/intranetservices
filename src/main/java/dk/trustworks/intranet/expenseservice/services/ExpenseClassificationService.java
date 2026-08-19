@@ -19,6 +19,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -34,11 +35,56 @@ public class ExpenseClassificationService {
     // suggestions from cheaper vision models and left the UI with zero AI hints. Dropped
     // answers are now logged so we can tune this number with real evidence.
     private static final double AI_ACCEPT_THRESHOLD = 0.40;
-    // Vision + strict JSON schema can produce more tokens than the default 4096
-    // budget once the model includes a rich line-item array; bump just for this path.
-    private static final int VISION_MAX_OUTPUT_TOKENS = 8192;
     private static final String UNREADABLE_WARNING =
             "We couldn't read the receipt. Try a sharper, well-lit photo showing the date, merchant and total.";
+
+    // The currency the accounting side expects. Everything downstream stores the amount in a
+    // *_dkk column, but the model can only read what is printed on the receipt — it has no
+    // exchange rate — so a non-DKK receipt must be flagged to the employee instead of being
+    // silently treated as kroner. Production comparison of 62 rows showed implied FX ratios
+    // of ~7.5 (EUR) and ~6.4 (USD): face value passed straight through as if it were DKK.
+    private static final String ACCOUNTING_CURRENCY = "DKK";
+
+    /**
+     * What the model may legitimately return in {@code currency}, enumerated in the schema so it
+     * cannot answer "kr." in the first place. Null stays valid — it is the escape hatch for a
+     * currency that is genuinely unreadable or not on this list, and is deliberately preferable
+     * to the model picking the nearest listed code. Danish consultancy travel: the Nordics,
+     * the euro zone, the UK/US/Swiss, plus the CEE countries we actually invoice from.
+     */
+    private static final List<String> ALLOWED_RECEIPT_CURRENCIES =
+            List.of("DKK", "EUR", "USD", "SEK", "NOK", "GBP", "CHF", "ISK", "PLN", "CZK");
+
+    /**
+     * Everything a Danish receipt calls a krone, keyed by its punctuation-stripped upper-case
+     * form (see {@link #normalizeCurrency}). Without this the wizard shouted "not DKK" at the
+     * employee on an ordinary domestic purchase — the loudest warning we have, on the most
+     * common case there is — because a vision model reading "kr." off a Netto receipt has no
+     * reason to type the ISO code we happen to want.
+     */
+    private static final Map<String, String> CURRENCY_SYNONYMS = Map.ofEntries(
+            Map.entry("KR", ACCOUNTING_CURRENCY),
+            Map.entry("KRS", ACCOUNTING_CURRENCY),
+            Map.entry("KRONE", ACCOUNTING_CURRENCY),
+            Map.entry("KRONER", ACCOUNTING_CURRENCY),
+            Map.entry("DKR", ACCOUNTING_CURRENCY),
+            Map.entry("DK", ACCOUNTING_CURRENCY),
+            Map.entry("DK KR", ACCOUNTING_CURRENCY),
+            Map.entry("DKK KR", ACCOUNTING_CURRENCY),
+            Map.entry("DANSK KRONE", ACCOUNTING_CURRENCY),
+            Map.entry("DANSKE KRONER", ACCOUNTING_CURRENCY),
+            Map.entry("DANISH KRONE", ACCOUNTING_CURRENCY),
+            Map.entry("DANISH KRONER", ACCOUNTING_CURRENCY)
+    );
+    // documentType values the model may return. The schema keeps the field a nullable string
+    // (persisted rows already carry "pdf" and "receipt" written by this service), but these two
+    // are the only values the AI is asked for: a refund is a CREDIT_NOTE with a positive amount,
+    // never a receipt with a negative one. Five production rows came back at exactly -1.000 the
+    // expected ratio because the sign was carrying that distinction instead.
+    private static final String DOCUMENT_TYPE_RECEIPT = "receipt";
+    private static final String DOCUMENT_TYPE_CREDIT_NOTE = "credit_note";
+    private static final String CREDIT_NOTE_WARNING =
+            "This looks like a credit note or refund, not a purchase. Check the amount and that you are expensing the right document.";
 
     // The AI must never auto-select the "Other / not sure" catch-all. When the model cannot
     // confidently place the receipt in a real category we want the employee to choose, not have
@@ -52,6 +98,62 @@ public class ExpenseClassificationService {
 
     @Inject OpenAIService openAIService;
     @Inject UserService userService;
+
+    /**
+     * Vision model for the receipt read. Deliberately NOT the global {@code openai.vision-model}:
+     * that property is still shared with the recruitment CV/document intake path
+     * ({@code AiIntakeGenerationService#callModel}) and is pinned to gpt-4o-mini for reasons that
+     * have nothing to do with receipts. (The recruitment calendar-image path no longer shares it —
+     * that one has its own {@code dk.trustworks.recruitment.ai.image-model}.) Reading a crumpled,
+     * angled or low-light receipt is a real visual task, so this path gets its own knob.
+     * Override per env with {@code DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_MODEL}.
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.ai.receipt-model", defaultValue = "gpt-4o-mini")
+    String receiptModel;
+
+    /**
+     * {@code reasoning.effort} for the receipt read, or empty to omit the reasoning node.
+     * <p>
+     * Declared {@code Optional<String>} deliberately: EMPTY is the default because
+     * {@link #receiptModel} defaults to gpt-4o-mini, a non-reasoning model that rejects the
+     * node with HTTP 400. A plain {@code String} cannot express that — SmallRye converts an
+     * empty-but-present value to null, and because the raw value is non-null the
+     * {@code defaultValue} never rescues it, so the whole application fails to boot with
+     * SRCFG00040. Same trap as {@code cvtool.username}/{@code cvtool.password}.
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.ai.receipt-reasoning-effort")
+    Optional<String> receiptReasoningEffort;
+
+    /**
+     * {@code max_output_tokens} for the receipt call. Vision + strict JSON schema can produce
+     * more tokens than the default 4096 budget once the model includes a rich line-item array.
+     * <p>
+     * WARNING: this, {@link #receiptModel} and {@link #receiptReasoningEffort} move TOGETHER.
+     * A reasoning-class model spends the same budget on hidden reasoning FIRST, so raising the
+     * model or the effort without raising this reproduces the empty-structured-output failure
+     * documented on {@code openai.vision-model}: a 2xx response carrying no output text.
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.ai.receipt-max-output-tokens", defaultValue = "8192")
+    int receiptMaxOutputTokens;
+
+    /**
+     * {@code input_image} detail — "high" stops the Responses API downsampling a photo before
+     * the model can read the amount, VAT line and date on it. Empty omits the field (API
+     * default). {@code Optional<String>} for the same SRCFG00040 reason as
+     * {@link #receiptReasoningEffort}.
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.ai.receipt-image-detail")
+    Optional<String> receiptImageDetail;
+
+    /** The effort to send, or null to omit the reasoning node entirely. */
+    private String receiptReasoningEffortOrNull() {
+        return receiptReasoningEffort.filter(e -> !e.isBlank()).orElse(null);
+    }
+
+    /** The image detail to send, or null to omit the field and take the API default. */
+    private String receiptImageDetailOrNull() {
+        return receiptImageDetail.filter(d -> !d.isBlank()).orElse(null);
+    }
 
     public String activeTreeVersion() {
         ExpenseClassificationTree tree = ExpenseClassificationTree.find("active = ?1", true).firstResult();
@@ -88,12 +190,21 @@ public class ExpenseClassificationService {
 
         String version = activeTreeVersion();
         String fallback = fallbackAnalysisJson();
-        String visionModel = openAIService.getVisionModel();
+        String reasoningEffort = receiptReasoningEffortOrNull();
+        String imageDetail = receiptImageDetailOrNull();
         int base64Len = request.receiptBase64().length();
-        log.infof("[Expense-Classify] Start analyze. useruuid=%s treeVersion=%s mime=%s base64Len=%d model=%s",
-                useruuid, version, mime, base64Len, visionModel);
+        log.infof("[Expense-Classify] Start analyze. useruuid=%s treeVersion=%s mime=%s base64Len=%d model=%s effort=%s detail=%s maxOutputTokens=%d",
+                useruuid, version, mime, base64Len, receiptModel,
+                reasoningEffort == null ? "none" : reasoningEffort,
+                imageDetail == null ? "default" : imageDetail,
+                receiptMaxOutputTokens);
 
         long startNanos = System.nanoTime();
+        // store=false: the request body is an employee's receipt image. The flag buys two things
+        // and no more — it keeps the request out of OpenAI-side retention, and it makes
+        // askWithSchemaAndImagesInternal suppress the upstream error-body/refusal echo. It does
+        // NOT make this path log-free: whatever we log here is our own responsibility, which is
+        // why the model's verbatim output below only goes out at DEBUG.
         String raw = openAIService.askWithSchemaAndImage(
                 analysisSystemPrompt(version),
                 "Read this employee receipt. Return only facts visible on the receipt and proposed question-tree answers. Do not choose final account numbers.",
@@ -102,15 +213,25 @@ public class ExpenseClassificationService {
                 analysisSchema(),
                 "expense_receipt_analysis",
                 fallback,
-                visionModel,
-                VISION_MAX_OUTPUT_TOKENS
+                receiptModel,
+                receiptMaxOutputTokens,
+                false,
+                reasoningEffort,
+                imageDetail
         );
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
 
-        String rawPreview = raw == null ? "null"
-                : (raw.length() > 500 ? raw.substring(0, 500) + "..." : raw);
-        log.infof("[Expense-Classify] OpenAI returned in %d ms. rawLen=%d preview=%s",
-                elapsedMs, raw == null ? 0 : raw.length(), rawPreview);
+        log.infof("[Expense-Classify] OpenAI returned in %d ms. rawLen=%d",
+                elapsedMs, raw == null ? 0 : raw.length());
+        if (log.isDebugEnabled()) {
+            // By construction this preview is the model's verbatim read of an employee's receipt:
+            // merchant, amount, date and the evidence quotes it lifted off the image. That is
+            // personal spending data, so it stays behind DEBUG — the length above is what INFO
+            // needs to tell an empty response from a real one.
+            String rawPreview = raw == null ? "null"
+                    : (raw.length() > 500 ? raw.substring(0, 500) + "..." : raw);
+            log.debugf("[Expense-Classify] Raw model output preview=%s", rawPreview);
+        }
 
         ExpenseClassificationDTOs.AnalyzeResponse parsed = parseAnalysis(version, raw);
         log.infof("[Expense-Classify] Parsed. merchant=%s date=%s amount=%s answersKept=%d warnings=%d",
@@ -395,6 +516,7 @@ public class ExpenseClassificationService {
             if (warningsNode.isArray()) {
                 warningsNode.forEach(w -> warnings.add(w.asText()));
             }
+            facts = normalizeFacts(facts, warnings);
             if (isReceiptUnreadable(facts) && warnings.stream().noneMatch(w -> w != null && w.contains("couldn't read"))) {
                 warnings.add(UNREADABLE_WARNING);
                 log.infof("[Expense-Classify] Receipt facts empty — appending unreadable warning so the UI surfaces it.");
@@ -443,8 +565,122 @@ public class ExpenseClassificationService {
         return noMerchant && noDate && noAmount;
     }
 
+    /**
+     * Enforces the amount/currency contract the system prompt asks for, because a prompt is a
+     * request and not a guarantee. A production comparison of 62 rows showed three recurring
+     * signatures: a refund read as a negative amount (5 rows at exactly -1.000 the expected
+     * ratio), a foreign-currency receipt whose face value was consumed as kroner (implied FX
+     * ~7.5 for EUR and ~6.4 for USD), and an ex-VAT base reported as the total (ratio 0.800
+     * recurring, Danish moms being 25%).
+     * <p>
+     * Only the first is mechanically correctable here — the sign is moved into
+     * {@code documentType}, which is where the distinction belongs. The other two are visible
+     * only to the model, so they are addressed in the prompt and schema, and this method just
+     * makes the currency mismatch loud: it appends to the same {@code warnings} list the wizard
+     * renders instead of converting an amount we have no exchange rate for. The employee is the
+     * only party who knows what was actually charged in DKK. Only a currency that is really
+     * foreign warns — {@link #normalizeCurrency} folds the Danish krone spellings into DKK first,
+     * because shouting at an employee over an ordinary Netto receipt costs us the whole feature.
+     *
+     * @param warnings the wizard's warning list. MUST be mutable — this method appends to it.
+     *                 {@code null} is tolerated (the warnings are then simply dropped); an
+     *                 immutable non-empty list is a programming error and will throw.
+     */
+    static ExpenseClassificationDTOs.ReceiptFacts normalizeFacts(ExpenseClassificationDTOs.ReceiptFacts facts,
+                                                                List<String> warnings) {
+        if (facts == null) return null;
+        List<String> warningSink = warnings == null ? new ArrayList<>() : warnings;
+        Double amount = facts.amount();
+        String documentType = facts.documentType();
+        boolean creditNote = isCreditNote(documentType);
+
+        if (amount != null && amount < 0) {
+            log.infof("[Expense-Classify] Negative amount %s from model — normalizing to a positive %s typed as %s.",
+                    amount, Math.abs(amount), DOCUMENT_TYPE_CREDIT_NOTE);
+            amount = Math.abs(amount);
+            creditNote = true;
+        }
+        if (creditNote) {
+            documentType = DOCUMENT_TYPE_CREDIT_NOTE;
+            // Dedupe on our own constant, never on a substring of model-authored text.
+            if (!warningSink.contains(CREDIT_NOTE_WARNING)) {
+                warningSink.add(CREDIT_NOTE_WARNING);
+            }
+        } else if (documentType == null || documentType.isBlank()) {
+            documentType = DOCUMENT_TYPE_RECEIPT;
+        }
+
+        String currency = normalizeCurrency(facts.currency());
+        if (currency != null && !ACCOUNTING_CURRENCY.equals(currency)) {
+            String warning = currencyMismatchWarning(currency);
+            if (!warningSink.contains(warning)) {
+                warningSink.add(warning);
+            }
+            log.infof("[Expense-Classify] Receipt currency %s is not %s — amount is NOT converted; warning added.",
+                    currency, ACCOUNTING_CURRENCY);
+        }
+
+        return new ExpenseClassificationDTOs.ReceiptFacts(
+                facts.merchantName(),
+                facts.date(),
+                amount,
+                currency,
+                facts.supplierCountry(),
+                facts.visibleVatText(),
+                facts.lineItems(),
+                documentType
+        );
+    }
+
+    /**
+     * Folds whatever the model wrote in {@code currency} into an ISO-ish upper-case code, mapping
+     * every Danish spelling of the krone onto {@link #ACCOUNTING_CURRENCY}.
+     * <p>
+     * The schema constrains this field to {@link #ALLOWED_RECEIPT_CURRENCIES} plus null, but a
+     * prompt-and-schema contract is a request, not a guarantee, and the cost of it being broken
+     * here is asymmetric: an unmapped "kr." fires the loudest warning in the wizard on the most
+     * ordinary purchase an employee can make. So the same rule is enforced twice.
+     * <p>
+     * Punctuation is stripped before the lookup, which also disposes of the Danish price artefacts
+     * the model copies straight off the receipt: "kr.", "kr,-" and a bare ",-" all reduce to KR or
+     * to nothing. A value that reduces to nothing is unknown, not a mismatch, so it returns null.
+     */
+    static String normalizeCurrency(String raw) {
+        if (raw == null) return null;
+        String cleaned = raw.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[.,\\-]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (cleaned.isEmpty()) return null;
+        return CURRENCY_SYNONYMS.getOrDefault(cleaned, cleaned);
+    }
+
+    /**
+     * The exact wording used when the receipt is not in {@link #ACCOUNTING_CURRENCY}. Built in one
+     * place so the dedupe guard above can compare on equality against a string we authored, rather
+     * than probing untrusted model text for a substring.
+     */
+    private static String currencyMismatchWarning(String currency) {
+        return "This receipt is in " + currency + " — the amount read off it is in "
+                + currency + ", not DKK. Enter the DKK amount you were actually charged.";
+    }
+
+    /** True when the model typed the document as a refund/credit note rather than a purchase. */
+    private static boolean isCreditNote(String documentType) {
+        if (documentType == null) return false;
+        String normalized = documentType.toLowerCase(Locale.ROOT);
+        return normalized.contains("credit") || normalized.contains("kredit") || normalized.contains("refund");
+    }
+
+    /**
+     * Facts for a receipt nothing could be read off — a PDF we never sent to the model, or a
+     * response that failed to parse. The currency is null, NOT DKK: the prompt and schema tell
+     * the model to return null rather than guess DKK, and this fallback has to make the same
+     * distinction, or "we know nothing about this document" arrives downstream looking exactly
+     * like "we confirmed this receipt is in kroner".
+     */
     private ExpenseClassificationDTOs.ReceiptFacts emptyFacts(String documentType) {
-        return new ExpenseClassificationDTOs.ReceiptFacts(null, null, null, "DKK", null, null, List.of(), documentType);
+        return new ExpenseClassificationDTOs.ReceiptFacts(null, null, null, null, null, null, List.of(), documentType);
     }
 
     private Map<String, String> parseStringMap(String json) {
@@ -497,6 +733,35 @@ public class ExpenseClassificationService {
                 The "date" field in receiptFacts MUST be formatted as ISO yyyy-MM-dd (e.g. 2025-11-07).
                 Convert from any format printed on the receipt (e.g. "07-11-2025", "7/11 2025", "Nov 7,
                 2025"). If you cannot determine a full date, return null.
+
+                AMOUNT — read this carefully, it is the field we get wrong most often:
+                  - "amount" MUST be the GROSS TOTAL ACTUALLY PAID, i.e. the final total INCLUDING VAT.
+                    On a Danish receipt that is the line labelled "Total", "At betale", "I alt" or
+                    "Beløb" — the number the card was charged.
+                  - It is NEVER the ex-VAT base ("subtotal", "ekskl. moms", "netto", "grundlag"), NEVER
+                    a subtotal, and NEVER a single line item. Danish VAT ("moms") is 25%, so an ex-VAT
+                    base is exactly 0.80 of the gross total: if you report that instead you understate
+                    the expense by a fifth. When the receipt prints both a base and a moms line, the
+                    gross total is base + moms — report that sum, not the base.
+                  - "amount" MUST be a POSITIVE number, even for a refund. Never return a negative
+                    number and never return a leading minus sign.
+                  - If the document is a refund, return, credit note ("kreditnota") or otherwise shows
+                    money going BACK to the cardholder, report the absolute value in "amount" and set
+                    "documentType" to "credit_note". Otherwise set "documentType" to "receipt". The
+                    sign never carries this distinction — "documentType" does.
+
+                CURRENCY — you cannot convert, so do not try:
+                  - "currency" MUST be the currency PRINTED ON THE RECEIPT, as an ISO code (DKK, EUR,
+                    USD, SEK, NOK, GBP …). Derive it from the symbol or wording if no code is printed
+                    ("kr." on a Danish receipt ⇒ DKK, "€" ⇒ EUR, "$" ⇒ USD). If you genuinely cannot
+                    tell, return null rather than guessing DKK.
+                  - "amount" is ALWAYS expressed in "currency". NEVER convert to DKK, never apply an
+                    exchange rate, never estimate one — you cannot know the rate that was actually
+                    charged. A foreign-currency receipt is handed to the employee to convert.
+
+                VAT: on Danish receipts "moms" means VAT. Put the VAT line exactly as printed into
+                "visibleVatText" (e.g. "Moms 25% 62,50" or "Heraf moms kr. 62,50"), or null if the
+                receipt shows no VAT line. Do not compute a VAT amount that is not printed.
                 """);
         return prompt.toString();
     }
@@ -559,14 +824,32 @@ public class ExpenseClassificationService {
         ObjectNode factProps = facts.putObject("properties");
         nullableString(factProps, "merchantName");
         nullableIsoDate(factProps, "date");
-        nullableNumber(factProps, "amount");
-        nullableString(factProps, "currency");
+        nullableNumber(factProps, "amount").put("description",
+                "The GROSS TOTAL ACTUALLY PAID, including VAT — the final 'Total'/'At betale'/'I alt' "
+                        + "line the card was charged. Never the ex-VAT base ('ekskl. moms', 'subtotal', "
+                        + "'netto'), never a subtotal, never a single line item. Danish VAT (moms) is "
+                        + "25%, so an ex-VAT base is exactly 0.80 of the gross total. Always POSITIVE, "
+                        + "including for refunds — a refund is signalled by documentType, not by a "
+                        + "minus sign. Expressed in the 'currency' field, never converted.");
+        nullableEnumString(factProps, "currency", ALLOWED_RECEIPT_CURRENCIES).put("description",
+                "ISO code of the currency PRINTED ON THE RECEIPT, chosen from the listed codes and "
+                        + "derived from the symbol or wording when no code is printed ('kr.' or "
+                        + "'kroner' on a Danish receipt ⇒ DKK, '€' ⇒ EUR, '$' ⇒ USD). Null when it "
+                        + "cannot be determined or is not one of the listed codes — do not guess "
+                        + "DKK, and do not pick the nearest listed code. Never convert 'amount' "
+                        + "into another currency; you cannot know the rate charged.");
         nullableString(factProps, "supplierCountry");
-        nullableString(factProps, "visibleVatText");
+        nullableString(factProps, "visibleVatText").put("description",
+                "The VAT line exactly as printed on the receipt — on Danish receipts 'moms' means VAT "
+                        + "(e.g. 'Moms 25% 62,50'). Null when the receipt shows no VAT line. Never a "
+                        + "VAT amount you computed yourself.");
         ObjectNode lineItems = factProps.putObject("lineItems");
         lineItems.put("type", "array");
         lineItems.putObject("items").put("type", "string");
-        nullableString(factProps, "documentType");
+        nullableString(factProps, "documentType").put("description",
+                "\"receipt\" for a normal purchase, \"credit_note\" when the document is a refund, "
+                        + "return or credit note (kreditnota) — money going back to the cardholder. "
+                        + "This field, not the sign of 'amount', carries that distinction.");
 
         ObjectNode proposed = properties.putObject("proposedAnswers");
         proposed.put("type", "array");
@@ -593,16 +876,34 @@ public class ExpenseClassificationService {
         return schema;
     }
 
-    private void nullableString(ObjectNode props, String name) {
+    /** Declares a nullable string property and returns it so a description can be attached. */
+    private ObjectNode nullableString(ObjectNode props, String name) {
         ObjectNode field = props.putObject(name);
         ArrayNode types = field.putArray("type");
         types.add("string").add("null");
+        return field;
     }
 
-    private void nullableNumber(ObjectNode props, String name) {
+    /**
+     * Declares a nullable string property constrained to {@code values} and returns it so a
+     * description can be attached. The null literal is added to the enum on purpose: strict mode
+     * validates the value against the enum as well as the type union, so a field typed
+     * ["string","null"] must list null among its allowed values or null becomes unreturnable.
+     */
+    private ObjectNode nullableEnumString(ObjectNode props, String name, List<String> values) {
+        ObjectNode field = nullableString(props, name);
+        ArrayNode allowed = field.putArray("enum");
+        values.forEach(allowed::add);
+        allowed.addNull();
+        return field;
+    }
+
+    /** Declares a nullable number property and returns it so a description can be attached. */
+    private ObjectNode nullableNumber(ObjectNode props, String name) {
         ObjectNode field = props.putObject(name);
         ArrayNode types = field.putArray("type");
         types.add("number").add("null");
+        return field;
     }
 
     static ExpenseClassificationDTOs.Answer modelProposedAnswer(ExpenseClassificationDTOs.Answer answer) {
@@ -630,7 +931,7 @@ public class ExpenseClassificationService {
                     "merchantName": null,
                     "date": null,
                     "amount": null,
-                    "currency": "DKK",
+                    "currency": null,
                     "supplierCountry": null,
                     "visibleVatText": null,
                     "lineItems": [],

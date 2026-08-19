@@ -187,6 +187,9 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('recruitment:gdpr', 'Recruitment — GDPR', NULL, 'Recruitment', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('recruitment:intake', 'Recruitment — candidate intake', NULL, 'Recruitment', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('recruitment:interview', 'Recruitment — interview', NULL, 'Recruitment', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)

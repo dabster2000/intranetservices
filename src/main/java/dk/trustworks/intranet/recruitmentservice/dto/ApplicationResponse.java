@@ -53,6 +53,14 @@ public record ApplicationResponse(
          * {@link #viewerCanDecide} on purpose: it is what opens the read-only
          * offer/contract view, and a recruiter who may decide everywhere is
          * deliberately not in it.
+         * <p>
+         * Deliberately the same predicate as {@code canReadDossier}'s
+         * hiring-owner branch ({@code RecruitmentVisibility
+         * .isHiringOwnerForCandidate}), so the page cannot offer a contract
+         * tab the backend then 404s. That includes the 2026-08-19 clause:
+         * an application the viewer filed themselves does not count, so an
+         * intake holder who attaches a candidate to their own position sees
+         * no contract tab appear.
          */
         boolean viewerRunsHire
 ) {

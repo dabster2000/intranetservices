@@ -468,6 +468,43 @@ dk:
         abort-threshold: ${EXPENSE_ECONOMICS_SYNC_ABORT_THRESHOLD:15}
         # Optional inter-item sleep in ms (0 = off).
         pacing-ms: ${EXPENSE_ECONOMICS_SYNC_PACING_MS:0}
+      ai:
+        # ---- Receipt OCR (ExpenseClassificationService, vision + strict schema) ----
+        # Deliberately NOT the global openai.vision-model. That property's only
+        # remaining consumer is the recruitment CV/document intake path
+        # (AiIntakeGenerationService, via OpenAIService.getVisionModel()) — the
+        # calendar-image path has since moved to its own
+        # dk.trustworks.recruitment.ai.image-model. It is pinned to gpt-4o-mini
+        # because, until 2026-08-18, the vision + strict-schema path in OpenAIService
+        # could not send a reasoning node at all (it called the four-argument
+        # baseSchemaRequest). Reading a crumpled, angled or low-light receipt is a
+        # real visual task, so this path gets its own model knob. Volume is a few
+        # hundred receipts a month. Override per env with
+        # DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_MODEL.
+        receipt-model: ${DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_MODEL:gpt-4o-mini}
+        # reasoning.effort for the receipt read: none, minimal, low, medium, high,
+        # xhigh, max. An EMPTY value omits the reasoning node entirely — and EMPTY is
+        # the default here precisely because receipt-model defaults to gpt-4o-mini,
+        # a non-reasoning model that rejects the node with HTTP 400. Set this only
+        # together with a reasoning-class receipt-model. Optional<String> at the
+        # injection point: with a plain String an empty-but-present value converts to
+        # null and Quarkus aborts startup with SRCFG00040 (the trap cvtool.username
+        # and cvtool.password already demonstrate in this file) — the defaultValue
+        # does NOT rescue it, because the raw value is present.
+        receipt-reasoning-effort: ${DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_REASONING_EFFORT:}
+        # max_output_tokens for the receipt call.
+        #
+        # WARNING: this, receipt-model and receipt-reasoning-effort move TOGETHER.
+        # A reasoning model spends the same max_output_tokens budget on hidden
+        # reasoning first, so raising the model or the effort without raising this
+        # reproduces exactly the empty-structured-output failure documented on
+        # openai.vision-model (a 2xx response carrying no output text).
+        receipt-max-output-tokens: ${DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_MAX_OUTPUT_TOKENS:8192}
+        # input_image detail. "high" stops the Responses API downsampling a photo
+        # before the model can read the amount, VAT line and date on it. An EMPTY
+        # value omits the field (API default). Optional<String> for the same
+        # SRCFG00040 reason as receipt-reasoning-effort above.
+        receipt-image-detail: ${DK_TRUSTWORKS_EXPENSE_AI_RECEIPT_IMAGE_DETAIL:}
     invoice:
       economics-upload:
         enabled: ${INVOICE_ECONOMICS_UPLOAD_ENABLED:true}
@@ -518,8 +555,11 @@ dk:
         # does NOT rescue it, because the raw value is present.
         extraction-reasoning-effort: ${DK_TRUSTWORKS_RECRUITMENT_AI_EXTRACTION_REASONING_EFFORT:low}
         # ---- Calendar-image availability reading (Method B, Phase 13 v2) ----
-        # Deliberately NOT the global openai.vision-model. That property is
-        # SHARED with expense receipt OCR and is pinned to gpt-4o-mini because,
+        # Deliberately NOT the global openai.vision-model. That property's only
+        # remaining consumer is the CV/document intake path
+        # (AiIntakeGenerationService) — expense receipt OCR has since moved to its
+        # own dk.trustworks.expense.ai.receipt-model. It is pinned to gpt-4o-mini
+        # because,
         # until 2026-08-18, the vision + strict-schema path in OpenAIService
         # could not send a reasoning node at all (it called the four-argument
         # baseSchemaRequest). Reading a calendar grid is spatial arithmetic —
@@ -548,6 +588,30 @@ dk:
         # dense ~1300x800 screenshot before the model can see its gridlines and
         # quarter-hour edges. An EMPTY value omits the field (API default).
         image-detail: ${DK_TRUSTWORKS_RECRUITMENT_AI_IMAGE_DETAIL:high}
+        # ---- Onboarding document VALIDATION (OnboardingDocumentValidationService) ----
+        # This does NOT generate any document. The only consumer READS an uploaded
+        # koerekort, sundhedskort or straffeattest and answers a strict schema with
+        # an approve/reject decision — a vision + strict-schema call, so the value
+        # MUST be a vision-capable model. Point it at a text-only model and every
+        # input_image request fails with HTTP 400, which on this fail-closed
+        # @PermitAll gate hard-blocks every onboarding document upload with no human
+        # override anywhere. Kept separate from extraction-model, which is a
+        # reasoning-class model tuned for pulling facts out of CV text: a
+        # reasoning-class model spends its max_output_tokens budget on hidden
+        # reasoning and answers 2xx with NO output text for image + schema requests,
+        # and that empty output parses as a rejection of a perfectly valid document.
+        # Hence the proven non-reasoning gpt-4o-family vision default. Override per
+        # env with DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MODEL.
+        onboarding-doc-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MODEL:gpt-4o-mini}
+        # max_output_tokens for that call.
+        #
+        # WARNING: this and onboarding-doc-model move TOGETHER (and with a
+        # reasoning-effort knob, should one ever be added here). A reasoning-class
+        # model spends the same max_output_tokens budget on hidden reasoning first,
+        # so raising the model alone reproduces exactly the empty-structured-output
+        # failure documented on openai.vision-model — a 2xx response with no output
+        # text.
+        onboarding-doc-max-output-tokens: ${DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MAX_OUTPUT_TOKENS:8192}
       # P17 SLA sweep (recruitment-sla-sweep, daily 07:00 UTC): kill switch
       # for the nudge DMs. The sweep is additionally a no-op while the
       # recruitment.interviews.enabled app setting is off; the three

@@ -41,12 +41,18 @@ class OnboardingDocumentValidationSchemaTest {
     }
 
     @Test
-    void schema_reasonHasLengthBounds() {
+    void schema_reasonStatesItsLengthWithoutStrictValidatorKeywords() {
+        // The length bounds moved OUT of the wire schema and into Java
+        // (capReason) + the prompts: minLength/maxLength are not in the strict
+        // structured-output subset we have evidence for on the pinned model, and
+        // a rejected keyword is an HTTP 400 that blocks every upload on this
+        // fail-closed gate. Same convention as ConsultantProfilePrompts.schema().
         ObjectNode schema = OnboardingDocumentValidationService.buildSchema();
         JsonNode reason = schema.path("properties").path("reason");
         assertEquals("string", reason.path("type").asText());
-        assertEquals(5, reason.path("minLength").asInt());
-        assertEquals(240, reason.path("maxLength").asInt());
+        assertTrue(reason.path("minLength").isMissingNode());
+        assertTrue(reason.path("maxLength").isMissingNode());
+        assertTrue(reason.path("description").asText().contains("240"));
     }
 
     @Test

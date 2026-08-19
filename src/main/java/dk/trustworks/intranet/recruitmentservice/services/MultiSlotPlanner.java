@@ -141,10 +141,26 @@ public final class MultiSlotPlanner {
             Map<String, List<ExternalConstraint>> externalConstraints) {
     }
 
-    /** One planned option; room fields null when no room was secured. */
+    /**
+     * One planned option; room fields null when no room was secured.
+     * {@code roomReason} explains a non-obvious room choice and is null when
+     * the top-preference room simply won — see
+     * {@link MeetingRoomPicker.Pick#reason()}. It is display-only and takes
+     * no part in ranking or in any inter-option rule.
+     */
     public record PlannedSlot(LocalDateTime start, LocalDateTime end,
                               String roomEmail, String roomDisplayName,
-                              int optionalFreeCount, int preferenceScore) {
+                              int optionalFreeCount, int preferenceScore,
+                              String roomReason) {
+
+        /** Convenience for callers that do not carry an explanation —
+         * notably {@code alreadyPlanned} slots rebuilt from persisted rows. */
+        public PlannedSlot(LocalDateTime start, LocalDateTime end,
+                           String roomEmail, String roomDisplayName,
+                           int optionalFreeCount, int preferenceScore) {
+            this(start, end, roomEmail, roomDisplayName, optionalFreeCount,
+                    preferenceScore, null);
+        }
     }
 
     /**
@@ -231,8 +247,8 @@ public final class MultiSlotPlanner {
                 return null;
             }
         }
-        RoomOption room = smallestFittingFreeRoom(request, anchor, slotStart);
-        if (request.requireRoom() && room == null) {
+        MeetingRoomPicker.Pick roomPick = preferredFreeRoom(request, anchor, slotStart);
+        if (request.requireRoom() && roomPick == null) {
             return null;
         }
         int optionalFree = 0;
@@ -250,10 +266,11 @@ public final class MultiSlotPlanner {
             penalty = 0;
         }
         return new PlannedSlot(slotStart, slotEnd,
-                room != null ? room.email() : null,
-                room != null ? room.displayName() : null,
+                roomPick != null ? roomPick.room().email() : null,
+                roomPick != null ? roomPick.room().displayName() : null,
                 optionalFree,
-                preferenceScore(request, slotStart, slotEnd) - penalty);
+                preferenceScore(request, slotStart, slotEnd) - penalty,
+                roomPick != null ? roomPick.reason() : null);
     }
 
     /** True when the slot fits a confirmed AVAILABLE_ONLY window of at
@@ -428,25 +445,19 @@ public final class MultiSlotPlanner {
 
     /** The room posture: only a KNOWN free schedule makes a promise —
      * and no room is ever touched unless the request ASKED for one
-     * (F2, owner decision 2026-08-14). */
-    private static RoomOption smallestFittingFreeRoom(PlanRequest request,
-                                                      LocalDateTime anchor,
-                                                      LocalDateTime slotStart) {
+     * (F2, owner decision 2026-08-14). Preference order and the enabled
+     * set come from the admin's room policy (V513); the request's
+     * {@code rooms} list arrives already filtered and sorted, so the rule
+     * itself is the shared {@link MeetingRoomPicker} — the same code
+     * Method A runs, which is how the two can no longer drift. */
+    private static MeetingRoomPicker.Pick preferredFreeRoom(PlanRequest request,
+                                                            LocalDateTime anchor,
+                                                            LocalDateTime slotStart) {
         if (!request.requireRoom()) {
             return null;
         }
-        return request.rooms().stream()
-                .filter(room -> room.capacity() != null
-                        && room.capacity() >= request.headcount())
-                .filter(room -> {
-                    MailboxWindowSchedule schedule = request.schedules().get(room.email());
-                    return schedule != null && schedule.availabilityView() != null
-                            && AvailabilitySlotSuggester.viewFree(anchor,
-                                    schedule.availabilityView(), slotStart,
-                                    request.durationMinutes(), false);
-                })
-                .min(Comparator.comparingInt(RoomOption::capacity))
-                .orElse(null);
+        return MeetingRoomPicker.pick(anchor, request.schedules(), request.rooms(),
+                slotStart, request.durationMinutes(), request.headcount());
     }
 
     /** The inter-option rules: overlap, separation, different days. */

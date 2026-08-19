@@ -184,7 +184,10 @@ public class AvailabilityService {
                 for (int i = 0; i < monthsInFuture; i++) {
                     userBooking.addAmountItemsPerProjects(subProject.getAmountItemsPerProjects(i), i);
                     userBooking.addAmountItemsPerPrebooking(subProject.getAmountItemsPerPrebooking(i), i);
-                    int workDaysInMonth = workService.getWorkDaysInMonth(userService.findByUsername(userBooking.getUsername(), true).getUuid(), currentDate);
+                    // userBooking already carries the user uuid (set at construction), so
+                    // re-resolving it by username once per month was both a redundant query
+                    // and a source of phantom uuids whenever the lookup missed.
+                    int workDaysInMonth = workService.getWorkDaysInMonth(userBooking.getUuid(), currentDate);
                     userBooking.setMonthNorm(NumberUtils.round(workDaysInMonth * 7, 2), i);
                     subProject.setMonthNorm(NumberUtils.round(workDaysInMonth * 7, 2), i);
                     currentDate = currentDate.plusMonths(1);

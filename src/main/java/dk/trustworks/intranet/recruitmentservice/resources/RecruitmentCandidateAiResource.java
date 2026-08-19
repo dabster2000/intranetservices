@@ -271,10 +271,12 @@ public class RecruitmentCandidateAiResource {
             throw error(Response.Status.CONFLICT, "STALE_SUGGESTION",
                     "The stored suggestion value can no longer be applied");
         }
+        // Trailing null = positionUuid: this is a PUT patch builder, and
+        // positionUuid is create-only (CandidateService.update ignores it).
         return new CandidateRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 education, null, experience, specializations, null, null,
-                languages, currentEmployer);
+                languages, currentEmployer, null);
     }
 
     /** AI bookkeeping event — copies the generation's subjects and visibility. */

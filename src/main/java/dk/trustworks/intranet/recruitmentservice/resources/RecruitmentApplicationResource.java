@@ -102,7 +102,7 @@ public class RecruitmentApplicationResource {
     public ApplicationListResponse listForCandidate(@PathParam("uuid") UUID candidateUuid) {
         enforceFlag();
         UUID actor = currentActor();
-        requireCandidate(candidateUuid);
+        requireVisibleCandidate(candidateUuid, actor);
         List<ApplicationResponse> applications =
                 applicationService.listForCandidate(actor.toString(), candidateUuid.toString());
         return new ApplicationListResponse(applications, applications.size());
@@ -123,7 +123,9 @@ public class RecruitmentApplicationResource {
             throw badRequest("positionUuid is required — an application is always FOR a position");
         }
         UUID actor = currentActor();
-        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        // The candidate must exist AND be readable by the actor — attaching
+        // is how a confidential candidate gets de-cloaked (see the helper).
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
         // The position must exist AND be visible to the actor — an invisible
         // partner-track position answers the same 404 as a nonexistent one.
         RecruitmentPosition position = requireVisiblePosition(request.positionUuid(), actor);
@@ -331,6 +333,46 @@ public class RecruitmentApplicationResource {
 
     // ---- Helpers --------------------------------------------------------------------
 
+    /**
+     * Resolve a <b>caller-supplied</b> candidate uuid under the same
+     * profile-visibility rule as every other candidate surface
+     * ({@link RecruitmentVisibility#canReadCandidateProfile}) — an
+     * existing-but-invisible candidate answers the same 404 as a
+     * nonexistent one. Same shape as {@code RecruitmentResource} and
+     * {@code RecruitmentEmailResource}.
+     *
+     * <p>This gate is load-bearing on the attach path specifically. Partner
+     * secrecy for a candidate is <em>derived</em> from their applications
+     * ({@code partnerTrackOnlyCandidateUuids}: hidden only while ALL of them
+     * sit on PARTNER positions), so attaching one non-partner application
+     * permanently removes a confidential candidate from the hidden set — for
+     * every viewer, on the grid, in the feed. Position rights alone do not
+     * stop that: {@code requireVisiblePosition} and
+     * {@code requireDecisionRights} both ask about the POSITION, and the
+     * caller owns the position in this scenario. Until this check existed
+     * the only thing standing between a candidate-intake holder and that
+     * de-cloak was the BFF's role array.
+     */
+    private RecruitmentCandidate requireVisibleCandidate(UUID candidateUuid, UUID viewer) {
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null
+                || viewer == null
+                || !visibility.canReadCandidateProfile(viewer.toString(), candidate)) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        return candidate;
+    }
+
+    /**
+     * Existence-only resolution, for the <b>application-derived</b> lookups
+     * on the terminal endpoints (reject / withdraw / return-to-pool). There
+     * the candidate uuid comes from an application the caller has already
+     * been proven able to read AND decide on — it is never caller-supplied,
+     * so there is no existence to leak. Deliberately NOT the profile gate:
+     * the profile rule narrows on candidate status (a HIRED file drops to
+     * HR/RECRUITMENT), and a decision-rights holder must still be able to
+     * close out an application without that separate grant.
+     */
     private RecruitmentCandidate requireCandidate(UUID candidateUuid) {
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
         if (candidate == null) {

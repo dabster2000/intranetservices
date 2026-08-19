@@ -14,6 +14,20 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * The candidate read DTO.
+ *
+ * @param applicationUuid the application created <em>by this very call</em>
+ *        when the atomic create-with-position path ran
+ *        ({@code CandidateRequest.positionUuid} supplied); {@code null} on
+ *        every other response — reads, updates, and positionless creates.
+ *        <p>This is deliberately NOT "the candidate's current application":
+ *        it is a create receipt, so the caller can navigate straight to the
+ *        new pipeline card without a second round trip. Anything wanting the
+ *        candidate's applications reads
+ *        {@code GET /recruitment/candidates/{uuid}/applications}, which is
+ *        per-viewer filtered.
+ */
 public record CandidateResponse(
         String uuid,
         String firstName,
@@ -51,6 +65,7 @@ public record CandidateResponse(
         String createdByUseruuid,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
-        RevisionSummary latestRevision
+        RevisionSummary latestRevision,
+        String applicationUuid
 ) {
 }
