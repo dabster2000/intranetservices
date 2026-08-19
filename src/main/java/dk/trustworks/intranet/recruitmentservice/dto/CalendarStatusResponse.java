@@ -26,7 +26,14 @@ public record CalendarStatusResponse(
      * or CANDIDATE (the room's own auto-response is ignored);
      * {@code userUuid} is the user UUID for interviewers and the
      * candidate UUID for the candidate. {@code response} is one of
-     * ACCEPTED, DECLINED, TENTATIVE, NONE.
+     * ACCEPTED, DECLINED, TENTATIVE, NONE, MISSING.
+     * <p>
+     * MISSING is not an answer — it means the person is an assigned
+     * interviewer who appears on NO attendee line of the Outlook event,
+     * i.e. they were never invited. It exists because the V492 attendee
+     * drop was invisible for exactly as long as an uninvited interviewer
+     * produced no row at all; a caller must render it distinctly from
+     * NONE ("invited, has not replied"), never fold the two together.
      */
     public record Rsvp(String participantType, String userUuid, String response) {
     }

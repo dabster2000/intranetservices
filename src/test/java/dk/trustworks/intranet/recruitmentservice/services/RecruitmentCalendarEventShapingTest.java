@@ -29,9 +29,15 @@ import static org.mockito.Mockito.when;
  * Event enrichment + organizer hardening (interview scheduling plan
  * Phase 2): Teams fields, create-idempotency, the D3 privacy posture,
  * and the stored-organizer rule that fixes the interviewer-#1-removal
- * bug. Plain unit test — single-interviewer fixtures keep the event
- * builder off {@code User.findById}, so this runs in the DB-free tier
- * that gates deploys.
+ * bug. Plain unit test that runs in the DB-free tier gating deploys.
+ * <p>
+ * The attendee list is reachable here because {@code interviewerResolver}
+ * is stubbed in {@link #setUp()}. It used to be unreachable: the fixtures
+ * carried ONE interviewer precisely so the builder never called
+ * {@code User.findById} (which throws outside Quarkus), which meant the
+ * gate could not express a multi-interviewer expectation at all — and
+ * that is how the V492 attendee drop reached production unnoticed. Never
+ * reintroduce a fixture whose single interviewer is load-bearing.
  */
 class RecruitmentCalendarEventShapingTest {
 
@@ -45,6 +51,11 @@ class RecruitmentCalendarEventShapingTest {
         service.graphApiClient = graph;
         service.calendarEnabled = true;
         service.configuredOrganizerValue = java.util.Optional.of("career@trustworks.dk");
+        // The DB seam: uuid -> mailbox, so the attendee list is assertable
+        // without Panache. "interviewer-1" becomes interviewer-1@trustworks.dk.
+        service.interviewerResolver = uuid ->
+                new RecruitmentCalendarService.Interviewer(
+                        uuid + "@trustworks.dk", "Name " + uuid);
     }
 
     @Test
@@ -317,10 +328,156 @@ class RecruitmentCalendarEventShapingTest {
                 .contains("Scheduled via the Trustworks intranet"));
     }
 
+    // ---- Attendee list: organizer exclusion is by identity, not position -------
+    //
+    // Regression pins for the V492 drop. buildInternalEvent used to skip
+    // interviewerUuids[0] unconditionally, which was right only while the
+    // organizer WAS the first interviewer. Once V492 pointed new events at the
+    // shared career@trustworks.dk mailbox, that skip silently un-invited a real
+    // person — and invited nobody at all when one interviewer was assigned.
+
+    @Test
+    void attendees_sharedOrganizer_invitesEveryInterviewer() {
+        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+                RecruitmentCalendarService.interviewerAttendees(
+                        List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A"),
+                                new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B")),
+                        "career@trustworks.dk");
+
+        assertEquals(List.of("a@trustworks.dk", "b@trustworks.dk"),
+                attendees.stream().map(a -> a.emailAddress().address()).toList(),
+                "the organizer is nobody on the roster, so NOBODY is excluded");
+        assertTrue(attendees.stream().allMatch(a -> "required".equals(a.type())));
+        assertEquals("A", attendees.get(0).emailAddress().name(),
+                "name rides along so external clients do not render a raw address");
+    }
+
+    @Test
+    void attendees_singleInterviewer_isStillInvited() {
+        assertEquals(List.of("solo@trustworks.dk"),
+                RecruitmentCalendarService.interviewerAttendees(
+                                List.of(new RecruitmentCalendarService.Interviewer(
+                                        "solo@trustworks.dk", "Solo")),
+                                "career@trustworks.dk").stream()
+                        .map(a -> a.emailAddress().address()).toList(),
+                "the one-interviewer case used to produce an event with no human attendee");
+    }
+
+    @Test
+    void attendees_legacyOrganizerIsAnInterviewer_excludesExactlyThem() {
+        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+                RecruitmentCalendarService.interviewerAttendees(
+                        List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A"),
+                                new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B")),
+                        "a@trustworks.dk");
+
+        assertEquals(List.of("b@trustworks.dk"),
+                attendees.stream().map(a -> a.emailAddress().address()).toList(),
+                "pre-V492 rows store an interviewer as organizer — they must not be double-invited");
+    }
+
+    @Test
+    void attendees_excludesTheOrganizerWhereverTheySitOnTheRoster() {
+        assertEquals(List.of("a@trustworks.dk", "c@trustworks.dk"),
+                RecruitmentCalendarService.interviewerAttendees(
+                                List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A"),
+                                        new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B"),
+                                        new RecruitmentCalendarService.Interviewer("c@trustworks.dk", "C")),
+                                "b@trustworks.dk").stream()
+                        .map(a -> a.emailAddress().address()).toList(),
+                "identity, not index: interviewer[0] is invited and the middle one is dropped");
+    }
+
+    @Test
+    void attendees_organizerMatchIsCaseAndWhitespaceInsensitive() {
+        assertTrue(RecruitmentCalendarService.interviewerAttendees(
+                        List.of(new RecruitmentCalendarService.Interviewer("A@Trustworks.DK", "A")),
+                        "  a@trustworks.dk  ").isEmpty(),
+                "Outlook mailboxes are case-insensitive; a casing difference must not double-invite");
+    }
+
+    @Test
+    void attendees_noOrganizer_invitesEveryone() {
+        assertEquals(1, RecruitmentCalendarService.interviewerAttendees(
+                        List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A")),
+                        null).size());
+    }
+
+    @Test
+    void attendees_unresolvableMailboxesAreSkippedWithoutLosingTheRest() {
+        assertEquals(List.of("b@trustworks.dk"),
+                RecruitmentCalendarService.interviewerAttendees(
+                                java.util.Arrays.asList(
+                                        null,
+                                        new RecruitmentCalendarService.Interviewer(null, "No mailbox"),
+                                        new RecruitmentCalendarService.Interviewer("  ", "Blank"),
+                                        new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B")),
+                                "career@trustworks.dk").stream()
+                        .map(a -> a.emailAddress().address()).toList());
+        assertTrue(RecruitmentCalendarService.interviewerAttendees(null, "career@trustworks.dk").isEmpty());
+        assertTrue(RecruitmentCalendarService.interviewerAttendees(List.of(), "career@trustworks.dk").isEmpty());
+    }
+
+    @Test
+    void create_twoInterviewers_bothRideOnTheInternalEvent() {
+        // The end-to-end shape of the reported bug: two people picked, one booked.
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-7", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setInterviewerUuids(List.of("interviewer-1", "interviewer-2"));
+
+        service.createEvent(interview, candidateWithoutEmail(), null);
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(eq("career@trustworks.dk"), body.capture());
+        assertEquals(List.of("interviewer-1@trustworks.dk", "interviewer-2@trustworks.dk"),
+                body.getValue().attendees().stream()
+                        .map(a -> a.emailAddress().address()).toList(),
+                "both interviewers are invited — this asserted only interviewer-2 before the fix");
+    }
+
+    @Test
+    void update_twoInterviewers_reschedulePatchesTheFullAttendeeList() {
+        // Reschedule shares the builder, so it was equally truncated — which is
+        // why no amount of re-saving ever repaired a dropped interviewer.
+        when(graph.updateCalendarEvent(anyString(), anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-8", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setInterviewerUuids(List.of("interviewer-1", "interviewer-2"));
+        interview.setGraphEventId("evt-8");
+        interview.setGraphOrganizer("career@trustworks.dk");
+
+        service.updateEvent(interview, candidateWithoutEmail(), null);
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).updateCalendarEvent(anyString(), eq("evt-8"), body.capture());
+        assertEquals(2, body.getValue().attendees().size());
+    }
+
+    @Test
+    void create_roomIsBookedAsAResourceAlongsideEveryInterviewer() {
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-9", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setRoomEmail("hp3@trustworks.dk");
+        interview.setLocation("HP3");
+
+        service.createEvent(interview, candidateWithoutEmail(), null);
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        assertEquals(List.of("required", "resource"),
+                body.getValue().attendees().stream().map(a -> a.type()).toList(),
+                "the room used to be the ONLY attendee on a single-interviewer event");
+    }
+
     // ---- Fixtures --------------------------------------------------------------
 
-    /** One interviewer on purpose: the attendee loop starts at index 1, so
-     * the builder never calls {@code User.findById} — DB-free. */
+    /** One interviewer — the single-interviewer case that invited NOBODY
+     * before the identity-based organizer exclusion landed. */
     private static RecruitmentInterview interview() {
         RecruitmentInterview interview = new RecruitmentInterview();
         interview.setUuid("int-1");
