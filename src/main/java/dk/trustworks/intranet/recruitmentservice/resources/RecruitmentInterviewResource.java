@@ -6,6 +6,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateInterviewsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DebriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.InterviewDecisionRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScheduleRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse;
@@ -35,6 +36,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
@@ -208,6 +210,48 @@ public class RecruitmentInterviewResource {
         requireDecisionRights(position, actor);
 
         interviewService.cancel(interview, application, position, actor);
+        return Response.noContent().build();
+    }
+
+    /**
+     * Record (or overwrite) the pending go/no-go for the round — the
+     * opt-in first half of "decide, then inform the candidate" (pipeline
+     * sub-status). The stage move that follows consumes the record.
+     */
+    @POST
+    @Path("/interviews/{uuid}/decision")
+    @RolesAllowed({"recruitment:write"})
+    public InterviewScorecardsResponse recordDecision(@PathParam("uuid") UUID interviewUuid,
+                                                      InterviewDecisionRequest request) {
+        enforceFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        if (request.decision() == null) {
+            throw badRequest("decision is required — ADVANCE or REJECT");
+        }
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentPosition position = positionOf(application);
+        requireDecisionRights(position, actor);
+
+        interviewService.recordDecision(interview, application, position,
+                request.decision(), actor);
+        return interviewService.scorecardsFor(actor.toString(), interview, application, position);
+    }
+
+    /** Withdraw a pending decision (the undo path). Idempotent. */
+    @DELETE
+    @Path("/interviews/{uuid}/decision")
+    @RolesAllowed({"recruitment:write"})
+    public Response clearDecision(@PathParam("uuid") UUID interviewUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentInterview interview = requireVisibleInterview(interviewUuid, actor);
+        RecruitmentApplication application = applicationOf(interview);
+        RecruitmentPosition position = positionOf(application);
+        requireDecisionRights(position, actor);
+
+        interviewService.clearDecision(interview, application, position, actor);
         return Response.noContent().build();
     }
 

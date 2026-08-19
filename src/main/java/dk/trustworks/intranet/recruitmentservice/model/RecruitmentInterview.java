@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
@@ -135,6 +136,29 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 10, nullable = false)
     private RecruitmentInterviewStatus status = RecruitmentInterviewStatus.SCHEDULED;
+
+    /**
+     * The owner's recorded go/no-go for this round (V519, pipeline
+     * sub-status): pending state only — the stage move or terminal that
+     * follows clears all three columns, and history lives in the
+     * {@code INTERVIEW_DECISION_*} events. {@code NULL} = no pending
+     * decision (the normal state, and the only state for INFORMAL/OFFER
+     * kinds). While set, the blind rule treats the round as decided.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "decision", length = 10)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private RecruitmentInterviewDecision decision;
+
+    /** Soft FK to {@code users.uuid} — who recorded the pending decision. */
+    @Column(name = "decided_by", length = 36)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String decidedBy;
+
+    /** UTC. When the pending decision was recorded. */
+    @Column(name = "decided_at")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime decidedAt;
 
     // ---- Audit columns (house Auditable pattern) ---------------------------
 

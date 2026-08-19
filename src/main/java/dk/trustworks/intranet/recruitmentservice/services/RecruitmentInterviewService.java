@@ -25,6 +25,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
@@ -66,8 +67,8 @@ import java.util.stream.Collectors;
  *   <li>they hold decision rights on the position
  *       ({@code canDecideOnApplication}) AND either every assigned
  *       interviewer has submitted (debrief-ready) or the decision has been
- *       made (the application moved past the round's stage, or is terminal
- *       or HIRED).</li>
+ *       made (the application moved past the round's stage, is terminal or
+ *       HIRED, or a pending decision is recorded on the round — V519).</li>
  * </ul>
  * Everyone else — including practice leads with read access and recruiters
  * before the debrief/decision — gets progress counters only. Free-text
@@ -299,12 +300,91 @@ public class RecruitmentInterviewService {
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
         interview.setStatus(RecruitmentInterviewStatus.CANCELLED);
+        // A cancelled interview cannot carry a pending go/no-go — the
+        // round is unheld again. Part of the same mutation, no extra event.
+        interview.setDecision(null);
+        interview.setDecidedBy(null);
+        interview.setDecidedAt(null);
         calendarService.cancelEvent(interview);
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_CANCELLED,
                 interview, application, position, actor)
                 .payload("scheduled_at",
                         interview.getScheduledAt() != null ? interview.getScheduledAt().toString() : null));
+        return interview;
+    }
+
+    /**
+     * Record (or overwrite) the pending go/no-go for one interview round —
+     * the opt-in first half of the two-step "decide, then inform the
+     * candidate" flow (pipeline sub-status, V519). Only ROUND interviews of
+     * the application's CURRENT stage take a decision: past rounds are
+     * already decided by the stage history, future rounds are not yet
+     * anyone's to decide. The stage move (or terminal) that follows
+     * consumes the record; moving without recording first remains fully
+     * supported and implies the decision, as it always did.
+     * <p>
+     * Recording unlocks the debrief for decision-tier viewers ("after the
+     * decision", class javadoc) — deliberately: today the same unlock
+     * happens the moment the card moves, and an owner who decides before
+     * every scorecard is in could always effect that by moving the card.
+     */
+    @Transactional
+    public RecruitmentInterview recordDecision(RecruitmentInterview detached,
+                                               RecruitmentApplication application,
+                                               RecruitmentPosition position,
+                                               RecruitmentInterviewDecision decision,
+                                               UUID actor) {
+        Objects.requireNonNull(decision, "decision must not be null");
+        RecruitmentInterview interview = managed(detached);
+        requireActive(interview);
+        requireInPlay(application);
+        if (interview.getKind() != RecruitmentInterviewKind.ROUND) {
+            throw new BusinessRuleViolation(
+                    "Only round interviews take a decision — informal chats and offer meetings do not gate the pipeline");
+        }
+        if (interview.roundStage() != application.getStage()) {
+            throw new BusinessRuleViolation(
+                    "The decision belongs to the current round — this application stands at %s, not %s"
+                            .formatted(application.getStage(), interview.roundStage()));
+        }
+        RecruitmentInterviewDecision previous = interview.getDecision();
+        interview.setDecision(decision);
+        interview.setDecidedBy(actor.toString());
+        interview.setDecidedAt(LocalDateTime.now(ZoneOffset.UTC));
+
+        recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_DECISION_RECORDED,
+                interview, application, position, actor)
+                .payload("decision", decision.name())
+                .payload("previous_decision", previous != null ? previous.name() : null)
+                .payload("stage", application.getStage().name()));
+        return interview;
+    }
+
+    /**
+     * Withdraw a pending decision — the undo path (NOT the normal
+     * completion; the consuming stage move clears the columns under its own
+     * event). Idempotent: clearing a round with nothing pending is a no-op
+     * and appends nothing.
+     */
+    @Transactional
+    public RecruitmentInterview clearDecision(RecruitmentInterview detached,
+                                              RecruitmentApplication application,
+                                              RecruitmentPosition position,
+                                              UUID actor) {
+        RecruitmentInterview interview = managed(detached);
+        RecruitmentInterviewDecision previous = interview.getDecision();
+        if (previous == null) {
+            return interview;
+        }
+        interview.setDecision(null);
+        interview.setDecidedBy(null);
+        interview.setDecidedAt(null);
+
+        recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_DECISION_CLEARED,
+                interview, application, position, actor)
+                .payload("previous_decision", previous.name())
+                .payload("stage", application.getStage().name()));
         return interview;
     }
 
@@ -428,6 +508,7 @@ public class RecruitmentInterviewService {
         Map<String, String> names = resolveNames(nameUuids);
         RecruitmentCandidate candidate =
                 RecruitmentCandidate.findById(application.getCandidateUuid());
+        boolean viewerCanDecide = visibility.canDecideOnApplication(viewerUuid, position);
 
         List<DebriefResponse.DebriefEntry> entries = rounds.stream()
                 .map(interview -> {
@@ -437,7 +518,7 @@ public class RecruitmentInterviewService {
                             viewerUuid, interview, application, position, cards, names);
                     return new DebriefResponse.DebriefEntry(
                             toResponse(viewerUuid, interview, application, position, candidate,
-                                    cards, names),
+                                    cards, names, viewerCanDecide),
                             filtered);
                 })
                 .toList();
@@ -478,14 +559,20 @@ public class RecruitmentInterviewService {
         visible.forEach(i -> nameUuids.addAll(i.getInterviewerUuids()));
         Map<String, String> names = resolveNames(nameUuids);
 
+        // Decision rights per position, resolved once per distinct position
+        // — not per interview row (the lookup walks role/practice tables).
+        Map<String, Boolean> canDecideByPosition = new HashMap<>();
         List<InterviewResponse> rows = visible.stream()
                 .map(interview -> {
                     RecruitmentApplication application =
                             applicationsByUuid.get(interview.getApplicationUuid());
                     RecruitmentPosition position = positions.get(application.getPositionUuid());
+                    boolean viewerCanDecide = canDecideByPosition.computeIfAbsent(
+                            position.getUuid(),
+                            uuid -> visibility.canDecideOnApplication(viewerUuid, position));
                     return toResponse(viewerUuid, interview, application, position, candidate,
                             scorecardsByInterview.getOrDefault(interview.getUuid(), List.of()),
-                            names);
+                            names, viewerCanDecide);
                 })
                 .toList();
         return new CandidateInterviewsResponse(rows, rows.size());
@@ -659,14 +746,20 @@ public class RecruitmentInterviewService {
 
     /**
      * "After decision" = the application has moved past this round's stage
-     * (canonical order), or has left the pipeline (terminal / HIRED). A
-     * back-move re-locks — deliberate: the rule keys on current state, and
-     * a rewound round is a live round again.
+     * (canonical order), has left the pipeline (terminal / HIRED), or the
+     * round carries a pending recorded decision (V519 — recording IS the
+     * decision; the move that follows merely completes it). A back-move
+     * re-locks — deliberate: the rule keys on current state, a rewound
+     * round is a live round again, and every stage move clears pending
+     * decisions, so a stale record can never hold the lock open.
      */
-    private static boolean decisionMade(RecruitmentApplication application,
-                                        RecruitmentInterview interview) {
+    static boolean decisionMade(RecruitmentApplication application,
+                                RecruitmentInterview interview) {
         if (application.getTerminal() != null
                 || application.getStage() == RecruitmentStage.HIRED) {
+            return true;
+        }
+        if (interview.getDecidedAt() != null) {
             return true;
         }
         RecruitmentStage roundStage = interview.roundStage();
@@ -681,7 +774,8 @@ public class RecruitmentInterviewService {
                                          RecruitmentPosition position,
                                          RecruitmentCandidate candidate,
                                          List<RecruitmentScorecard> scorecards,
-                                         Map<String, String> names) {
+                                         Map<String, String> names,
+                                         boolean viewerCanDecide) {
         boolean ownSubmitted = scorecards.stream()
                 .anyMatch(s -> s.getInterviewerUuid().equals(viewerUuid));
         return new InterviewResponse(
@@ -708,7 +802,11 @@ public class RecruitmentInterviewService {
                 candidate != null && candidate.getEmail() != null
                         && !candidate.getEmail().isBlank(),
                 interview.isOnlineMeeting(),
-                interview.getJoinUrl());
+                interview.getJoinUrl(),
+                // A pending decision is decider-only until the candidate is
+                // informed — everyone else learns it when the card moves.
+                viewerCanDecide ? interview.getDecision() : null,
+                viewerCanDecide ? interview.getDecidedAt() : null);
     }
 
     private static List<InterviewResponse.InterviewerInfo> interviewerInfos(

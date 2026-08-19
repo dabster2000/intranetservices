@@ -72,6 +72,25 @@ public enum RecruitmentEventType {
     INTERVIEW_CANCELLED,
     SCORECARD_SUBMITTED,
     SCORECARD_NUDGED,
+    /**
+     * The owner recorded a pending go/no-go for one interview round
+     * (pipeline sub-status feature, V519) — the state the board renders
+     * as "Inform candidate" until the stage move or terminal that
+     * completes it. Payload: {@code decision} (ADVANCE | REJECT),
+     * {@code previous_decision} (re-records overwrite), {@code stage} —
+     * all structural, no pii. Catalog addition per spec §6.2 ("every
+     * mutating endpoint = one command = ≥1 event"): recording a decision
+     * ahead of informing the candidate was previously not an act the
+     * system could represent at all.
+     */
+    INTERVIEW_DECISION_RECORDED,
+    /**
+     * A pending interview decision was explicitly withdrawn (the undo
+     * path — NOT the normal completion: the consuming stage move clears
+     * the columns as part of its own event). Payload:
+     * {@code previous_decision}, {@code stage}; structural only.
+     */
+    INTERVIEW_DECISION_CLEARED,
 
     // --- SLA automation (P17) --------------------------------------------
     /**
