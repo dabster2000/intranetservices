@@ -6,7 +6,6 @@ import io.quarkus.cache.CacheManager;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.cache.CompositeCacheKey;
 import jakarta.inject.Inject;
-import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
@@ -62,6 +61,19 @@ public class PhotoService {
      * uuid and so always take the delete-and-insert branch.
      */
     static final String SUPERSEDED_ROWS_QUERY = "relateduuid = ?1 AND type = ?2";
+
+    /**
+     * S3 key of the shared silhouette this service used to serve when an entity had no photo.
+     * <p>
+     * Deliberately NOT served any more — kept only so the key stays identifiable in the bucket and
+     * in {@code photo-cache} keys. Every consumer has a better per-entity fallback that only
+     * engages when the image fails to load: the frontend {@code UserAvatar} falls through to a
+     * DiceBear avatar derived from the uuid and then to coloured initials, and the legacy Vaadin
+     * client guards on {@code getFile().length > 0}. Handing back a decodable shared silhouette
+     * would suppress all of that and show one identical face for everybody — which is also why an
+     * absent photo must stay an EMPTY payload rather than becoming a 404 or an exception.
+     */
+    static final String DEFAULT_PHOTO_KEY = "c297e216-e5cf-437d-9a1f-de840c7557e9";
 
     private static final Map<String, String> MIME_TO_EXTENSION = new HashMap<>();
 
@@ -200,37 +212,67 @@ public class PhotoService {
             File photo = photos.get(new Random().nextInt(photos.size()));
             photo.setFile(loadFromS3(photo.getUuid()));
             return photo;
-        } else {
-            log.debug("Is not present");
-            File newPhoto = new File(UUID.randomUUID().toString(), UUID.randomUUID().toString(), "PHOTO");
-            QuarkusTransaction.run(() -> File.persist(newPhoto));
-
-            newPhoto.setFile(loadFromS3("c297e216-e5cf-437d-9a1f-de840c7557e9"));
-            return newPhoto;
         }
+        log.debug("Is not present");
+        // Was persisting a row here, with a RANDOM relateduuid — so unlike the by-relateduuid
+        // fallback it could never even be found again, and every miss added another. See
+        // {@link #absentPhoto} for why no row is written at all now.
+        return absentPhoto(UUID.randomUUID().toString());
     }
 
     public List<File> findPhotosByType(String type) {
         return File.find("type = ?1", type).list();
     }
 
+    /**
+     * The stored photo row for {@code relateduuid}, or empty when there is none.
+     * <p>
+     * Side-effect free, and deliberately separate from {@link #findPhotoByRelatedUUID}: callers
+     * that need to know whether a photo actually EXISTS cannot ask that question of a method whose
+     * contract is to always hand back an image.
+     */
+    Optional<File> findStoredPhoto(String relateduuid) {
+        return File.find("relateduuid = ?1 AND type = 'PHOTO'", relateduuid).firstResultOptional();
+    }
+
+    /**
+     * A row standing in for "this entity has no photo", carrying an empty payload.
+     * <p>
+     * This used to call {@code File.persist} on a bare {@code File(uuid, relateduuid, "PHOTO")}
+     * before returning it, which made a plain GET write to the database and — far worse — poisoned
+     * every later read of the same entity. The persisted row carries {@code type = 'PHOTO'}, so the
+     * NEXT lookup found it, took the found-branch, and called {@code loadFromS3} on a uuid that
+     * owns no S3 object: {@code byte[0]}. The fallback therefore worked exactly once per entity and
+     * served nothing at all forever after, which is why "missing avatar" traffic scales with page
+     * views (it once reached 79% of backend ERROR volume, and was twice treated as a logging
+     * problem). By 2026-08-19 that had left 7,304 of the 7,699 {@code type='PHOTO'} rows in
+     * production as these stubs.
+     * <p>
+     * Nothing ever read the row: every caller of {@link #findPhotoByRelatedUUID} and
+     * {@link #findPhotoByType} uses the bytes or serialises the object, and none looks the uuid
+     * back up. So it is not written any more.
+     * <p>
+     * It also no longer fetches {@link #DEFAULT_PHOTO_KEY}. That is not an oversight: with the
+     * stub rows gone, EVERY read for a photo-less entity would otherwise return the shared
+     * silhouette, where production has in practice been answering with an empty payload for years
+     * (95% of entities were already shadowed by a stub, and a stub serves nothing). Empty is what
+     * the consumers' own fallbacks are built on, and it saves an S3 round trip on a path whose
+     * volume scales with page views.
+     */
+    private File absentPhoto(String relateduuid) {
+        File absent = new File(UUID.randomUUID().toString(), relateduuid, "PHOTO");
+        absent.setFile(new byte[0]);
+        return absent;
+    }
+
     public File findPhotoByRelatedUUID(String relateduuid) {
         log.debug("findPhotoByRelatedUUID uuid=" + relateduuid);
-        Optional<File> photo = File.find("relateduuid = ?1 AND type = 'PHOTO'", relateduuid).firstResultOptional();
-        if(photo.isPresent()) {
-            byte[] file = loadFromS3(photo.get().getUuid());
-            photo.get().setFile(file);
-            String mimeType = detectMimeType(file);
-            if (!mimeType.equals("image/webp")) {
-                return photo.get();
-            }
+        Optional<File> photo = findStoredPhoto(relateduuid);
+        if (photo.isPresent()) {
+            photo.get().setFile(loadFromS3(photo.get().getUuid()));
+            return photo.get();
         }
-        return photo.orElseGet(() -> {
-            File newPhoto = new File(UUID.randomUUID().toString(), relateduuid, "PHOTO");
-            QuarkusTransaction.run(() -> File.persist(newPhoto));
-            newPhoto.setFile(loadFromS3("c297e216-e5cf-437d-9a1f-de840c7557e9"));
-            return newPhoto;
-        });
+        return absentPhoto(relateduuid);
     }
 
     public String detectMimeType(byte[] data) {
@@ -534,7 +576,18 @@ public class PhotoService {
             return loadFromS3(key);
         }
 
-        File photo = findPhotoByRelatedUUID(relateduuid);
+        Optional<File> stored = findStoredPhoto(relateduuid);
+        if (stored.isEmpty()) {
+            // Nothing stored: answer empty and, critically, write nothing. This is the path
+            // UserAvatar actually calls (it requests ?width=), and an empty body is what makes it
+            // fall through to its DiceBear-then-initials fallback. Returning a resized shared
+            // silhouette here would both suppress that and publish an S3 object per entity per
+            // width — the S3 counterpart of the placeholder rows this change stops writing.
+            return new byte[0];
+        }
+
+        File photo = stored.get();
+        photo.setFile(loadFromS3(photo.getUuid()));
         try {
             byte[] resized = resizeImage(photo.getFile(), width, key);
             // Never publish an empty thumbnail. resizeImage hands back what it was given when it
