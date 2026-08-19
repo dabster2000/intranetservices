@@ -2,7 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateApplicationInfo;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
@@ -10,7 +10,6 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSummary;
-import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
@@ -89,6 +88,9 @@ public class CandidateService {
 
     @Inject
     CandidateProfileReadService profileReadService;
+
+    @Inject
+    DossierTemplateResolver templateResolver;
 
     @Inject
     jakarta.persistence.EntityManager em;
@@ -216,11 +218,18 @@ public class CandidateService {
         RecruitmentCandidate.persist(candidate);
 
         if (dossierPath) {
+            // Resolve-and-require-active BEFORE the insert: an unresolvable or
+            // retired templateUuid used to produce a dossier that looked fine
+            // and only surfaced as blank placeholders in a real employment
+            // contract (see DossierTemplateResolver's javadoc). The template's
+            // own uuid — not the request string — is what the row stores, so
+            // the FK-in-spirit always matches a row that exists.
+            DocumentTemplateEntity template = templateResolver.requireActiveTemplate(req.templateUuid());
             CandidateDossier dossier = new CandidateDossier();
             dossier.setCandidateUuid(candidate.getUuid());
-            dossier.setTemplateUuid(req.templateUuid());
+            dossier.setTemplateUuid(template.getUuid());
             dossier.setStatus(DossierStatus.OPEN);
-            dossier.setSignersConfigJson(seedSignersFromTemplate(req.templateUuid()));
+            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid()));
             CandidateDossier.persist(dossier);
         }
 
@@ -1179,35 +1188,4 @@ public class CandidateService {
         return new IllegalStateException("JSON " + operation + " failed: " + cause.getOriginalMessage(), cause);
     }
 
-    /**
-     * Seed the dossier's signers_config from the template's default signers,
-     * sorted by signer group then display order. ${PLACEHOLDER} tokens in
-     * name/email are preserved as-is; revision snapshots resolve them at
-     * send time. Returns "[]" when the template defines no defaults so the
-     * not-null DB column always carries a valid JSON array.
-     */
-    private String seedSignersFromTemplate(String templateUuid) {
-        List<TemplateDefaultSignerEntity> defaults = TemplateDefaultSignerEntity
-                .find("template.uuid = ?1 ORDER BY signerGroup, displayOrder", templateUuid)
-                .list();
-
-        List<SignerConfigDto> signers = new ArrayList<>(defaults.size());
-        for (TemplateDefaultSignerEntity s : defaults) {
-            signers.add(new SignerConfigDto(
-                    String.valueOf(s.getSignerGroup()),
-                    s.getName(),
-                    s.getEmail(),
-                    s.isSigning(),
-                    s.isNeedsCpr(),
-                    s.getRole(),
-                    null
-            ));
-        }
-
-        try {
-            return objectMapper.writeValueAsString(signers);
-        } catch (JsonProcessingException e) {
-            throw jsonError("write", e);
-        }
-    }
 }

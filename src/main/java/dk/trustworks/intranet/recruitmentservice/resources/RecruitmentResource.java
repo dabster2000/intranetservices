@@ -15,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.DeclineRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DedupeCheckRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.DossierCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.HardDeleteRequest;
@@ -837,6 +838,50 @@ public class RecruitmentResource {
     }
 
     // ---- Dossier endpoints ----------------------------------------------------
+
+    /**
+     * Open (or reopen) the candidate's offer dossier — the manual HR step on
+     * the profile's Offer &amp; Contract tab. Until this endpoint existed a
+     * dossier could only be born at candidate-creation time, so a candidate
+     * who reached OFFER any other way was stuck: every dossier sub-resource
+     * 404s without one, and {@code RecruitmentOfferBridge.onOfferEntered} is
+     * deliberately link-only (no position→template rule can pick correctly,
+     * so a human must).
+     *
+     * <h3>Gate order</h3>
+     * <ol>
+     *   <li>{@code enforceFlag()} — the dossier flag, as every sibling.</li>
+     *   <li>{@link #requireDossierWritable(UUID)} — ADMIN/HR only, and the
+     *       usual two answers: 404 when the caller may not even read the
+     *       dossier (existence must not leak), 403 when they can see it but
+     *       may not change it.</li>
+     *   <li>Everything below — template, candidate status, existing dossiers
+     *       — is domain state and belongs to
+     *       {@link DossierService#createForCandidate}, which runs it in the
+     *       same transaction as the insert and the event append.</li>
+     * </ol>
+     * A null body is not a 500: it falls through to the contract's 400
+     * {@code TEMPLATE_REQUIRED}, which is what the create dialog renders.
+     *
+     * @return 201 with the same {@code DossierResponse} body {@code GET}
+     *         returns, so the client can render the editor immediately
+     */
+    @POST
+    @Path("/candidates/{uuid}/dossier")
+    @RolesAllowed({"recruitment:write"})
+    public Response createDossier(@PathParam("uuid") UUID candidateUuid,
+                                  @Valid DossierCreateRequest request) {
+        enforceFlag();
+        requireDossierWritable(candidateUuid);
+        DossierResponse created = dossierService.createForCandidate(
+                candidateUuid,
+                request == null ? null : request.templateUuid(),
+                currentActor());
+        return Response.created(URI.create(String.format(
+                        "/recruitment/candidates/%s/dossier", candidateUuid)))
+                .entity(created)
+                .build();
+    }
 
     @GET
     @Path("/candidates/{uuid}/dossier")

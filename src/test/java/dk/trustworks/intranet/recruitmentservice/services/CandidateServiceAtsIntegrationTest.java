@@ -58,21 +58,53 @@ class CandidateServiceAtsIntegrationTest {
 
     private final UUID actor = UUID.randomUUID();
     private final List<String> createdCandidates = new ArrayList<>();
+    private final List<String> createdTemplates = new ArrayList<>();
 
     @AfterEach
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
-            if (createdCandidates.isEmpty()) {
-                return;
+            if (!createdCandidates.isEmpty()) {
+                em.createNativeQuery("DELETE FROM recruitment_events WHERE candidate_uuid IN :uuids")
+                        .setParameter("uuids", createdCandidates).executeUpdate();
+                em.createNativeQuery("DELETE FROM candidate_dossiers WHERE candidate_uuid IN :uuids")
+                        .setParameter("uuids", createdCandidates).executeUpdate();
+                em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid IN :uuids")
+                        .setParameter("uuids", createdCandidates).executeUpdate();
             }
-            em.createNativeQuery("DELETE FROM recruitment_events WHERE candidate_uuid IN :uuids")
-                    .setParameter("uuids", createdCandidates).executeUpdate();
-            em.createNativeQuery("DELETE FROM candidate_dossiers WHERE candidate_uuid IN :uuids")
-                    .setParameter("uuids", createdCandidates).executeUpdate();
-            em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid IN :uuids")
-                    .setParameter("uuids", createdCandidates).executeUpdate();
+            // After the dossiers: candidate_dossiers.template_uuid is a soft FK
+            // (V312 §"NO DB FK constraint"), so nothing would stop the delete —
+            // but leaving a fixture template behind would pollute the admin
+            // template list every other @QuarkusTest in this tier reads.
+            if (!createdTemplates.isEmpty()) {
+                em.createNativeQuery("DELETE FROM document_templates WHERE uuid IN :uuids")
+                        .setParameter("uuids", createdTemplates).executeUpdate();
+            }
         });
         createdCandidates.clear();
+        createdTemplates.clear();
+    }
+
+    /**
+     * Insert an active {@code document_templates} row and return its uuid.
+     * <p>
+     * The dossier create path resolves the template and requires
+     * {@code active = true}, so a dossier-path test needs a real row. Inserted
+     * natively rather than through {@code DocumentTemplateEntity} to keep the
+     * fixture independent of that entity's lifecycle callbacks and validation,
+     * which is the idiom the rest of this class's setup already uses.
+     */
+    private String activeTemplate() {
+        String uuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery(
+                                "INSERT INTO document_templates "
+                                        + "(uuid, name, category, sharepoint_type, active, created_at, updated_at) "
+                                        + "VALUES (:uuid, :name, 'EMPLOYMENT', 'EMPLOYEE', 1, NOW(), NOW())")
+                        .setParameter("uuid", uuid)
+                        .setParameter("name", "TEST - Ansaettelseskontrakt " + uuid)
+                        .executeUpdate());
+        createdTemplates.add(uuid);
+        return uuid;
     }
 
     // ---- Create: ATS path ------------------------------------------------------
@@ -160,22 +192,31 @@ class CandidateServiceAtsIntegrationTest {
 
     @Test
     void dossierCreate_requiresEmailAndTargetCompany_andStillOpensTheDossier() {
+        // A REAL, active template row: createCandidate now resolves the
+        // templateUuid and requires active before it opens the dossier, so a
+        // throwaway random uuid answers 400 TEMPLATE_NOT_FOUND rather than
+        // reaching the persist. See DossierTemplateResolver's javadoc for why
+        // that check exists — an unresolvable template used to yield a dossier
+        // that looked fine and rendered blank placeholders into a real
+        // employment contract.
+        String templateUuid = activeTemplate();
+
         WebApplicationException noEmail = assertThrows(WebApplicationException.class,
                 () -> candidateService.createCandidate(builder()
-                        .templateUuid(UUID.randomUUID().toString())
+                        .templateUuid(templateUuid)
                         .targetCompanyUuid(UUID.randomUUID().toString())
                         .build(), actor));
         assertEquals(400, noEmail.getResponse().getStatus());
 
         WebApplicationException noCompany = assertThrows(WebApplicationException.class,
                 () -> candidateService.createCandidate(builder()
-                        .templateUuid(UUID.randomUUID().toString())
+                        .templateUuid(templateUuid)
                         .email(uniqueEmail())
                         .build(), actor));
         assertEquals(400, noCompany.getResponse().getStatus());
 
         CandidateResponse created = create(builder()
-                .templateUuid(UUID.randomUUID().toString())
+                .templateUuid(templateUuid)
                 .email(uniqueEmail())
                 .targetCompanyUuid(UUID.randomUUID().toString())
                 .build());
@@ -190,6 +231,34 @@ class CandidateServiceAtsIntegrationTest {
                 events.stream().map(RecruitmentEvent::getEventType).toList());
         assertTrue(events.get(0).getPayload().contains("\"dossier_opened\":true"));
         events.forEach(RecruitmentEventPiiAssertions::assertNoPiiInPayload);
+    }
+
+    @Test
+    void dossierCreate_unresolvableTemplate_isRefusedAndWritesNothing() {
+        // The template reference is a SOFT FK (V312) — no DB constraint catches
+        // a dangling uuid, and seedSignersFromTemplate cannot tell "no such
+        // template" from "template with no default signers" (both yield "[]").
+        // The resolve-and-require-active check in createCandidate is the only
+        // thing standing between a typo and a contract full of blank
+        // placeholders, so it is pinned here as well as on the DB-free tier.
+        String email = uniqueEmail();
+        WebApplicationException unknown = assertThrows(WebApplicationException.class,
+                () -> candidateService.createCandidate(builder()
+                        .templateUuid(UUID.randomUUID().toString())
+                        .email(email)
+                        .targetCompanyUuid(UUID.randomUUID().toString())
+                        .build(), actor));
+        assertEquals(400, unknown.getResponse().getStatus());
+
+        // The whole create rolls back — no orphan candidate, so no dossier
+        // either. createCandidate is @Transactional and the resolve happens
+        // after RecruitmentCandidate.persist, so this is the rollback being
+        // asserted, not merely check-ordering.
+        Number candidates = (Number) em.createNativeQuery(
+                        "SELECT COUNT(*) FROM recruitment_candidates WHERE email = :email")
+                .setParameter("email", email)
+                .getSingleResult();
+        assertEquals(0, candidates.intValue(), "a refused create leaves no candidate behind");
     }
 
     // ---- Update ------------------------------------------------------------------

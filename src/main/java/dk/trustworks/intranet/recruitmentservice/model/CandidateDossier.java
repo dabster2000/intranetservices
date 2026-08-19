@@ -154,6 +154,26 @@ public class CandidateDossier extends PanacheEntityBase {
     }
 
     /**
+     * Reopen this dossier idempotently — the counterpart to
+     * {@link #closeOnTerminal()}, and the only other status mutator.
+     * <p>
+     * Invoked by {@code DossierService.createForCandidate} when the
+     * candidate already carries a CLOSED dossier on the very template the
+     * recruiter is asking for. Re-inserting instead would hit
+     * {@code uk_dossier_candidate_template UNIQUE (candidate_uuid,
+     * template_uuid)} and answer 500, so a reactivated candidate used to
+     * need manual SQL to get their contract flow back.
+     * <p>
+     * The draft state is deliberately left alone: the placeholder values,
+     * signer configuration and appendices the recruiter entered before the
+     * candidate went terminal are exactly what they want back. Past
+     * revisions stay immutable either way.
+     */
+    public void reopen() {
+        this.status = DossierStatus.OPEN;
+    }
+
+    /**
      * @return the next monotonically-increasing version number for a new
      *         revision on this dossier. Computed via
      *         {@code SELECT COALESCE(MAX(versionNumber), 0) + 1} so that

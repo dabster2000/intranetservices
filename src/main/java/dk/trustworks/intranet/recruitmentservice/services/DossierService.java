@@ -3,16 +3,24 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
+import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -36,9 +44,9 @@ import java.util.UUID;
 
 /**
  * Application service for the {@link CandidateDossier} aggregate. Handles
- * autosave of the JSON draft state (placeholders + signers + appendices),
- * appendix CRUD with filename sanitisation, and read-side projection to the
- * {@link DossierResponse} DTO.
+ * creation (and reopening) of the dossier, autosave of the JSON draft state
+ * (placeholders + signers + appendices), appendix CRUD with filename
+ * sanitisation, and read-side projection to the {@link DossierResponse} DTO.
  * <p>
  * Send actions live on {@link DossierRevisionService}, not here, so this
  * service stays focused on draft-state mutation only.
@@ -52,6 +60,12 @@ public class DossierService {
 
     @Inject
     ObjectMapper objectMapper;
+
+    @Inject
+    DossierTemplateResolver templateResolver;
+
+    @Inject
+    RecruitmentEventRecorder eventRecorder;
 
     /**
      * Look up the open dossier for the given (candidate, template) pair, if
@@ -77,6 +91,190 @@ public class DossierService {
                         candidateUuid.toString())
                 .firstResultOptional()
                 .map(this::toResponse);
+    }
+
+    /**
+     * Open the offer dossier for an existing candidate — the manual
+     * recruiter step {@code RecruitmentOfferBridge.onOfferEntered} has always
+     * deferred to ("dossier creation stays a manual recruiter step on the
+     * profile's Offer &amp; Contract tab") but which had no endpoint until
+     * now. Until this shipped, a candidate who reached OFFER without having
+     * been created through the dossier path had no way to ever get one: the
+     * only {@code new CandidateDossier()} in {@code src/main} lived inside
+     * {@link CandidateService#createCandidate}.
+     *
+     * <h3>Guards, in the contract's order</h3>
+     * Authorization (the dossier flag and the ADMIN/HR write gate) is the
+     * resource's job and runs first. Everything below is domain state and
+     * lives here, in {@link #resolveReopenTarget}: templateUuid present (400
+     * {@code TEMPLATE_REQUIRED}), template resolves and is active (400
+     * {@code TEMPLATE_NOT_FOUND} / {@code TEMPLATE_INACTIVE}), candidate
+     * ACTIVE (409 {@code CANDIDATE_NOT_ACTIVE}), no OPEN dossier (409
+     * {@code DOSSIER_EXISTS}), a CLOSED dossier on the same template is
+     * reopened, a CLOSED dossier on a different template refuses (409).
+     *
+     * <h3>Why the whole command is one transaction</h3>
+     * {@code RecruitmentAtomicCreateStructureTest} forbids a class-level
+     * {@code @Transactional} on {@code RecruitmentResource}, so composing
+     * the insert and the event append up there would commit a dossier and
+     * then possibly fail the append — a contract dossier the timeline never
+     * mentions. Both halves therefore live in this one method, at the
+     * default REQUIRED propagation, exactly like the atomic candidate
+     * create.
+     *
+     * @param candidateUuid the candidate to open the dossier for; already
+     *                      resolved and authorized by the resource
+     * @param templateUuid  the caller's chosen {@code document_templates.uuid}
+     * @param actor         the acting user (from {@code X-Requested-By})
+     * @return the dossier as {@code GET} would return it
+     * @throws NotFoundException       if the candidate does not exist
+     * @throws WebApplicationException 400/409 with a {@code {error, message}}
+     *                                 body the dialog renders verbatim
+     */
+    @Transactional
+    public DossierResponse createForCandidate(UUID candidateUuid, String templateUuid, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+
+        String trimmedTemplateUuid = templateUuid == null ? null : templateUuid.trim();
+        // Read, do not validate: resolveReopenTarget owns the whole guard
+        // chain so its order — which the contract pins — is decided in one
+        // place the DB-free tier can exercise end to end.
+        DocumentTemplateEntity template = trimmedTemplateUuid == null || trimmedTemplateUuid.isEmpty()
+                ? null
+                : DocumentTemplateEntity.findById(trimmedTemplateUuid);
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        List<CandidateDossier> existing = CandidateDossier
+                .<CandidateDossier>list("candidateUuid = ?1", candidate.getUuid());
+
+        CandidateDossier reopenTarget = resolveReopenTarget(
+                trimmedTemplateUuid, template, candidate, existing);
+        boolean reopened = reopenTarget != null;
+
+        CandidateDossier dossier;
+        if (reopened) {
+            dossier = reopenTarget;
+            dossier.reopen();
+        } else {
+            dossier = new CandidateDossier();
+            dossier.setCandidateUuid(candidate.getUuid());
+            // The template's OWN uuid, never the request string: the row then
+            // always points at a template that exists.
+            dossier.setTemplateUuid(template.getUuid());
+            dossier.setStatus(DossierStatus.OPEN);
+            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid()));
+            CandidateDossier.persist(dossier);
+        }
+
+        // The open application (if any) is context for the timeline, and on a
+        // PARTNER-track position it is also what decides the event's secrecy.
+        RecruitmentApplication application =
+                RecruitmentApplicationService.openApplicationOf(candidate.getUuid());
+        RecruitmentPosition position = application == null
+                ? null
+                : RecruitmentPosition.findById(application.getPositionUuid());
+        eventRecorder.record(dossierCreatedEvent(
+                candidate, dossier, reopened, application, position, actor));
+
+        log.infof("DOSSIER_CREATED candidate=%s dossier=%s template=%s reopened=%s by actor=%s",
+                candidate.getUuid(), dossier.getUuid(), dossier.getTemplateUuid(), reopened, actor);
+
+        return toResponse(dossier);
+    }
+
+    /**
+     * The create-dossier guard chain, pure so every branch is reachable on
+     * the DB-free tier (which is the deploy gate).
+     *
+     * <h3>Why a CLOSED dossier reopens rather than re-inserting</h3>
+     * {@code uk_dossier_candidate_template UNIQUE (candidate_uuid,
+     * template_uuid)} would turn a naive re-insert on the same template into
+     * a duplicate-key 500, so that case reopens instead. A CLOSED dossier on
+     * a <em>different</em> template refuses rather than adding a second one:
+     * {@code S3EmployeePromotionService} groups revisions by dossier and
+     * promotes per dossier, so a second dossier multiplies what lands in the
+     * employee record at hire. No candidate in production has ever had more
+     * than one — this keeps it that way.
+     *
+     * @param templateUuid the (trimmed) template reference the caller supplied
+     * @param template     what it resolved to, or {@code null}
+     * @param candidate    the candidate the dossier is for
+     * @param existing     every dossier that candidate already has
+     * @return the CLOSED dossier to reopen, or {@code null} to insert a new one
+     */
+    static CandidateDossier resolveReopenTarget(String templateUuid,
+                                                DocumentTemplateEntity template,
+                                                RecruitmentCandidate candidate,
+                                                List<CandidateDossier> existing) {
+        DocumentTemplateEntity usable = DossierTemplateResolver.requireUsable(templateUuid, template);
+
+        if (candidate.getStatus() != CandidateStatus.ACTIVE) {
+            throw dossierConflict("CANDIDATE_NOT_ACTIVE",
+                    "This candidate is " + candidate.getStatus()
+                            + " — reactivate them before opening a contract dossier.");
+        }
+
+        // Rule 6 scans ALL existing dossiers before rules 7/8 look at any one
+        // of them: an OPEN dossier is an answer on its own, whichever
+        // template it is on.
+        for (CandidateDossier dossier : existing) {
+            if (dossier.getStatus() == DossierStatus.OPEN) {
+                throw dossierConflict("DOSSIER_EXISTS",
+                        "This candidate already has an open dossier — open it instead of creating another.");
+            }
+        }
+        for (CandidateDossier dossier : existing) {
+            if (usable.getUuid().equals(dossier.getTemplateUuid())) {
+                return dossier;
+            }
+        }
+        if (!existing.isEmpty()) {
+            throw dossierConflict("DOSSIER_EXISTS",
+                    "This candidate already has a dossier on template "
+                            + existing.get(0).getTemplateUuid()
+                            + " — reopen that one rather than starting a second.");
+        }
+        return null;
+    }
+
+    /**
+     * The {@code DOSSIER_CREATED} event. Payload is structural only — no
+     * salary, no names, no email (the PII fixture forbids them, spec §3.3),
+     * and this command has no personal data to record in the first place.
+     *
+     * @param position the open application's position, or {@code null}
+     */
+    static RecruitmentEventBuilder dossierCreatedEvent(RecruitmentCandidate candidate,
+                                                       CandidateDossier dossier,
+                                                       boolean reopened,
+                                                       RecruitmentApplication application,
+                                                       RecruitmentPosition position,
+                                                       UUID actor) {
+        RecruitmentEventBuilder event = RecruitmentEventBuilder
+                .event(RecruitmentEventType.DOSSIER_CREATED)
+                .candidate(candidate.getUuid())
+                .actorUser(actor.toString())
+                .payload("template_uuid", dossier.getTemplateUuid())
+                .payload("dossier_uuid", dossier.getUuid())
+                .payload("reopened", reopened);
+        if (application != null) {
+            event.application(application.getUuid())
+                    .position(application.getPositionUuid())
+                    .payload("application_uuid", application.getUuid())
+                    .payload("stage", application.getStage() == null
+                            ? null : application.getStage().name());
+        }
+        if (position != null && position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            // BOTH stamps are load-bearing: the readers of a CIRCLE event
+            // (RecruitmentTimelineService.isVisible, RecruitmentLandingService)
+            // resolve the circle FROM the event's position, so a CIRCLE event
+            // with a null position fails closed for everyone — including the
+            // HR user who just created the dossier. Same pairing as
+            // CandidateService.createCandidate and
+            // RecruitmentApplicationService.applicationEvent.
+            event.position(position.getUuid())
+                    .visibility(RecruitmentEventVisibility.CIRCLE);
+        }
+        return event;
     }
 
     /**
@@ -177,10 +375,7 @@ public class DossierService {
     public DossierResponse branchFromRevision(UUID candidateUuid, UUID revisionUuid, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
 
-        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
-        if (candidate == null) {
-            throw new NotFoundException("Candidate not found: " + candidateUuid);
-        }
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         if (candidate.getStatus() == CandidateStatus.HIRED
                 || candidate.getStatus() == CandidateStatus.DECLINED
                 || candidate.getStatus() == CandidateStatus.WITHDRAWN) {
@@ -233,6 +428,27 @@ public class DossierService {
     }
 
     // ---- helpers ---------------------------------------------------------------
+
+    private static RecruitmentCandidate requireCandidate(UUID candidateUuid) {
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        return candidate;
+    }
+
+    /**
+     * 409 with the contract's {@code {error, message}} body — the create
+     * dialog renders both fields verbatim, so the message is written for the
+     * recruiter rather than for a log. Same shape as
+     * {@code RecruitmentOfferBridge.assertSignatureSendAllowed} and
+     * {@code RecruitmentCandidateHardDeleteService.requireDeletable}.
+     */
+    private static WebApplicationException dossierConflict(String code, String message) {
+        return new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                .entity(Map.of("error", code, "message", message))
+                .build());
+    }
 
     private CandidateDossier requireDossier(UUID dossierUuid) {
         CandidateDossier d = CandidateDossier.findById(dossierUuid.toString());

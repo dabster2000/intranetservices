@@ -126,6 +126,23 @@ public enum RecruitmentEventType {
 
     // --- Offer bridge to the existing dossier module (P10) ---------------
     OFFER_OPENED,
+    /**
+     * HR opened the offer dossier for a candidate from the profile's Offer
+     * &amp; Contract tab — the manual step {@code OFFER_OPENED}'s
+     * {@code dossier_linked:false} has always implied but that had no
+     * endpoint until now. Payload is structural only:
+     * {@code template_uuid}, {@code dossier_uuid}, {@code reopened} (true
+     * when a CLOSED dossier on the same template was reactivated rather
+     * than a row inserted) and, when the candidate has an open application,
+     * {@code application_uuid} + {@code stage}. Never salary, names or
+     * email — those belong in {@code pii}, and this command has none.
+     * <p>
+     * Catalog addition made by the create-offer-dossier command: spec §6.2's
+     * rule is "every mutating endpoint = one command = ≥1 event", and until
+     * this type existed the birth of a contract dossier was the one
+     * offer-flow act the timeline could not show.
+     */
+    DOSSIER_CREATED,
     SIGNING_COMPLETED,
     CANDIDATE_HIRED,
     TEAM_ASSIGNED,
