@@ -543,25 +543,35 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
     private String kitDmText(RecruitmentEventType type, boolean addedOnly,
                              RecruitmentInterview interview,
                              SlackCandidateFacts facts, RecruitmentPosition position) {
-        boolean informal = interview.getRound() == null;
+        // Three shapes of the same sentence, one per kind: an offer
+        // meeting is neither an evaluated round nor an informal chat, so
+        // it gets its own wording rather than inheriting "informal".
+        boolean informal = interview.getKind() == RecruitmentInterviewKind.INFORMAL
+                || (interview.getKind() == RecruitmentInterviewKind.ROUND
+                        && interview.getRound() == null);
+        boolean offer = interview.getKind() == RecruitmentInterviewKind.OFFER;
+        String doingWith = offer ? "meeting " : informal ? "having an informal chat with " : "interviewing ";
+        String joiningWith = offer ? "joining an offer meeting with "
+                : informal ? "joining an informal chat with " : "interviewing ";
+        String noun = offer ? "offer meeting" : informal ? "informal chat" : "interview";
         StringBuilder sb = new StringBuilder(256);
         switch (type) {
             case INTERVIEW_SCHEDULED -> sb.append(":calendar: *Interview scheduled* — you're ")
-                    .append(informal ? "having an informal chat with " : "interviewing ")
+                    .append(doingWith)
                     .append(facts.displayName());
             case INTERVIEW_RESCHEDULED -> {
                 if (addedOnly) {
                     sb.append(":calendar: *You've been added* — you're now ")
-                            .append(informal ? "joining an informal chat with " : "interviewing ")
+                            .append(joiningWith)
                             .append(facts.displayName());
                 } else {
                     sb.append(":calendar: *Interview moved* — your ")
-                            .append(informal ? "informal chat" : "interview").append(" with ")
+                            .append(noun).append(" with ")
                             .append(facts.displayName());
                 }
             }
             default -> sb.append(":x: *Interview cancelled* — your ")
-                    .append(informal ? "informal chat" : "interview").append(" with ")
+                    .append(noun).append(" with ")
                     .append(facts.displayName());
         }
         if (facts.positionTitle() != null) {

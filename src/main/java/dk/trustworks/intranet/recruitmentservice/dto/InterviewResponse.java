@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 
@@ -22,6 +23,13 @@ import java.util.List;
  *                              of silently not inviting the candidate
  * @param onlineMeeting         whether the Outlook event is a Teams meeting
  * @param joinUrl               the Teams join link when known
+ * @param decision              the pending go/no-go recorded on this round
+ *                              (V519 pipeline sub-status) — served ONLY to
+ *                              viewers with decision rights on the position;
+ *                              {@code null} for everyone else, and for rounds
+ *                              with no pending decision
+ * @param decidedAt             when the pending decision was recorded (UTC);
+ *                              gated exactly like {@code decision}
  */
 public record InterviewResponse(
         String uuid,
@@ -46,7 +54,9 @@ public record InterviewResponse(
         boolean calendarSynced,
         boolean candidateInvitable,
         boolean onlineMeeting,
-        String joinUrl
+        String joinUrl,
+        RecruitmentInterviewDecision decision,
+        LocalDateTime decidedAt
 ) {
 
     /** An assigned interviewer + their submission state (never the content). */

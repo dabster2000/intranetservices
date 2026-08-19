@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
@@ -28,7 +29,9 @@ import java.util.UUID;
  * One interview on one application (ATS spec §4.1/§5.3): rounds 1–3 count
  * toward the stage machine (round <em>n</em> ↔ stage {@code INTERVIEW_n});
  * {@code INFORMAL} is the schedulable <em>uformel snak</em> that never
- * advances the stage and takes no scorecard.
+ * advances the stage and takes no scorecard, and {@code OFFER} is the
+ * offer-phase meeting — schedulable on the same terms as an informal chat
+ * (any time the application is in play), no round, no scorecard.
  * <p>
  * State changes are only made through {@code RecruitmentInterviewService},
  * which pairs every mutation with its {@code INTERVIEW_*} event. Interviewer
@@ -56,7 +59,7 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Column(name = "kind", length = 10, nullable = false, updatable = false)
     private RecruitmentInterviewKind kind;
 
-    /** 1..3 for {@code ROUND}; {@code NULL} for {@code INFORMAL}. */
+    /** 1..3 for {@code ROUND}; {@code NULL} for every other kind. */
     @Column(name = "round", updatable = false)
     private Integer round;
 
@@ -134,6 +137,29 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Column(name = "status", length = 10, nullable = false)
     private RecruitmentInterviewStatus status = RecruitmentInterviewStatus.SCHEDULED;
 
+    /**
+     * The owner's recorded go/no-go for this round (V519, pipeline
+     * sub-status): pending state only — the stage move or terminal that
+     * follows clears all three columns, and history lives in the
+     * {@code INTERVIEW_DECISION_*} events. {@code NULL} = no pending
+     * decision (the normal state, and the only state for INFORMAL/OFFER
+     * kinds). While set, the blind rule treats the round as decided.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "decision", length = 10)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private RecruitmentInterviewDecision decision;
+
+    /** Soft FK to {@code users.uuid} — who recorded the pending decision. */
+    @Column(name = "decided_by", length = 36)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String decidedBy;
+
+    /** UTC. When the pending decision was recorded. */
+    @Column(name = "decided_at")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime decidedAt;
+
     // ---- Audit columns (house Auditable pattern) ---------------------------
 
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -169,12 +195,16 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
 
     /**
      * The pipeline stage this interview belongs to — {@code INTERVIEW_n}
-     * for round <em>n</em>, {@code null} for {@code INFORMAL} (which never
-     * maps to a stage). The blind rule's "after decision" unlock compares
-     * the application's current stage against this.
+     * for round <em>n</em>, {@code null} for {@code INFORMAL} and
+     * {@code OFFER} (neither maps to a round in the stage machine; an
+     * offer meeting is scheduled around the OFFER stage, it does not
+     * gate it). The blind rule's "after decision" unlock compares the
+     * application's current stage against this, and every round-only
+     * sweep (SLA nudges, pending-decision tasks) treats a {@code null}
+     * here as "not an evaluated round".
      */
     public RecruitmentStage roundStage() {
-        if (kind != RecruitmentInterviewKind.ROUND || round == null) {
+        if (kind == null || !kind.hasRound() || round == null) {
             return null;
         }
         return switch (round) {

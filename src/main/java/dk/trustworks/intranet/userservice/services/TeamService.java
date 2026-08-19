@@ -115,6 +115,31 @@ public class TeamService {
     }
 
     /**
+     * True when {@code useruuid} holds an active LEADER or SPONSOR role on
+     * {@code teamuuid} on {@code date}.
+     * <p>
+     * The same predicate {@code TeamDashboardService.validateTeamAccess}
+     * enforces for team-dashboard <em>reads</em>, so a write offered from that
+     * page can be gated on exactly the audience that can see the page. It is
+     * deliberately wider than {@link #getTeamLeadersByTeam(String, LocalDate)}:
+     * sponsors count here, and do not count for membership writes.
+     * <p>
+     * Row-count only — no {@code filterForActiveTeamMembers} pass. The
+     * membership row is the authorization fact; whether the holder's employment
+     * status makes them a billable team member is a different question, and
+     * asking it here would silently drop a leader on parental leave.
+     */
+    public boolean isLeaderOrSponsor(String teamuuid, String useruuid, LocalDate date) {
+        if (teamuuid == null || teamuuid.isBlank() || useruuid == null || useruuid.isBlank()) {
+            return false;
+        }
+        return TeamRole.count("teamuuid = ?1 AND useruuid = ?2 " +
+                        "AND teammembertype in (?3, ?4) " +
+                        "AND startdate <= ?5 AND (enddate > ?5 OR enddate is null)",
+                teamuuid, useruuid, TeamMemberType.LEADER, TeamMemberType.SPONSOR, date) > 0;
+    }
+
+    /**
      * Distinct users who are LEADER of ANY team on the given date — the
      * cross-team variant of {@link #getTeamLeadersByTeam(String, LocalDate)}
      * (interviewer-picker grouping: teamleaders sort first).

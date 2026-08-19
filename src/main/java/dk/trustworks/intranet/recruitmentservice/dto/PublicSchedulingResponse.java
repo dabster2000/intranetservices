@@ -18,7 +18,7 @@ import java.util.List;
  *                          consent-page precedent)
  * @param positionTitle     public context (job postings are public);
  *                          null for informal chats without a position
- * @param kind              ROUND or INFORMAL
+ * @param kind              ROUND, INFORMAL or OFFER
  * @param round             1..3 for ROUND, null otherwise
  * @param durationMinutes   interview length
  * @param timezone          always Europe/Copenhagen — shown explicitly

@@ -40,11 +40,15 @@ class SlackSchedulingViewsTest {
     }
 
     @Test
-    void interviewLabel_coversRoundsAndInformal() {
+    void interviewLabel_coversEveryKind() {
         assertEquals("Interview 2",
                 SlackSchedulingViews.interviewLabel(RecruitmentInterviewKind.ROUND, 2));
         assertEquals("Uformel snak",
                 SlackSchedulingViews.interviewLabel(RecruitmentInterviewKind.INFORMAL, null));
+        // The offer meeting carries no round: the old ternary would have
+        // fallen through to the ROUND branch and printed "Interview 1".
+        assertEquals("Samtale (tilbud)",
+                SlackSchedulingViews.interviewLabel(RecruitmentInterviewKind.OFFER, null));
     }
 
     // ---- Combined proposal card -------------------------------------------

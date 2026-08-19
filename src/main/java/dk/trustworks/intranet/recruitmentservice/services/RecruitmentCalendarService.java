@@ -1547,6 +1547,23 @@ public class RecruitmentCalendarService {
      * candidate, so the position and focus areas return to where the
      * interviewers can use them.
      */
+    /**
+     * The calendar subject/ICS summary for one interview — the only place
+     * the kinds are spelled out for a calendar. A ROUND names its number;
+     * an INFORMAL chat is Airtable's <em>uformel snak</em>; an OFFER
+     * meeting is a plain <em>samtale</em>, matching the Danish wording the
+     * candidate already gets in the invitation body ("at møde dig til
+     * samtale") — it carries no round number, so it must never fall
+     * through to the ROUND branch and render "Interview null".
+     */
+    private static String interviewSubject(RecruitmentInterview interview, String candidateName) {
+        return switch (interview.getKind()) {
+            case INFORMAL -> "Uformel snak: %s".formatted(candidateName);
+            case OFFER -> "Samtale: %s".formatted(candidateName);
+            case ROUND -> "Interview %d: %s".formatted(interview.getRound(), candidateName);
+        };
+    }
+
     private CalendarEventRequest buildInternalEvent(RecruitmentInterview interview,
                                                     RecruitmentCandidate candidate,
                                                     RecruitmentPosition position,
@@ -1557,9 +1574,7 @@ public class RecruitmentCalendarService {
         boolean candidateInvited = includeCandidate
                 && candidate != null
                 && candidate.getEmail() != null && !candidate.getEmail().isBlank();
-        String subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
-                ? "Uformel snak: %s".formatted(candidateName(candidate))
-                : "Interview %d: %s".formatted(interview.getRound(), candidateName(candidate));
+        String subject = interviewSubject(interview, candidateName(candidate));
         if (!includeCandidate && position != null && position.getTitle() != null) {
             // Interviewers-only surface — naming the position helps them
             // and can no longer leak to the candidate.
@@ -1805,6 +1820,9 @@ public class RecruitmentCalendarService {
                     ? rendered.body()
                     : escapeHtml(rendered.body()).replace("\n", "<br>");
         } else {
+            // Deliberately two-way, not three: an OFFER meeting shares the
+            // neutral "Samtale hos Trustworks" with the rounds. The
+            // candidate-facing surface never names the pipeline phase.
             subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
                     ? "Uformel snak hos Trustworks"
                     : "Samtale hos Trustworks";
@@ -1851,9 +1869,7 @@ public class RecruitmentCalendarService {
             attendees.add(new InterviewIcsWriter.IcsAttendee(
                     candidate.getEmail(), candidateName(candidate)));
         }
-        String summary = interview.getKind() == RecruitmentInterviewKind.INFORMAL
-                ? "Uformel snak: %s".formatted(candidateName(candidate))
-                : "Interview %d: %s".formatted(interview.getRound(), candidateName(candidate));
+        String summary = interviewSubject(interview, candidateName(candidate));
         return InterviewIcsWriter.write(
                 interview.getUuid() + "@trustworks.dk",
                 interview.getScheduledAt(),
@@ -1900,6 +1916,9 @@ public class RecruitmentCalendarService {
         // namelessly rather than "Kære <surname>", which reads wrong.
         String first = candidate.getFirstName() == null ? "" : candidate.getFirstName().trim();
         String greeting = first.isEmpty() ? "Hej" : "Kære " + first;
+        // Two-way by design: an OFFER meeting takes the same neutral
+        // wording as a round — the candidate is told when and where, not
+        // which phase of our pipeline they are in.
         String occasion = interview.getKind() == RecruitmentInterviewKind.INFORMAL
                 ? "en uformel snak med dig"
                 : "at møde dig til samtale";

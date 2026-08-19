@@ -18,6 +18,11 @@ import java.time.LocalDateTime;
  * ("First Last"), resolved from {@code referred_by_user_uuid} for
  * {@code REFERRAL}/{@code PARTNER_REFERRAL} candidates only — batched
  * per board, never per card.
+ * <p>
+ * {@code subStatus} is the server-derived position inside the stage
+ * ({@link BoardCardSubStatus}); {@code null} for stages with no ladder
+ * (SCREENING, HIRED) — old clients ignore the field, and the frontend
+ * renders nothing when it is null.
  */
 public record BoardCard(
         String applicationUuid,
@@ -29,6 +34,7 @@ public record BoardCard(
         long daysInStage,
         boolean idle,
         LocalDate expectedStartDate,
-        String assignedTeamUuid
+        String assignedTeamUuid,
+        BoardCardSubStatus subStatus
 ) {
 }

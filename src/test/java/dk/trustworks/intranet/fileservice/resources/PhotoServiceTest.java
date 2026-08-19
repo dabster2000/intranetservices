@@ -10,15 +10,27 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -34,8 +46,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 /**
  * A missing avatar is an expected, benign condition — the user simply has no photo uploaded.
@@ -528,6 +544,104 @@ class PhotoServiceTest {
         }
         // jboss-logging defers formatting to the handler, so debugf() arrives unformatted.
         return message + " " + java.util.Arrays.toString(parameters);
+    }
+
+    // --- the fallback must not write, and must keep working -----------------------------------
+    // findPhotoByRelatedUUID used to persist a bare File(uuid, relateduuid, "PHOTO") on a miss and
+    // return that. Two things went wrong. A plain GET wrote to the database, which by 2026-08-19
+    // had left 7,304 of the 7,699 type='PHOTO' rows in production as these stubs. And because the
+    // stub carries type='PHOTO', the NEXT read FOUND it and loaded S3 by its uuid — a key nothing
+    // ever wrote — so the caller got byte[0]. The default image was served exactly once per
+    // entity and never again. These pin both halves.
+    //
+    // How the "no write" half is enforced here: these run outside Arc, so the QuarkusTransaction
+    // the persist needed cannot resolve a transaction manager. Reintroducing the write therefore
+    // does not quietly pass — all three fallback tests below error on
+    // `Arc.container()` being null. Verified by putting the persist back and watching them fail.
+
+    /** A tiny real PNG, so Thumbnailator has something it can actually decode. */
+    private static byte[] png() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(120, 120, BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
+    }
+
+    /** Serves {@code contents} by S3 key; any other key behaves as a genuine 404. */
+    private void s3Contains(Map<String, byte[]> contents) {
+        doAnswer(invocation -> {
+            String key = invocation.<GetObjectRequest>getArgument(0).key();
+            byte[] bytes = contents.get(key);
+            if (bytes == null) {
+                throw NoSuchKeyException.builder().statusCode(404).build();
+            }
+            ResponseTransformer<GetObjectResponse, ?> transformer = invocation.getArgument(1);
+            return transformer.transform(GetObjectResponse.builder().build(),
+                    AbortableInputStream.create(new ByteArrayInputStream(bytes)));
+        }).when(s3).getObject(any(GetObjectRequest.class), any(ResponseTransformer.class));
+    }
+
+    /** No thumbnail cached in S3 yet — the normal state on a first request. */
+    private void noThumbnailInS3() {
+        doThrow(NoSuchKeyException.builder().statusCode(404).build())
+                .when(s3).headObject(any(HeadObjectRequest.class));
+    }
+
+    /** A PhotoService whose database lookup is stubbed, so no Panache enhancement is needed. */
+    private PhotoService serviceWithStoredPhoto(Optional<File> stored) {
+        PhotoService stubbed = new PhotoService(s3) {
+            @Override
+            Optional<File> findStoredPhoto(String relateduuid) {
+                return stored;
+            }
+        };
+        stubbed.bucketName = BUCKET;
+        return stubbed;
+    }
+
+    @Test
+    void aMissAnswersEmptyAndFetchesNothingFromS3() {
+        File result = serviceWithStoredPhoto(Optional.empty()).findPhotoByRelatedUUID(RELATED_UUID);
+
+        assertEquals(0, result.getFile().length,
+                "an absent photo is an empty payload — that is what UserAvatar's DiceBear/initials "
+                        + "fallback and the legacy client's length>0 guard both key off");
+        assertEquals(RELATED_UUID, result.getRelateduuid());
+        // Serving the shared silhouette would show one identical face for every photo-less person,
+        // and would cost an S3 round trip on a path whose volume scales with page views.
+        verify(s3, never()).getObject(any(GetObjectRequest.class), any(ResponseTransformer.class));
+    }
+
+    @Test
+    void everyMissBehavesTheSame_notJustTheFirst() {
+        PhotoService stubbed = serviceWithStoredPhoto(Optional.empty());
+
+        // The old code's first call persisted a stub that its own second call then found, so the
+        // two reads took different branches. They must now be indistinguishable.
+        assertEquals(0, stubbed.findPhotoByRelatedUUID(RELATED_UUID).getFile().length);
+        assertEquals(0, stubbed.findPhotoByRelatedUUID(RELATED_UUID).getFile().length);
+    }
+
+    @Test
+    void aMissAtAWidthPublishesNothingAndCachesNothing() throws Exception {
+        noThumbnailInS3();
+
+        byte[] resized = serviceWithStoredPhoto(Optional.empty()).getResizedPhoto(RELATED_UUID, 64);
+
+        assertEquals(0, resized.length, "UserAvatar requests ?width= — this is the path it hits");
+        // Publishing here would trade the placeholder ROWS this change removes for one S3 object
+        // per entity per width, which no later upload would clean up at ad-hoc widths.
+        verify(s3, never()).putObject(any(PutObjectRequest.class), any(RequestBody.class));
+    }
+
+    @Test
+    void aStoredPhotoIsStillResizedAndCached() throws Exception {
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        s3Contains(Map.of(UUID, png()));
+        noThumbnailInS3();
+
+        byte[] resized = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 64);
+
+        assertNotEquals(0, resized.length, "a real photo must still resize");
     }
 
     private static final class RecordingHandler extends Handler {

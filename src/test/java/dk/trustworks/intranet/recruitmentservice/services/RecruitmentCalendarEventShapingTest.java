@@ -91,6 +91,31 @@ class RecruitmentCalendarEventShapingTest {
     }
 
     @Test
+    void create_offerMeeting_namesTheMeetingInsteadOfAnUnnumberedRound() {
+        // The offer meeting carries no round. Before the OFFER kind
+        // existed, every subject was "INFORMAL ? uformel snak : Interview
+        // %d" — a third kind falls into the round branch and renders
+        // "Interview null: Anna Nielsen" on the candidate's own calendar.
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-offer", null, null));
+        RecruitmentInterview interview = interview();
+        interview.setKind(RecruitmentInterviewKind.OFFER);
+        interview.setRound(null);
+
+        service.createEvent(interview, candidateWithoutEmail(), null);
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph).createCalendarEvent(anyString(), body.capture());
+        String subject = body.getValue().subject();
+        assertTrue(subject.startsWith("Samtale: "),
+                "the offer meeting gets its own subject, got: " + subject);
+        assertTrue(!subject.contains("null"), "no round number to render: " + subject);
+        assertTrue(!subject.contains("Uformel"),
+                "an offer meeting is not the uformel snak: " + subject);
+    }
+
+    @Test
     void create_plainInterview_sendsNoTeamsFields() {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-2", null, null));

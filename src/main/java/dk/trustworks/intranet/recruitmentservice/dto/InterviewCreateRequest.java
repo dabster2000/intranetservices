@@ -12,8 +12,9 @@ import java.util.List;
  * in the resource/service — bean validation is inert in this backend
  * (house rule, findings §P4).
  *
- * @param kind             ROUND or INFORMAL
- * @param round            1..3, required for ROUND, must be null for INFORMAL
+ * @param kind             ROUND, INFORMAL or OFFER
+ * @param round            1..3, required for ROUND, must be null for every
+ *                         other kind
  * @param interviewerUuids the assigned interviewers (1–10 existing users)
  * @param location         optional, PII-free: room name or "Teams"
  * @param roomEmail        optional room mailbox (Graph places) to book as a

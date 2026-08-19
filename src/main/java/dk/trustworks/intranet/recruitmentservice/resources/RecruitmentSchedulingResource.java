@@ -293,14 +293,15 @@ public class RecruitmentSchedulingResource {
 
     private void validateCreate(SchedulingRequestCreateRequest request) {
         if (request.kind() == null) {
-            throw badRequest("kind is required — ROUND or INFORMAL");
+            throw badRequest("kind is required — ROUND, INFORMAL or OFFER");
         }
         if (request.kind() == RecruitmentInterviewKind.ROUND
                 && (request.round() == null || request.round() < 1 || request.round() > 3)) {
             throw badRequest("round must be 1..3 for ROUND interviews");
         }
-        if (request.kind() == RecruitmentInterviewKind.INFORMAL && request.round() != null) {
-            throw badRequest("round must be null for INFORMAL interviews");
+        if (request.kind() != RecruitmentInterviewKind.ROUND && request.round() != null) {
+            throw badRequest("round must be null for "
+                    + request.kind().name() + " interviews");
         }
         if (request.interviewerUuids() == null || request.interviewerUuids().isEmpty()
                 || request.interviewerUuids().size() > MAX_INTERVIEWERS) {

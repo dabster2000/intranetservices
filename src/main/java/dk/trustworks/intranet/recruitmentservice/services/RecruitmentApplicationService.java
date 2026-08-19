@@ -12,6 +12,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication.StageMove;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentConsent;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
@@ -266,6 +267,7 @@ public class RecruitmentApplicationService {
         Objects.requireNonNull(actor, "actor must not be null");
         application = managedApplication(application);
         StageMove move = application.moveToStage(target, position.getStageSet());
+        clearPendingDecisions(application);
         if (move.direction() == RecruitmentApplication.MoveDirection.FORWARD
                 && move.skippedStages() && !mayFastTrack) {
             throw new WebApplicationException(Response
@@ -349,6 +351,7 @@ public class RecruitmentApplicationService {
 
         RecruitmentApplication.PositionMove move =
                 application.moveToPosition(target.getUuid(), stageCodesOf(target));
+        clearPendingDecisions(application);
 
         // Subject the event to the TARGET position (where the application
         // lives now), but stamp CIRCLE if either side is partner track.
@@ -410,6 +413,7 @@ public class RecruitmentApplicationService {
         }
         RecruitmentStage fromStage = application.getStage();
         application.reject(request.reasonCode());
+        clearPendingDecisions(application);
 
         CandidateStatus cascaded = closeOutCandidateIfLastApplication(candidate,
                 CandidateStatus.DECLINED,
@@ -445,6 +449,7 @@ public class RecruitmentApplicationService {
         candidate = managedCandidate(candidate);
         RecruitmentStage fromStage = application.getStage();
         application.withdraw();
+        clearPendingDecisions(application);
 
         CandidateStatus cascaded = closeOutCandidateIfLastApplication(candidate,
                 CandidateStatus.WITHDRAWN,
@@ -485,6 +490,7 @@ public class RecruitmentApplicationService {
         candidate = managedCandidate(candidate);
         RecruitmentStage fromStage = application.getStage();
         application.returnToPool();
+        clearPendingDecisions(application);
 
         // Candidate → talent pool via the domain pool path (P3 carry-over).
         candidate.pool(CandidatePoolStatus.SILVER_MEDALIST, actor);
@@ -669,6 +675,26 @@ public class RecruitmentApplicationService {
             throw new BusinessRuleViolation("Application no longer exists: " + detached.getUuid());
         }
         return managed;
+    }
+
+    /**
+     * A stage move, position move or terminal consumes/supersedes every
+     * pending interview decision on the application (V519 pipeline
+     * sub-status): the record means "decided, awaiting the move", so
+     * whichever move follows resolves it — including a different one than
+     * recorded, which simply wins. Cleared on managed rows (the audit
+     * listener stamps them), no event of its own: this is part of the
+     * move's mutation, and decision history lives in the
+     * {@code INTERVIEW_DECISION_*} events.
+     */
+    private static void clearPendingDecisions(RecruitmentApplication application) {
+        List<RecruitmentInterview> pending = RecruitmentInterview.list(
+                "applicationUuid = ?1 and decision is not null", application.getUuid());
+        for (RecruitmentInterview interview : pending) {
+            interview.setDecision(null);
+            interview.setDecidedBy(null);
+            interview.setDecidedAt(null);
+        }
     }
 
     /** See {@link #managedApplication}. */

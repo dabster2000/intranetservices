@@ -69,6 +69,18 @@ class RecruitmentEventTypeCatalogTest {
         // SCHEDULING_OPTIONS_APPROVED (the D11 review action) and
         // SCHEDULING_REMINDER_SENT (sweep side effects are events) follow
         // the same catalog-addition rules as the paragraphs above.
+        // DOSSIER_CREATED is the create-offer-dossier addition: opening the
+        // contract dossier for an existing candidate is a mutating command
+        // ("every mutating endpoint = one command = ≥1 event", spec §6.2)
+        // and was the one offer-flow act the timeline could not show —
+        // OFFER_OPENED only ever reported whether a dossier already existed.
+        // INTERVIEW_DECISION_RECORDED / INTERVIEW_DECISION_CLEARED are the
+        // pipeline sub-status additions (V519): the opt-in pending go/no-go
+        // on an interview round — the state the board shows as "Inform
+        // candidate" — and its explicit undo. Both are mutating commands
+        // per spec §6.2; the consuming stage move clears the pending state
+        // under its own APPLICATION_* event, deliberately without a second
+        // CLEARED event.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -77,11 +89,13 @@ class RecruitmentEventTypeCatalogTest {
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
+                "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
-                "OFFER_OPENED", "SIGNING_COMPLETED", "CANDIDATE_HIRED", "TEAM_ASSIGNED",
+                "OFFER_OPENED", "DOSSIER_CREATED", "SIGNING_COMPLETED", "CANDIDATE_HIRED",
+                "TEAM_ASSIGNED",
                 "RECORD_CHECK_DRAWN", "RECORD_CHECK_OUTCOME_RECORDED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
                 "ART14_NOTICE_SENT", "DSAR_RECEIVED", "DSAR_EXPORTED", "CANDIDATE_ANONYMIZED",
@@ -109,8 +123,9 @@ class RecruitmentEventTypeCatalogTest {
                         + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
                         + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
-                        + "AVAILABILITY_EVIDENCE_* additions exactly");
-        assertEquals(75, RecruitmentEventType.values().length);
+                        + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
+                        + "and the V519 INTERVIEW_DECISION_* pair exactly");
+        assertEquals(78, RecruitmentEventType.values().length);
     }
 
     @Test
