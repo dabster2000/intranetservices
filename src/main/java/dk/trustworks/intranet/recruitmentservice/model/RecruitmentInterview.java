@@ -28,7 +28,9 @@ import java.util.UUID;
  * One interview on one application (ATS spec §4.1/§5.3): rounds 1–3 count
  * toward the stage machine (round <em>n</em> ↔ stage {@code INTERVIEW_n});
  * {@code INFORMAL} is the schedulable <em>uformel snak</em> that never
- * advances the stage and takes no scorecard.
+ * advances the stage and takes no scorecard, and {@code OFFER} is the
+ * offer-phase meeting — schedulable on the same terms as an informal chat
+ * (any time the application is in play), no round, no scorecard.
  * <p>
  * State changes are only made through {@code RecruitmentInterviewService},
  * which pairs every mutation with its {@code INTERVIEW_*} event. Interviewer
@@ -56,7 +58,7 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Column(name = "kind", length = 10, nullable = false, updatable = false)
     private RecruitmentInterviewKind kind;
 
-    /** 1..3 for {@code ROUND}; {@code NULL} for {@code INFORMAL}. */
+    /** 1..3 for {@code ROUND}; {@code NULL} for every other kind. */
     @Column(name = "round", updatable = false)
     private Integer round;
 
@@ -169,12 +171,16 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
 
     /**
      * The pipeline stage this interview belongs to — {@code INTERVIEW_n}
-     * for round <em>n</em>, {@code null} for {@code INFORMAL} (which never
-     * maps to a stage). The blind rule's "after decision" unlock compares
-     * the application's current stage against this.
+     * for round <em>n</em>, {@code null} for {@code INFORMAL} and
+     * {@code OFFER} (neither maps to a round in the stage machine; an
+     * offer meeting is scheduled around the OFFER stage, it does not
+     * gate it). The blind rule's "after decision" unlock compares the
+     * application's current stage against this, and every round-only
+     * sweep (SLA nudges, pending-decision tasks) treats a {@code null}
+     * here as "not an evaluated round".
      */
     public RecruitmentStage roundStage() {
-        if (kind != RecruitmentInterviewKind.ROUND || round == null) {
+        if (kind == null || !kind.hasRound() || round == null) {
             return null;
         }
         return switch (round) {

@@ -512,7 +512,7 @@ public class RecruitmentLandingService {
                             displayName(candidate), titleOf(position),
                             i.getKind().name(), i.getRound(), i.getScheduledAt(),
                             i.getLocation(),
-                            i.getKind() == RecruitmentInterviewKind.ROUND, ownSubmitted);
+                            i.getKind().takesScorecard(), ownSubmitted);
                 })
                 .toList();
     }

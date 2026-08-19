@@ -130,6 +130,24 @@ class SlackAppHomeViewsTest {
     }
 
     @Test
+    void upcomingInterviews_labelTheOfferMeetingAsItsOwnKind() {
+        LandingResponse landing = new LandingResponse(LandingResponse.SHAPE_INTERVIEWER,
+                new LandingKpis(0, 0, 1, 0), List.of(), List.of(),
+                List.of(new LandingInterview("int-11", "cand-9", "Nora Nord", "Consultant",
+                        "OFFER", null, LocalDateTime.of(2026, 7, 27, 9, 0),
+                        "HQ room 1", false, false)),
+                List.of(), LandingResponse.PIPELINE_SCOPE_OWN, false);
+        String blocks = SlackAppHomeViews
+                .appHomeView(landing, List.of(), false, BASE, NOW).getBlocks().toString();
+
+        assertTrue(blocks.contains("offer meeting"));
+        assertFalse(blocks.contains("informal chat"),
+                "an offer meeting is not an informal chat");
+        assertFalse(blocks.contains("(round "),
+                "an offer meeting has no round number to print");
+    }
+
+    @Test
     void mrkdwnCharactersInNames_areEscaped() {
         LandingResponse landing = landingWithTasks(List.of(
                 scorecardTask("int-1", "Anna <script> & *bold*", "Consulting & <Friends>", 5L)));

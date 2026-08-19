@@ -652,8 +652,17 @@ public class SlackCardReactor extends RecruitmentReactor {
         String interviewUuid = str(payload, "interview_uuid");
         RecruitmentInterview interview = interviewUuid == null ? null
                 : RecruitmentInterview.findById(interviewUuid);
-        String what = interview != null && interview.getRound() != null
-                ? "Interview (round " + interview.getRound() + ")" : "Informal chat";
+        // Name the kind, never infer it from the missing round: an offer
+        // meeting has no round either, and calling it an informal chat in
+        // the candidate's card thread is simply untrue. A row we cannot
+        // load says the neutral "Interview" rather than guessing.
+        String what = interview == null ? "Interview" : switch (interview.getKind()) {
+            case INFORMAL -> "Informal chat";
+            case OFFER -> "Offer meeting";
+            case ROUND -> interview.getRound() != null
+                    ? "Interview (round " + interview.getRound() + ")"
+                    : "Interview";
+        };
         StringBuilder sb = new StringBuilder(128);
         switch (event.getEventType()) {
             case INTERVIEW_SCHEDULED -> sb.append(":calendar: ").append(what).append(" scheduled");

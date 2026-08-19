@@ -9,7 +9,6 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
-import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -108,7 +107,7 @@ public class CandidateBriefService {
                             interview.getStatus(),
                             position == null ? List.<ScorecardAttribute>of() : focusAreas(position),
                             coInterviewers,
-                            interview.getKind() == RecruitmentInterviewKind.ROUND,
+                            interview.getKind().takesScorecard(),
                             ownSubmitted);
                 })
                 .toList();

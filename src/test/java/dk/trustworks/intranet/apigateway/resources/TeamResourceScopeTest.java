@@ -9,7 +9,9 @@ import dk.trustworks.intranet.security.ScopeGuard;
 import dk.trustworks.intranet.security.ScopeResolution;
 import dk.trustworks.intranet.security.TestScopeGuards;
 import dk.trustworks.intranet.userservice.model.TeamRole;
+import dk.trustworks.intranet.userservice.services.TeamLogoService;
 import dk.trustworks.intranet.userservice.services.TeamService;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.ForbiddenException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,6 +48,7 @@ class TeamResourceScopeTest {
 
     private TeamResource resource;
     private TeamService teamService;
+    private TeamLogoService teamLogoService;
     private AuthorizationService authorizationService;
     private RequestHeaderHolder headers;
     private TeamRole stubbedRow;
@@ -53,6 +56,7 @@ class TeamResourceScopeTest {
     @BeforeEach
     void setUp() {
         teamService = mock(TeamService.class);
+        teamLogoService = mock(TeamLogoService.class);
         authorizationService = mock(AuthorizationService.class);
         headers = mock(RequestHeaderHolder.class);
         stubbedRow = null;
@@ -64,6 +68,7 @@ class TeamResourceScopeTest {
             }
         };
         resource.teamService = teamService;
+        resource.teamLogoService = teamLogoService;
         resource.requestHeaderHolder = headers;
         resource.scope = TestScopeGuards.wired(authorizationService, headers);
     }
@@ -145,6 +150,81 @@ class TeamResourceScopeTest {
         assertThrows(ForbiddenException.class,
                 () -> resource.deleteTeamRole(LED_TEAM, "role-row-uuid"));
         verify(teamService, never()).removeUserFromTeam(any());
+    }
+
+    // ---- Team identity (logo): LEADER *or SPONSOR* of that one team ---------
+
+    private static final TeamResource.UpdateTeamLogoRequest LOGO =
+            new TeamResource.UpdateTeamLogoRequest("logo.jpg", "aGVsbG8=");
+
+    private void actorLeadsOrSponsors(String teamuuid) {
+        when(teamService.isLeaderOrSponsor(eq(teamuuid), eq(ACTOR), any())).thenReturn(true);
+    }
+
+    @Test
+    void unboundedActorChangesAnyTeamLogo() {
+        actorIs(ACTOR);
+        writeReachIs(ScopeResolution.unboundedAll());
+        resource.updateTeamLogo(OTHER_TEAM, LOGO);
+        verify(teamLogoService).updateTeamLogo(eq(OTHER_TEAM), eq("aGVsbG8="), eq("logo.jpg"));
+        verify(teamService, never()).isLeaderOrSponsor(any(), any(), any());
+    }
+
+    @Test
+    void headerlessCallerChangesLogoUnchecked() {
+        actorIs(null);
+        resource.updateTeamLogo(OTHER_TEAM, LOGO);
+        verify(teamLogoService).updateTeamLogo(eq(OTHER_TEAM), any(), any());
+        verify(authorizationService, never()).resolveReach(any(), any(), any(), anySet());
+    }
+
+    @Test
+    void boundedLeadChangesOwnTeamLogo() {
+        actorIs(ACTOR);
+        writeReachIs(ScopeResolution.bounded(DataScope.TEAM, Set.of(ACTOR)));
+        actorLeadsOrSponsors(LED_TEAM);
+        resource.updateTeamLogo(LED_TEAM, LOGO);
+        verify(teamLogoService).updateTeamLogo(eq(LED_TEAM), any(), any());
+    }
+
+    @Test
+    void boundedActorIs403OnAnotherTeamsLogo() {
+        actorIs(ACTOR);
+        writeReachIs(ScopeResolution.bounded(DataScope.TEAM, Set.of(ACTOR)));
+        when(teamService.isLeaderOrSponsor(eq(OTHER_TEAM), eq(ACTOR), any())).thenReturn(false);
+        assertThrows(ForbiddenException.class, () -> resource.updateTeamLogo(OTHER_TEAM, LOGO));
+        verify(teamLogoService, never()).updateTeamLogo(any(), any(), any());
+    }
+
+    @Test
+    void actorWithoutTeamsWriteIs403OnLogo() {
+        actorIs(ACTOR);
+        writeReachIs(ScopeResolution.none());
+        assertThrows(ForbiddenException.class, () -> resource.updateTeamLogo(LED_TEAM, LOGO));
+        verify(teamLogoService, never()).updateTeamLogo(any(), any(), any());
+    }
+
+    @Test
+    void logoRequestWithoutBytesIs400BeforeAnyReachLookup() {
+        // The 400 must precede the guard: an empty body is a client mistake, and
+        // resolving reach first would report it as a permissions problem.
+        actorIs(ACTOR);
+        assertThrows(BadRequestException.class,
+                () -> resource.updateTeamLogo(LED_TEAM, new TeamResource.UpdateTeamLogoRequest("logo.jpg", "  ")));
+        assertThrows(BadRequestException.class, () -> resource.updateTeamLogo(LED_TEAM, null));
+        verify(teamLogoService, never()).updateTeamLogo(any(), any(), any());
+        verify(authorizationService, never()).resolveReach(any(), any(), any(), anySet());
+    }
+
+    @Test
+    void logoWriteIsNotScopeEnforced() {
+        // @ScopeEnforced demands an ALL-scope grant and would lock out the
+        // TEAM-scoped teams:write TEAMLEAD holds (V473) — the whole audience
+        // this endpoint exists for.
+        Method m = Arrays.stream(TeamResource.class.getDeclaredMethods())
+                .filter(x -> x.getName().equals("updateTeamLogo")).findFirst().orElseThrow();
+        assertFalse(m.isAnnotationPresent(ScopeEnforced.class),
+                "updateTeamLogo must NOT be @ScopeEnforced — bounded team leads are its audience");
     }
 
     // ---- Whole-team writes stay unbounded-only ------------------------------

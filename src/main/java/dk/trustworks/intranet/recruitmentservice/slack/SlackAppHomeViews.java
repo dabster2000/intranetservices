@@ -167,9 +167,11 @@ public final class SlackAppHomeViews {
             StringBuilder sb = new StringBuilder(160)
                     .append("*").append(safe(interview.candidateName())).append("*");
             appendPosition(sb, interview.positionTitle(),
-                    "INFORMAL".equals(interview.kind()) ? null : interview.round());
+                    "ROUND".equals(interview.kind()) ? interview.round() : null);
             if ("INFORMAL".equals(interview.kind())) {
                 sb.append(" · informal chat");
+            } else if ("OFFER".equals(interview.kind())) {
+                sb.append(" · offer meeting");
             }
             if (interview.scheduledAt() != null) {
                 sb.append(" · ").append(interview.scheduledAt().format(WHEN));

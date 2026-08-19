@@ -22,6 +22,7 @@ import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeEnforced;
 import dk.trustworks.intranet.security.ScopeGuard;
 import dk.trustworks.intranet.security.ScopeResolution;
+import dk.trustworks.intranet.userservice.services.TeamLogoService;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
@@ -81,6 +82,9 @@ public class TeamResource {
     TeamSettingService teamSettingService;
 
     @Inject
+    TeamLogoService teamLogoService;
+
+    @Inject
     RequestHeaderHolder requestHeaderHolder;
 
     @Inject
@@ -115,7 +119,43 @@ public class TeamResource {
         }
     }
 
+    /**
+     * Team-<em>identity</em> writes (today: the logo) are reachable by an
+     * unbounded {@code teams:write} holder (HR, ADMIN) or by a LEADER
+     * <em>or SPONSOR</em> of that one team — the same pair
+     * {@code TeamDashboardService.validateTeamAccess} already admits to the
+     * team dashboard, which is where the control lives. Gating the write on a
+     * narrower audience than the page it sits on would render a button that
+     * always 403s.
+     * <p>
+     * Deliberately wider than {@link #requireMembershipWriteReach}, which
+     * accepts LEADER only: moving people between teams is a membership change
+     * with bonus and visibility consequences, whereas the logo is presentation
+     * and reverting it costs one upload.
+     */
+    private void requireTeamIdentityWriteReach(String teamuuid) {
+        ScopeResolution reach = scope.reachOrNull(TEAMS_WRITE);
+        if (reach == null || reach.unbounded()) {
+            return;
+        }
+        if (reach.isNone() || !teamService.isLeaderOrSponsor(teamuuid, scope.actorOrNull(), LocalDate.now())) {
+            log.infof("teams:write scope denied — actor %s neither leads nor sponsors team %s",
+                    scope.actorOrNull(), teamuuid);
+            throw new ForbiddenException("Team logo changes outside your reach");
+        }
+    }
+
     public record CreateTeamRequest(String name, String shortname, String description, String practiceCode) {
+    }
+
+    /**
+     * @param filename   advisory; sanitized before it is stored
+     * @param fileBase64 the image bytes, base64-encoded. JSON rather than
+     *                   multipart because every other photo write in this
+     *                   backend takes that shape, and the BFF is the only
+     *                   caller — it receives the multipart upload and re-encodes.
+     */
+    public record UpdateTeamLogoRequest(String filename, String fileBase64) {
     }
 
     public record UpdateTeamRequest(String name, String shortname, String description) {
@@ -308,6 +348,38 @@ public class TeamResource {
         if (request == null) throw new BadRequestException("Request body is required");
         log.infof("TeamResource.updateTeam teamuuid=%s updatedBy=%s", teamuuid, requestHeaderHolder.getUserUuid());
         return teamService.updateTeam(teamuuid, request.name(), request.shortname(), request.description());
+    }
+
+    /**
+     * Replaces the team's logo — the image {@code /organization} and the team
+     * dashboard render for this team.
+     * <p>
+     * A team-scoped endpoint rather than a second caller of
+     * {@code PUT /files/photos/logo}: that one is gated on
+     * {@code documents:write}, which says nothing about <em>which</em> team's
+     * identity the caller may change, and its {@code relateduuid} is whatever
+     * the body claims. Here the team is a path segment, so
+     * {@link #requireTeamIdentityWriteReach} can bind the write to a team the
+     * acting human actually leads or sponsors.
+     * <p>
+     * No {@code @ScopeEnforced}: that annotation demands an ALL-scope grant,
+     * which would lock out the TEAM-scoped {@code teams:write} TEAMLEAD holds
+     * (V473) — the audience this endpoint exists for.
+     */
+    @PUT
+    @Path("/{teamuuid}/logo")
+    @RolesAllowed({"teams:write"})
+    public Response updateTeamLogo(@PathParam("teamuuid") String teamuuid, UpdateTeamLogoRequest request) {
+        if (request == null || request.fileBase64() == null || request.fileBase64().isBlank()) {
+            throw new BadRequestException("fileBase64 is required");
+        }
+        requireTeamIdentityWriteReach(teamuuid);
+        teamLogoService.updateTeamLogo(teamuuid, request.fileBase64(), request.filename());
+        // Audit line for a team mutation — logSafe strips CR/LF so a newline in
+        // the client-supplied filename cannot forge a second log event.
+        log.infof("TeamResource.updateTeamLogo teamuuid=%s filename=%s updatedBy=%s",
+                teamuuid, logSafe(request.filename()), requestHeaderHolder.getUserUuid());
+        return Response.noContent().build();
     }
 
     // -----------------------------------------------------------------------

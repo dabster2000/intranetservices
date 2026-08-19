@@ -148,7 +148,7 @@ public class RecruitmentInterviewResource {
         enforceFlag();
         Objects.requireNonNull(request, "request body must not be null");
         if (request.kind() == null) {
-            throw badRequest("kind is required — ROUND or INFORMAL");
+            throw badRequest("kind is required — ROUND, INFORMAL or OFFER");
         }
         if (request.scheduledAt() == null) {
             throw badRequest("scheduledAt is required — interviews are scheduled with a time");

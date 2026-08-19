@@ -13,8 +13,8 @@ import java.util.List;
  * finds the time. All validation is explicit in the resource/service —
  * bean validation is inert in this backend (house rule, findings §P4).
  *
- * @param kind                     ROUND or INFORMAL
- * @param round                    1..3 for ROUND, null for INFORMAL
+ * @param kind                     ROUND, INFORMAL or OFFER
+ * @param round                    1..3 for ROUND, null for INFORMAL and OFFER
  * @param interviewerUuids         REQUIRED interviewers (1–10 existing
  *                                 users) — each must approve every option
  * @param optionalInterviewerUuids optional interviewers (≤10) — never

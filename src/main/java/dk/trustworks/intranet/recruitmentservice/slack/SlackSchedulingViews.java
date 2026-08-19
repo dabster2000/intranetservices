@@ -78,11 +78,21 @@ public final class SlackSchedulingViews {
         return at.format(DAY) + " kl. " + at.format(TIME);
     }
 
-    /** The card's one-line interview label: "Interview 2" / "Uformel snak". */
+    /**
+     * The card's one-line interview label: {@code "Interview 2"} /
+     * {@code "Uformel snak"} / {@code "Samtale (tilbud)"}. Internal
+     * (interviewer-facing) copy, so the offer meeting may name its phase —
+     * the candidate-facing calendar subject deliberately does not.
+     */
     public static String interviewLabel(RecruitmentInterviewKind kind, Integer round) {
-        return kind == RecruitmentInterviewKind.INFORMAL
-                ? "Uformel snak"
-                : "Interview " + (round != null ? round : 1);
+        if (kind == null) {
+            return "Interview " + (round != null ? round : 1);
+        }
+        return switch (kind) {
+            case INFORMAL -> "Uformel snak";
+            case OFFER -> "Samtale (tilbud)";
+            case ROUND -> "Interview " + (round != null ? round : 1);
+        };
     }
 
     /**

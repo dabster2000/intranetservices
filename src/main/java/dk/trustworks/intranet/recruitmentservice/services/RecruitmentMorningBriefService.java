@@ -329,23 +329,36 @@ public class RecruitmentMorningBriefService {
                 : ctx.candidates.get(application.getCandidateUuid());
         RecruitmentPosition position = application == null ? null
                 : ctx.positions.get(application.getPositionUuid());
-        boolean informal = interview.getKind() == RecruitmentInterviewKind.INFORMAL
-                || interview.getRound() == null;
+        // "round n" only when there IS one — an informal chat and an offer
+        // meeting carry no round and must never render "round null".
+        String kindLabel = switch (interview.getKind()) {
+            case OFFER -> "offer meeting";
+            case INFORMAL -> "informal chat";
+            // A ROUND without a number is impossible by CHECK constraint;
+            // the fallback keeps a migrated oddity readable (pre-V442 rows).
+            case ROUND -> interview.getRound() == null
+                    ? "informal chat"
+                    : "round " + interview.getRound();
+        };
         StringBuilder sb = new StringBuilder(200)
                 .append("• ").append(interview.getScheduledAt().format(TIME))
                 .append(" — *").append(briefLink(candidate)).append('*');
         if (position != null && position.getTitle() != null) {
             sb.append(" (*").append(SlackCandidateFacts.mrkdwnSafe(position.getTitle()))
                     .append('*');
-            sb.append(informal ? ", informal chat" : ", round " + interview.getRound());
+            sb.append(", ").append(kindLabel);
             sb.append(')');
         } else {
-            sb.append(informal ? " (informal chat)" : " (round " + interview.getRound() + ")");
+            sb.append(" (").append(kindLabel).append(')');
         }
         if (interview.getLocation() != null && !interview.getLocation().isBlank()) {
             sb.append(" · ").append(SlackCandidateFacts.mrkdwnSafe(interview.getLocation()));
         }
-        if (!informal && position != null && position.getScorecardTemplate() != null
+        // Focus areas belong to the scored kinds only — an informal chat
+        // and an offer meeting take no scorecard, so the template would
+        // be a prompt to fill in something that cannot be submitted.
+        if (interview.getKind().takesScorecard() && position != null
+                && position.getScorecardTemplate() != null
                 && !position.getScorecardTemplate().isEmpty()) {
             sb.append("\n  Focus areas: ").append(position.getScorecardTemplate().stream()
                     .map(a -> SlackCandidateFacts.mrkdwnSafe(a.label()))

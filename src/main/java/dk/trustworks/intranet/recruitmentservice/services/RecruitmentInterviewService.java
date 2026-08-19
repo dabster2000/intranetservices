@@ -114,7 +114,10 @@ public class RecruitmentInterviewService {
      * Create (= schedule) an interview. The application must be in play —
      * terminal or HIRED applications take no more interviews. ROUND
      * interviews must map to a stage in the position's stage set; INFORMAL
-     * is schedulable at any point (spec §5.3).
+     * and OFFER are schedulable at any point (spec §5.3). An offer meeting
+     * is deliberately NOT gated on the application already standing at
+     * OFFER: the meeting is regularly booked while the decision to make an
+     * offer is being taken, and a back-move must not orphan it.
      */
     @Transactional
     public RecruitmentInterview create(RecruitmentApplication application,
@@ -135,14 +138,17 @@ public class RecruitmentInterviewService {
                                         position.getStageSet() == null ? List.of() : position.getStageSet())));
             }
         } else if (request.round() != null) {
-            throw new BusinessRuleViolation("An informal chat has no round number");
+            throw new BusinessRuleViolation(
+                    request.kind() == RecruitmentInterviewKind.OFFER
+                            ? "An offer meeting has no round number"
+                            : "An informal chat has no round number");
         }
         List<String> interviewers = normalizeInterviewers(request.interviewerUuids());
 
         RecruitmentInterview interview = new RecruitmentInterview();
         interview.setApplicationUuid(application.getUuid());
         interview.setKind(request.kind());
-        interview.setRound(request.kind() == RecruitmentInterviewKind.ROUND ? request.round() : null);
+        interview.setRound(request.kind().hasRound() ? request.round() : null);
         interview.setScheduledAt(request.scheduledAt());
         if (request.durationMinutes() != null) {
             interview.setDurationMinutes(request.durationMinutes());
@@ -333,9 +339,12 @@ public class RecruitmentInterviewService {
                                                 String origin) {
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
-        if (interview.getKind() == RecruitmentInterviewKind.INFORMAL) {
+        if (!interview.getKind().takesScorecard()) {
             throw new BusinessRuleViolation(
-                    "An informal chat takes no scorecard — add a note on the candidate instead");
+                    (interview.getKind() == RecruitmentInterviewKind.OFFER
+                            ? "An offer meeting takes no scorecard"
+                            : "An informal chat takes no scorecard")
+                            + " — add a note on the candidate instead");
         }
         if (!interview.isAssigned(actor.toString())) {
             // The resource has already 404'd viewers without candidate
@@ -551,7 +560,7 @@ public class RecruitmentInterviewService {
                             stage,
                             focusAreas(position),
                             latestCvFileUuid(candidate.getUuid()),
-                            interview.getKind() == RecruitmentInterviewKind.ROUND,
+                            interview.getKind().takesScorecard(),
                             ownSubmitted,
                             coInterviewers);
                 })
@@ -689,7 +698,7 @@ public class RecruitmentInterviewService {
                 interview.getRoomEmail(),
                 interview.getStatus(),
                 interviewerInfos(interview, scorecards, names),
-                interview.getKind() == RecruitmentInterviewKind.ROUND,
+                interview.getKind().takesScorecard(),
                 scorecards.size(),
                 interview.getInterviewerUuids().size(),
                 ownSubmitted,
