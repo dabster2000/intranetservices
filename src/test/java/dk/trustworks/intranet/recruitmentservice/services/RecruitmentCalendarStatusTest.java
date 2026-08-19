@@ -51,6 +51,62 @@ class RecruitmentCalendarStatusTest {
     // ---- Pure mapping ----------------------------------------------------------
 
     @Test
+    void assignedInterviewerOnNoAttendeeLine_isReportedMissing_notOmitted() {
+        // The V492 attendee drop hid behind an absent row for six days in
+        // production. An uninvited interviewer must be a visible state.
+        Map<String, String> interviewers = new LinkedHashMap<>();
+        interviewers.put("uuid-a", "anna.alpha@trustworks.dk");
+        interviewers.put("uuid-b", "bo.beta@trustworks.dk");
+        CalendarEventDetails details = new CalendarEventDetails(
+                new CalendarEventRequest.DateTimeTimeZone("2026-08-20T10:00:00.0000000", "Europe/Copenhagen"),
+                List.of(attendee("bo.beta@trustworks.dk", "required", "none")),
+                null);
+
+        CalendarStatusResponse status = RecruitmentCalendarService.calendarStatus(
+                interviewers, "cand-1", null, SCHEDULED, details);
+
+        assertEquals(2, status.rsvps().size(), "both interviewers get a row");
+        assertEquals(new CalendarStatusResponse.Rsvp("INTERVIEWER", "uuid-b", "NONE"),
+                status.rsvps().get(0), "invited but silent stays NONE");
+        assertEquals(new CalendarStatusResponse.Rsvp("INTERVIEWER", "uuid-a", "MISSING"),
+                status.rsvps().get(1), "never invited is MISSING — a different fact from NONE");
+    }
+
+    @Test
+    void everyInterviewerMissing_stillReportsKnown_soTheUiCanWarn() {
+        // The single-interviewer case: the event carried only the room.
+        Map<String, String> interviewers = new LinkedHashMap<>();
+        interviewers.put("uuid-solo", "solo@trustworks.dk");
+        CalendarEventDetails details = new CalendarEventDetails(
+                new CalendarEventRequest.DateTimeTimeZone("2026-08-20T10:00:00.0000000", "Europe/Copenhagen"),
+                List.of(attendee("room-hq2@trustworks.dk", "resource", "accepted")),
+                null);
+
+        CalendarStatusResponse status = RecruitmentCalendarService.calendarStatus(
+                interviewers, "cand-1", null, SCHEDULED, details);
+
+        assertTrue(status.known());
+        assertEquals(List.of(new CalendarStatusResponse.Rsvp("INTERVIEWER", "uuid-solo", "MISSING")),
+                status.rsvps(), "an event with no human attendee must not read as 'nothing to report'");
+    }
+
+    @Test
+    void candidateEventMapping_passesNoInterviewers_soItMintsNoMissingRows() {
+        // eventStatus() calls this a second time with Map.of() for the split
+        // candidate event; MISSING rows there would duplicate every interviewer.
+        CalendarEventDetails details = new CalendarEventDetails(
+                new CalendarEventRequest.DateTimeTimeZone("2026-08-20T10:00:00.0000000", "Europe/Copenhagen"),
+                List.of(attendee("candidate@example.com", "required", "accepted")),
+                null);
+
+        CalendarStatusResponse status = RecruitmentCalendarService.calendarStatus(
+                Map.of(), "cand-1", "candidate@example.com", SCHEDULED, details);
+
+        assertEquals(List.of(new CalendarStatusResponse.Rsvp("CANDIDATE", "cand-1", "ACCEPTED")),
+                status.rsvps());
+    }
+
+    @Test
     void mapsResponses_perParticipant_roomIgnored_caseInsensitive() {
         Map<String, String> interviewers = new LinkedHashMap<>();
         interviewers.put("uuid-a", "Anna.Alpha@trustworks.dk");

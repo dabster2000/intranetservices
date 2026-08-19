@@ -52,12 +52,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * calendar trouble. {@code graph_event_id} simply stays null (create) or
  * keeps its last value (update/cancel).
  * <p>
- * Event shape: created in the FIRST interviewer's calendar (they act as
- * organizer); remaining interviewers and the candidate (external, when an
- * email exists) are invited as required attendees. Duration is the
- * interview row's {@code duration_minutes} (V474), default 60. The body is
- * written to the candidate whenever they are on the invitation — see
- * {@link #invitationBody}.
+ * Event shape: created under the mailbox {@link #organizerMailbox} resolves
+ * — since V492 the shared {@code career@trustworks.dk}, before that the
+ * first interviewer's own calendar. EVERY interviewer is invited as a
+ * required attendee except the one whose mailbox IS the organizer, because
+ * Outlook derives the organizer from the hosting mailbox and listing them
+ * again duplicates them. The exclusion is by mailbox identity, never by
+ * list position: it was positional until V492 moved the organizer to a
+ * shared mailbox, at which point interviewer #1 silently stopped being
+ * invited. The candidate (external, when an email exists) is invited on
+ * their own event since V493. Duration is the interview row's
+ * {@code duration_minutes} (V474), default 60. The body is written to the
+ * candidate whenever they are on the invitation — see {@link #invitationBody}.
  */
 @JBossLog
 @ApplicationScoped
@@ -345,7 +351,7 @@ public class RecruitmentCalendarService {
                 return Optional.empty();
             }
             GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
-                    organizer, buildInternalEvent(interview, candidate, position, true, false));
+                    organizer, buildInternalEvent(interview, candidate, position, true, false, organizer));
             if (created == null || created.id() == null) {
                 return Optional.empty();
             }
@@ -406,7 +412,7 @@ public class RecruitmentCalendarService {
             boolean split = interview.getGraphCandidateEventId() != null;
             GraphApiClient.CalendarEvent updated = graph().updateCalendarEvent(
                     organizer, interview.getGraphEventId(),
-                    buildInternalEvent(interview, candidate, position, false, !split));
+                    buildInternalEvent(interview, candidate, position, false, !split, organizer));
             String joinUrl = updated != null ? joinUrlOf(updated) : null;
             if (split) {
                 try {
@@ -502,6 +508,12 @@ public class RecruitmentCalendarService {
      * ignored; the organizer's own pseudo-response counts as accepted
      * only when the organizer IS an interviewer (shared-mailbox events
      * never surface it because the mailbox maps to nobody).
+     * <p>
+     * Every assigned interviewer gets a row. One who matches no attendee
+     * line is reported MISSING — never invited — rather than omitted, so
+     * an attendee-list defect is visible instead of silent. Callers pass
+     * an empty interviewer map for the candidate event, which therefore
+     * yields no MISSING rows.
      */
     static CalendarStatusResponse calendarStatus(Map<String, String> emailByInterviewerUuid,
                                                  String candidateUuid,
@@ -516,6 +528,7 @@ public class RecruitmentCalendarService {
                 : null;
 
         List<CalendarStatusResponse.Rsvp> rsvps = new ArrayList<>();
+        Set<String> placedInterviewerUuids = new HashSet<>();
         if (details.attendees() != null) {
             for (GraphApiClient.CalendarEventDetails.EventAttendee attendee : details.attendees()) {
                 if (attendee.emailAddress() == null || attendee.emailAddress().address() == null) {
@@ -528,6 +541,7 @@ public class RecruitmentCalendarService {
                 if (interviewerUuid != null) {
                     rsvps.add(new CalendarStatusResponse.Rsvp(
                             "INTERVIEWER", interviewerUuid, response));
+                    placedInterviewerUuids.add(interviewerUuid);
                 } else if (candidateEmailLower != null && candidateEmailLower.equals(email)) {
                     rsvps.add(new CalendarStatusResponse.Rsvp(
                             "CANDIDATE", candidateUuid, response));
@@ -535,6 +549,16 @@ public class RecruitmentCalendarService {
                 // else: the room's auto-response or an unplaceable address — ignored.
             }
         }
+        // An assigned interviewer who is on NO attendee line has not "not
+        // answered" — they were never invited, and every other surface
+        // (Slack kit DM, My interviews, the tab itself) is meanwhile telling
+        // them they are booked. Report that as its own state instead of as
+        // an absent row: silent omission is how the V492 attendee drop
+        // survived unnoticed in production.
+        emailByInterviewerUuid.keySet().stream()
+                .filter(uuid -> !placedInterviewerUuids.contains(uuid))
+                .forEach(uuid -> rsvps.add(new CalendarStatusResponse.Rsvp(
+                        "INTERVIEWER", uuid, "MISSING")));
 
         LocalDateTime outlookStart = parseGraphDateTime(
                 details.start() != null ? details.start().dateTime() : null);
@@ -1527,7 +1551,8 @@ public class RecruitmentCalendarService {
                                                     RecruitmentCandidate candidate,
                                                     RecruitmentPosition position,
                                                     boolean create,
-                                                    boolean includeCandidate) {
+                                                    boolean includeCandidate,
+                                                    String organizer) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
         boolean candidateInvited = includeCandidate
                 && candidate != null
@@ -1541,18 +1566,8 @@ public class RecruitmentCalendarService {
             subject = subject + " — " + position.getTitle();
         }
 
-        List<CalendarEventRequest.Attendee> attendees = new ArrayList<>();
-        List<String> interviewers = interview.getInterviewerUuids();
-        for (int i = 1; i < interviewers.size(); i++) {
-            // Name as well as address: an external mail client cannot
-            // resolve a Trustworks address against our directory, so a
-            // nameless attendee shows up as a raw firstname.lastname@… .
-            User user = User.findById(interviewers.get(i));
-            String email = mailboxOf(user);
-            if (email != null) {
-                attendees.add(required(email, displayName(user)));
-            }
-        }
+        List<CalendarEventRequest.Attendee> attendees = new ArrayList<>(
+                interviewerAttendees(resolveInterviewers(interview.getInterviewerUuids()), organizer));
         if (candidateInvited) {
             attendees.add(required(candidate.getEmail(), candidateName(candidate)));
         }
@@ -1597,6 +1612,96 @@ public class RecruitmentCalendarService {
                 Boolean.TRUE,
                 null,
                 null);
+    }
+
+    /**
+     * One interviewer reduced to what an invitation needs: their mailbox
+     * and the name to show beside it.
+     */
+    record Interviewer(String email, String name) {
+    }
+
+    /**
+     * How an interviewer UUID becomes a mailbox identity. A replaceable
+     * field rather than a direct call — exactly like {@link #graphApiClient}
+     * — so the DB-free tier that gates deploys can build a MULTI-interviewer
+     * attendee list. {@code User.findById} is Panache-enhanced and throws
+     * {@code implementationInjectionMissing} outside Quarkus, which
+     * {@code createEvent}'s catch-all would swallow into a silent no-op:
+     * that is precisely why the pre-fix single-interviewer fixtures were
+     * the only shape the gate could express, and why the drop shipped.
+     */
+    java.util.function.Function<String, Interviewer> interviewerResolver = uuid -> {
+        User user = User.findById(uuid);
+        String email = mailboxOf(user);
+        return email == null ? null : new Interviewer(email, displayName(user));
+    };
+
+    /** Resolve assigned interviewer UUIDs to mailbox identities, in order,
+     * dropping any we cannot place (no user row, no usable email). */
+    private List<Interviewer> resolveInterviewers(List<String> interviewerUuids) {
+        if (interviewerUuids == null) {
+            return List.of();
+        }
+        List<Interviewer> resolved = new ArrayList<>();
+        for (String uuid : interviewerUuids) {
+            Interviewer interviewer = interviewerResolver.apply(uuid);
+            if (interviewer != null && interviewer.email() != null
+                    && !interviewer.email().isBlank()) {
+                resolved.add(interviewer);
+            }
+        }
+        return resolved;
+    }
+
+    /**
+     * The interviewer attendee list: everyone except whoever IS the
+     * organizer. Outlook derives the organizer from the mailbox hosting the
+     * event, so re-listing them as an attendee duplicates them on the
+     * invitation.
+     * <p>
+     * Matching is on mailbox identity, case-insensitively — NOT on list
+     * position. The positional form ({@code for i = 1}) was correct only
+     * while the organizer was by definition {@code interviewerUuids[0]};
+     * V492 moved new events to the shared {@code career@trustworks.dk}
+     * mailbox and the skip silently began dropping a real person, and
+     * invited nobody at all when a single interviewer was assigned. Legacy
+     * rows whose stored {@code graph_organizer} IS an interviewer still
+     * exclude exactly that one, so nothing double-invites.
+     * <p>
+     * Pure and package-private on purpose: the DB-free tier that gates
+     * deploys pins it directly, the same convention as {@link #internalBody},
+     * {@link #invitationBody} and {@link #calendarStatus}.
+     *
+     * @param interviewers already-resolved mailbox identities, in roster order
+     * @param organizerMailbox the mailbox the event lives under; {@code null}
+     *                         excludes nobody
+     */
+    static List<CalendarEventRequest.Attendee> interviewerAttendees(
+            List<Interviewer> interviewers, String organizerMailbox) {
+        if (interviewers == null || interviewers.isEmpty()) {
+            return List.of();
+        }
+        List<CalendarEventRequest.Attendee> attendees = new ArrayList<>();
+        for (Interviewer interviewer : interviewers) {
+            String email = interviewer == null || interviewer.email() == null
+                    ? null
+                    : interviewer.email().trim();
+            if (email == null || email.isEmpty()) {
+                continue;
+            }
+            // Trim BOTH sides: a stored mailbox with stray whitespace would
+            // otherwise fail to match the organizer and get listed twice —
+            // once as organizer, once as attendee.
+            if (organizerMailbox != null && email.equalsIgnoreCase(organizerMailbox.trim())) {
+                continue;
+            }
+            // Name as well as address: an external mail client cannot
+            // resolve a Trustworks address against our directory, so a
+            // nameless attendee shows up as a raw firstname.lastname@… .
+            attendees.add(required(email, interviewer.name()));
+        }
+        return attendees;
     }
 
     /** The split-mode internal note: kit pointer, position, focus areas. */
@@ -1733,12 +1838,12 @@ public class RecruitmentCalendarService {
     public String icsFor(RecruitmentInterview interview, RecruitmentCandidate candidate) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set for an invitation");
         List<InterviewIcsWriter.IcsAttendee> attendees = new ArrayList<>();
-        for (String interviewerUuid : interview.getInterviewerUuids()) {
-            User user = User.findById(interviewerUuid);
-            String email = mailboxOf(user);
-            if (email != null) {
-                attendees.add(new InterviewIcsWriter.IcsAttendee(email, displayName(user)));
-            }
+        // Every interviewer, including whoever organizes: iCalendar lists the
+        // ORGANIZER property and the ATTENDEE lines independently, so unlike a
+        // Graph event there is nobody to exclude here.
+        for (Interviewer interviewer : resolveInterviewers(interview.getInterviewerUuids())) {
+            attendees.add(new InterviewIcsWriter.IcsAttendee(
+                    interviewer.email(), interviewer.name()));
         }
         boolean candidateInvited = candidate != null
                 && candidate.getEmail() != null && !candidate.getEmail().isBlank();

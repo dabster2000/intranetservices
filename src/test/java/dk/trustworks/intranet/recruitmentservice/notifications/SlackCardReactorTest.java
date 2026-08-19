@@ -160,6 +160,20 @@ class SlackCardReactorTest {
                                 + direction + "\",\"skipped_stages\":false}", null));
     }
 
+    /** An INTERVIEW_RESCHEDULED carrying the before/after pairs the diff reads. */
+    private long insertInterviewRescheduled(String previousScheduledAt, String scheduledAt,
+                                            String previousLocation, String location) {
+        return QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.insertEvent(em, "INTERVIEW_RESCHEDULED", candidateUuid,
+                        applicationUuid, positionUuid, "USER", actorUser, "NORMAL",
+                        "{\"previous_scheduled_at\":\"" + previousScheduledAt + "\","
+                                + "\"scheduled_at\":\"" + scheduledAt + "\","
+                                + "\"previous_location\":\"" + previousLocation + "\","
+                                + "\"location\":\"" + location + "\","
+                                + "\"previous_duration_minutes\":60,\"duration_minutes\":60}",
+                        null));
+    }
+
     private String otherPracticeChannelKey() {
         return RecruitmentSlackChannelRouter.PRACTICE_CHANNEL_KEY_PREFIX + otherPracticeUuid;
     }
@@ -293,6 +307,38 @@ class SlackCardReactorTest {
         ArgumentCaptor<String> reply = ArgumentCaptor.forClass(String.class);
         verify(slackService).sendThreadReply(eq("C-DEFAULT"), eq(ROOT_TS), reply.capture());
         assertTrue(reply.getValue().contains("Moved back"), "BACK moves must say so");
+    }
+
+    @Test
+    void reschedule_thatChangedNothing_postsNoMovedNote() throws Exception {
+        // A reschedule save is how a recruiter re-invites an interviewer the
+        // V492 attendee drop left off the Outlook event: nothing about WHEN or
+        // WHERE changes. Announcing "moved" in the candidate's card thread is
+        // then simply untrue — and it contradicts the kit DMs, which already
+        // stay silent on this exact diff.
+        cardsOnWithChannel("C-DEFAULT");
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+        insertInterviewRescheduled("2026-08-20T10:00", "2026-08-20T10:00",
+                "HP4", "HP4");
+
+        reactor.catchUp();
+
+        verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void reschedule_thatActuallyMoved_stillPostsTheMovedNote() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+        insertInterviewRescheduled("2026-08-20T10:00", "2026-08-21T13:30",
+                "HP4", "HP4");
+
+        reactor.catchUp();
+
+        ArgumentCaptor<String> reply = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendThreadReply(eq("C-DEFAULT"), eq(ROOT_TS), reply.capture());
+        assertTrue(reply.getValue().contains("moved"),
+                "a genuine time change must still announce itself");
     }
 
     @Test

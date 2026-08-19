@@ -41,9 +41,14 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>toggle OFF (the shipped default): no Graph call ever, empty
  *       result — manual scheduling untouched;</li>
- *   <li>toggle ON: event created in the FIRST interviewer's mailbox with
- *       the co-interviewers + candidate as attendees; update/cancel
- *       propagate;</li>
+ *   <li>toggle ON, NO configured organizer (the pre-V492 fallback): event
+ *       created in the FIRST interviewer's mailbox, so they are the
+ *       organizer and only the co-interviewers are attendees;</li>
+ *   <li>toggle ON WITH the configured shared mailbox — what production
+ *       actually runs: EVERY interviewer is an attendee. Until this case
+ *       existed, the suite's only multi-interviewer test pinned the legacy
+ *       fallback, the one configuration in which excluding interviewer[0]
+ *       is correct, so the V492 attendee drop passed every gate;</li>
  *   <li>Graph failure: swallowed — scheduling never fails on calendar
  *       trouble.</li>
  * </ul>
@@ -101,6 +106,31 @@ class RecruitmentCalendarServiceTest {
     }
 
     @Test
+    void configuredSharedOrganizer_invitesEveryInterviewer_includingTheFirst() {
+        // The PRODUCTION configuration. career@trustworks.dk is on nobody's
+        // roster, so no interviewer is the organizer and none may be skipped.
+        // Before the identity-based exclusion landed, interviewerA was dropped
+        // here and a single-interviewer interview invited nobody at all.
+        service.calendarEnabled = true;
+        service.configuredOrganizerValue = Optional.of("career@trustworks.dk");
+        when(graph.createCalendarEvent(anyString(), any()))
+                .thenReturn(new GraphApiClient.CalendarEvent("evt-shared", null, null));
+
+        QuarkusTransaction.requiringNew().call(() ->
+                service.createEvent(interview(), candidate(), null));
+
+        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        verify(graph, times(2)).createCalendarEvent(eq("career@trustworks.dk"), body.capture());
+        List<String> attendeeEmails = body.getAllValues().get(0).attendees().stream()
+                .map(a -> a.emailAddress().address())
+                .toList();
+        assertEquals(List.of(interviewerA + "@example.com", interviewerB + "@example.com"),
+                attendeeEmails,
+                "both interviewers, in roster order — the drop was interviewerA going missing");
+    }
+
+    @Test
     void toggleOn_createsInFirstInterviewersMailbox_withCandidateAttendee() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
@@ -121,6 +151,8 @@ class RecruitmentCalendarServiceTest {
                 .toList();
         assertTrue(attendeeEmails.contains(interviewerB + "@example.com"),
                 "co-interviewer invited");
+        assertTrue(!attendeeEmails.contains(interviewerA + "@example.com"),
+                "interviewerA hosts the event here, so they are the organizer — never also an attendee");
         assertTrue(!attendeeEmails.contains("candidate@example.com"),
                 "the candidate rides on their OWN event, never the internal one");
         assertEquals("Interview 1: Kim Kandidat", internal.subject());

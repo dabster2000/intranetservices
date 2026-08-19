@@ -657,7 +657,20 @@ public class SlackCardReactor extends RecruitmentReactor {
         StringBuilder sb = new StringBuilder(128);
         switch (event.getEventType()) {
             case INTERVIEW_SCHEDULED -> sb.append(":calendar: ").append(what).append(" scheduled");
-            case INTERVIEW_RESCHEDULED -> sb.append(":calendar: ").append(what).append(" moved");
+            case INTERVIEW_RESCHEDULED -> {
+                // Say "moved" only when it actually moved. A reschedule save
+                // that changes nothing — the way a recruiter re-invites a
+                // missing interviewer — still records INTERVIEW_RESCHEDULED,
+                // and claiming a move in the candidate's card thread is simply
+                // false. Same WHEN/WHERE diff the kit DMs use, so the thread
+                // and the DMs can never tell different stories; a list-only
+                // change reaches its additions by DM, not by an untrue
+                // "moved" note here.
+                if (!RecruitmentSlackReactor.rescheduleDetailsChanged(payload)) {
+                    return null;
+                }
+                sb.append(":calendar: ").append(what).append(" moved");
+            }
             default -> {
                 sb.append(":x: ").append(what).append(" cancelled");
                 return sb.toString();
