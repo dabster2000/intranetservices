@@ -12,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import java.util.List;
 import java.util.UUID;
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -270,6 +272,8 @@ class SlackCardReactorTest {
         assertEquals(ROOT_TS, threadRowTs(), "thread projection must record the root ts");
         verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
         verify(slackService, never()).sendMessage(anyString(), anyString());
+        // Shared channel: chat:write.public covers it — no membership heal.
+        verify(slackService, never()).ensureCardBotInChannel(anyString());
     }
 
     @Test
@@ -451,7 +455,12 @@ class SlackCardReactorTest {
 
         reactor.catchUp();
 
-        verify(slackService, times(1)).sendMessageReturningTs(eq("C-PRIVATE"), anyString(), any());
+        // The membership heal precedes the post: a private channel answers
+        // channel_not_found to a non-member token, so posting first would
+        // dead-letter on any channel whose bot went missing.
+        InOrder heals = inOrder(slackService);
+        heals.verify(slackService).ensureCardBotInChannel("C-PRIVATE");
+        heals.verify(slackService).sendMessageReturningTs(eq("C-PRIVATE"), anyString(), any());
         verify(slackService, never()).sendMessage(any(User.class), anyString());
         assertEquals(ROOT_TS, threadRowTs());
     }
@@ -478,6 +487,8 @@ class SlackCardReactorTest {
         verify(slackService, never()).updateMessageStrict(anyString(), anyString(), anyString(), any());
         verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
         verify(slackService, never()).sendMessageReturningTs(anyString(), anyString(), any());
+        // The freeze also never drags the bot into the shared channel.
+        verify(slackService, never()).ensureCardBotInChannel(anyString());
         assertEquals("C-DEFAULT", threadRowChannel(),
                 "the stale row stays put so the logged cleanup can still find it");
     }
@@ -499,7 +510,11 @@ class SlackCardReactorTest {
         insertStageChanged("SCREENING", "INTERVIEW_1", "FORWARD");
         reactor.catchUp();
 
-        verify(slackService).updateMessageStrict(eq("C-PRIVATE"), eq(ROOT_TS), anyString(), any());
+        // Heal before touch, same as the root post — a kicked bot would
+        // otherwise dead-letter every update until the next circle event.
+        InOrder heals = inOrder(slackService);
+        heals.verify(slackService).ensureCardBotInChannel("C-PRIVATE");
+        heals.verify(slackService).updateMessageStrict(eq("C-PRIVATE"), eq(ROOT_TS), anyString(), any());
     }
 
     // ---- Redaction hook (P19 carry-over) ------------------------------------------

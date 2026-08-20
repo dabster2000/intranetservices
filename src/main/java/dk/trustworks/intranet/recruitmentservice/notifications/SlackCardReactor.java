@@ -76,6 +76,16 @@ import java.util.Map;
  *       fail-closed position move left behind in a shared channel is
  *       <em>frozen</em>: later events never update or reply to it there,
  *       so it permanently shows the pre-move, already-public state.</li>
+ *   <li><b>Card-bot membership heal:</b> before the mother bot touches a
+ *       card in a partner position's PRIVATE channel (root post, update,
+ *       re-home away from it, redaction), the delivery re-asserts the
+ *       bot's membership ({@link SlackService#ensureCardBotInChannel}).
+ *       {@link SlackChannelReactor}'s heal is event-driven and circle
+ *       events are rare — without this, a private channel missing its bot
+ *       answered {@code channel_not_found} and dead-lettered every card
+ *       until the position's next circle change (prod seq 834/835,
+ *       2026-08-15). Never called for shared channels
+ *       ({@code chat:write.public} covers those).</li>
  *   <li><b>Anonymization redaction (P19 carry-over):</b>
  *       {@code CANDIDATE_ANONYMIZED} rewrites every root card of the
  *       candidate to "Anonymized candidate" — deliberately independent of
@@ -185,6 +195,7 @@ public class SlackCardReactor extends RecruitmentReactor {
                 }
                 return;
             }
+            ensureCardBotIfPartnerChannel(channel);
             postRootCard(channel, applicationUuid, state, event.getSeq());
             // The fresh card already shows current state — no reply needed
             // for the event that just birthed it (mid-stream toggle rule).
@@ -248,6 +259,7 @@ public class SlackCardReactor extends RecruitmentReactor {
         // chat.update the living card first (idempotent — a retry of this
         // delivery re-runs it harmlessly), then the in-thread reply LAST
         // and best-effort, so a retry can never duplicate it.
+        ensureCardBotIfPartnerChannel(thread.getChannelId());
         slackService.updateMessageStrict(thread.getChannelId(), thread.getRootTs(),
                 state.fallbackText(), state.blocks(baseUrl));
         touch(thread);
@@ -306,6 +318,10 @@ public class SlackCardReactor extends RecruitmentReactor {
     private void rehome(RecruitmentSlackThread thread, String target, CardState state,
                         RecruitmentEvent event) throws Exception {
         String previousChannel = thread.getChannelId();
+        // The OLD home can be a partner circle channel (a move OFF the
+        // partner track re-homes into a shared one); the new target never
+        // is — the move ONTO the track fails closed before rehome runs.
+        ensureCardBotIfPartnerChannel(previousChannel);
         // Idempotent: a retry of this delivery re-runs it harmlessly.
         slackService.updateMessageStrict(previousChannel, thread.getRootTs(),
                 state.fallbackText(), state.blocks(baseUrl));
@@ -368,6 +384,7 @@ public class SlackCardReactor extends RecruitmentReactor {
             RecruitmentCandidate candidate = RecruitmentCandidate.findById(application.getCandidateUuid());
             RecruitmentPosition position = RecruitmentPosition.findById(application.getPositionUuid());
             CardState state = CardState.of(candidate, position, application);
+            ensureCardBotIfPartnerChannel(thread.getChannelId());
             slackService.updateMessageStrict(thread.getChannelId(), thread.getRootTs(),
                     state.fallbackText(), state.blocks(baseUrl));
             touch(thread);
@@ -421,6 +438,7 @@ public class SlackCardReactor extends RecruitmentReactor {
                 RecruitmentPosition position = application.getPositionUuid() == null ? null
                         : RecruitmentPosition.findById(application.getPositionUuid());
                 CardState state = CardState.redacted(position, application);
+                ensureCardBotIfPartnerChannel(thread.getChannelId());
                 slackService.updateMessageStrict(thread.getChannelId(), thread.getRootTs(),
                         state.fallbackText(), state.blocks(baseUrl));
             } catch (Exception e) {
@@ -450,6 +468,36 @@ public class SlackCardReactor extends RecruitmentReactor {
             return channel == null || channel.getArchivedAt() != null ? null : channel.getChannelId();
         }
         return router.channelFor(position == null ? null : position.getPracticeUuid()).orElse(null);
+    }
+
+    /**
+     * Re-asserts the mother bot's membership of {@code channelId} just before
+     * the card path posts there — IF it is a partner position's private
+     * circle channel, i.e. its id appears live in
+     * {@code recruitment_slack_channels} (that table holds nothing else).
+     * A private channel answers {@code channel_not_found} to a non-member
+     * token, and {@link SlackChannelReactor}'s membership heal only runs on
+     * rare circle events — so a channel whose bot went missing (created
+     * before the heal existed, or the bot kicked by a human) dead-lettered
+     * every card until the position's next circle change (prod seq 834/835,
+     * 2026-08-15). Partner volume is tiny; one extra idempotent Slack call
+     * per partner delivery is the accepted cost.
+     * <p>
+     * Deliberately keyed on the CHANNEL, not the application's current
+     * position: after a move off the partner track the old private channel
+     * still gets its farewell update ({@link #rehome}) although the position
+     * is no longer partner. Shared/public channels never match and are never
+     * invited into ({@code chat:write.public} covers them); an archived
+     * channel is skipped — the post fails there regardless, invite or not.
+     * Failures throw, so the delivery retries and eventually dead-letters
+     * with the invite error, which names the channel.
+     */
+    private void ensureCardBotIfPartnerChannel(String channelId) throws Exception {
+        RecruitmentSlackChannel privateChannel =
+                RecruitmentSlackChannel.find("channelId = ?1", channelId).firstResult();
+        if (privateChannel != null && privateChannel.getArchivedAt() == null) {
+            slackService.ensureCardBotInChannel(channelId);
+        }
     }
 
     private void dmCircleMembers(RecruitmentPosition position, String message) throws Exception {
