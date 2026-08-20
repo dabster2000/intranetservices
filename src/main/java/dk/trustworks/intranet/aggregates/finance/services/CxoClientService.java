@@ -1880,7 +1880,7 @@ public class CxoClientService {
     /**
      * Internal record for engagement metrics calculation results.
      */
-    private record EngagementMetrics(double avgMonths, int clientCount) {}
+    record EngagementMetrics(double avgMonths, int clientCount) {}
 
     /**
      * Queries engagement metrics from the work table.
@@ -1895,7 +1895,7 @@ public class CxoClientService {
      * @param companyIds Optional company filter
      * @return EngagementMetrics with average months and client count
      */
-    private EngagementMetrics queryEngagementMetrics(
+    EngagementMetrics queryEngagementMetrics(
             LocalDate asOfDate,
             Set<String> sectors,
             Set<String> companyIds) {
@@ -1919,11 +1919,14 @@ public class CxoClientService {
             sql.append("    AND c.segment IN (:sectors) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            // NOTE: company filter – assumes work has a company dimension; adjust if needed.
+            // work has no company column; the consultant's company is the userstatus
+            // row in effect at the registered date (same rule as the work_full views).
             sql.append("    AND c.uuid IN (");
             sql.append("      SELECT DISTINCT w2.clientuuid ");
             sql.append("      FROM work w2 ");
-            sql.append("      WHERE w2.companyuuid IN (:companyIds)");
+            sql.append("      WHERE (SELECT us.companyuuid FROM userstatus us ");
+            sql.append("             WHERE us.useruuid = w2.useruuid AND us.statusdate <= w2.registered ");
+            sql.append("             ORDER BY us.statusdate DESC LIMIT 1) IN (:companyIds)");
             sql.append("    ) ");
         }
 
@@ -1945,15 +1948,13 @@ public class CxoClientService {
             query.setParameter("companyIds", companyIds);
         }
 
-        try {
-            Object[] result = (Object[]) query.getSingleResult();
-            double avgMonths = toDouble(result[0]);
-            int clientCount = (int) toLong(result[1]);
-            return new EngagementMetrics(avgMonths, clientCount);
-        } catch (Exception e) {
-            log.warnf("Failed to query engagement metrics: %s", e.getMessage());
-            return new EngagementMetrics(0.0, 0);
-        }
+        // No catch here: a query failure must propagate (like getEngagementByCompany)
+        // instead of masquerading as a legitimate "0 months / 0 clients" result.
+        // The aggregate always returns one row; AVG over no rows is NULL → 0.0.
+        Object[] result = (Object[]) query.getSingleResult();
+        double avgMonths = toDouble(result[0]);
+        int clientCount = (int) toLong(result[1]);
+        return new EngagementMetrics(avgMonths, clientCount);
     }
 
     /**
@@ -2029,8 +2030,11 @@ public class CxoClientService {
             sql.append("  AND c.segment IN (:sectors) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            // NOTE: adjust column name to match your schema if needed
-            sql.append("  AND w.companyuuid IN (:companyIds) ");
+            // work has no company column; the consultant's company is the userstatus
+            // row in effect at the registered date (same rule as the work_full views).
+            sql.append("  AND (SELECT us.companyuuid FROM userstatus us ");
+            sql.append("       WHERE us.useruuid = w.useruuid AND us.statusdate <= w.registered ");
+            sql.append("       ORDER BY us.statusdate DESC LIMIT 1) IN (:companyIds) ");
         }
 
         sql.append("GROUP BY c.uuid, c.name, c.segment, c.active ");
