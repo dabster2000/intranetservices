@@ -39,6 +39,15 @@ public class GuestRegistrationService {
         log.debug("Persisting " + registration);
         registration.persist();
 
+        // Defensive: User.findById(null) throws IllegalArgumentException
+        // ("Identifier may not be null"). The REST layer already rejects a blank
+        // employeeId with 400, so reaching this means a non-REST caller — skip
+        // the notification rather than fail the whole registration.
+        if (registration.getEmployeeUuid() == null || registration.getEmployeeUuid().isBlank()) {
+            log.warn("Guest registration without an employee uuid — no Slack notification sent: " + registration.getGuestName());
+            return;
+        }
+
         try {
             User employee = userService.findById(registration.getEmployeeUuid(), true);
             if(employee != null) {
