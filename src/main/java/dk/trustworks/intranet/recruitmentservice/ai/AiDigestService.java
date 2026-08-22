@@ -76,7 +76,14 @@ public class AiDigestService {
     /** The quarterly digest generates only this many days into the new quarter. */
     static final int REJECTION_GRACE_DAYS = 14;
 
-    /** Weekly window: the current month (month-to-date) plus this many full months back. */
+    /**
+     * TREND window only: the current month (month-to-date) plus this many
+     * full months back. This is <b>not</b> the digest's reported period —
+     * that is the single ISO week named by {@link #isoWeekKey}. The two
+     * were the same field until 2026-08-22, which is why a message headed
+     * "week 34" reported four months of numbers and its prose opened
+     * "I denne måned".
+     */
     static final int WEEKLY_WINDOW_MONTHS_BACK = 3;
 
     /** Narratives are a short paragraph; cap the stored text defensively. */
@@ -177,9 +184,14 @@ public class AiDigestService {
         if (inTx(() -> digestExists(KIND_WEEKLY_FUNNEL, period, practiceUuid))) {
             return new DigestSummary(KIND_WEEKLY_FUNNEL, true, false, period);
         }
+        // The reported period is the ISO week `period` names — not the
+        // trend window. Conflating the two is what made a message headed
+        // "week 34" report four months of numbers.
+        LocalDate weekMonday = today.with(WeekFields.ISO.dayOfWeek(), 1L);
         YearMonth windowTo = YearMonth.from(today);
         YearMonth windowFrom = windowTo.minusMonths(WEEKLY_WINDOW_MONTHS_BACK);
-        AiDigestFacts facts = inTx(() -> loadWeeklyFacts(windowFrom, windowTo, practiceUuid));
+        AiDigestFacts facts =
+                inTx(() -> loadWeeklyFacts(weekMonday, windowFrom, windowTo, practiceUuid));
 
         String narrative = callModel(AiDigestPrompts.weeklySystemPrompt(),
                 AiDigestPrompts.weeklyUserPrompt(facts), KIND_WEEKLY_FUNNEL, period);
@@ -187,19 +199,25 @@ public class AiDigestService {
             return new DigestSummary(KIND_WEEKLY_FUNNEL, true, false, period);
         }
 
+        // Every KPI is week-scoped and carries its own delta, so the
+        // renderer never has to choose a window and the reader can tell up
+        // from down. `open_positions` is current state and has no delta.
+        AiDigestFacts.FunnelWindow week = facts.weeklyFunnel().week();
+        AiDigestFacts.FunnelWindow prev = facts.weeklyFunnel().previousWeek();
         Map<String, Object> kpis = new LinkedHashMap<>();
-        kpis.put("applications", facts.weeklyFunnel().applicationsPerSource().stream()
-                .mapToLong(AiDigestFacts.MonthCodeCount::count).sum());
-        kpis.put("stage_moves", facts.weeklyFunnel().stageMoves().stream()
-                .mapToLong(AiDigestFacts.StageMove::count).sum());
-        kpis.put("terminals", facts.weeklyFunnel().terminalsByOutcome().stream()
-                .mapToLong(AiDigestFacts.CodeCount::count).sum());
-        kpis.put("hires", facts.weeklyFunnel().hires());
-        kpis.put("scorecards", facts.weeklyFunnel().scorecardsSubmitted());
-        kpis.put("nudges", facts.weeklyFunnel().nudgesByType().stream()
-                .mapToLong(AiDigestFacts.CodeCount::count).sum());
-        kpis.put("open_positions", facts.weeklyFunnel().openPositionsByTrack().stream()
-                .mapToLong(AiDigestFacts.CodeCount::count).sum());
+        kpis.put("applications", week.applicationTotal());
+        kpis.put("applications_delta", week.applicationTotal() - prev.applicationTotal());
+        kpis.put("stage_moves", week.stageMoveTotal());
+        kpis.put("stage_moves_delta", week.stageMoveTotal() - prev.stageMoveTotal());
+        kpis.put("terminals", week.terminalTotal());
+        kpis.put("terminals_delta", week.terminalTotal() - prev.terminalTotal());
+        kpis.put("hires", week.hires());
+        kpis.put("hires_delta", week.hires() - prev.hires());
+        kpis.put("scorecards", week.scorecardsSubmitted());
+        kpis.put("scorecards_delta", week.scorecardsSubmitted() - prev.scorecardsSubmitted());
+        kpis.put("nudges", week.nudgeTotal());
+        kpis.put("nudges_delta", week.nudgeTotal() - prev.nudgeTotal());
+        kpis.put("open_positions", facts.weeklyFunnel().openPositions());
 
         inTx(() -> {
             appendDigestEvent(KIND_WEEKLY_FUNNEL, period, facts, narrative, kpis, practiceUuid);
@@ -371,69 +389,36 @@ public class AiDigestService {
     // Projection reads (the digests' sole aggregate input — plan §P24)
     // ------------------------------------------------------------------
 
-    private AiDigestFacts loadWeeklyFacts(YearMonth from, YearMonth to, String practiceUuid) {
-        LocalDate f = from.atDay(1);
-        LocalDate t = to.atDay(1);
-        String scope = practiceScope(practiceUuid);
+    /**
+     * Load the funnel digest's two windows.
+     *
+     * <p>The reported period is the ISO week beginning {@code weekMonday},
+     * read at week grain from {@code recruitment_fact_weekly} (V523) — the
+     * week the message is titled with is now the week the message counts.
+     * The preceding week is loaded in the same shape so every headline
+     * number can carry a delta. The month series is loaded separately at
+     * month grain purely as trend context for the chart, and is never
+     * summed into a headline figure.</p>
+     */
+    private AiDigestFacts loadWeeklyFacts(LocalDate weekMonday, YearMonth trendFrom,
+                                          YearMonth trendTo, String practiceUuid) {
+        AiDigestFacts.FunnelWindow week = loadFunnelWindow(weekMonday, practiceUuid);
+        AiDigestFacts.FunnelWindow previous =
+                loadFunnelWindow(weekMonday.minusWeeks(1), practiceUuid);
 
-        List<AiDigestFacts.MonthCodeCount> applications = new ArrayList<>();
+        String scope = practiceScope(practiceUuid);
+        LocalDate tf = trendFrom.atDay(1);
+        LocalDate tt = trendTo.atDay(1);
+
+        List<AiDigestFacts.MonthCount> trend = new ArrayList<>();
         for (Object[] row : rows("""
-                SELECT DATE_FORMAT(month, '%%Y-%%m'), source, SUM(cnt)
+                SELECT DATE_FORMAT(month, '%%Y-%%m'), SUM(cnt)
                 FROM recruitment_fact_monthly
                 WHERE fact = 'APPLICATION_CREATED' AND month BETWEEN :f AND :t%s
-                GROUP BY 1, 2 ORDER BY 1, 2
-                """.formatted(scope), f, t, practiceUuid)) {
-            applications.add(new AiDigestFacts.MonthCodeCount(
-                    (String) row[0], emptyToUnknown((String) row[1]), longOf(row[2])));
-        }
-
-        List<AiDigestFacts.StageMove> stageMoves = new ArrayList<>();
-        for (Object[] row : rows("""
-                SELECT stage_from, stage_to, outcome, SUM(cnt)
-                FROM recruitment_fact_monthly
-                WHERE fact = 'STAGE_MOVED' AND month BETWEEN :f AND :t%s
-                GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
-                """.formatted(scope), f, t, practiceUuid)) {
-            stageMoves.add(new AiDigestFacts.StageMove(
-                    (String) row[0], (String) row[1], (String) row[2], longOf(row[3])));
-        }
-
-        List<AiDigestFacts.StageDays> timeInStage = new ArrayList<>();
-        for (Object[] row : rows("""
-                SELECT stage_from, SUM(sum_days), SUM(cnt)
-                FROM recruitment_fact_monthly
-                WHERE fact IN ('STAGE_MOVED', 'TERMINAL') AND stage_from <> ''
-                  AND month BETWEEN :f AND :t%s
                 GROUP BY 1 ORDER BY 1
-                """.formatted(scope), f, t, practiceUuid)) {
-            long moves = longOf(row[2]);
-            double avg = moves == 0 ? 0d : ((Number) row[1]).doubleValue() / moves;
-            timeInStage.add(new AiDigestFacts.StageDays((String) row[0], avg, moves));
+                """.formatted(scope), tf, tt, practiceUuid)) {
+            trend.add(new AiDigestFacts.MonthCount((String) row[0], longOf(row[1])));
         }
-
-        List<AiDigestFacts.CodeCount> terminals = codeCounts("""
-                SELECT outcome, SUM(cnt)
-                FROM recruitment_fact_monthly
-                WHERE fact = 'TERMINAL' AND month BETWEEN :f AND :t%s
-                GROUP BY 1 ORDER BY 1
-                """.formatted(scope), f, t, practiceUuid);
-
-        long hires = singleCount("""
-                SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_monthly
-                WHERE fact = 'HIRED' AND month BETWEEN :f AND :t%s
-                """.formatted(scope), f, t, practiceUuid);
-
-        long scorecards = singleCount("""
-                SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_monthly
-                WHERE fact = 'SCORECARD_SUBMITTED' AND month BETWEEN :f AND :t%s
-                """.formatted(scope), f, t, practiceUuid);
-
-        List<AiDigestFacts.CodeCount> nudges = codeCounts("""
-                SELECT detail, SUM(cnt)
-                FROM recruitment_fact_monthly
-                WHERE fact = 'NUDGE_SENT' AND month BETWEEN :f AND :t%s
-                GROUP BY 1 ORDER BY 1
-                """.formatted(scope), f, t, practiceUuid);
 
         // Current state, not a flow: bare counts from the positions table
         // (the one sanctioned non-projection input — AiDigestFacts javadoc).
@@ -451,10 +436,81 @@ public class AiDigestService {
             openPositions.add(new AiDigestFacts.CodeCount((String) cols[0], longOf(cols[1])));
         }
 
-        return new AiDigestFacts(from.toString(), to.toString(),
-                new AiDigestFacts.WeeklyFunnel(applications, stageMoves, timeInStage,
-                        terminals, hires, scorecards, nudges, openPositions),
+        return new AiDigestFacts(trendFrom.toString(), trendTo.toString(),
+                new AiDigestFacts.WeeklyFunnel(week, previous, trend, openPositions),
                 null);
+    }
+
+    /**
+     * One ISO week of funnel flow from the week-grain projection. Both
+     * bounds are the same Monday: {@code recruitment_fact_weekly} stores
+     * one row per (week × fact × dims), so a single week is an equality
+     * match expressed through the shared {@code BETWEEN} helper.
+     */
+    private AiDigestFacts.FunnelWindow loadFunnelWindow(LocalDate weekMonday, String practiceUuid) {
+        String scope = practiceScope(practiceUuid);
+        LocalDate f = weekMonday;
+        LocalDate t = weekMonday;
+
+        List<AiDigestFacts.CodeCount> applications = codeCounts("""
+                SELECT source, SUM(cnt)
+                FROM recruitment_fact_weekly
+                WHERE fact = 'APPLICATION_CREATED' AND week BETWEEN :f AND :t%s
+                GROUP BY 1 ORDER BY 2 DESC, 1
+                """.formatted(scope), f, t, practiceUuid);
+
+        List<AiDigestFacts.StageMove> stageMoves = new ArrayList<>();
+        for (Object[] row : rows("""
+                SELECT stage_from, stage_to, outcome, SUM(cnt)
+                FROM recruitment_fact_weekly
+                WHERE fact = 'STAGE_MOVED' AND week BETWEEN :f AND :t%s
+                GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+                """.formatted(scope), f, t, practiceUuid)) {
+            stageMoves.add(new AiDigestFacts.StageMove(
+                    (String) row[0], (String) row[1], (String) row[2], longOf(row[3])));
+        }
+
+        List<AiDigestFacts.StageDays> timeInStage = new ArrayList<>();
+        for (Object[] row : rows("""
+                SELECT stage_from, SUM(sum_days), SUM(cnt)
+                FROM recruitment_fact_weekly
+                WHERE fact IN ('STAGE_MOVED', 'TERMINAL') AND stage_from <> ''
+                  AND week BETWEEN :f AND :t%s
+                GROUP BY 1 ORDER BY 1
+                """.formatted(scope), f, t, practiceUuid)) {
+            long moves = longOf(row[2]);
+            double avg = moves == 0 ? 0d : ((Number) row[1]).doubleValue() / moves;
+            timeInStage.add(new AiDigestFacts.StageDays((String) row[0], avg, moves));
+        }
+
+        List<AiDigestFacts.CodeCount> terminals = codeCounts("""
+                SELECT outcome, SUM(cnt)
+                FROM recruitment_fact_weekly
+                WHERE fact = 'TERMINAL' AND week BETWEEN :f AND :t%s
+                GROUP BY 1 ORDER BY 1
+                """.formatted(scope), f, t, practiceUuid);
+
+        long hires = singleCount("""
+                SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_weekly
+                WHERE fact = 'HIRED' AND week BETWEEN :f AND :t%s
+                """.formatted(scope), f, t, practiceUuid);
+
+        long scorecards = singleCount("""
+                SELECT COALESCE(SUM(cnt), 0) FROM recruitment_fact_weekly
+                WHERE fact = 'SCORECARD_SUBMITTED' AND week BETWEEN :f AND :t%s
+                """.formatted(scope), f, t, practiceUuid);
+
+        List<AiDigestFacts.CodeCount> nudges = codeCounts("""
+                SELECT detail, SUM(cnt)
+                FROM recruitment_fact_weekly
+                WHERE fact = 'NUDGE_SENT' AND week BETWEEN :f AND :t%s
+                GROUP BY 1 ORDER BY 1
+                """.formatted(scope), f, t, practiceUuid);
+
+        return new AiDigestFacts.FunnelWindow(
+                weekMonday.toString(), weekMonday.plusDays(6).toString(),
+                applications, stageMoves, timeInStage, terminals,
+                hires, scorecards, nudges);
     }
 
     /**
@@ -558,13 +614,70 @@ public class AiDigestService {
             // that practice's channel instead of the HR channel.
             builder = builder.payload("practice_uuid", practiceUuid);
         }
-        eventRecorder.record(builder
+        builder = builder
                 .payload("window_from", facts.windowFrom())
                 .payload("window_to", facts.windowTo())
                 .payload("model", digestModel)
                 .payload("prompt_version", AiDigestPrompts.PROMPT_VERSION)
                 .payload("narrative", narrative)
-                .payload("kpis", kpis));
+                .payload("kpis", kpis);
+        if (facts.weeklyFunnel() != null) {
+            // Everything the Slack renderer needs to build its table and
+            // chart WITHOUT re-querying — a second independent count is
+            // exactly how the old digest ended up contradicting itself.
+            builder = builder
+                    .payload("week_from", facts.weeklyFunnel().week().from())
+                    .payload("week_to", facts.weeklyFunnel().week().to())
+                    .payload("funnel", funnelRows(facts.weeklyFunnel()))
+                    .payload("sources", codeRows(facts.weeklyFunnel().week().applicationsBySource()))
+                    .payload("open_positions_by_track",
+                            codeRows(facts.weeklyFunnel().openPositionsByTrack()))
+                    .payload("trend", facts.weeklyFunnel().monthlyApplications().stream()
+                            .map(m -> Map.<String, Object>of(
+                                    "month", m.month(), "count", m.count()))
+                            .toList());
+        }
+        eventRecorder.record(builder);
+    }
+
+    /**
+     * The funnel table's rows: one per stage transition seen this week,
+     * already carrying the Danish labels, the average days on the stage
+     * being left, and the week-over-week delta. Built here rather than in
+     * the renderer so the numbers in the message and the numbers the model
+     * was shown come from one computation.
+     */
+    private static List<Map<String, Object>> funnelRows(AiDigestFacts.WeeklyFunnel funnel) {
+        Map<String, Long> previous = new LinkedHashMap<>();
+        for (AiDigestFacts.StageMove move : funnel.previousWeek().stageMoves()) {
+            previous.merge(move.fromStage() + ">" + move.toStage(), move.count(), Long::sum);
+        }
+        Map<String, Double> avgDays = new LinkedHashMap<>();
+        for (AiDigestFacts.StageDays days : funnel.week().timeInStage()) {
+            avgDays.put(days.stage(), days.avgDays());
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (AiDigestFacts.StageMove move : funnel.week().stageMoves()) {
+            String key = move.fromStage() + ">" + move.toStage();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("from", RecruitmentDanishLabels.label(move.fromStage()));
+            row.put("to", RecruitmentDanishLabels.label(move.toStage()));
+            row.put("count", move.count());
+            row.put("delta", move.count() - previous.getOrDefault(key, 0L));
+            Double avg = avgDays.get(move.fromStage());
+            row.put("avg_days", avg == null ? null : Math.round(avg * 10d) / 10d);
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** {@code [{label, count}]} with codes already translated to Danish. */
+    private static List<Map<String, Object>> codeRows(List<AiDigestFacts.CodeCount> counts) {
+        return counts.stream()
+                .map(c -> Map.<String, Object>of(
+                        "label", RecruitmentDanishLabels.label(c.code()),
+                        "count", c.count()))
+                .toList();
     }
 
     /** Normalise newlines, strip control chars except newline, trim, cap. Blank ⇒ null. */

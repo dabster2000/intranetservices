@@ -1,10 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.notifications;
 
-import com.slack.api.model.block.ContextBlock;
-import com.slack.api.model.block.HeaderBlock;
-import com.slack.api.model.block.LayoutBlock;
-import com.slack.api.model.block.SectionBlock;
-import com.slack.api.model.block.composition.MarkdownTextObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.recruitmentservice.resources.P8ProfileFixtures;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -17,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -86,7 +84,7 @@ class SlackDigestRendererTest {
         // Drain any backlog with the flags OFF so each test's sweep only
         // reflects its own trigger events.
         reactor.catchUp();
-        when(slackService.sendMessageReturningTs(anyString(), anyString(), any()))
+        when(slackService.sendMessageWithRawBlocksReturningTs(anyString(), anyString(), anyString()))
                 .thenReturn("1700000000.000200");
     }
 
@@ -126,32 +124,56 @@ class SlackDigestRendererTest {
                 : "\"practice_uuid\":\"" + practiceUuid + "\",";
         String payload = """
                 {"kind":"%s","period":"%s",%s"window_from":"2026-04","window_to":"2026-07",\
-                "model":"test-model","prompt_version":"digest-v1","narrative":"%s","kpis":%s}"""
+                "week_from":"2026-07-20","week_to":"2026-07-26",\
+                "model":"test-model","prompt_version":"digest-v2","narrative":"%s","kpis":%s}"""
                 .formatted(kind, period, practice, narrative, kpisJson);
         return QuarkusTransaction.requiringNew().call(() ->
                 P8ProfileFixtures.insertEvent(em, "AI_DIGEST_GENERATED", null, null, null,
                         "SCHEDULER", null, "NORMAL", payload, null));
     }
 
-    @SuppressWarnings("unchecked")
-    private List<LayoutBlock> postedBlocks() throws Exception {
-        ArgumentCaptor<List<LayoutBlock>> captor =
-                ArgumentCaptor.forClass((Class<List<LayoutBlock>>) (Class<?>) List.class);
-        verify(slackService).sendMessageReturningTs(eq(hrChannel), anyString(), captor.capture());
-        return captor.getValue();
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * The renderer posts raw JSON (2026 block types the Java SDK does not
+     * model), so the assertion surface is the parsed payload rather than
+     * typed {@code LayoutBlock}s. {@code SlackDigestBlocksTest} covers the
+     * shape in the fast tier; this test covers the delivery path.
+     */
+    private JsonNode postedBlocks() throws Exception {
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendMessageWithRawBlocksReturningTs(
+                eq(hrChannel), anyString(), captor.capture());
+        return JSON.readTree(captor.getValue());
     }
 
-    private static String headerText(List<LayoutBlock> blocks) {
-        return ((HeaderBlock) blocks.get(0)).getText().getText();
+    private static List<String> typesOf(JsonNode blocks) {
+        List<String> types = new ArrayList<>();
+        blocks.forEach(b -> types.add(b.path("type").asText()));
+        return types;
     }
 
-    private static String sectionText(LayoutBlock block) {
-        return ((MarkdownTextObject) ((SectionBlock) block).getText()).getText();
+    private static JsonNode firstOfType(JsonNode blocks, String type) {
+        for (JsonNode block : blocks) {
+            if (type.equals(block.path("type").asText())) {
+                return block;
+            }
+        }
+        throw new AssertionError("no '" + type + "' block in " + typesOf(blocks));
     }
 
-    private static String contextText(List<LayoutBlock> blocks) {
-        ContextBlock context = (ContextBlock) blocks.get(blocks.size() - 1);
-        return ((MarkdownTextObject) context.getElements().get(0)).getText();
+    private static String headerText(JsonNode blocks) {
+        return blocks.get(0).path("text").path("text").asText();
+    }
+
+    /** The AI paragraph now lives inside the collapsed details container. */
+    private static String narrativeText(JsonNode blocks) {
+        JsonNode container = firstOfType(blocks, "container");
+        return container.path("child_blocks").get(0).path("text").path("text").asText();
+    }
+
+    private static String contextText(JsonNode blocks) {
+        return firstOfType(blocks, "context").path("elements").get(0).path("text").asText();
     }
 
     // =========================================================================
@@ -165,17 +187,19 @@ class SlackDigestRendererTest {
                 "{\"applications\":12,\"hires\":1}");
         reactor.catchUp();
 
-        List<LayoutBlock> blocks = postedBlocks();
-        assertEquals("Recruitment week in numbers · 2026-W30", headerText(blocks));
-        assertEquals("Kort dansk fortælling om ugen.", sectionText(blocks.get(1)));
-        SectionBlock kpiSection = (SectionBlock) blocks.get(2);
-        List<String> fields = kpiSection.getFields().stream()
-                .map(f -> ((MarkdownTextObject) f).getText())
-                .toList();
-        assertTrue(fields.contains("*Applications:* 12"), "KPI fields must match the payload");
-        assertTrue(fields.contains("*Hires:* 1"));
-        assertTrue(contextText(blocks).contains("/recruitment/reports|"),
+        JsonNode blocks = postedBlocks();
+        assertEquals("📈 Rekruttering · uge 30 · hele huset", headerText(blocks));
+        assertEquals("Kort dansk fortælling om ugen.", narrativeText(blocks));
+
+        String headline = firstOfType(blocks, "markdown").path("text").asText();
+        assertTrue(headline.contains("**1 ansættelse**"), headline);
+        assertTrue(headline.contains("**12 ansøgninger**"), headline);
+        assertTrue(headline.contains("uge 30"), "the reported period is the week: " + headline);
+
+        assertEquals("https://intra.trustworks.dk/recruitment/reports",
+                firstOfType(blocks, "actions").path("elements").get(0).path("url").asText(),
                 "the deep link must land on the reports page");
+        assertTrue(contextText(blocks).contains("uge 30"), contextText(blocks));
     }
 
     @Test
@@ -185,9 +209,12 @@ class SlackDigestRendererTest {
                 "{\"rejections\":9,\"applications\":40}");
         reactor.catchUp();
 
-        List<LayoutBlock> blocks = postedBlocks();
-        assertEquals("Quarterly rejection patterns · FY2025/26-Q4", headerText(blocks));
-        assertEquals("Kvartalets mønstre.", sectionText(blocks.get(1)));
+        JsonNode blocks = postedBlocks();
+        assertEquals("📉 Afslagsmønstre · FY2025/26-Q4 · hele huset", headerText(blocks));
+        // The quarterly digest is read as prose, so it keeps the plain layout.
+        assertEquals(List.of("header", "section", "context"), typesOf(blocks));
+        assertEquals("Kvartalets mønstre.",
+                blocks.get(1).path("text").path("text").asText());
     }
 
     @Test
@@ -196,7 +223,7 @@ class SlackDigestRendererTest {
         insertDigestEvent("WEEKLY_FUNNEL", "2026-W31", "x".repeat(4500), "{}");
         reactor.catchUp();
 
-        String narrative = sectionText(postedBlocks().get(1));
+        String narrative = narrativeText(postedBlocks());
         assertTrue(narrative.length() <= SlackDigestRenderer.SECTION_CLAMP,
                 "narrative section must respect the 3000-char Block Kit limit");
         assertTrue(narrative.endsWith("…"));
@@ -215,7 +242,7 @@ class SlackDigestRendererTest {
         reactor.catchUp();
 
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(anyString(), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(anyString(), anyString(), anyString());
         assertTrue(reactor.watermark() >= seq, "the watermark must advance past the gated event");
 
         // Enabling later must not backfill — the event is already claimed.
@@ -223,7 +250,7 @@ class SlackDigestRendererTest {
                 P8ProfileFixtures.setFlag(em, WEEKLY_FLAG, "true"));
         reactor.catchUp();
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(anyString(), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(anyString(), anyString(), anyString());
     }
 
     /**
@@ -239,9 +266,9 @@ class SlackDigestRendererTest {
         long seq = insertDigestEvent("WEEKLY_FUNNEL", "2026-W33", "Hele huset.", "{}");
         reactor.catchUp();
 
-        verify(slackService).sendMessageReturningTs(eq(hrChannel), anyString(), any());
+        verify(slackService).sendMessageWithRawBlocksReturningTs(eq(hrChannel), anyString(), anyString());
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(eq(DEFAULT_CHANNEL), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(eq(DEFAULT_CHANNEL), anyString(), anyString());
         assertTrue(reactor.watermark() >= seq);
     }
 
@@ -255,9 +282,9 @@ class SlackDigestRendererTest {
                 PRACTICE_UUID);
         reactor.catchUp();
 
-        verify(slackService).sendMessageReturningTs(eq(PRACTICE_CHANNEL), anyString(), any());
+        verify(slackService).sendMessageWithRawBlocksReturningTs(eq(PRACTICE_CHANNEL), anyString(), anyString());
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(eq(hrChannel), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(eq(hrChannel), anyString(), anyString());
         assertTrue(reactor.watermark() >= seq);
     }
 
@@ -274,7 +301,7 @@ class SlackDigestRendererTest {
         reactor.catchUp();
 
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(anyString(), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(anyString(), anyString(), anyString());
         assertTrue(reactor.watermark() >= seq);
     }
 
@@ -285,7 +312,7 @@ class SlackDigestRendererTest {
         reactor.catchUp();
 
         verify(slackService, org.mockito.Mockito.never())
-                .sendMessageReturningTs(anyString(), anyString(), any());
+                .sendMessageWithRawBlocksReturningTs(anyString(), anyString(), anyString());
         assertTrue(reactor.watermark() >= seq);
     }
 
@@ -296,6 +323,6 @@ class SlackDigestRendererTest {
         reactor.catchUp();
         reactor.catchUp();
 
-        verify(slackService, times(1)).sendMessageReturningTs(eq(hrChannel), anyString(), any());
+        verify(slackService, times(1)).sendMessageWithRawBlocksReturningTs(eq(hrChannel), anyString(), anyString());
     }
 }

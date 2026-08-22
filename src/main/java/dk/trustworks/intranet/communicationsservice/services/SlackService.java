@@ -173,6 +173,49 @@ public class SlackService {
     }
 
     /**
+     * Raw-JSON sibling of {@link #sendMessageReturningTs(String, String, java.util.List)}
+     * — deliberately a distinct name, not an overload: the typed variant is
+     * called with a {@code null} blocks argument elsewhere, which would
+     * match both signatures. It is also the honest label for a method
+     * that type-checks nothing.
+     * the escape hatch for Block Kit types the Java SDK does not model.
+     * <p>
+     * Slack shipped {@code table}, {@code container}, {@code
+     * data_visualization} and {@code data_table} during 2026, and none of
+     * them exist in <em>any</em> released {@code slack-api-model} version
+     * (slackapi/java-slack-sdk issue #1499 is still open); {@code
+     * blocksAsString} is the workaround Slack's own maintainers point to,
+     * and it has been present since well before the 1.37.0 we pin. Callers
+     * pass a JSON array literal — {@code [ {"type":"header",...}, ... ]} —
+     * and are responsible for its validity, since nothing type-checks it
+     * here. Validate payload shape in tests rather than discovering
+     * {@code invalid_blocks} at delivery time.
+     * <p>
+     * Throws on transport failure and on a not-ok API response, exactly
+     * like the typed variant: a digest that silently failed to post is
+     * worse than one that retries.
+     *
+     * @param blocksJson a JSON <em>array</em> of block objects, not a message object
+     */
+    public String sendMessageWithRawBlocksReturningTs(String channel, String fallbackText,
+                                                      String blocksJson)
+            throws SlackApiException, IOException {
+        ChatPostMessageResponse response = Slack.getInstance().methods(motherSlackBotToken)
+                .chatPostMessage(req -> req
+                        .channel(channel)
+                        .text(fallbackText)
+                        .blocksAsString(blocksJson));
+        if (!response.isOk()) {
+            // The channel id belongs in the message: this exception is what a
+            // poison-skipped delivery leaves behind, and "channel_not_found"
+            // with no channel is not diagnosable after the fact.
+            throw new IOException("Slack root-card post failed for channel " + channel + ": "
+                    + response.getError());
+        }
+        return response.getTs();
+    }
+
+    /**
      * Posts a plain-text reply into a message thread (P22 — living-card
      * event replies). Best-effort: logs and swallows — the intranet is the
      * system of record and the {@code chat.update}d root card carries
