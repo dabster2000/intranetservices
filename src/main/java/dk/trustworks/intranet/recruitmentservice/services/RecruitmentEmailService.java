@@ -62,7 +62,18 @@ public class RecruitmentEmailService {
     public static final String KEY_ACKNOWLEDGEMENT = "ACKNOWLEDGEMENT";
     public static final String KEY_REJECTION_SCREENING = "REJECTION_SCREENING";
     public static final String KEY_REJECTION_POST_INTERVIEW = "REJECTION_POST_INTERVIEW";
+    /** Receipt for the unsolicited public form (remediation F6) — no application exists. */
+    public static final String KEY_UNSOLICITED_ACKNOWLEDGEMENT = "UNSOLICITED_ACKNOWLEDGEMENT";
+    /** Receipt when a repeat submission stored documents onto an open application (remediation F7). */
+    public static final String KEY_DUPLICATE_APPLICATION_NOTICE = "DUPLICATE_APPLICATION_NOTICE";
     public static final String STAGE_KEY_PREFIX = "STAGE_";
+
+    /**
+     * The candidate's own Outlook-invitation body, read by
+     * {@code RecruitmentCalendarService.candidateTemplate()} — mirrored here
+     * as a constant because that class looks the row up by this literal.
+     */
+    public static final String KEY_INTERVIEW_CANDIDATE_INVITATION = "INTERVIEW_CANDIDATE_INVITATION";
 
     public static final int SUBJECT_MAX_LENGTH = 300;
 
@@ -159,7 +170,7 @@ public class RecruitmentEmailService {
     @Transactional
     public RecruitmentEmailTemplate updateTemplate(String uuid, String name, String subject,
                                                    String body, RecruitmentEmailBodyFormat bodyFormat,
-                                                   boolean autoSend, boolean active,
+                                                   boolean autoSend, Boolean active,
                                                    Set<RecruitmentEmailCopyRole> copyRoles,
                                                    RecruitmentEmailCopyMode copyMode) {
         RecruitmentEmailTemplate template = RecruitmentEmailTemplate.findById(uuid);
@@ -177,7 +188,10 @@ public class RecruitmentEmailService {
         template.setBody(storedBody);
         template.setBodyFormat(format);
         template.setAutoSend(autoSend);
-        template.setActive(active);
+        // Absent keeps the stored state — an omitted flag must never flip a
+        // deliberately-inactive template live (the F9 posture: activation is
+        // always an explicit act).
+        template.setActive(active == null ? template.isActive() : active);
         template.setCopyRoles(RecruitmentEmailCopyRole.toCsv(copyRoles));
         template.setCopyMode(copyMode == null ? RecruitmentEmailCopyMode.BCC : copyMode);
         return template;
@@ -238,6 +252,8 @@ public class RecruitmentEmailService {
         return KEY_ACKNOWLEDGEMENT.equals(key)
                 || KEY_REJECTION_SCREENING.equals(key)
                 || KEY_REJECTION_POST_INTERVIEW.equals(key)
+                || KEY_UNSOLICITED_ACKNOWLEDGEMENT.equals(key)
+                || KEY_DUPLICATE_APPLICATION_NOTICE.equals(key)
                 || key != null && key.startsWith(STAGE_KEY_PREFIX);
     }
 
@@ -254,9 +270,18 @@ public class RecruitmentEmailService {
      * placeholder. The compose picker hides these; the send gate
      * ({@link RecruitmentEmailRenderer#unresolvedLinkTokens}) is what
      * actually enforces it.
+     * <p>
+     * {@code OPTION_INVITATION} (Method B's booking link exists only inside
+     * the advance sweep) and {@code INTERVIEW_CANDIDATE_INVITATION} (an
+     * Outlook event body, not an email at all — its interview extras resolve
+     * only in the calendar service) are the same shape and were added in the
+     * candidate-email remediation (F10, 2026-08-22): a recruiter hand-sending
+     * either could only produce a broken message.
      */
     public static boolean isSystemKey(String key) {
-        return RecruitmentGdprService.KEY_CONSENT_RENEWAL.equals(key);
+        return RecruitmentGdprService.KEY_CONSENT_RENEWAL.equals(key)
+                || RecruitmentSchedulingCandidateService.TEMPLATE_KEY_OPTION_INVITATION.equals(key)
+                || KEY_INTERVIEW_CANDIDATE_INVITATION.equals(key);
     }
 
     private static void validateTemplateFields(String name, String subject, String body,

@@ -269,7 +269,15 @@ class PublicApplyServiceIntegrationTest {
         long applicationCreated = events.stream()
                 .filter(e -> e.getEventType() == RecruitmentEventType.APPLICATION_CREATED).count();
         assertEquals(1, applicationCreated);
-        RecruitmentEvent lastDocument = events.get(events.size() - 1);
+        // Remediation F7: the branch that used to end in silence now records
+        // the fact — the candidate mailer answers it with
+        // DUPLICATE_APPLICATION_NOTICE.
+        RecruitmentEvent receipt = events.get(events.size() - 1);
+        assertEquals(RecruitmentEventType.DUPLICATE_APPLICATION_RECEIVED, receipt.getEventType());
+        assertEquals(RecruitmentActorType.CANDIDATE, receipt.getActorType());
+        assertTrue(receipt.getPayload().contains("\"origin\":\"public_form\""));
+        assertTrue(receipt.getPayload().contains("\"reason\":\"DUPLICATE_PUBLIC_SUBMISSION\""));
+        RecruitmentEvent lastDocument = events.get(events.size() - 2);
         assertEquals(RecruitmentEventType.DOCUMENT_UPLOADED, lastDocument.getEventType());
         assertTrue(lastDocument.getPayload().contains("\"reason\":\"DUPLICATE_PUBLIC_SUBMISSION\""));
         verify(storageService, times(2))
@@ -353,6 +361,16 @@ class PublicApplyServiceIntegrationTest {
         RecruitmentCandidate candidate = candidateByEmail(email);
         assertEquals(0, applicationsOf(candidate.getUuid()).size(),
                 "unsolicited creates the candidate ONLY — triage attaches the application later");
+
+        // Remediation F6: the submission itself is now a recorded fact — the
+        // candidate mailer answers it with UNSOLICITED_ACKNOWLEDGEMENT.
+        RecruitmentEvent receipt = eventsFor(candidate.getUuid()).stream()
+                .filter(e -> e.getEventType()
+                        == RecruitmentEventType.UNSOLICITED_APPLICATION_RECEIVED)
+                .findFirst().orElseThrow();
+        assertEquals(RecruitmentActorType.CANDIDATE, receipt.getActorType());
+        assertTrue(receipt.getPayload().contains("\"origin\":\"public_form\""));
+        assertTrue(receipt.getPayload().contains("\"candidate_reused\":false"));
 
         List<RecruitmentApplicationAnswer> answers = answersForCandidate(candidate.getUuid());
         assertEquals(List.of("WHY_TRUSTWORKS", "STRENGTHS"),

@@ -145,11 +145,14 @@ public class RecruitmentEmailResource {
             throw badRequest("templateKey is required");
         }
         requireTemplateFields(request);
+        // Absent active defaults to INACTIVE (F9): a template someone is
+        // still writing must not fire at candidates — activation is an
+        // explicit act, mirrored by the dialog's unticked default.
         RecruitmentEmailTemplate template = emailService.createTemplate(
                 request.templateKey(), request.name(), request.subject(), request.body(),
                 RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
-                request.active() == null || request.active(),
+                Boolean.TRUE.equals(request.active()),
                 copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
         return Response.status(Response.Status.CREATED)
                 .entity(EmailTemplateResponse.of(template))
@@ -165,12 +168,14 @@ public class RecruitmentEmailResource {
         requireRecruiterTier(currentActor());
         Objects.requireNonNull(request, "request body must not be null");
         requireTemplateFields(request);
+        // Absent active keeps the stored state (F9): an update that does not
+        // speak about activation must never flip an inactive template live.
         RecruitmentEmailTemplate template = emailService.updateTemplate(uuid.toString(),
                 request.name(), request.subject(), request.body(),
                 request.bodyFormat() == null || request.bodyFormat().isBlank()
                         ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
-                request.active() == null || request.active(),
+                request.active(),
                 copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
         if (template == null) {
             throw new NotFoundException("Resource not found");

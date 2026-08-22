@@ -106,6 +106,47 @@ class RecruitmentEmailRendererTest {
         assertTrue(with.unresolvedFields().isEmpty());
     }
 
+    // ---- F2: multi-line merge values must keep their line structure ------
+
+    @Test
+    void multiLineExtra_becomesBrSeparated_inAnHtmlBody() {
+        // The Method B options list is a newline-joined numbered list; in an
+        // HTML body a bare \n renders as one space, so the times would arrive
+        // as a single run-on line (remediation F2).
+        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                "Emne", "<p>{{options_list}}</p>", null, null,
+                java.util.Map.of("options_list",
+                        "1) mandag 10:00\n2) tirsdag 14:00\r\n3) onsdag 09:00"),
+                RecruitmentEmailBodyFormat.HTML);
+
+        assertEquals("<p>1) mandag 10:00<br>2) tirsdag 14:00<br>3) onsdag 09:00</p>",
+                rendered.body());
+    }
+
+    @Test
+    void multiLineExtra_staysPlainNewlines_inAPlainBody() {
+        // The PLAIN path escapes-and-<br>s the whole body at send time
+        // (toHtml), so the value must NOT be pre-converted here.
+        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                "Emne", "{{options_list}}", null, null,
+                java.util.Map.of("options_list", "1) mandag\n2) tirsdag"),
+                RecruitmentEmailBodyFormat.PLAIN);
+
+        assertEquals("1) mandag\n2) tirsdag", rendered.body());
+    }
+
+    @Test
+    void htmlValueEscaping_stillHappensBeforeTheBrConversion() {
+        // The <br> is the ONE piece of markup a value may carry — anything
+        // the value itself brought is still escaped as data.
+        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                "Emne", "<p>{{options_list}}</p>", null, null,
+                java.util.Map.of("options_list", "<b>fed</b>\nnæste"),
+                RecruitmentEmailBodyFormat.HTML);
+
+        assertEquals("<p>&lt;b&gt;fed&lt;/b&gt;<br>næste</p>", rendered.body());
+    }
+
     // ---- The send gate: an unfilled link placeholder must never go out ----
 
     @Test

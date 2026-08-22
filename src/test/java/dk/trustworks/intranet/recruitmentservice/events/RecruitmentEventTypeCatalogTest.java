@@ -81,12 +81,19 @@ class RecruitmentEventTypeCatalogTest {
         // per spec §6.2; the consuming stage move clears the pending state
         // under its own APPLICATION_* event, deliberately without a second
         // CLEARED event.
+        // UNSOLICITED_APPLICATION_RECEIVED / DUPLICATE_APPLICATION_RECEIVED
+        // are the candidate-email remediation additions (F6/F7, 2026-08-22):
+        // the two public-form paths that deliberately create no application —
+        // unsolicited submissions and repeat submissions onto an open
+        // process — previously produced no event at all, so the candidate
+        // mailer had nothing to acknowledge and the applicant heard nothing.
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
                 "APPLICATION_CREATED", "APPLICATION_UPDATED", "APPLICATION_STAGE_CHANGED",
                 "APPLICATION_POSITION_CHANGED",
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
+                "UNSOLICITED_APPLICATION_RECEIVED", "DUPLICATE_APPLICATION_RECEIVED",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
@@ -125,7 +132,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
                         + "and the V519 INTERVIEW_DECISION_* pair exactly");
-        assertEquals(78, RecruitmentEventType.values().length);
+        assertEquals(80, RecruitmentEventType.values().length);
     }
 
     @Test

@@ -50,6 +50,35 @@ public enum RecruitmentEventType {
     APPLICATION_POSITION_CHANGED,
     APPLICATION_REJECTED,
     APPLICATION_WITHDRAWN,
+    /**
+     * An unsolicited application arrived through the public form
+     * ({@code PublicApplyService.submitUnsolicited}). That path deliberately
+     * creates no application row (recruiter triage attaches one later), so
+     * {@code APPLICATION_CREATED} never fires — and before this type existed
+     * the candidate mailer had no fact to hang a receipt on: the applicant
+     * heard nothing. Emitted for NEW and REUSED candidates alike — the
+     * submission is the fact being recorded, not the candidate row's birth
+     * ({@code CANDIDATE_CREATED} only fires for new rows). Payload:
+     * {@code origin=public_form}, {@code candidate_reused}; the CV's own
+     * {@code DOCUMENT_UPLOADED} carries the file facts. Catalog addition per
+     * spec §6.2 ("every mutating endpoint = one command = ≥1 event") and the
+     * trigger for the {@code UNSOLICITED_ACKNOWLEDGEMENT} template
+     * (candidate-email remediation F6, 2026-08-22).
+     */
+    UNSOLICITED_APPLICATION_RECEIVED,
+    /**
+     * A returning candidate submitted the public position form while already
+     * holding an open application. The submission stores their documents but
+     * deliberately creates no second application
+     * ({@code PublicApplyService.submitForPosition}'s duplicate branch — the
+     * one-open-application invariant), so again no {@code APPLICATION_CREATED}
+     * and, before this type, no receipt for someone who had now applied
+     * twice. Payload: {@code origin=public_form},
+     * {@code reason=DUPLICATE_PUBLIC_SUBMISSION}; position subject set. The
+     * trigger for the {@code DUPLICATE_APPLICATION_NOTICE} template
+     * (candidate-email remediation F7, 2026-08-22).
+     */
+    DUPLICATE_APPLICATION_RECEIVED,
 
     // --- Referrals (P6) -------------------------------------------------
     REFERRAL_SUBMITTED,
