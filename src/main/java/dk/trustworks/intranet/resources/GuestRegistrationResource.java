@@ -29,6 +29,13 @@ public class GuestRegistrationResource {
     @RolesAllowed({"guest:write"})
     public void register(RegistrationRequest registrationRequest) {
         log.info("register called " + registrationRequest);
+        if (registrationRequest == null) throw new BadRequestException("Request body is required");
+        // The kiosk must resolve the host to a real user uuid. A free-typed name
+        // arrives with employeeId=null, which reached User.findById(null) and blew
+        // up as an unmapped IllegalArgumentException ("Identifier may not be
+        // null") — a 500 for what is a malformed request.
+        if (registrationRequest.getEmployeeId() == null || registrationRequest.getEmployeeId().isBlank())
+            throw new BadRequestException("employeeId is required");
         service.register(registrationRequest);
     }
 
