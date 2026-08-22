@@ -19,6 +19,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.DossierCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.HardDeleteRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.NoteEditRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.PoolRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
@@ -261,11 +262,20 @@ public class RecruitmentResource {
             @QueryParam("experience") String experience,
             @QueryParam("specialization") String specialization,
             @QueryParam("clearance") String clearance,
+            @QueryParam("practice") String practice,
             @QueryParam("source") String source,
             @QueryParam("view") String view,
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("20") int size) {
         enforceFlag();
+        if (practice != null && !practice.isBlank()) {
+            try {
+                UUID.fromString(practice.trim());
+            } catch (IllegalArgumentException e) {
+                throw new WebApplicationException(
+                        "practice must be a practice uuid", Response.Status.BAD_REQUEST);
+            }
+        }
         // Lenient viewer resolution: rows carry per-viewer application info
         // (P4) when the X-Requested-By header is present; legacy callers
         // without it still get the list (with empty application lists)
@@ -274,6 +284,7 @@ public class RecruitmentResource {
         String viewer = requestHeaderHolder.getUserUuid();
         CandidateListResponse result = candidateService.list(
                 status, search, tag, education, experience, specialization, clearance,
+                practice == null || practice.isBlank() ? null : practice.trim(),
                 source, view, page, size,
                 viewer != null && !viewer.isBlank() ? viewer : null);
         return Response.ok(result).build();
@@ -631,6 +642,31 @@ public class RecruitmentResource {
         return Response.status(Response.Status.CREATED)
                 .entity(Map.of(
                         "eventId", event.getEventId(),
+                        "occurredAt", event.getOccurredAt().toString()))
+                .build();
+    }
+
+    /**
+     * Edit a discussion note (change request 2026-08-22): author-only, any
+     * time, recorded as an appended {@code NOTE_EDITED} event — the stream
+     * stays append-only and the timeline folds the newest edit into the
+     * displayed note. Structured notes (SALARY_EXPECTATION) answer 400;
+     * a non-author answers 403; an unknown or foreign event id answers 404.
+     * Deliberately no Slack re-notification — mentions fired when the note
+     * was posted.
+     */
+    @PUT
+    @Path("/candidates/{uuid}/notes/{eventId}")
+    @RolesAllowed({"recruitment:write"})
+    public Response editNote(@PathParam("uuid") UUID uuid,
+                             @PathParam("eventId") String eventId,
+                             @Valid NoteEditRequest request) {
+        enforcePipelineFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        RecruitmentEvent event = candidateService.editNote(uuid, eventId, request, currentActor());
+        return Response.ok(Map.of(
+                        "eventId", event.getEventId(),
+                        "editedEventId", eventId,
                         "occurredAt", event.getOccurredAt().toString()))
                 .build();
     }

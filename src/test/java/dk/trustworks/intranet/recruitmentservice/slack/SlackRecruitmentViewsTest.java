@@ -257,12 +257,12 @@ class SlackRecruitmentViewsTest {
     }
 
     /**
-     * Slack has no hover, so the web tooltip's content has to arrive as input
-     * hints — otherwise an interviewer scoring from a phone sees six bare
-     * labels and no definition of what a 3 means.
+     * Slack has no hover, so each subject carries a ONE-LINE hint — the full
+     * definition and score anchors moved behind the "Scoring guide" button
+     * (feedback 2026-08: the old full-guidance hints drowned the form).
      */
     @Test
-    void scorecardModal_eachSubjectCarriesItsGuidanceAsAHint() {
+    void scorecardModal_shortHintsAndGuideButton() {
         List<ScorecardAttribute> template = List.of(
                 new ScorecardAttribute("WHY_CONSULTING", "Why consulting"),
                 new ScorecardAttribute("FAGLIGHED", "Faglighed & formidling"),
@@ -276,12 +276,13 @@ class SlackRecruitmentViewsTest {
         List<InputBlock> inputs = inputs(view.getBlocks());
         String whyHint = inputs.get(0).getHint().getText();
         assertTrue(whyHint.contains("Motivation for the consultant role"),
-                "the definition an interviewer reads before scoring");
-        assertTrue(whyHint.contains("1: ") && whyHint.contains("4: "),
-                "all four anchors travel with the subject");
+                "the curated one-liner an interviewer reads before scoring");
+        assertFalse(whyHint.contains("1: ") || whyHint.contains("4: "),
+                "the anchors no longer travel inline — they live in the guide view");
 
-        assertTrue(inputs.get(1).getHint().getText().contains("kompetencekatalog"),
-                "Danish framework terms survive the plain-text hint");
+        assertTrue(inputs.get(1).getHint().getText()
+                        .contains("level the role is hired for"),
+                "faglighed keeps its one-line definition");
         assertEquals("Closes a month cleanly.", inputs.get(2).getHint().getText(),
                 "a custom subject falls back to its author's help text");
         assertNull(inputs.get(3).getHint(),
@@ -297,8 +298,44 @@ class SlackRecruitmentViewsTest {
             }
         }
 
-        assertTrue(allMrkdwn(view.getBlocks()).contains("ceiling for one sitting"),
+        // The guide button carries the interview uuid so its handler can
+        // re-authorize the claim, exactly like the scorecard-open button.
+        ActionsBlock actions = view.getBlocks().stream()
+                .filter(ActionsBlock.class::isInstance)
+                .map(ActionsBlock.class::cast)
+                .findFirst().orElseThrow();
+        com.slack.api.model.block.element.ButtonElement guide =
+                (com.slack.api.model.block.element.ButtonElement) actions.getElements().get(0);
+        assertEquals(SlackRecruitmentViews.SCORECARD_GUIDE_OPEN, guide.getActionId());
+        assertEquals("interview-1", guide.getValue());
+    }
+
+    /** The pushed guide view: usage note + per-subject definitions and anchors. */
+    @Test
+    void scorecardGuideView_fullGuidancePerSubject() {
+        List<ScorecardAttribute> template = List.of(
+                new ScorecardAttribute("WHY_CONSULTING", "Why consulting"),
+                // Custom subject with hostile author-typed label and help text.
+                new ScorecardAttribute("BOOKKEEPING", HOSTILE_NAME, HOSTILE_NAME),
+                // Nothing to say → skipped entirely.
+                new ScorecardAttribute("MYSTERY", "Mystery subject"));
+        View view = SlackRecruitmentViews.scorecardGuideView(template);
+
+        assertEquals("modal", view.getType());
+        assertNull(view.getSubmit(), "the guide is read-only — Close pops back to the form");
+        assertTrue(view.getTitle().getText().length() <= 24, "Slack caps modal titles at 24 chars");
+
+        String text = allMrkdwn(view.getBlocks());
+        assertTrue(text.contains("ceiling for one sitting"),
                 "the usage note keeps six subjects from becoming a checklist");
+        assertTrue(text.contains("Motivation for the consultant role itself — not just"),
+                "the full definition, not the one-liner");
+        assertTrue(text.contains("*1*") && text.contains("*4*"),
+                "all four anchors are spelled out");
+        assertFalse(text.contains("<https://evil.example|"),
+                "author-typed labels/help text never render as live markup");
+        assertFalse(text.contains("Mystery subject"),
+                "subjects with no guidance are skipped, not padded");
     }
 
     @Test

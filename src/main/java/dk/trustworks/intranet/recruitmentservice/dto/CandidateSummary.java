@@ -18,6 +18,12 @@ public record CandidateSummary(
         CandidatePoolStatus poolStatus,
         CandidateSource source,
         List<String> tags,
+        /**
+         * Practice-scoped faglighed role tags — the P8 grid's
+         * Specializations column (change request 2026-08-22), the only
+         * faglighed signal for pooled candidates who are in no pipeline.
+         */
+        List<String> specializations,
         RevisionKind latestRevisionKind,
         LocalDateTime latestRevisionAt,
         /**

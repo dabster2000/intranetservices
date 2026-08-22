@@ -158,6 +158,16 @@ public enum RecruitmentEventType {
     // --- Communication & notes (P3, P15) --------------------------------
     EMAIL_SENT,
     NOTE_ADDED,
+    /**
+     * The author corrected their own discussion note (change request
+     * 2026-08-22). Payload: {@code edited_event_id} (the {@code NOTE_ADDED}
+     * event this supersedes — structural); pii: {@code text} (the new
+     * text). Visibility is copied from the original note so a private note
+     * stays private. The timeline read path folds the newest edit into the
+     * displayed note (with an "edited" marker) and hides the edit events
+     * themselves; the original text stays in the stream as audit history.
+     */
+    NOTE_EDITED,
     DOCUMENT_UPLOADED,
     /**
      * A recruiter manually re-typed a stored candidate document whose

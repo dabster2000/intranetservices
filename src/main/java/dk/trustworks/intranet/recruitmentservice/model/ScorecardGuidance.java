@@ -17,6 +17,9 @@ import java.util.List;
  *
  * @param code              the {@link ScorecardAttribute#code()} this coaches
  * @param label             display label of the subject
+ * @param shortHint         one curated line — the compact surfaces' hint
+ *                          (the Slack modal), where the full definition
+ *                          would drown the form
  * @param whatYouAreScoring the definition an interviewer reads before scoring
  * @param probes            questions that surface the subject, in asking order
  * @param anchors           exactly four entries — what a 1, 2, 3 and 4 look like
@@ -24,6 +27,7 @@ import java.util.List;
 public record ScorecardGuidance(
         String code,
         String label,
+        String shortHint,
         String whatYouAreScoring,
         List<String> probes,
         List<String> anchors

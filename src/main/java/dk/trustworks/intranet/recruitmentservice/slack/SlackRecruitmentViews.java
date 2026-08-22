@@ -69,6 +69,13 @@ public final class SlackRecruitmentViews {
     /** action_id of the scorecard button on the nudge/kit DMs (block_actions key, P18). */
     public static final String SCORECARD_OPEN = "recruitment_scorecard_open";
 
+    /**
+     * action_id of the "Scoring guide" button inside the scorecard modal —
+     * pushes the full guidance (definitions + score anchors) as a second
+     * view, so the form itself stays lean (block_actions key).
+     */
+    public static final String SCORECARD_GUIDE_OPEN = "recruitment_scorecard_guide_open";
+
     // ---- Block ids ------------------------------------------------------------
     public static final String BLOCK_CANDIDATE_NAME = "candidate_name";
     public static final String BLOCK_LINKEDIN = "linkedin_url";
@@ -449,8 +456,16 @@ public final class SlackRecruitmentViews {
                 ":lock: Scorecards are blind: your co-interviewers can't see your answers "
                         + "before submitting their own, and you can't see theirs. "
                         + "Everything unlocks in the intranet debrief once all are in.")))));
-        blocks.add(context(c -> c.elements(asContextElements(markdownText(
-                ScorecardGuidanceCatalog.USAGE_NOTE)))));
+        // The full guidance (definitions, score anchors, usage note) lives one
+        // click away instead of under every input — the form stays scannable.
+        if (template.stream().anyMatch(SlackRecruitmentViews::hasGuidance)) {
+            blocks.add(com.slack.api.model.block.Blocks.actions(a -> a.elements(
+                    com.slack.api.model.block.element.BlockElements.asElements(
+                            com.slack.api.model.block.element.BlockElements.button(b -> b
+                                    .actionId(SCORECARD_GUIDE_OPEN)
+                                    .value(interviewUuid)
+                                    .text(plainText("📖 Scoring guide")))))));
+        }
         blocks.add(divider());
         for (ScorecardAttribute attribute : template) {
             String hint = scorecardHint(attribute);
@@ -460,9 +475,8 @@ public final class SlackRecruitmentViews {
                         .element(staticSelect(s -> s.actionId("value")
                                 .placeholder(plainText("Pick a score"))
                                 .options(scoreOptions())));
-                // Slack has no hover, so the web tooltip's content becomes the
-                // input hint — the only place an interviewer scoring from a
-                // phone can read what the subject means and what a 3 looks like.
+                // Slack has no hover, so each subject keeps a one-line hint;
+                // the full definition and anchors sit behind the guide button.
                 if (hint != null) {
                     i.hint(plainText(hint));
                 }
@@ -541,11 +555,11 @@ public final class SlackRecruitmentViews {
     }
 
     /**
-     * The subject's coaching, folded into one plain-text hint: the definition
-     * followed by what each score looks like. Standard subjects resolve from
-     * {@link ScorecardGuidanceCatalog}; a custom subject falls back to the
-     * help text its position author wrote; anything else gets no hint rather
-     * than a filler one.
+     * The subject's one-line hint. Standard subjects use the catalog's
+     * curated {@code shortHint} — the full definition and anchors moved to
+     * the pushed guide view ({@link #scorecardGuideView}) so the form stays
+     * scannable. A custom subject falls back to the help text its position
+     * author wrote; anything else gets no hint rather than a filler one.
      * <p>
      * Capped at {@link #SLACK_HINT_MAX_LENGTH}: Block Kit rejects the whole
      * view if any single text object runs over, which would take the modal
@@ -553,16 +567,7 @@ public final class SlackRecruitmentViews {
      */
     private static String scorecardHint(ScorecardAttribute attribute) {
         String text = ScorecardGuidanceCatalog.forCode(attribute.code())
-                .map(guidance -> {
-                    StringBuilder sb = new StringBuilder(guidance.whatYouAreScoring());
-                    for (int score = 1; score <= ScorecardGuidance.ANCHOR_COUNT; score++) {
-                        String anchor = guidance.anchorFor(score);
-                        if (anchor != null) {
-                            sb.append("\n").append(score).append(": ").append(anchor);
-                        }
-                    }
-                    return sb.toString();
-                })
+                .map(ScorecardGuidance::shortHint)
                 .orElseGet(attribute::helpText);
         if (text == null || text.isBlank()) {
             return null;
@@ -570,6 +575,71 @@ public final class SlackRecruitmentViews {
         return text.length() <= SLACK_HINT_MAX_LENGTH
                 ? text
                 : text.substring(0, SLACK_HINT_MAX_LENGTH - 1) + "…";
+    }
+
+    /** Whether the guide view would have anything to say about this subject. */
+    private static boolean hasGuidance(ScorecardAttribute attribute) {
+        return ScorecardGuidanceCatalog.forCode(attribute.code()).isPresent()
+                || (attribute.helpText() != null && !attribute.helpText().isBlank());
+    }
+
+    /**
+     * The full scoring guidance as a pushed view (stacked on the scorecard
+     * modal): per subject the definition and what each score looks like,
+     * headed by the sitting-level usage note. Standard subjects resolve from
+     * {@link ScorecardGuidanceCatalog}; custom subjects show their position
+     * author's help text — that text (and every custom label) is
+     * author-typed and goes through {@code mrkdwnSafe} like any untrusted
+     * string. Subjects with nothing to say are skipped.
+     */
+    public static View scorecardGuideView(List<ScorecardAttribute> template) {
+        List<LayoutBlock> blocks = new ArrayList<>();
+        blocks.add(context(c -> c.elements(asContextElements(markdownText(
+                ScorecardGuidanceCatalog.USAGE_NOTE)))));
+        boolean first = true;
+        for (ScorecardAttribute attribute : template) {
+            String body = guideBody(attribute);
+            if (body == null) {
+                continue;
+            }
+            if (!first) {
+                blocks.add(divider());
+            }
+            first = false;
+            blocks.add(section(s -> s.text(markdownText(body))));
+        }
+        return view(v -> v
+                .type("modal")
+                .title(viewTitle(t -> t.type("plain_text").text("Scoring guide")))
+                .close(viewClose(c -> c.type("plain_text").text("Back")))
+                .blocks(blocks));
+    }
+
+    /** One subject's guide section (mrkdwn), or null when there is nothing to say. */
+    private static String guideBody(ScorecardAttribute attribute) {
+        var guidance = ScorecardGuidanceCatalog.forCode(attribute.code()).orElse(null);
+        if (guidance == null) {
+            String helpText = attribute.helpText();
+            if (helpText == null || helpText.isBlank()) {
+                return null;
+            }
+            return "*" + SlackCandidateFacts.mrkdwnSafe(attribute.label()) + "*\n"
+                    + SlackCandidateFacts.mrkdwnSafe(helpText);
+        }
+        StringBuilder sb = new StringBuilder("*")
+                .append(SlackCandidateFacts.mrkdwnSafe(guidance.label())).append("*\n")
+                .append(SlackCandidateFacts.mrkdwnSafe(guidance.whatYouAreScoring()));
+        boolean hasAnchors = false;
+        for (int score = 1; score <= ScorecardGuidance.ANCHOR_COUNT; score++) {
+            String anchor = guidance.anchorFor(score);
+            if (anchor != null) {
+                sb.append(hasAnchors ? "\n" : "\n\n_What each score looks like_\n")
+                        .append('*').append(score).append("* — ")
+                        .append(SlackCandidateFacts.mrkdwnSafe(anchor));
+                hasAnchors = true;
+            }
+        }
+        return sb.toString();
     }
 
     private static List<OptionObject> scoreOptions() {

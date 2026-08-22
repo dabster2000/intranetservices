@@ -4,8 +4,12 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateSummary;
+import dk.trustworks.intranet.recruitmentservice.dto.CandidateTimelineResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.NoteEditRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.TimelineEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventPiiAssertions;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateEducationLevel;
@@ -20,6 +24,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.WebApplicationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +57,9 @@ class CandidateServiceAtsIntegrationTest {
 
     @Inject
     CandidateService candidateService;
+
+    @Inject
+    RecruitmentTimelineService timelineService;
 
     @Inject
     EntityManager em;
@@ -376,6 +384,65 @@ class CandidateServiceAtsIntegrationTest {
         assertEquals(400, e.getResponse().getStatus());
     }
 
+    // ---- Note editing (change request 2026-08-22) -------------------------------------
+
+    @Test
+    void editNote_appendsNoteEdited_andTimelineFoldsNewestEdit() {
+        CandidateResponse created = create(builder().source(CandidateSource.OTHER).build());
+        UUID candidateUuid = UUID.fromString(created.uuid());
+        RecruitmentEvent note = candidateService.addNote(candidateUuid,
+                new NoteRequest("Wrong nmae mentioned", false, null, null), actor);
+
+        RecruitmentEvent edit = candidateService.editNote(candidateUuid,
+                note.getEventId(), new NoteEditRequest(PII_SENTINEL + " right name"), actor);
+
+        assertEquals(RecruitmentEventType.NOTE_EDITED, edit.getEventType());
+        RecruitmentEventPiiAssertions.assertNoPiiInPayload(edit);
+        assertTrue(edit.getPayload().contains(note.getEventId()),
+                "the edit references the note it corrects");
+        assertTrue(edit.getPii().contains(PII_SENTINEL), "edited text lives in pii");
+
+        // The timeline folds the newest edit into the note and never renders
+        // the NOTE_EDITED event as a feed row of its own.
+        CandidateTimelineResponse timeline = timelineService.timeline(
+                actor.toString(), RecruitmentCandidate.findById(created.uuid()), 100, null);
+        List<TimelineEvent> noteRows = timeline.events().stream()
+                .filter(e -> e.eventType() == RecruitmentEventType.NOTE_ADDED).toList();
+        assertEquals(1, noteRows.size());
+        TimelineEvent folded = noteRows.get(0);
+        assertEquals(Boolean.TRUE, folded.payload().get("edited"));
+        assertTrue(String.valueOf(folded.pii().get("text")).contains("right name"),
+                "the displayed text is the edit's");
+        assertTrue(timeline.events().stream()
+                        .noneMatch(e -> e.eventType() == RecruitmentEventType.NOTE_EDITED),
+                "edit events ride along on the note, never as rows");
+    }
+
+    @Test
+    void editNote_authorOnly_structuredRefused_unknownIs404() {
+        CandidateResponse created = create(builder().source(CandidateSource.OTHER).build());
+        UUID candidateUuid = UUID.fromString(created.uuid());
+        RecruitmentEvent note = candidateService.addNote(candidateUuid,
+                new NoteRequest("plain note", false, null, null), actor);
+
+        WebApplicationException forbidden = assertThrows(WebApplicationException.class,
+                () -> candidateService.editNote(candidateUuid, note.getEventId(),
+                        new NoteEditRequest("hijack attempt"), UUID.randomUUID()));
+        assertEquals(403, forbidden.getResponse().getStatus());
+
+        RecruitmentEvent salary = candidateService.addNote(candidateUuid,
+                new NoteRequest("75.000", true, NoteRequest.FIELD_SALARY_EXPECTATION, null),
+                actor);
+        WebApplicationException structured = assertThrows(WebApplicationException.class,
+                () -> candidateService.editNote(candidateUuid, salary.getEventId(),
+                        new NoteEditRequest("80.000"), actor));
+        assertEquals(400, structured.getResponse().getStatus());
+
+        assertThrows(NotFoundException.class,
+                () -> candidateService.editNote(candidateUuid,
+                        UUID.randomUUID().toString(), new NoteEditRequest("x"), actor));
+    }
+
     // ---- List filters (qualification fields persist AND filter — DoD) -----------------
 
     @Test
@@ -397,35 +464,35 @@ class CandidateServiceAtsIntegrationTest {
                 .build());
 
         assertOnlyContains(candidateService.list(null, null, "tag-" + marker,
-                null, null, null, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
+                null, null, null, null, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
         assertOnlyContains(candidateService.list(null, null, null,
-                null, null, "Spec-" + marker, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
+                null, null, "Spec-" + marker, null, null, null, null, 0, 100, null), pm.uuid(), dev.uuid());
 
         CandidateListResponse cleared = candidateService.list(null, null, null,
-                null, null, null, "CLEARED", null, null, 0, 1000, null);
+                null, null, null, "CLEARED", null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(cleared).contains(pm.uuid()));
         assertFalse(uuidsOf(cleared).contains(dev.uuid()));
 
         CandidateListResponse seniors = candidateService.list(null, null, null,
-                null, "SENIOR", null, null, null, null, 0, 1000, null);
+                null, "SENIOR", null, null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(seniors).contains(pm.uuid()));
         assertFalse(uuidsOf(seniors).contains(dev.uuid()));
 
         CandidateListResponse masters = candidateService.list(null, null, null,
-                "MASTER", null, null, null, null, null, 0, 1000, null);
+                "MASTER", null, null, null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(masters).contains(pm.uuid()));
         assertFalse(uuidsOf(masters).contains(dev.uuid()));
 
         // The POOLED status filter finds pool candidates.
         candidateService.pool(UUID.fromString(dev.uuid()), CandidatePoolStatus.SILVER_MEDALIST, actor);
         CandidateListResponse pooled = candidateService.list("POOLED", null, null,
-                null, null, null, null, null, null, 0, 1000, null);
+                null, null, null, null, null, null, null, 0, 1000, null);
         assertTrue(uuidsOf(pooled).contains(dev.uuid()));
         assertFalse(uuidsOf(pooled).contains(pm.uuid()));
 
         WebApplicationException badFilter = assertThrows(WebApplicationException.class,
                 () -> candidateService.list(null, null, null, "NOT_A_LEVEL",
-                        null, null, null, null, null, 0, 10, null));
+                        null, null, null, null, null, null, 0, 10, null));
         assertEquals(400, badFilter.getResponse().getStatus());
     }
 

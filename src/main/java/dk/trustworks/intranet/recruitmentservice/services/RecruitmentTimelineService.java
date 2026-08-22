@@ -144,12 +144,22 @@ public class RecruitmentTimelineService {
         Set<String> readablePositions = admin ? Set.of()
                 : visibility.readablePositionUuids(viewerUuid, positions.values());
 
+        // Note edits fold into their original note (change request
+        // 2026-08-22): the newest NOTE_EDITED per note id, resolved for the
+        // whole candidate in one query — the edit may sit on a different
+        // page than the note it corrects, so the scan window can't serve it.
+        Map<String, RecruitmentEvent> newestEditByNoteId = loadNoteEdits(candidate.getUuid());
+
         // Event-level filtering over the full remainder, then one page.
         Map<Long, Map<String, Object>> payloads = new HashMap<>();
         List<RecruitmentEvent> visible = new ArrayList<>();
         for (RecruitmentEvent event : raw) {
             Map<String, Object> payload = parseJson(event.getPayload());
             payloads.put(event.getSeq(), payload);
+            if (event.getEventType() == RecruitmentEventType.NOTE_EDITED) {
+                // Never a feed row of its own — it rides along on the note.
+                continue;
+            }
             if (isVisible(event, payload, viewerUuid, admin, noteTier, readablePositions)) {
                 visible.add(event);
             }
@@ -160,7 +170,8 @@ public class RecruitmentTimelineService {
         Map<String, String> actorNames = resolveActorNames(page);
         List<TimelineEvent> events = page.stream()
                 .map(event -> toDto(event, payloads.get(event.getSeq()),
-                        actorNames, positions, compTier, viewerUuid, admin))
+                        actorNames, positions, compTier, viewerUuid, admin,
+                        newestEditByNoteId.get(event.getEventId())))
                 .toList();
         return new CandidateTimelineResponse(events, hasMore, compTier);
     }
@@ -189,7 +200,8 @@ public class RecruitmentTimelineService {
     private TimelineEvent toDto(RecruitmentEvent event, Map<String, Object> payload,
                                 Map<String, String> actorNames,
                                 Map<String, RecruitmentPosition> positions,
-                                boolean compTier, String viewerUuid, boolean admin) {
+                                boolean compTier, String viewerUuid, boolean admin,
+                                RecruitmentEvent newestEdit) {
         boolean salaryNote = event.getEventType() == RecruitmentEventType.NOTE_ADDED
                 && NoteRequest.FIELD_SALARY_EXPECTATION.equals(payload.get("field"));
         // P11 blind rule on the timeline: scorecard notes only for the
@@ -203,6 +215,23 @@ public class RecruitmentTimelineService {
                 ? null
                 : parseJson(event.getPii());
         boolean piiRedacted = redactPii && event.getPii() != null;
+
+        // Fold the newest edit into a discussion note: the displayed text
+        // is the edit's, the payload gains the "edited" marker, and the
+        // NOTE_EDITED events themselves never render (filtered above). Only
+        // plain notes are editable (the write path refuses field notes), so
+        // this never crosses the salary-redaction rule.
+        if (newestEdit != null
+                && event.getEventType() == RecruitmentEventType.NOTE_ADDED
+                && !salaryNote && !redactPii) {
+            Map<String, Object> annotated = new HashMap<>(payload);
+            annotated.put("edited", Boolean.TRUE);
+            annotated.put("edited_at", newestEdit.getOccurredAt().toString());
+            payload = annotated;
+            if (newestEdit.getPii() != null) {
+                pii = parseJson(newestEdit.getPii());
+            }
+        }
 
         RecruitmentPosition position = event.getPositionUuid() != null
                 ? positions.get(event.getPositionUuid())
@@ -228,6 +257,33 @@ public class RecruitmentTimelineService {
     }
 
     // ---- Batched lookups --------------------------------------------------------
+
+    /**
+     * The newest {@code NOTE_EDITED} per edited note id for one candidate —
+     * a single indexed query; a candidate's edit events are few. Newest
+     * wins: the stream is scanned descending and only the first edit per
+     * note id is kept.
+     */
+    private Map<String, RecruitmentEvent> loadNoteEdits(String candidateUuid) {
+        // Same defense-in-depth cap as the main scan window: newest-first,
+        // so on pathological data the freshest edits still win.
+        List<RecruitmentEvent> edits = RecruitmentEvent.<RecruitmentEvent>find(
+                        "candidateUuid = ?1 and eventType = ?2 order by seq desc",
+                        candidateUuid, RecruitmentEventType.NOTE_EDITED)
+                .page(0, EVENT_SCAN_CAP)
+                .list();
+        if (edits.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, RecruitmentEvent> newestByNoteId = new HashMap<>();
+        for (RecruitmentEvent edit : edits) {
+            Object noteId = parseJson(edit.getPayload()).get("edited_event_id");
+            if (noteId instanceof String id) {
+                newestByNoteId.putIfAbsent(id, edit);
+            }
+        }
+        return newestByNoteId;
+    }
 
     private static Map<String, RecruitmentPosition> loadPositions(
             List<RecruitmentEvent> events, List<RecruitmentApplication> applications) {
