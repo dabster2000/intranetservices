@@ -57,7 +57,8 @@ import java.util.stream.Collectors;
  *   <li>one column per {@code stage_set} entry in set order, including
  *       {@code HIRED} — empty stages still render;</li>
  *   <li>cards ordered oldest {@code stageEnteredAt} first (longest-waiting
- *       on top); {@code daysInStage} and {@code idle} (&gt; 7 days) are
+ *       on top); {@code daysInStage} and {@code idle}
+ *       ({@code > recruitment.sla.candidate-idle-days}) are
  *       server-computed in UTC;</li>
  *   <li>terminal applications (REJECTED / WITHDRAWN / RETURNED_TO_POOL)
  *       leave the columns and appear in the summarized rail, newest
@@ -68,11 +69,27 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class RecruitmentBoardService {
 
-    /** Cards waiting longer than this are flagged idle (contract: {@code daysInStage > 7}). */
-    static final int IDLE_THRESHOLD_DAYS = 7;
-
     @Inject
     EntityManager em;
+
+    /**
+     * The idle chip's threshold, shared with the SLA sweep and the landing
+     * page (2026-08-22).
+     *
+     * <p>Was a hard-coded {@code 7} while {@code recruitment.sla.candidate-idle-days}
+     * sat at 4 in production, so the same candidate was "idle" on the landing
+     * page and in Slack three days before the board agreed — and the admin
+     * settings page told administrators the one number drove all three. One
+     * word, one number now.
+     *
+     * <p>The board's chip stays deliberately simpler than the task list:
+     * {@code daysInStage > threshold}, with none of {@link RecruitmentIdleRule}'s
+     * suppressions. A board card is a fact about how long someone has waited
+     * — true even when the next interview is already booked — while a task
+     * row is a claim that somebody must act. Only the number is shared.
+     */
+    @Inject
+    RecruitmentSlaThresholds thresholds;
 
     @Inject
     dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility visibility;
@@ -104,8 +121,12 @@ public class RecruitmentBoardService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         boolean viewerCanDecide = visibility.canDecideOnApplication(viewerUuid, position);
         SubStatusInputs subStatusInputs = loadSubStatusInputs(applications);
+        // Read once per board, never per card — app_settings is a tiny table
+        // but a lookup per card is still an N+1 by any other name.
+        int idleThresholdDays = thresholds.candidateIdleDays();
         List<BoardColumn> columns = buildColumns(applications, stageSet, candidates,
-                referrerNames, now, position, subStatusInputs, viewerCanDecide);
+                referrerNames, now, position, subStatusInputs, viewerCanDecide,
+                idleThresholdDays);
         BoardTerminalSummary terminal = buildTerminal(applications, candidates);
 
         return new PositionBoardResponse(
@@ -122,7 +143,8 @@ public class RecruitmentBoardService {
                                            LocalDateTime now,
                                            RecruitmentPosition position,
                                            SubStatusInputs subStatusInputs,
-                                           boolean viewerCanDecide) {
+                                           boolean viewerCanDecide,
+                                           int idleThresholdDays) {
         // Sort BEFORE grouping — groupingBy preserves encounter order, so
         // every column comes out oldest stageEnteredAt first (uuid as a
         // deterministic tie-break).
@@ -146,7 +168,8 @@ public class RecruitmentBoardService {
                                         referrerNames, now,
                                         deriveSubStatus(application, position,
                                                 subStatusInputs, nowCopenhagen,
-                                                viewerCanDecide)))
+                                                viewerCanDecide),
+                                        idleThresholdDays))
                                 .toList()))
                 .toList();
     }
@@ -155,7 +178,8 @@ public class RecruitmentBoardService {
                              RecruitmentCandidate candidate,
                              Map<String, String> referrerNames,
                              LocalDateTime now,
-                             BoardCardSubStatus subStatus) {
+                             BoardCardSubStatus subStatus,
+                             int idleThresholdDays) {
         long daysInStage = Math.max(0,
                 ChronoUnit.DAYS.between(application.getStageEnteredAt(), now));
         CandidateSource source = candidate == null ? null : candidate.getSource();
@@ -172,7 +196,7 @@ public class RecruitmentBoardService {
                 referredByName,
                 application.getStageEnteredAt(),
                 daysInStage,
-                daysInStage > IDLE_THRESHOLD_DAYS,
+                daysInStage > idleThresholdDays,
                 application.getExpectedStartDate(),
                 application.getAssignedTeamUuid(),
                 subStatus);

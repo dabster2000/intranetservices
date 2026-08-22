@@ -51,17 +51,23 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li><b>Scorecard overdue</b> — a round interview's time has passed and
  *       an assigned interviewer's own scorecard is missing → DM to that
- *       interviewer ({@code SCORECARD_NUDGED}, hard cap of 2 per
+ *       interviewer ({@code SCORECARD_NUDGED}, hard cap of
+ *       {@code recruitment.sla.max-scorecard-nudges} — default 2 — per
  *       interviewer per interview, never after submission).</li>
  *   <li><b>Debrief stalled</b> — every assigned interviewer has submitted
  *       (the shared {@code allAssignedSubmitted} rule) but the application
  *       has not moved past the round → DM to the decision owner
  *       ({@code DEBRIEF_STALLED_NUDGED}, re-pinged at most once per
  *       threshold period).</li>
- *   <li><b>Candidate idle</b> — an open application has sat in one stage
- *       beyond the threshold → DM to the decision owner
- *       ({@code CANDIDATE_IDLE_NUDGED}, re-pinged at most once per
- *       threshold period while still idle).</li>
+ *   <li><b>Candidate idle</b> — an open application has made no progress
+ *       beyond the threshold <em>and</em> nothing is queued to move it
+ *       ({@link RecruitmentIdleRule}: not booked, not out with the
+ *       scheduling automation, not waiting on a colleague's scorecard, not
+ *       debrief-ready, not queued for email review, requisition still open)
+ *       → DM to the decision owner ({@code CANDIDATE_IDLE_NUDGED}, re-pinged
+ *       at most once per threshold period while still idle). The stage clock
+ *       is only the pre-filter; the rule — shared with the landing page's
+ *       task list so Slack and the page always agree — decides.</li>
  * </ul>
  * The plan calls this the "SlaReactor", but no event can announce that
  * time has passed — the component is a sweep service driven by the
@@ -97,8 +103,6 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class RecruitmentSlaService {
 
-    /** Spec §8.4 / plan §P17: at most two scorecard nudges per interviewer per interview. */
-    static final int MAX_SCORECARD_NUDGES = 2;
 
     private static final com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>> JSON_OBJECT =
             new com.fasterxml.jackson.core.type.TypeReference<>() {
@@ -115,6 +119,9 @@ public class RecruitmentSlaService {
 
     @Inject
     RecruitmentSlaThresholds thresholds;
+
+    @Inject
+    RecruitmentIdleFacts idleFacts;
 
     @Inject
     RecruitmentSlackFeatureFlag slackFlags;
@@ -208,7 +215,7 @@ public class RecruitmentSlaService {
                 }
                 List<LocalDateTime> priorNudges = priorScorecardNudges(
                         ctx, interview.getUuid(), interviewerUuid);
-                if (priorNudges.size() >= MAX_SCORECARD_NUDGES) {
+                if (priorNudges.size() >= thresholds.maxScorecardNudges()) {
                     continue; // hard cap
                 }
                 if (!priorNudges.isEmpty()
@@ -334,6 +341,11 @@ public class RecruitmentSlaService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         LocalDateTime cutoff = now.minusDays(thresholdDays);
 
+        // Candidates for the trigger: the stage clock is only a cheap
+        // pre-filter here. stage_entered_at can never be NEWER than the idle
+        // rule's clock (the rule takes the max of it and the newest progress
+        // event), so anything the rule would keep is already in this list —
+        // the rule then removes, never adds.
         List<RecruitmentApplication> idle = inTx(() -> RecruitmentApplication.list(
                 "terminal is null and stage <> ?1 and stageEnteredAt <= ?2",
                 RecruitmentStage.HIRED, cutoff));
@@ -342,7 +354,26 @@ public class RecruitmentSlaService {
         }
         Context ctx = inTx(() -> Context.loadForApplications(idle));
 
+        // The same rule the landing page's IDLE_CANDIDATE row runs
+        // (RecruitmentIdleRule, 2026-08-22). Before this, the sweep DM'd
+        // owners about candidates whose next interview was already booked,
+        // whose round was waiting on a colleague's scorecard, or who were
+        // simultaneously being chased by the debrief-stalled trigger above —
+        // Slack and the page disagreed about the same candidate on the same
+        // morning, which is how a nudge channel becomes background noise.
+        Map<String, RecruitmentIdleRule.Facts> facts =
+                inTx(() -> idleFacts.load(idle, ctx.positions, now));
+
         for (RecruitmentApplication application : idle) {
+            RecruitmentIdleRule.Facts applicationFacts = facts.get(application.getUuid());
+            RecruitmentIdleRule.Suppression suppressed =
+                    applicationFacts == null ? RecruitmentIdleRule.Suppression.STILL_MOVING
+                            : RecruitmentIdleRule.suppressedBecause(applicationFacts, cutoff);
+            if (suppressed != null) {
+                log.debugf("SLA sweep: application %s not idle (%s)",
+                        application.getUuid(), suppressed);
+                continue;
+            }
             LocalDateTime lastNudge = newestNudgeFor(ctx, RecruitmentEventType.CANDIDATE_IDLE_NUDGED,
                     "application_uuid", application.getUuid());
             if (lastNudge != null && lastNudge.isAfter(now.minusDays(thresholdDays))) {
@@ -350,7 +381,7 @@ public class RecruitmentSlaService {
             }
             RecruitmentPosition position = ctx.positions.get(application.getPositionUuid());
             RecruitmentCandidate candidate = ctx.candidates.get(application.getCandidateUuid());
-            long daysIdle = ChronoUnit.DAYS.between(application.getStageEnteredAt(), now);
+            long daysIdle = ChronoUnit.DAYS.between(applicationFacts.lastProgressAt(), now);
 
             List<String> owners = resolveOwners(position);
             if (owners.isEmpty()) {
@@ -376,6 +407,8 @@ public class RecruitmentSlaService {
                             .payload("stage", application.getStage().name())
                             .payload("days_idle", daysIdle)
                             .payload("stage_entered_at", application.getStageEnteredAt().toString())
+                            .payload("last_progress_at",
+                                    applicationFacts.lastProgressAt().toString())
                             .payload("threshold_days", thresholdDays)
                             .payload("nudged_user_uuids", notified)));
             if (recorded) {
@@ -528,7 +561,7 @@ public class RecruitmentSlaService {
                 .append(displayName(candidate)).append('*');
         appendPositionContext(sb, position, round);
         sb.append(" is still open");
-        if (nudgeNumber >= MAX_SCORECARD_NUDGES) {
+        if (nudgeNumber >= thresholds.maxScorecardNudges()) {
             sb.append(" (final reminder)");
         }
         sb.append(". It takes about 90 seconds:\n")

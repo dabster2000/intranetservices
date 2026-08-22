@@ -1,17 +1,29 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.model.AppSetting;
 import dk.trustworks.intranet.services.AppSettingService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 /**
- * The three P17 SLA thresholds, read from {@code app_settings} on every
- * call (the {@link RecruitmentFeatureFlag} idiom — the table is tiny, and
- * no cache means an admin edit takes effect on the next sweep without a
- * redeploy). Seeded by V447; a missing or unparseable row falls back to
- * the plan's defaults (24 h / 7 d / 48 h), never to "off" — the sweep's
- * on/off switch is {@code recruitment.interviews.enabled}, not these.
+ * The SLA cadence thresholds, read from {@code app_settings} on every call
+ * (the {@link RecruitmentFeatureFlag} idiom — the table is tiny, and no
+ * cache means an admin edit takes effect on the next sweep without a
+ * redeploy). The three P17 thresholds are seeded by V447 and the nudge cap
+ * by V524; a missing or unparseable row falls back to the plan's defaults
+ * (24 h / 7 d / 48 h / 2 nudges), never to "off" — the sweep's on/off switch
+ * is {@code recruitment.interviews.enabled}, not these
+ * ({@link RecruitmentTunables}).
+ *
+ * <p>Row counts live in the sibling {@link RecruitmentDisplayLimits}: this
+ * class answers "how long before we chase", that one "how much before we
+ * stop listing".
+ *
+ * <p>{@link #candidateIdleDays()} is the single definition of "too long" in
+ * this module. It drives the SLA DM, the landing {@code IDLE_CANDIDATE} row
+ * and its pipelines badge (both through {@link RecruitmentIdleRule}) and —
+ * since 2026-08-22 — the pipeline board's idle chip, which until then carried
+ * its own hard-coded 7 and therefore called a candidate idle three days later
+ * than every other screen did.
  */
 @ApplicationScoped
 public class RecruitmentSlaThresholds {
@@ -19,10 +31,12 @@ public class RecruitmentSlaThresholds {
     static final String SCORECARD_OVERDUE_HOURS_KEY = "recruitment.sla.scorecard-overdue-hours";
     static final String CANDIDATE_IDLE_DAYS_KEY = "recruitment.sla.candidate-idle-days";
     static final String DEBRIEF_STALLED_HOURS_KEY = "recruitment.sla.debrief-stalled-hours";
+    static final String MAX_SCORECARD_NUDGES_KEY = "recruitment.sla.max-scorecard-nudges";
 
     static final int DEFAULT_SCORECARD_OVERDUE_HOURS = 24;
     static final int DEFAULT_CANDIDATE_IDLE_DAYS = 7;
     static final int DEFAULT_DEBRIEF_STALLED_HOURS = 48;
+    static final int DEFAULT_MAX_SCORECARD_NUDGES = 2;
 
     @Inject
     AppSettingService appSettingService;
@@ -32,7 +46,11 @@ public class RecruitmentSlaThresholds {
         return readPositiveInt(SCORECARD_OVERDUE_HOURS_KEY, DEFAULT_SCORECARD_OVERDUE_HOURS);
     }
 
-    /** Days an open application may sit in one stage before the owner ping. */
+    /**
+     * Days an application may go without progress before it counts as idle —
+     * the owner ping, the landing task row, the pipelines badge and the board
+     * chip all measure against this one number.
+     */
     public int candidateIdleDays() {
         return readPositiveInt(CANDIDATE_IDLE_DAYS_KEY, DEFAULT_CANDIDATE_IDLE_DAYS);
     }
@@ -42,18 +60,17 @@ public class RecruitmentSlaThresholds {
         return readPositiveInt(DEBRIEF_STALLED_HOURS_KEY, DEFAULT_DEBRIEF_STALLED_HOURS);
     }
 
+    /**
+     * How many scorecard DMs one interviewer may get for one interview
+     * (spec §8.4). A hard stop, not a cadence: past it the sweep goes quiet
+     * for that pair forever, submitted or not, so the reminder can never
+     * become the thing people mute.
+     */
+    public int maxScorecardNudges() {
+        return readPositiveInt(MAX_SCORECARD_NUDGES_KEY, DEFAULT_MAX_SCORECARD_NUDGES);
+    }
+
     private int readPositiveInt(String key, int defaultValue) {
-        String value = appSettingService.findByKey(key)
-                .map(AppSetting::getSettingValue)
-                .orElse(null);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        try {
-            int parsed = Integer.parseInt(value.trim());
-            return parsed > 0 ? parsed : defaultValue;
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
+        return RecruitmentTunables.positiveInt(appSettingService, key, defaultValue);
     }
 }

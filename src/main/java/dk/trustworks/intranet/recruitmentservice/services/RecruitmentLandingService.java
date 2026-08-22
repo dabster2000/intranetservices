@@ -73,17 +73,40 @@ import java.util.stream.Collectors;
  *   <li>{@code IDLE_CANDIDATE} — chronic rather than acute; oldest
  *       first.</li>
  * </ol>
+ *
+ * <h3>What earns a row (2026-08-22)</h3>
+ * Every row asserts the same thing: <em>the process is waiting on you, and
+ * there is something to do about it right now.</em> A row that fails either
+ * half is not a smaller task, it is noise — and noise on this card is
+ * expensive, because the card's promise is "when this list is empty, you're
+ * done". Three rules keep the assertion true:
+ * <ul>
+ *   <li><b>Idle rows go through {@link RecruitmentIdleRule}</b> — a truthful
+ *       clock (last real progress, not last stage change) plus a court check
+ *       (booked, out with the scheduling automation, waiting on a colleague's
+ *       scorecard, queued for email review, on a paused requisition). The
+ *       landing pipelines' idle badge and the nightly SLA DM run the same
+ *       rule, so the three surfaces can never disagree.</li>
+ *   <li><b>An application yields at most one row per viewer</b> — the
+ *       sharper type wins. Before this, a debrief-ready candidate appeared
+ *       both as "Decide on X" and as "X is waiting in Interview 2", with two
+ *       different ages, which read as two different problems.</li>
+ *   <li><b>"This round is over" is
+ *       {@link RecruitmentInterviewService#decisionMade} and nothing else</b>
+ *       — the page used to keep a private copy of the predicate (a bare
+ *       stage-ordinal comparison) that missed V519's recorded-but-not-yet-moved
+ *       decisions, so recording a decision left the nag standing.</li>
+ * </ul>
+ * Suppressed candidates keep their board card, their {@code daysInStage} and
+ * their pipeline position — they stop being <em>tasks</em>, which is a claim
+ * about who acts next, not about whether they exist.
  */
 @JBossLog
 @ApplicationScoped
 public class RecruitmentLandingService {
 
-    /** Feed page size served to the client. */
-    static final int FEED_SIZE = 15;
-    /** Raw events fetched before visibility filtering (some rows drop out). */
-    static final int FEED_FETCH_SIZE = 60;
-    /** Upcoming own interviews served. */
-    static final int UPCOMING_INTERVIEWS_SIZE = 5;
+    // Feed page size, over-fetch and upcoming-interview count are admin
+    // tunables since 2026-08-22 — see RecruitmentDisplayLimits.
 
     /**
      * Event types the feed renders — deliberately curated: process moves
@@ -120,6 +143,12 @@ public class RecruitmentLandingService {
 
     @Inject
     RecruitmentEmailService emailService;
+
+    @Inject
+    RecruitmentIdleFacts idleFactsLoader;
+
+    @Inject
+    RecruitmentDisplayLimits displayLimits;
 
     /** Build the full landing aggregate for one viewer, own pipelines only. */
     public LandingResponse build(String viewerUuid) {
@@ -183,8 +212,14 @@ public class RecruitmentLandingService {
                 .filter(a -> decidablePositionUuids.contains(a.getPositionUuid()))
                 .toList();
 
+        // Every non-cancelled interview on the whole open slice, not just the
+        // decidable one: the idle rule needs "is the next step already on a
+        // calendar?" for every open application, and the pipelines' idle
+        // badge counts the same population as the task rows (2026-08-22 — the
+        // two used to be computed from different rules and disagreed on the
+        // same screen).
         List<RecruitmentInterview> taskInterviews =
-                roundInterviewsFor(ownInterviews, decidableApplications);
+                interviewsFor(ownInterviews, openApplications);
         Map<String, List<RecruitmentScorecard>> scorecardsByInterview =
                 scorecardsOf(taskInterviews);
         Map<String, RecruitmentApplication> taskApplications =
@@ -205,7 +240,16 @@ public class RecruitmentLandingService {
             emailReviewTask(viewerUuid).ifPresent(tasks::add);
             referralTriageTask().ifPresent(tasks::add);
         }
-        tasks.addAll(idleCandidateTasks(decidableApplications, taskPositions, candidates, now));
+
+        // One idle-fact table for the whole open slice — three extra batched
+        // queries (scheduling requests, pending emails, progress events) on
+        // top of the interviews and scorecards already in hand. Shared by the
+        // task rows below, the pipelines' idle badge and (through the same
+        // loader) the nightly SLA sweep, so the three can never disagree.
+        Map<String, RecruitmentIdleRule.Facts> idleFacts = idleFactsLoader.load(
+                openApplications, taskPositions, taskInterviews, scorecardsByInterview, now);
+        tasks.addAll(idleCandidateTasks(decidableApplications, taskPositions, candidates,
+                idleFacts, now));
 
         // ---- KPI row -------------------------------------------------------
         // Always company-wide (everything the viewer may read), never scoped
@@ -257,7 +301,7 @@ public class RecruitmentLandingService {
         // §6.1: an interviewer sees interviews + scorecards only.
         List<LandingPipeline> pipelines = interviewer
                 ? List.of()
-                : pipelines(scopedOpenPositions, openByPosition, now);
+                : pipelines(scopedOpenPositions, openByPosition, idleFacts, now);
         List<LandingActivity> activity = interviewer
                 ? List.of()
                 : activityFeed(viewerUuid, scopedPositionUuids, candidates);
@@ -295,6 +339,24 @@ public class RecruitmentLandingService {
     // Task builders
     // ------------------------------------------------------------------
 
+    /**
+     * The viewer's own missing scorecards.
+     *
+     * <p>Two conditions beyond "you have not submitted" (2026-08-22):
+     * <ul>
+     *   <li>the meeting must actually be <em>over</em> — {@code scheduledAt +
+     *       durationMinutes}, not {@code scheduledAt}. The row used to appear
+     *       the minute an interview started, telling the interviewer they were
+     *       late for a scorecard while still in the room with the candidate;</li>
+     *   <li>the round must still be live — {@link
+     *       RecruitmentInterviewService#decisionMade}. Once the decision is
+     *       made (the stage moved, or V519 recorded it on the round), the
+     *       card unblocks nobody, and the row's own copy — "your written
+     *       impressions unblock the debrief for everyone" — stops being true.
+     *       The scorecard stays submittable from {@code /recruitment/interviews};
+     *       it just stops claiming to be urgent.</li>
+     * </ul>
+     */
     private List<LandingTask> overdueScorecardTasks(String viewerUuid,
                                                     List<RecruitmentInterview> ownInterviews,
                                                     Map<String, RecruitmentApplication> applications,
@@ -304,12 +366,13 @@ public class RecruitmentLandingService {
                                                     LocalDateTime now) {
         return ownInterviews.stream()
                 .filter(i -> i.getKind() == RecruitmentInterviewKind.ROUND)
-                .filter(i -> i.getScheduledAt() != null && !i.getScheduledAt().isAfter(now))
+                .filter(i -> i.getScheduledAt() != null && !RecruitmentIdleFacts.endOf(i).isAfter(now))
                 .filter(i -> scorecards.getOrDefault(i.getUuid(), List.of()).stream()
                         .noneMatch(s -> s.getInterviewerUuid().equals(viewerUuid)))
                 .filter(i -> {
                     RecruitmentApplication application = applications.get(i.getApplicationUuid());
-                    return application != null && applicationInPlay(application);
+                    return application != null && applicationInPlay(application)
+                            && !RecruitmentInterviewService.decisionMade(application, i);
                 })
                 .sorted(Comparator.comparing(RecruitmentInterview::getScheduledAt))
                 .map(i -> {
@@ -327,6 +390,27 @@ public class RecruitmentLandingService {
                 .toList();
     }
 
+    /**
+     * Rounds where everyone has answered and the process waits for exactly
+     * one person — the viewer.
+     *
+     * <p>Three conditions beyond "all scorecards are in" (2026-08-22):
+     * <ul>
+     *   <li>the requisition is still {@code OPEN} — deciding on a candidate
+     *       for a paused or closed req is a requisition conversation, not a
+     *       candidate one;</li>
+     *   <li>"this round is over" is {@link
+     *       RecruitmentInterviewService#decisionMade}, not a private
+     *       stage-ordinal copy of it. The copy predated V519 and missed
+     *       recorded-but-not-yet-moved decisions, so recording the decision —
+     *       which V519 defines as <em>being</em> the decision — left the row
+     *       standing;</li>
+     *   <li>nothing is booked ahead of it. When the next round (or an offer
+     *       meeting, or a clarifying chat) is already in the calendar, the
+     *       decision has visibly been taken and only the stage move lags —
+     *       chasing it adds a row nobody can act on.</li>
+     * </ul>
+     */
     private List<LandingTask> pendingDecisionTasks(List<RecruitmentApplication> decidable,
                                                    List<RecruitmentInterview> interviews,
                                                    Map<String, List<RecruitmentScorecard>> scorecards,
@@ -336,17 +420,19 @@ public class RecruitmentLandingService {
         Map<String, List<RecruitmentInterview>> byApplication = interviews.stream()
                 .filter(i -> i.getKind() == RecruitmentInterviewKind.ROUND)
                 .collect(Collectors.groupingBy(RecruitmentInterview::getApplicationUuid));
+        Set<String> booked = RecruitmentIdleFacts.booked(interviews, now);
 
         List<LandingTask> tasks = new ArrayList<>();
         for (RecruitmentApplication application : decidable) {
-            if (!applicationInPlay(application)) {
+            if (!applicationInPlay(application)
+                    || !isOpen(positions.get(application.getPositionUuid()))
+                    || booked.contains(application.getUuid())) {
                 continue;
             }
             for (RecruitmentInterview interview
                     : byApplication.getOrDefault(application.getUuid(), List.of())) {
-                RecruitmentStage roundStage = interview.roundStage();
-                if (roundStage == null
-                        || application.getStage().ordinal() > roundStage.ordinal()) {
+                if (interview.roundStage() == null
+                        || RecruitmentInterviewService.decisionMade(application, interview)) {
                     continue; // decision made for this round
                 }
                 List<RecruitmentScorecard> cards =
@@ -401,24 +487,39 @@ public class RecruitmentLandingService {
                         (int) count));
     }
 
+    /**
+     * Candidates nothing is happening to and nothing is queued to happen to —
+     * the {@link RecruitmentIdleRule} population, oldest first.
+     *
+     * <p>{@code ageHours} and {@code since} are measured from the rule's
+     * clock ({@code lastProgressAt}), not from {@code stage_entered_at}: the
+     * number the card shows is "how long has this been still", and a stage
+     * that has not changed since an interview was rescheduled yesterday has
+     * not been still for eleven days. The frontend copy says so.
+     */
     private List<LandingTask> idleCandidateTasks(List<RecruitmentApplication> decidable,
                                                  Map<String, RecruitmentPosition> positions,
                                                  Map<String, RecruitmentCandidate> candidates,
+                                                 Map<String, RecruitmentIdleRule.Facts> facts,
                                                  LocalDateTime now) {
-        int thresholdDays = thresholds.candidateIdleDays();
-        LocalDateTime cutoff = now.minusDays(thresholdDays);
+        LocalDateTime cutoff = now.minusDays(thresholds.candidateIdleDays());
         return decidable.stream()
                 .filter(this::applicationInPlayStatic)
-                .filter(a -> a.getStageEnteredAt() != null
-                        && a.getStageEnteredAt().isBefore(cutoff))
-                .sorted(Comparator.comparing(RecruitmentApplication::getStageEnteredAt))
-                .map(a -> new LandingTask(LandingTask.TYPE_IDLE_CANDIDATE,
-                        a.getCandidateUuid(), displayName(candidates.get(a.getCandidateUuid())),
-                        a.getPositionUuid(), titleOf(positions.get(a.getPositionUuid())),
-                        a.getUuid(), null, null, a.getStage().name(),
-                        ChronoUnit.HOURS.between(a.getStageEnteredAt(), now),
-                        a.getStageEnteredAt(), null))
+                .filter(a -> RecruitmentIdleRule.isIdleTask(facts.get(a.getUuid()), cutoff))
+                .sorted(Comparator.comparing(a -> facts.get(a.getUuid()).lastProgressAt()))
+                .map(a -> {
+                    LocalDateTime since = facts.get(a.getUuid()).lastProgressAt();
+                    return new LandingTask(LandingTask.TYPE_IDLE_CANDIDATE,
+                            a.getCandidateUuid(), displayName(candidates.get(a.getCandidateUuid())),
+                            a.getPositionUuid(), titleOf(positions.get(a.getPositionUuid())),
+                            a.getUuid(), null, null, a.getStage().name(),
+                            ChronoUnit.HOURS.between(since, now), since, null);
+                })
                 .toList();
+    }
+
+    private static boolean isOpen(RecruitmentPosition position) {
+        return position != null && position.getStatus() == RecruitmentPositionStatus.OPEN;
     }
 
     // ------------------------------------------------------------------
@@ -449,11 +550,19 @@ public class RecruitmentLandingService {
     // Pipelines
     // ------------------------------------------------------------------
 
+    /**
+     * "Your pipelines". {@code idleCount} counts exactly the population that
+     * would produce an {@code IDLE_CANDIDATE} task on the card above
+     * ({@link RecruitmentIdleRule}) — before 2026-08-22 the badge ran a bare
+     * {@code stage_entered_at} comparison of its own, so the amber number and
+     * the task list disagreed on the same screen and taught the viewer to
+     * trust neither.
+     */
     private List<LandingPipeline> pipelines(List<RecruitmentPosition> openPositions,
                                             Map<String, List<RecruitmentApplication>> openByPosition,
+                                            Map<String, RecruitmentIdleRule.Facts> idleFacts,
                                             LocalDateTime now) {
-        int idleDays = thresholds.candidateIdleDays();
-        LocalDateTime idleCutoff = now.minusDays(idleDays);
+        LocalDateTime idleCutoff = now.minusDays(thresholds.candidateIdleDays());
         return openPositions.stream()
                 .map(position -> {
                     List<RecruitmentApplication> open =
@@ -470,8 +579,7 @@ public class RecruitmentLandingService {
                                     byStage.getOrDefault(stage, 0L).intValue()))
                             .toList();
                     int idleCount = (int) open.stream()
-                            .filter(a -> a.getStageEnteredAt() != null
-                                    && a.getStageEnteredAt().isBefore(idleCutoff))
+                            .filter(a -> RecruitmentIdleRule.isIdleTask(idleFacts.get(a.getUuid()), idleCutoff))
                             .count();
                     return new LandingPipeline(position.getUuid(), position.getTitle(),
                             position.getPracticeName(),
@@ -498,7 +606,7 @@ public class RecruitmentLandingService {
         return ownInterviews.stream()
                 .filter(i -> i.getScheduledAt() != null && i.getScheduledAt().isAfter(now))
                 .sorted(Comparator.comparing(RecruitmentInterview::getScheduledAt))
-                .limit(UPCOMING_INTERVIEWS_SIZE)
+                .limit(displayLimits.upcomingInterviewRows())
                 .map(i -> {
                     RecruitmentApplication application = applications.get(i.getApplicationUuid());
                     RecruitmentCandidate candidate = application == null ? null
@@ -526,7 +634,7 @@ public class RecruitmentLandingService {
                                                Map<String, RecruitmentCandidate> preloadedCandidates) {
         List<RecruitmentEvent> raw = RecruitmentEvent.<RecruitmentEvent>find(
                         "eventType in ?1 order by seq desc", List.copyOf(FEED_TYPES))
-                .page(0, FEED_FETCH_SIZE)
+                .page(0, displayLimits.activityFetchRows())
                 .list();
         if (raw.isEmpty()) {
             return List.of();
@@ -544,7 +652,7 @@ public class RecruitmentLandingService {
                         || visiblePositionUuids.contains(e.getPositionUuid()))
                 .filter(e -> e.getCandidateUuid() == null
                         || !partnerOnlyCandidates.contains(e.getCandidateUuid()))
-                .limit(FEED_SIZE)
+                .limit(displayLimits.activityRows())
                 .toList();
 
         // Batched name resolution — candidates, positions, actors.
@@ -605,11 +713,19 @@ public class RecruitmentLandingService {
                 RecruitmentStage.HIRED);
     }
 
-    /** Non-cancelled ROUND interviews for the union of own + decidable applications. */
-    private List<RecruitmentInterview> roundInterviewsFor(
+    /**
+     * Every non-cancelled interview (any kind) for the union of the viewer's
+     * own assignments and the whole open-application slice.
+     *
+     * <p>Widened from "decidable applications" on 2026-08-22: the idle rule
+     * asks "is the next step already booked?" of every open application, and
+     * the pipelines' idle badge must count the same population as the task
+     * rows. One query either way — the {@code in} list simply gets longer.
+     */
+    private List<RecruitmentInterview> interviewsFor(
             List<RecruitmentInterview> ownInterviews,
-            List<RecruitmentApplication> decidableApplications) {
-        Set<String> applicationUuids = decidableApplications.stream()
+            List<RecruitmentApplication> openApplications) {
+        Set<String> applicationUuids = openApplications.stream()
                 .map(RecruitmentApplication::getUuid)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         List<RecruitmentInterview> merged = new ArrayList<>(ownInterviews);
