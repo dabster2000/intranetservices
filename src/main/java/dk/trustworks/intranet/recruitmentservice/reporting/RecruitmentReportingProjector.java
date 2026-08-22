@@ -22,10 +22,20 @@ import java.util.Map;
 
 /**
  * P20 ReportingProjector (spec §3.2 read-model kind 3): folds the
- * recruitment event stream into the monthly-grain projection
- * {@code recruitment_fact_monthly} (V449). The projection is the input
+ * recruitment event stream into two grains of the same projection —
+ * {@code recruitment_fact_monthly} (V449) and
+ * {@code recruitment_fact_weekly} (V523). The projection is the input
  * for {@code /recruitment/reports} and — by design — the <em>sole</em>
  * input for the P24 AI digests (aggregates only, by construction).
+ *
+ * <h3>Two grains, neither derived from the other</h3>
+ * Both tables are written from the same {@code Dims} in the same
+ * transaction, so they cannot disagree about an event. Weekly is not a
+ * rollup of monthly (nor the reverse): an ISO week can straddle a month
+ * boundary, so a derived rollup would misattribute the straddling week.
+ * The weekly grain exists because the funnel digest is titled with an
+ * ISO week and needs real week numbers for its headline, while the
+ * monthly grain still feeds the digest's multi-month trend.
  *
  * <h3>Anonymization-proof</h3>
  * Every increment is built from uuids, enum codes and timestamps; the
@@ -63,6 +73,24 @@ public class RecruitmentReportingProjector extends RecruitmentReactor {
                 (month, fact, position_uuid, practice_uuid, hiring_track, source,
                  stage_from, stage_to, outcome, detail, person_uuid, cnt, sum_days)
             VALUES (:month, :fact, :position, :practice, :track, :source,
+                    :stageFrom, :stageTo, :outcome, :detail, :person, :cnt, :sumDays)
+            ON DUPLICATE KEY UPDATE
+                cnt = cnt + VALUES(cnt),
+                sum_days = sum_days + VALUES(sum_days)
+            """;
+
+    /**
+     * The ISO-week grain (V523). Written in the same transaction as
+     * {@link #UPSERT} from the same {@code Dims}, so the two grains can
+     * never disagree about a single event. Not derived from the monthly
+     * table: a week may straddle a month boundary, so neither grain is a
+     * rollup of the other.
+     */
+    private static final String UPSERT_WEEKLY = """
+            INSERT INTO recruitment_fact_weekly
+                (week, fact, position_uuid, practice_uuid, hiring_track, source,
+                 stage_from, stage_to, outcome, detail, person_uuid, cnt, sum_days)
+            VALUES (:week, :fact, :position, :practice, :track, :source,
                     :stageFrom, :stageTo, :outcome, :detail, :person, :cnt, :sumDays)
             ON DUPLICATE KEY UPDATE
                 cnt = cnt + VALUES(cnt),
@@ -205,6 +233,9 @@ public class RecruitmentReportingProjector extends RecruitmentReactor {
             entityManager.createNativeQuery("DELETE FROM recruitment_reactor_deliveries WHERE reactor_name = :name")
                     .setParameter("name", name()).executeUpdate();
             entityManager.createNativeQuery("DELETE FROM recruitment_fact_monthly").executeUpdate();
+            // Both grains reset together — a rebuild that cleared only one
+            // would double-count the other on replay.
+            entityManager.createNativeQuery("DELETE FROM recruitment_fact_weekly").executeUpdate();
             entityManager.createNativeQuery("INSERT INTO recruitment_reactor_offsets (reactor_name, last_processed_seq) " +
                             "VALUES (:name, 0) ON DUPLICATE KEY UPDATE last_processed_seq = 0")
                     .setParameter("name", name()).executeUpdate();
@@ -321,9 +352,19 @@ public class RecruitmentReportingProjector extends RecruitmentReactor {
     // ------------------------------------------------------------------
 
     private void increment(RecruitmentEvent event, ReportingFact fact, Dims dims) {
-        LocalDate month = event.getOccurredAt().toLocalDate().withDayOfMonth(1);
-        entityManager.createNativeQuery(UPSERT)
-                .setParameter("month", month)
+        LocalDate day = event.getOccurredAt().toLocalDate();
+        LocalDate month = day.withDayOfMonth(1);
+        LocalDate week = day.with(java.time.temporal.WeekFields.ISO.dayOfWeek(), 1L);
+        bindDims(entityManager.createNativeQuery(UPSERT).setParameter("month", month), fact, dims)
+                .executeUpdate();
+        bindDims(entityManager.createNativeQuery(UPSERT_WEEKLY).setParameter("week", week), fact, dims)
+                .executeUpdate();
+    }
+
+    /** The dimension/measure binding both grains share — one shape, one place. */
+    private static jakarta.persistence.Query bindDims(jakarta.persistence.Query query,
+                                                      ReportingFact fact, Dims dims) {
+        return query
                 .setParameter("fact", fact.name())
                 .setParameter("position", dims.position)
                 .setParameter("practice", dims.practice)
@@ -335,8 +376,7 @@ public class RecruitmentReportingProjector extends RecruitmentReactor {
                 .setParameter("detail", dims.detail)
                 .setParameter("person", dims.person)
                 .setParameter("cnt", 1L)
-                .setParameter("sumDays", dims.sumDays)
-                .executeUpdate();
+                .setParameter("sumDays", dims.sumDays);
     }
 
     /** Mutable dim collector; '' sentinels per the V449 contract. */
