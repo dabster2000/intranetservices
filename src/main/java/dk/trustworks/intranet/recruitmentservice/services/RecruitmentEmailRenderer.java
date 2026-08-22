@@ -168,13 +168,20 @@ public final class RecruitmentEmailRenderer {
      * be a URL ({@code *_link}) additionally becomes a clickable anchor —
      * {@code {{consent_link}}} in an HTML body would otherwise arrive as dead
      * text and the GDPR consent renewal would quietly stop working.
+     * <p>
+     * Newlines in the value become {@code <br>}: an HTML body renders a bare
+     * {@code \n} as a single space, so a multi-line value — Method B's
+     * {@code {{options_list}}}, a numbered list of interview times — would
+     * otherwise arrive as one run-on line. The line structure is part of the
+     * value; the conversion happens after escaping, so the {@code <br>} is the
+     * one piece of markup a value may carry.
      */
     private static String renderValueAsHtml(String key, String value) {
         String escaped = RecruitmentEmailHtmlSanitizer.escapeHtml(value);
         if (key.endsWith("_link") && (value.startsWith("https://") || value.startsWith("http://"))) {
             return "<a href=\"" + escaped + "\">" + escaped + "</a>";
         }
-        return escaped;
+        return escaped.replace("\r\n", "\n").replace('\r', '\n').replace("\n", "<br>");
     }
 
     /**

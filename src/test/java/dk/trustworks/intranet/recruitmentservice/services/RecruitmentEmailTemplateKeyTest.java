@@ -37,6 +37,37 @@ class RecruitmentEmailTemplateKeyTest {
     }
 
     @Test
+    void jobOwnedKeys_areSystemOwned_andNotComposableByHand() {
+        // F10 (remediation 2026-08-22): the Method B booking link exists only
+        // inside the advance sweep, and the candidate invitation is an
+        // Outlook event body whose interview extras resolve only in the
+        // calendar service. Hand-sending either can only produce a broken
+        // message, exactly like the consent renewal.
+        assertTrue(RecruitmentEmailService.isSystemKey(
+                RecruitmentSchedulingCandidateService.TEMPLATE_KEY_OPTION_INVITATION));
+        assertTrue(RecruitmentEmailService.isSystemKey(
+                RecruitmentEmailService.KEY_INTERVIEW_CANDIDATE_INVITATION));
+        assertFalse(RecruitmentEmailService.isTriggerKey(
+                RecruitmentSchedulingCandidateService.TEMPLATE_KEY_OPTION_INVITATION));
+        assertFalse(RecruitmentEmailService.isTriggerKey(
+                RecruitmentEmailService.KEY_INTERVIEW_CANDIDATE_INVITATION));
+    }
+
+    @Test
+    void receiptKeys_areTriggers_notSystemOwned() {
+        // F6/F7: both receipts are reactor-fired, and re-sending one by hand
+        // is legitimate — so they must classify exactly like ACKNOWLEDGEMENT.
+        for (String key : new String[]{
+                RecruitmentEmailService.KEY_UNSOLICITED_ACKNOWLEDGEMENT,
+                RecruitmentEmailService.KEY_DUPLICATE_APPLICATION_NOTICE}) {
+            assertTrue(RecruitmentEmailService.isTriggerKey(key),
+                    key + " must be reactor-fired");
+            assertFalse(RecruitmentEmailService.isSystemKey(key),
+                    key + " must stay available in the compose picker");
+        }
+    }
+
+    @Test
     void recruiterFacingKeys_stayComposable() {
         for (String key : new String[]{
                 RecruitmentEmailService.KEY_ACKNOWLEDGEMENT,

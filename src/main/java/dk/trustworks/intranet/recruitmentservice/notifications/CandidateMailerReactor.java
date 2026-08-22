@@ -38,6 +38,14 @@ import java.util.Map;
  *       {@code REJECTION_SCREENING} (from SCREENING) or
  *       {@code REJECTION_POST_INTERVIEW} (any later stage; defaults
  *       review-first per plan).</li>
+ *   <li><b>Unsolicited receipt</b> — {@code UNSOLICITED_APPLICATION_RECEIVED}
+ *       → template {@code UNSOLICITED_ACKNOWLEDGEMENT} (remediation F6: the
+ *       unsolicited path creates no application, so the acknowledgement
+ *       trigger never fired for it).</li>
+ *   <li><b>Duplicate receipt</b> — {@code DUPLICATE_APPLICATION_RECEIVED}
+ *       → template {@code DUPLICATE_APPLICATION_NOTICE} (remediation F7: a
+ *       repeat submission onto an open application stores documents but
+ *       creates nothing — the candidate still deserves a receipt).</li>
  * </ul>
  * Rules enforced here:
  * <ul>
@@ -95,7 +103,8 @@ public class CandidateMailerReactor extends RecruitmentReactor {
     @Override
     protected void handle(RecruitmentEvent event) throws Exception {
         switch (event.getEventType()) {
-            case APPLICATION_CREATED, APPLICATION_STAGE_CHANGED, APPLICATION_REJECTED -> {
+            case APPLICATION_CREATED, APPLICATION_STAGE_CHANGED, APPLICATION_REJECTED,
+                    UNSOLICITED_APPLICATION_RECEIVED, DUPLICATE_APPLICATION_RECEIVED -> {
             }
             default -> {
                 return; // not ours — silent advance
@@ -109,6 +118,10 @@ public class CandidateMailerReactor extends RecruitmentReactor {
             case APPLICATION_CREATED -> acknowledgementKey(payload);
             case APPLICATION_STAGE_CHANGED -> stageKey(payload);
             case APPLICATION_REJECTED -> rejectionKey(payload);
+            case UNSOLICITED_APPLICATION_RECEIVED ->
+                    RecruitmentEmailService.KEY_UNSOLICITED_ACKNOWLEDGEMENT;
+            case DUPLICATE_APPLICATION_RECEIVED ->
+                    RecruitmentEmailService.KEY_DUPLICATE_APPLICATION_NOTICE;
             default -> null;
         };
         if (templateKey == null) {

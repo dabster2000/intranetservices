@@ -158,6 +158,19 @@ public class PublicApplyService {
         RecruitmentApplication application = null;
         if (duplicateOpen) {
             storeDocuments(submission, candidate, position, null, REASON_DUPLICATE_SUBMISSION);
+            // The submission is a fact even though no application is created
+            // (the one-open-application invariant): without an event the
+            // candidate mailer has nothing to acknowledge, and someone who
+            // has now applied twice hears nothing (remediation F7). The
+            // reactor answers it with DUPLICATE_APPLICATION_NOTICE.
+            RecruitmentEventBuilder duplicate = RecruitmentEventBuilder
+                    .event(RecruitmentEventType.DUPLICATE_APPLICATION_RECEIVED)
+                    .candidate(candidate.getUuid())
+                    .actorCandidate()
+                    .payload("origin", ORIGIN_PUBLIC_FORM)
+                    .payload("reason", REASON_DUPLICATE_SUBMISSION);
+            subjectAndVisibility(duplicate, position, null);
+            eventRecorder.record(duplicate);
         } else {
             application = applicationService.createFromPublicForm(
                     candidate, position, resolution.reused());
@@ -188,6 +201,18 @@ public class PublicApplyService {
         persistCandidateAnswers(candidate, submission.answers(), resolution.reused());
         storeDocuments(submission, candidate, null, null, null);
         recordSubmissionConsents(submission, candidate, null, null);
+        // No application means no APPLICATION_CREATED, which was the only
+        // acknowledgement trigger — so an unsolicited applicant heard nothing
+        // (remediation F6). This event is the receipt's fact, emitted for new
+        // AND reused candidates: the submission is what happened, not the
+        // candidate row's birth. The reactor answers it with
+        // UNSOLICITED_ACKNOWLEDGEMENT.
+        eventRecorder.record(RecruitmentEventBuilder
+                .event(RecruitmentEventType.UNSOLICITED_APPLICATION_RECEIVED)
+                .candidate(candidate.getUuid())
+                .actorCandidate()
+                .payload("origin", ORIGIN_PUBLIC_FORM)
+                .payload("candidate_reused", resolution.reused()));
         log.infof("Public unsolicited submission received: candidate=%s reused=%s",
                 candidate.getUuid(), resolution.reused());
     }

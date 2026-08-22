@@ -100,6 +100,11 @@ class CandidateMailerReactorTest {
                 em.createNativeQuery("DELETE FROM recruitment_email_templates WHERE uuid = :u")
                         .setParameter("u", stageTemplateUuid).executeUpdate();
             }
+            // Restore the V521 state: both receipt templates inactive.
+            em.createNativeQuery("UPDATE recruitment_email_templates SET active = 0 "
+                            + "WHERE template_key IN "
+                            + "('UNSOLICITED_ACKNOWLEDGEMENT', 'DUPLICATE_APPLICATION_NOTICE')")
+                    .executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(candidateUuid), List.of(positionUuid), List.of(actorUser), practiceUuid);
             P8ProfileFixtures.restoreFlag(em, INTERVIEWS_FLAG, previousFlag);
@@ -321,8 +326,10 @@ class CandidateMailerReactorTest {
     @Test
     void stageTemplate_firesOnForwardEntry_notOnBackMove_notWithoutTemplate() {
         flagOn();
-        // No STAGE_OFFER template yet → forward entry is silent.
-        insertStageChanged("OFFER", "FORWARD");
+        // STAGE_INTERVIEW_3 deliberately: V521 seeds a real (inactive)
+        // STAGE_OFFER row, and template_key is unique — this test needs a
+        // stage key nothing seeds so it can own the row it inserts.
+        insertStageChanged("INTERVIEW_3", "FORWARD");
         reactor.catchUp();
         assertEquals(0, mailCount());
 
@@ -332,23 +339,125 @@ class CandidateMailerReactorTest {
                                 INSERT INTO recruitment_email_templates
                                     (uuid, template_key, name, subject, body, auto_send, active,
                                      created_at, updated_at, created_by)
-                                VALUES (:uuid, 'STAGE_OFFER', 'Tilbud på vej', 'Vi vil gerne videre med dig',
-                                        'Kære {{candidate_first_name}}\\n\\nVi vender tilbage med et tilbud.',
+                                VALUES (:uuid, 'STAGE_INTERVIEW_3', 'Tredje samtale', 'Vi vil gerne videre med dig',
+                                        'Kære {{candidate_first_name}}\\n\\nVi vil gerne se dig igen.',
                                         1, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test')
                                 """)
                         .setParameter("uuid", stageTemplateUuid)
                         .executeUpdate());
 
-        insertStageChanged("OFFER", "FORWARD");
+        insertStageChanged("INTERVIEW_3", "FORWARD");
         reactor.catchUp();
         assertEquals(1, mailCount());
         assertTrue(emailSentEvents().get(0).getPayload()
-                .contains("\"template_key\":\"STAGE_OFFER\""));
+                .contains("\"template_key\":\"STAGE_INTERVIEW_3\""));
 
         // Back-moves never mail the candidate.
-        insertStageChanged("OFFER", "BACK");
+        insertStageChanged("INTERVIEW_3", "BACK");
         reactor.catchUp();
         assertEquals(1, mailCount());
+    }
+
+    // ---- Receipts with no application (remediation F6/F7) ----------------------------
+
+    /**
+     * Make a receipt template exist AND be live for one test. V521 seeds
+     * both receipt keys inactive (TA activates after sign-off), so the row
+     * usually exists — INSERT IGNORE covers a pre-V521 database, the UPDATE
+     * makes it fire. {@link #cleanup()} always flips both keys back to
+     * inactive, restoring the V521 state.
+     */
+    private void activateReceiptTemplate(String key, String subject, String body) {
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("""
+                            INSERT IGNORE INTO recruitment_email_templates
+                                (uuid, template_key, name, subject, body, body_format, auto_send,
+                                 active, created_at, updated_at, created_by)
+                            VALUES (:uuid, :key, :key, :subject, :body, 'HTML', 1, 0,
+                                    UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'test')
+                            """)
+                    .setParameter("uuid", UUID.randomUUID().toString())
+                    .setParameter("key", key)
+                    .setParameter("subject", subject)
+                    .setParameter("body", body)
+                    .executeUpdate();
+            em.createNativeQuery("UPDATE recruitment_email_templates "
+                            + "SET auto_send = 1, active = 1 WHERE template_key = :key")
+                    .setParameter("key", key)
+                    .executeUpdate();
+        });
+    }
+
+    private long insertUnsolicitedReceived() {
+        return QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.insertEvent(em, "UNSOLICITED_APPLICATION_RECEIVED", candidateUuid,
+                        null, null, "USER", actorUser, "NORMAL",
+                        "{\"origin\":\"public_form\",\"candidate_reused\":false}", null));
+    }
+
+    private long insertDuplicateReceived() {
+        return QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.insertEvent(em, "DUPLICATE_APPLICATION_RECEIVED", candidateUuid,
+                        null, positionUuid, "USER", actorUser, "NORMAL",
+                        "{\"origin\":\"public_form\",\"reason\":\"DUPLICATE_PUBLIC_SUBMISSION\"}",
+                        null));
+    }
+
+    @Test
+    void unsolicitedSubmission_sendsTheUnsolicitedAcknowledgement() {
+        flagOn();
+        activateReceiptTemplate(
+                dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService
+                        .KEY_UNSOLICITED_ACKNOWLEDGEMENT,
+                "Vi har modtaget din uopfordrede ansøgning",
+                "<p>Kære {{candidate_first_name}}</p><p>Tak — du hører fra os.</p>");
+        insertUnsolicitedReceived();
+
+        reactor.catchUp();
+
+        assertEquals(1, mailCount());
+        List<RecruitmentEvent> events = emailSentEvents();
+        assertEquals(1, events.size());
+        assertTrue(events.get(0).getPayload()
+                .contains("\"template_key\":\"UNSOLICITED_ACKNOWLEDGEMENT\""));
+        String body = QuarkusTransaction.requiringNew().call(() ->
+                (String) em.createNativeQuery("SELECT content FROM mail WHERE mail = :to")
+                        .setParameter("to", candidateEmail)
+                        .getSingleResult());
+        assertTrue(body.contains("Kære Søren"), "merge fields resolve without an application");
+    }
+
+    @Test
+    void duplicateSubmission_sendsTheDuplicateApplicationNotice() {
+        flagOn();
+        activateReceiptTemplate(
+                dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService
+                        .KEY_DUPLICATE_APPLICATION_NOTICE,
+                "Vi har modtaget dine dokumenter",
+                "<p>Kære {{candidate_first_name}}</p><p>Du er allerede i proces hos os.</p>");
+        insertDuplicateReceived();
+
+        reactor.catchUp();
+
+        assertEquals(1, mailCount());
+        List<RecruitmentEvent> events = emailSentEvents();
+        assertEquals(1, events.size());
+        assertTrue(events.get(0).getPayload()
+                .contains("\"template_key\":\"DUPLICATE_APPLICATION_NOTICE\""));
+    }
+
+    @Test
+    void receiptEvent_withoutActiveTemplate_silentAdvance() {
+        // The V521 default: the templates exist but are inactive until TA
+        // signs off the copy — the trigger stays quietly off, offset advances.
+        flagOn();
+        long seq = insertUnsolicitedReceived();
+
+        reactor.catchUp();
+
+        assertEquals(0, mailCount());
+        assertTrue(emailSentEvents().isEmpty());
+        assertTrue(reactor.watermark() >= seq);
     }
 
     // ---- Visibility ------------------------------------------------------------------
