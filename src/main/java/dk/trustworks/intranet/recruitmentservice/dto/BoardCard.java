@@ -12,7 +12,10 @@ import java.time.LocalDateTime;
  * <ul>
  *   <li>{@code daysInStage} = floor(now − {@code stageEnteredAt}) in
  *       whole days, UTC, clamped at 0;</li>
- *   <li>{@code idle} = {@code daysInStage > 7}.</li>
+ *   <li>{@code idle} = {@code daysInStage >} the configured
+ *       {@code recruitment.sla.candidate-idle-days} (default 7). The same
+ *       number the SLA sweep and the landing page use — the board flags
+ *       the wait, they claim someone must act on it.</li>
  * </ul>
  * {@code referredByName} is the referring employee's display name
  * ("First Last"), resolved from {@code referred_by_user_uuid} for

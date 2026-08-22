@@ -6,6 +6,7 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.LandingResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralRow;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentDisplayLimits;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentLandingService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentSlackFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.ReferralService;
@@ -62,6 +63,9 @@ public class SlackAppHomeService {
     RecruitmentSlackFeatureFlag slackFlags;
 
     @Inject
+    RecruitmentDisplayLimits displayLimits;
+
+    @Inject
     RecruitmentLandingService landingService;
 
     @Inject
@@ -102,7 +106,8 @@ public class SlackAppHomeService {
             List<MyReferralRow> referrals =
                     referralService.listMine(UUID.fromString(userUuid)).referrals();
             View view = SlackAppHomeViews.appHomeView(landing, referrals,
-                    slackFlags.isScorecardEnabled(), baseUrl, LocalDateTime.now(COPENHAGEN));
+                    slackFlags.isScorecardEnabled(), baseUrl, LocalDateTime.now(COPENHAGEN),
+                    displayLimits.taskRows());
             // false here means Slack's Home tab is disabled in the app
             // configuration — a permanent setting that SlackService already
             // reported, not a failure this path should warn about again.

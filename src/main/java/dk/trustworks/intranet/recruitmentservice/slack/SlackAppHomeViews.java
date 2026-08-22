@@ -51,15 +51,23 @@ import static com.slack.api.model.view.Views.view;
  *       ({@link SlackRecruitmentViews#scorecardActions}), which is
  *       surface-agnostic by construction.</li>
  *   <li>Sections render only when non-empty and are capped at
- *       {@link #MAX_ROWS_PER_SECTION} rows with a "+N more" overflow line
+ *       {@code recruitment.ui.task-rows} rows with a "+N more" overflow line
  *       — Slack rejects views above 100 blocks, and the intranet carries
  *       the full lists anyway.</li>
  * </ul>
  */
 public final class SlackAppHomeViews {
 
-    /** Per-section row cap — keeps the view far below Slack's 100-block limit. */
-    static final int MAX_ROWS_PER_SECTION = 5;
+    /**
+     * Per-section row cap when the caller does not supply one — keeps the
+     * view far below Slack's 100-block limit. Since 2026-08-22 the live value
+     * is the admin-tunable {@code recruitment.ui.task-rows}
+     * ({@code RecruitmentDisplayLimits.taskRows()}), the same number that
+     * decides where the intranet's "My tasks" card stops and offers "Show N
+     * more" — one list, one stopping point, two surfaces. This constant is
+     * the compiled fallback and the default that value seeds to.
+     */
+    static final int DEFAULT_ROWS_PER_SECTION = 5;
 
     /** Wall-clock Europe/Copenhagen display format (the P11/P18 model). */
     private static final DateTimeFormatter WHEN =
@@ -85,6 +93,14 @@ public final class SlackAppHomeViews {
      */
     public static View appHomeView(LandingResponse landing, List<MyReferralRow> referrals,
                                    boolean scorecardButtons, String baseUrl, LocalDateTime now) {
+        return appHomeView(landing, referrals, scorecardButtons, baseUrl, now,
+                DEFAULT_ROWS_PER_SECTION);
+    }
+
+    /** As above, with an explicit per-section row cap (see {@link #DEFAULT_ROWS_PER_SECTION}). */
+    public static View appHomeView(LandingResponse landing, List<MyReferralRow> referrals,
+                                   boolean scorecardButtons, String baseUrl, LocalDateTime now,
+                                   int rowsPerSection) {
         List<LayoutBlock> blocks = new ArrayList<>();
         blocks.add(header(h -> h.text(plainText("Recruitment"))));
         blocks.add(context(asContextElements(markdownText(
@@ -92,12 +108,12 @@ public final class SlackAppHomeViews {
                         + " · the full picture lives in <" + baseUrl + "/recruitment|the intranet>"))));
 
         boolean anyContent = false;
-        anyContent |= scorecardSection(blocks, landing, scorecardButtons, baseUrl);
-        anyContent |= interviewSection(blocks, landing, baseUrl);
-        anyContent |= decisionSection(blocks, landing, baseUrl);
+        anyContent |= scorecardSection(blocks, landing, scorecardButtons, baseUrl, rowsPerSection);
+        anyContent |= interviewSection(blocks, landing, baseUrl, rowsPerSection);
+        anyContent |= decisionSection(blocks, landing, baseUrl, rowsPerSection);
         anyContent |= recruiterQueueSection(blocks, landing, baseUrl);
-        anyContent |= idleSection(blocks, landing, baseUrl);
-        anyContent |= referralSection(blocks, referrals, baseUrl);
+        anyContent |= idleSection(blocks, landing, baseUrl, rowsPerSection);
+        anyContent |= referralSection(blocks, referrals, baseUrl, rowsPerSection);
 
         if (!anyContent) {
             blocks.add(section(s -> s.text(markdownText(
@@ -124,14 +140,15 @@ public final class SlackAppHomeViews {
     // ------------------------------------------------------------------
 
     private static boolean scorecardSection(List<LayoutBlock> blocks, LandingResponse landing,
-                                            boolean scorecardButtons, String baseUrl) {
+                                            boolean scorecardButtons, String baseUrl,
+                                            int rowsPerSection) {
         List<LandingTask> tasks = tasksOf(landing, LandingTask.TYPE_OVERDUE_SCORECARD);
         if (tasks.isEmpty()) {
             return false;
         }
         blocks.add(section(s -> s.text(markdownText(
                 ":hourglass_flowing_sand: *Scorecards waiting for you* (" + tasks.size() + ")"))));
-        for (LandingTask task : capped(tasks)) {
+        for (LandingTask task : capped(tasks, rowsPerSection)) {
             StringBuilder sb = new StringBuilder(160)
                     .append("*").append(safe(task.candidateName())).append("*");
             appendPosition(sb, task.positionTitle(), task.round());
@@ -146,7 +163,7 @@ public final class SlackAppHomeViews {
                 blocks.add(SlackRecruitmentViews.scorecardActions(task.interviewUuid()));
             }
         }
-        overflow(blocks, tasks.size(), baseUrl + "/recruitment/interviews");
+        overflow(blocks, tasks.size(), baseUrl + "/recruitment/interviews", rowsPerSection);
         blocks.add(context(asContextElements(markdownText(
                 "Colleagues can't see your scores until you submit your own — "
                         + "it takes about 90 seconds."))));
@@ -154,7 +171,7 @@ public final class SlackAppHomeViews {
     }
 
     private static boolean interviewSection(List<LayoutBlock> blocks, LandingResponse landing,
-                                            String baseUrl) {
+                                            String baseUrl, int rowsPerSection) {
         List<LandingInterview> upcoming = landing.upcomingInterviews() == null
                 ? List.of() : landing.upcomingInterviews();
         if (upcoming.isEmpty()) {
@@ -163,7 +180,7 @@ public final class SlackAppHomeViews {
         blocks.add(section(s -> s.text(markdownText(
                 ":calendar: *Your upcoming interviews* (" + upcoming.size() + ")"))));
         for (LandingInterview interview : upcoming.subList(0,
-                Math.min(upcoming.size(), MAX_ROWS_PER_SECTION))) {
+                Math.min(upcoming.size(), rowsPerSection))) {
             StringBuilder sb = new StringBuilder(160)
                     .append("*").append(safe(interview.candidateName())).append("*");
             appendPosition(sb, interview.positionTitle(),
@@ -181,7 +198,7 @@ public final class SlackAppHomeViews {
             }
             blocks.add(section(s -> s.text(markdownText(sb.toString()))));
         }
-        overflow(blocks, upcoming.size(), baseUrl + "/recruitment/interviews");
+        overflow(blocks, upcoming.size(), baseUrl + "/recruitment/interviews", rowsPerSection);
         blocks.add(context(asContextElements(markdownText(
                 "Your kit (CV, focus areas, scorecard) for each interview: <"
                         + baseUrl + "/recruitment/interviews|open the interviews page>"))));
@@ -189,14 +206,14 @@ public final class SlackAppHomeViews {
     }
 
     private static boolean decisionSection(List<LayoutBlock> blocks, LandingResponse landing,
-                                           String baseUrl) {
+                                           String baseUrl, int rowsPerSection) {
         List<LandingTask> tasks = tasksOf(landing, LandingTask.TYPE_PENDING_DECISION);
         if (tasks.isEmpty()) {
             return false;
         }
         blocks.add(section(s -> s.text(markdownText(
                 ":scales: *Decisions waiting for you* (" + tasks.size() + ")"))));
-        for (LandingTask task : capped(tasks)) {
+        for (LandingTask task : capped(tasks, rowsPerSection)) {
             StringBuilder sb = new StringBuilder(160)
                     .append("*").append(safe(task.candidateName())).append("*");
             appendPosition(sb, task.positionTitle(), task.round());
@@ -207,7 +224,7 @@ public final class SlackAppHomeViews {
                     .append(task.candidateUuid()).append("|Review the debrief>");
             blocks.add(section(s -> s.text(markdownText(sb.toString()))));
         }
-        overflow(blocks, tasks.size(), baseUrl + "/recruitment");
+        overflow(blocks, tasks.size(), baseUrl + "/recruitment", rowsPerSection);
         return true;
     }
 
@@ -233,14 +250,14 @@ public final class SlackAppHomeViews {
     }
 
     private static boolean idleSection(List<LayoutBlock> blocks, LandingResponse landing,
-                                       String baseUrl) {
+                                       String baseUrl, int rowsPerSection) {
         List<LandingTask> tasks = tasksOf(landing, LandingTask.TYPE_IDLE_CANDIDATE);
         if (tasks.isEmpty()) {
             return false;
         }
         blocks.add(section(s -> s.text(markdownText(
                 ":zzz: *Idle candidates* (" + tasks.size() + ")"))));
-        for (LandingTask task : capped(tasks)) {
+        for (LandingTask task : capped(tasks, rowsPerSection)) {
             StringBuilder sb = new StringBuilder(160)
                     .append("*").append(safe(task.candidateName())).append("*");
             appendPosition(sb, task.positionTitle(), null);
@@ -254,19 +271,19 @@ public final class SlackAppHomeViews {
                     .append(task.candidateUuid()).append("|Open profile>");
             blocks.add(section(s -> s.text(markdownText(sb.toString()))));
         }
-        overflow(blocks, tasks.size(), baseUrl + "/recruitment/pipeline");
+        overflow(blocks, tasks.size(), baseUrl + "/recruitment/pipeline", rowsPerSection);
         return true;
     }
 
     private static boolean referralSection(List<LayoutBlock> blocks, List<MyReferralRow> referrals,
-                                           String baseUrl) {
+                                           String baseUrl, int rowsPerSection) {
         if (referrals == null || referrals.isEmpty()) {
             return false;
         }
         blocks.add(section(s -> s.text(markdownText(
                 ":raised_hands: *Your referrals* (" + referrals.size() + ")"))));
         for (MyReferralRow row : referrals.subList(0,
-                Math.min(referrals.size(), MAX_ROWS_PER_SECTION))) {
+                Math.min(referrals.size(), rowsPerSection))) {
             StringBuilder sb = new StringBuilder(120)
                     .append("*").append(safe(row.candidateName())).append("*")
                     .append(" · ").append(statusLabel(row.derivedStatus()));
@@ -280,7 +297,7 @@ public final class SlackAppHomeViews {
             }
             blocks.add(section(s -> s.text(markdownText(sb.toString()))));
         }
-        overflow(blocks, referrals.size(), baseUrl + "/recruitment/refer");
+        overflow(blocks, referrals.size(), baseUrl + "/recruitment/refer", rowsPerSection);
         blocks.add(context(asContextElements(markdownText(
                 "Statuses update automatically as your referral moves through the pipeline. "
                         + "Refer someone new: <" + baseUrl + "/recruitment/refer|open the refer page>"))));
@@ -296,13 +313,14 @@ public final class SlackAppHomeViews {
                 : landing.tasks().stream().filter(t -> type.equals(t.type())).toList();
     }
 
-    private static List<LandingTask> capped(List<LandingTask> tasks) {
-        return tasks.subList(0, Math.min(tasks.size(), MAX_ROWS_PER_SECTION));
+    private static List<LandingTask> capped(List<LandingTask> tasks, int rowsPerSection) {
+        return tasks.subList(0, Math.min(tasks.size(), rowsPerSection));
     }
 
-    private static void overflow(List<LayoutBlock> blocks, int total, String url) {
-        if (total > MAX_ROWS_PER_SECTION) {
-            int more = total - MAX_ROWS_PER_SECTION;
+    private static void overflow(List<LayoutBlock> blocks, int total, String url,
+                                 int rowsPerSection) {
+        if (total > rowsPerSection) {
+            int more = total - rowsPerSection;
             blocks.add(section(s -> s.text(markdownText(
                     "…and " + more + " more — <" + url + "|see the full list>"))));
         }
