@@ -57,11 +57,14 @@ import java.util.UUID;
  *       (404 + {@code admin:*} bypass) → actor from {@code X-Requested-By}
  *       → {@code requireVisibleCandidate} (invisible candidates answer
  *       404, never 403).</li>
- *   <li>Commands additionally require the recruiter tier
+ *   <li>Regenerate additionally requires the recruiter tier
  *       (ADMIN/HR/RECRUITMENT) or the hiring owner of the relevant position
- *       (403 otherwise), and regenerate requires the intake-or-brief toggle
- *       (same 404-style guard; NO bypass inside the toggles themselves —
- *       the {@code admin:*} bypass is the resource convention only).</li>
+ *       (403 otherwise), plus the intake-or-brief toggle (same 404-style
+ *       guard; NO bypass inside the toggles themselves — the
+ *       {@code admin:*} bypass is the resource convention only). Resolve
+ *       deliberately has no tier gate beyond candidate visibility
+ *       (change request 2026-08-22): whoever can see a suggestion may
+ *       accept or dismiss it.</li>
  *   <li>Regenerate is rate-limited to
  *       {@link CandidateAiReadService#DAILY_REGENERATION_LIMIT}/day (UTC)
  *       per candidate → 429 {@code RATE_LIMITED}.</li>
@@ -211,10 +214,12 @@ public class RecruitmentCandidateAiResource {
             throw error(Response.Status.CONFLICT, "STALE_SUGGESTION",
                     "The suggestion is not part of the latest generation");
         }
-        RecruitmentPosition position = generation.event().getPositionUuid() == null ? null
-                : RecruitmentPosition.findById(generation.event().getPositionUuid());
-        requireAiActionTier(viewer, position);
-
+        // No tier gate beyond candidate visibility (change request 2026-08-22):
+        // anyone who can see the suggestion chips may resolve them. The
+        // generation itself is already visibility-filtered per viewer above,
+        // and the accept path still runs through CandidateService.update's
+        // canonical validation. Regenerate keeps its tier gate — it spends
+        // rate-limited AI calls; resolving spends nothing.
         if (aiReadService.resolvedSuggestionIds(candidate.getUuid())
                 .contains(request.suggestionId())) {
             // Double-click safe: already resolved ⇒ 200 no-op, no new events.

@@ -46,6 +46,8 @@ public final class ScorecardGuidanceCatalog {
     private static final ScorecardGuidance WHY_CONSULTING = new ScorecardGuidance(
             "WHY_CONSULTING",
             "Why consulting",
+            "Motivation for the consultant role itself — with a realistic picture of "
+                    + "its uncomfortable parts.",
             "Motivation for the consultant role itself — not just for Trustworks or the "
                     + "domain. A realistic picture including the uncomfortable parts "
                     + "(utilization, being measured on client value, representing an unpopular "
@@ -90,20 +92,25 @@ public final class ScorecardGuidanceCatalog {
             "Would visibly raise the room; a learning machine with a sharing reflex — arrives "
                     + "with an idea for what they'd contribute to a practice in month one.");
 
+    private static final String CULTURE_SHORT_HINT =
+            "Someone you want to work with — honest, empathetic, a fast learner "
+                    + "who shares what they learn.";
+
     private static final ScorecardGuidance CULTURE = new ScorecardGuidance(
             "CULTURE",
             "Culture — Good People, learning & sharing",
-            CULTURE_WHAT, CULTURE_PROBES, CULTURE_ANCHORS);
+            CULTURE_SHORT_HINT, CULTURE_WHAT, CULTURE_PROBES, CULTURE_ANCHORS);
 
     /** Same subject under its pre-2026-08 code, for positions snapshotted before the rename. */
     private static final ScorecardGuidance CULTURE_FIT = new ScorecardGuidance(
             CULTURE_FIT_LEGACY_CODE,
             "Culture fit",
-            CULTURE_WHAT, CULTURE_PROBES, CULTURE_ANCHORS);
+            CULTURE_SHORT_HINT, CULTURE_WHAT, CULTURE_PROBES, CULTURE_ANCHORS);
 
     private static final ScorecardGuidance SELF_LEADERSHIP = new ScorecardGuidance(
             "SELF_LEADERSHIP",
             "Self-leadership & structure",
+            "Can they run their own week at a client with no one steering?",
             "Can they run their own week at a client with no one steering? Career-model "
                     + "behaviours: plan and structure own work, prioritize, align expectations up "
                     + "front (forventningsafstemning), flag slippage early, sustainable pace with "
@@ -125,6 +132,7 @@ public final class ScorecardGuidanceCatalog {
     private static final ScorecardGuidance UNCERTAINTY = new ScorecardGuidance(
             "UNCERTAINTY",
             "Handling uncertainty",
+            "Do they create clarity when the brief is unclear — or wait for it?",
             "Comfort and effectiveness when the brief is unclear, the data is missing, or a "
                     + "committed deadline meets fixed scope (leverancekultur: timebox, "
                     + "“lever effektivt, brænd færrest timer”). Do they create "
@@ -144,6 +152,7 @@ public final class ScorecardGuidanceCatalog {
     private static final ScorecardGuidance FAGLIGHED = new ScorecardGuidance(
             "FAGLIGHED",
             "Faglighed & formidling",
+            "Can they do the job at the level the role is hired for — and explain it simply?",
             "Can they do the job at the level the role is hired for — and explain it simply? "
                     + "Judged against the practice's kompetencekatalog (Aspirer baseline for grads "
                     + "→ Udfører for seniors), plus DNA Q4: complicated matters "
@@ -169,6 +178,8 @@ public final class ScorecardGuidanceCatalog {
     private static final ScorecardGuidance COMMERCIAL_DRIVE = new ScorecardGuidance(
             "COMMERCIAL_DRIVE",
             "Commercial drive",
+            "Curiosity about the client's business, and comfort talking value and "
+                    + "price at their level.",
             "“Consultants first, commercially aware second.” Genuine curiosity about "
                     + "the client's business, spotting and routing extension opportunities, comfort "
                     + "talking value and price at their level — and realism about numbers (a "

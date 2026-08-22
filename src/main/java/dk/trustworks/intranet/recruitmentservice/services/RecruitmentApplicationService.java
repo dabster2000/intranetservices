@@ -613,11 +613,16 @@ public class RecruitmentApplicationService {
         return byCandidate.entrySet().stream().collect(Collectors.toMap(
                 Map.Entry::getKey,
                 e -> e.getValue().stream()
-                        .map(a -> new CandidateApplicationInfo(
-                                a.getUuid(),
-                                a.getPositionUuid(),
-                                titleOf(positions.get(a.getPositionUuid())),
-                                a.getStage()))
+                        .map(a -> {
+                            RecruitmentPosition position = positions.get(a.getPositionUuid());
+                            return new CandidateApplicationInfo(
+                                    a.getUuid(),
+                                    a.getPositionUuid(),
+                                    titleOf(position),
+                                    position == null ? null : position.getPracticeUuid(),
+                                    position == null ? null : position.getPracticeName(),
+                                    a.getStage());
+                        })
                         .toList()));
     }
 

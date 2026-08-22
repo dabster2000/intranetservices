@@ -8,6 +8,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateSummary;
+import dk.trustworks.intranet.recruitmentservice.dto.NoteEditRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSummary;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
@@ -315,6 +316,12 @@ public class CandidateService {
      * @param experience      nullable; a {@link CandidateExperienceLevel} name
      * @param specialization  nullable; exact specialization membership
      * @param clearance       nullable; a {@link CandidateSecurityClearance} name
+     * @param practice        nullable; a practice uuid — keeps candidates
+     *                        with at least one open (still-in-play)
+     *                        application on a position of that practice
+     *                        (change request 2026-08-22). Same "still in
+     *                        play" notion as ACTIVE_PIPELINE: terminal NULL
+     *                        and not at the HIRED stage.
      * @param source          nullable; a {@link CandidateSource} name
      * @param view            nullable; a {@link CandidateListView} name — the
      *                        P8 saved views (ACTIVE_PIPELINE / TALENT_POOL /
@@ -342,7 +349,7 @@ public class CandidateService {
     public CandidateListResponse list(String statusFilter, String search, String tag,
                                       String education, String experience,
                                       String specialization, String clearance,
-                                      String source, String view,
+                                      String practice, String source, String view,
                                       int page, int size, String viewerUuid) {
         StringBuilder where = new StringBuilder("1 = 1");
         Map<String, Object> params = new java.util.HashMap<>();
@@ -444,6 +451,17 @@ public class CandidateService {
             where.append(" AND securityClearance = :clearance");
             params.put("clearance", parseEnum(CandidateSecurityClearance.class, clearance, "clearance"));
         }
+        if (practice != null && !practice.isBlank()) {
+            // "In a pipeline of this practice": at least one still-in-play
+            // application (ACTIVE_PIPELINE's exact notion — terminal NULL,
+            // not at the HIRED stage) on a position of the practice.
+            where.append(" AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a,"
+                    + " RecruitmentPosition p WHERE p.uuid = a.positionUuid"
+                    + " AND a.terminal IS NULL AND a.stage <> :practiceHiredStage"
+                    + " AND p.practiceUuid = :practiceUuid)");
+            params.put("practiceHiredStage", RecruitmentStage.HIRED);
+            params.put("practiceUuid", practice);
+        }
 
         long totalCount = RecruitmentCandidate.count(where.toString(), params);
         List<RecruitmentCandidate> rows = RecruitmentCandidate
@@ -475,6 +493,7 @@ public class CandidateService {
                     c.getPoolStatus(),
                     c.getSource(),
                     c.getTags(),
+                    c.getSpecializations(),
                     latest.map(CandidateDossierRevision::getKind).orElse(null),
                     latest.map(CandidateDossierRevision::getCreatedAt).orElse(null),
                     applicationInfo.getOrDefault(c.getUuid(), List.of()),
@@ -781,6 +800,79 @@ public class CandidateService {
             builder.payload("mentions", note.mentions());
         }
         return eventRecorder.record(builder.pii("text", note.text()));
+    }
+
+    /**
+     * The author's correction of their own discussion note (change request
+     * 2026-08-22). The stream stays append-only: this records a
+     * {@code NOTE_EDITED} event referencing the original {@code NOTE_ADDED}
+     * by event id, with the new text in pii; the timeline read path folds
+     * the newest edit into the displayed note and marks it "edited", while
+     * the original text remains in the stream as audit history.
+     * <p>
+     * Rules: only the original AUTHOR may edit (403 otherwise — admins
+     * included: a correction is the author's, redaction has its own tools);
+     * only plain discussion notes are editable (structured notes such as
+     * SALARY_EXPECTATION answer 400 — their write path is scope-gated and
+     * their value semantics are replace-by-new-note); privacy and mentions
+     * are fixed at posting time. Visibility and the private flag are COPIED
+     * from the original so a private note's edit is exactly as hidden as
+     * the note itself.
+     *
+     * @return the appended NOTE_EDITED event
+     */
+    @Transactional
+    public RecruitmentEvent editNote(UUID candidateUuid, String noteEventId,
+                                     NoteEditRequest edit, UUID actor) {
+        Objects.requireNonNull(edit, "edit must not be null");
+        Objects.requireNonNull(actor, "actor must not be null");
+        // Explicit — bean validation is not reliable in this module, and a
+        // blank edit would blank the visible comment while looking edited.
+        if (edit.text() == null || edit.text().isBlank()) {
+            throw badRequest("text is required");
+        }
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        RecruitmentEvent original = RecruitmentEvent
+                .<RecruitmentEvent>find("eventId", noteEventId).firstResult();
+        if (original == null
+                || !candidate.getUuid().equals(original.getCandidateUuid())
+                || original.getEventType() != RecruitmentEventType.NOTE_ADDED) {
+            throw new NotFoundException("Note not found: " + noteEventId);
+        }
+        Map<String, Object> payload = parseEventJson(original.getPayload());
+        if (payload.get("field") != null) {
+            throw badRequest("Structured notes cannot be edited — record a new one instead");
+        }
+        if (!actor.toString().equals(original.getActorUuid())) {
+            throw new WebApplicationException(
+                    "Only the author can edit a comment",
+                    Response.Status.FORBIDDEN);
+        }
+        RecruitmentEventBuilder builder = RecruitmentEventBuilder
+                .event(RecruitmentEventType.NOTE_EDITED)
+                .candidate(candidate.getUuid())
+                .application(original.getApplicationUuid())
+                .position(original.getPositionUuid())
+                .actorUser(actor.toString())
+                .visibility(original.getVisibility())
+                .payload("edited_event_id", noteEventId)
+                .payload("private", Boolean.TRUE.equals(payload.get("private")));
+        return eventRecorder.record(builder.pii("text", edit.text()));
+    }
+
+    /** Parse an event's JSON payload section; null/blank/broken → empty map. */
+    private Map<String, Object> parseEventJson(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                    });
+        } catch (Exception e) {
+            log.warn("Unparseable recruitment event payload — treating as empty");
+            return Map.of();
+        }
     }
 
     /**

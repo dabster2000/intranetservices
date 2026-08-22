@@ -81,6 +81,11 @@ class RecruitmentEventTypeCatalogTest {
         // per spec §6.2; the consuming stage move clears the pending state
         // under its own APPLICATION_* event, deliberately without a second
         // CLEARED event.
+        // NOTE_EDITED is the editable-comments addition (change request
+        // 2026-08-22): the author's correction of their own discussion
+        // note — a mutating command per spec §6.2, folded into the
+        // displayed note by the timeline read path while the original
+        // text stays in the stream as audit history.
         // UNSOLICITED_APPLICATION_RECEIVED / DUPLICATE_APPLICATION_RECEIVED
         // are the candidate-email remediation additions (F6/F7, 2026-08-22):
         // the two public-form paths that deliberately create no application —
@@ -100,7 +105,7 @@ class RecruitmentEventTypeCatalogTest {
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
-                "EMAIL_SENT", "NOTE_ADDED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
+                "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
                 "OFFER_OPENED", "DOSSIER_CREATED", "SIGNING_COMPLETED", "CANDIDATE_HIRED",
                 "TEAM_ASSIGNED",
                 "RECORD_CHECK_DRAWN", "RECORD_CHECK_OUTCOME_RECORDED",
@@ -132,7 +137,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
                         + "and the V519 INTERVIEW_DECISION_* pair exactly");
-        assertEquals(80, RecruitmentEventType.values().length);
+        assertEquals(81, RecruitmentEventType.values().length);
     }
 
     @Test
