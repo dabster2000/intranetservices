@@ -1597,7 +1597,7 @@ public class RecruitmentCalendarService {
 
         String body = includeCandidate
                 ? invitationBody(interview, candidate, candidateInvited)
-                : internalBody(position);
+                : internalBody(position, candidate, organizer);
 
         // Teams fields are one-way: TRUE turns the meeting online (works on
         // both create and PATCH — verified in this tenant, Phase 0.3 spike);
@@ -1719,8 +1719,28 @@ public class RecruitmentCalendarService {
         return attendees;
     }
 
-    /** The split-mode internal note: kit pointer, position, focus areas. */
-    static String internalBody(RecruitmentPosition position) {
+    /**
+     * The split-mode internal note: kit pointer, position, focus areas,
+     * and — the whole point of the closing paragraph — where the
+     * candidate went.
+     * <p>
+     * This body is read by interviewers inside Outlook, where the split
+     * is invisible: they see themselves and a room and nothing else, and
+     * reasonably conclude the candidate was never invited. Worse, the
+     * candidate's accept/decline is mailed to the shared organizer
+     * mailbox, so an interviewer watching their own inbox for an answer
+     * waits forever. Both facts are stated here rather than left to be
+     * rediscovered. The no-email branch is the one that matters most: it
+     * is the only case where no invitation actually exists, and Outlook
+     * looks exactly the same as when one does.
+     *
+     * @param organizer the mailbox the events are addressed under, named
+     *                  so the reader knows where the RSVP landed; omitted
+     *                  from the text when unknown
+     */
+    static String internalBody(RecruitmentPosition position,
+                               RecruitmentCandidate candidate,
+                               String organizer) {
         StringBuilder body = new StringBuilder(
                 "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit.");
         if (position != null && position.getTitle() != null) {
@@ -1733,7 +1753,30 @@ public class RecruitmentCalendarService {
                         .toList()));
             }
         }
+        body.append("\n\n").append(candidateInvitationNote(candidate, organizer));
         return body.toString();
+    }
+
+    /**
+     * The closing paragraph of {@link #internalBody} — split out so the
+     * DB-free tier can pin both branches on their own.
+     */
+    static String candidateInvitationNote(RecruitmentCandidate candidate, String organizer) {
+        String email = candidate != null && candidate.getEmail() != null
+                ? candidate.getEmail().trim()
+                : "";
+        if (email.isEmpty()) {
+            return "The candidate has NO email address in the intranet, so no invitation was sent to them"
+                    + " — this meeting is booked with the room and the interviewers only."
+                    + " Add their address on the candidate page and save the interview again,"
+                    + " or invite them by hand.";
+        }
+        String mailbox = organizer != null && !organizer.isBlank() ? organizer.trim() : null;
+        return "The candidate is invited on their own separate event and is deliberately not on this one: "
+                + email + "."
+                + "\nTheir answer will not reach your inbox"
+                + (mailbox != null ? " — RSVP replies go to " + mailbox : "")
+                + ". See the Outlook line on the candidate's Interviews tab for whether they accepted.";
     }
 
     /**

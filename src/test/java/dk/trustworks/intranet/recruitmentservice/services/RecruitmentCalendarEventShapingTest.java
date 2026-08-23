@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -346,11 +347,64 @@ class RecruitmentCalendarEventShapingTest {
 
     @Test
     void internalBody_carriesPositionAndFocusAreas() {
-        String body = RecruitmentCalendarService.internalBody(position());
+        String body = RecruitmentCalendarService.internalBody(
+                position(), candidate(), "career@trustworks.dk");
         assertTrue(body.contains("Position: Consultant"));
         assertTrue(body.contains("Focus areas: Why consulting, Culture fit"));
-        assertTrue(RecruitmentCalendarService.internalBody(null)
+        assertTrue(RecruitmentCalendarService
+                .internalBody(null, candidate(), "career@trustworks.dk")
                 .contains("Scheduled via the Trustworks intranet"));
+    }
+
+    // ---- The candidate note: the split is invisible in Outlook ---------------
+    //
+    // Interviewers open this event, see themselves and a room, and conclude
+    // nobody invited the candidate. Reported in production 2026-08-22 on an
+    // interview whose candidate had in fact already ACCEPTED — on her own
+    // event, whose RSVP goes to the shared organizer mailbox and never to the
+    // interviewer. The note is the only place inside Outlook that says so.
+
+    @Test
+    void internalBody_saysWhereTheCandidateWentAndWhoGetsTheAnswer() {
+        String body = RecruitmentCalendarService.internalBody(
+                position(), candidate(), "career@trustworks.dk");
+
+        assertTrue(body.contains("anna@example.com"), "names the invited address");
+        assertTrue(body.contains("separate event"));
+        assertTrue(body.contains("career@trustworks.dk"), "names the mailbox the RSVP lands in");
+        assertTrue(body.contains("Interviews tab"), "points at the surface that shows the answer");
+    }
+
+    @Test
+    void internalBody_noCandidateEmail_saysNoInvitationWasSent() {
+        String body = RecruitmentCalendarService.internalBody(
+                position(), candidateWithoutEmail(), "career@trustworks.dk");
+
+        assertTrue(body.contains("NO email address"));
+        assertTrue(body.contains("no invitation was sent"));
+        assertFalse(body.contains("separate event"),
+                "must not claim a candidate event that cannot exist without an address");
+    }
+
+    @Test
+    void candidateInvitationNote_unknownOrganizer_dropsTheMailboxClause() {
+        String note = RecruitmentCalendarService.candidateInvitationNote(candidate(), null);
+
+        assertTrue(note.contains("anna@example.com"));
+        assertFalse(note.contains("RSVP replies go to"),
+                "never name a mailbox we could not resolve");
+        assertTrue(note.contains("Interviews tab"));
+    }
+
+    @Test
+    void candidateInvitationNote_blankEmail_takesTheNotSentBranch() {
+        RecruitmentCandidate blank = candidate();
+        blank.setEmail("   ");
+
+        assertTrue(RecruitmentCalendarService.candidateInvitationNote(blank, "career@trustworks.dk")
+                .contains("no invitation was sent"));
+        assertTrue(RecruitmentCalendarService.candidateInvitationNote(null, "career@trustworks.dk")
+                .contains("no invitation was sent"));
     }
 
     // ---- Attendee list: organizer exclusion is by identity, not position -------

@@ -202,6 +202,12 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('recruitment:refer', 'Recruitment — refer', NULL, 'Recruitment', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('recruitment:settings', 'Recruitment — settings', NULL, 'Recruitment', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('recruitment:triage', 'Recruitment — inbox triage', NULL, 'Recruitment', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('recruitment:write', 'Recruitment — write', NULL, 'Recruitment', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)

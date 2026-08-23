@@ -1,7 +1,7 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 90,
+  "count": 92,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
@@ -67,6 +67,8 @@
     { "key": "recruitment:manage", "displayName": "Recruitment — manage candidates", "category": "Recruitment" },
     { "key": "recruitment:read", "displayName": "Recruitment — read", "category": "Recruitment" },
     { "key": "recruitment:refer", "displayName": "Recruitment — refer", "category": "Recruitment" },
+    { "key": "recruitment:settings", "displayName": "Recruitment — settings", "category": "Recruitment" },
+    { "key": "recruitment:triage", "displayName": "Recruitment — inbox triage", "category": "Recruitment" },
     { "key": "recruitment:write", "displayName": "Recruitment — write", "category": "Recruitment" },
     { "key": "revenue:read", "displayName": "Revenue — read", "category": "Revenue & utilization" },
     { "key": "salaries:read", "displayName": "Salaries — read", "category": "Users & HR" },

@@ -36,9 +36,14 @@ class PermissionsCatalogueTest {
      * (2026-08-18) — the create-and-attach slice of the candidate database,
      * split out of {@code recruitment:manage} so a team lead can put a name
      * into the funnel without also getting edit, delete, pool/unpool, bulk
-     * tag, candidate e-mail, templates, the dossier or record-check outcomes.
+     * tag, candidate e-mail, templates, the dossier or record-check outcomes;
+     * 92 since the recruitment nav-gate split added {@code recruitment:triage}
+     * and {@code recruitment:settings} (2026-08-23) — the Inbox and Settings
+     * surfaces both hung off {@code recruitment:write}, which every team lead
+     * holds, so the two tabs could not diverge and team leads saw surfaces
+     * whose every request 403s (recruitment-access-model-target §5.2).
      */
-    private static final int EXPECTED_PERMISSIONS = 90;
+    private static final int EXPECTED_PERMISSIONS = 92;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {
