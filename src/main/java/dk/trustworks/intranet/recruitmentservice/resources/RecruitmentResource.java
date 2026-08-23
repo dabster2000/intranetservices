@@ -293,8 +293,9 @@ public class RecruitmentResource {
     /**
      * P8 database-grid bulk action: union-add tags to up to 200 candidates
      * through the existing tag path — one {@code CANDIDATE_UPDATED} per
-     * actually-changed candidate, nothing for no-ops. Recruiter tier
-     * (ADMIN/HR/RECRUITMENT) enforced here AND in the service (defense in
+     * actually-changed candidate, nothing for no-ops. Decision 15
+     * (2026-08-23) opened this to TEAMLEAD (company-wide) and the assistant
+     * (practice-scoped); enforced here AND in the service (defense in
      * depth); invisible targets answer 404 for the whole call.
      */
     @POST
@@ -307,9 +308,9 @@ public class RecruitmentResource {
                     "request body is required", Response.Status.BAD_REQUEST);
         }
         UUID actor = currentActor();
-        if (!visibility.isRecruiterTier(actor.toString())) {
+        if (!visibility.canBulkTag(actor.toString())) {
             throw new WebApplicationException(
-                    "Bulk tagging is reserved for the recruiter tier",
+                    "Bulk tagging is reserved for the recruitment team and team leads",
                     Response.Status.FORBIDDEN);
         }
         int updated = candidateService.bulkAddTags(
@@ -581,31 +582,43 @@ public class RecruitmentResource {
                 dedupeService.check(request.email(), request.linkedinUrl(), actor.toString())).build();
     }
 
-    /** Move a candidate into the talent pool (bucket defaults to PROSPECT). */
+    /**
+     * Move a candidate into the talent pool (bucket defaults to PROSPECT).
+     * <p>
+     * The per-person gate is candidate visibility ({@code requireVisibleCandidate},
+     * added with the 2026-08-23 access model): {@code @RolesAllowed} gates
+     * only the API client, and this endpoint previously had no per-person
+     * check at all — anyone the BFF admitted could pool anybody. Visibility
+     * yields exactly the target table: recruiter tier and TEAMLEAD
+     * everywhere, the assistant within their practice, everyone else 404.
+     */
     @POST
     @Path("/candidates/{uuid}/pool")
     @RolesAllowed({"recruitment:write"})
     public Response poolCandidate(@PathParam("uuid") UUID uuid, PoolRequest request) {
         enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
         CandidatePoolStatus bucket = request != null ? request.poolStatus() : null;
         return Response.ok(candidateService.pool(uuid, bucket, currentActor())).build();
     }
 
-    /** Bring a pooled candidate back to ACTIVE. */
+    /** Bring a pooled candidate back to ACTIVE. Gate as {@code poolCandidate}. */
     @POST
     @Path("/candidates/{uuid}/unpool")
     @RolesAllowed({"recruitment:write"})
     public Response unpoolCandidate(@PathParam("uuid") UUID uuid) {
         enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
         return Response.ok(candidateService.unpool(uuid, currentActor())).build();
     }
 
-    /** Replace the candidate's tag set (empty list clears). */
+    /** Replace the candidate's tag set (empty list clears). Gate as {@code poolCandidate}. */
     @PUT
     @Path("/candidates/{uuid}/tags")
     @RolesAllowed({"recruitment:write"})
     public Response updateTags(@PathParam("uuid") UUID uuid, @Valid TagsRequest request) {
         enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         return Response.ok(candidateService.updateTags(uuid, request.tags(), currentActor())).build();
     }
@@ -621,6 +634,10 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response addNote(@PathParam("uuid") UUID uuid, @Valid NoteRequest request) {
         enforcePipelineFlag();
+        // Per-person gate (2026-08-23 access model): notes follow candidate
+        // visibility — this endpoint previously relied on the BFF role array
+        // alone, and @RolesAllowed gates only the API client.
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         if (NoteRequest.FIELD_SALARY_EXPECTATION.equals(request.field())
                 && !scopeContext.hasScope("recruitment:comp")) {
@@ -777,8 +794,9 @@ public class RecruitmentResource {
      * Unsolicited applicants awaiting routing (plan §P6, the P5 carry-over):
      * public-form candidates with no application yet, each with their
      * desired practice (from {@code source_detail}) and candidate-scoped
-     * form answers. Recruiter tier only — the raw intake queue is not a
-     * teamlead surface (spec §7.2). The literal path segment wins over the
+     * form answers. Inbox tier — the recruiter tier plus TEAMLEAD since
+     * decision 12 (2026-08-23) widened the queues rather than hiding the
+     * tab. The literal path segment wins over the
      * {@code /candidates/{uuid}} template (the dedupe-check precedent).
      */
     @GET
@@ -786,9 +804,9 @@ public class RecruitmentResource {
     public Response triageQueue() {
         enforcePipelineFlag();
         UUID actor = currentActor();
-        if (!visibility.isRecruiterTier(actor.toString())) {
+        if (!visibility.isInboxTier(actor.toString())) {
             throw new WebApplicationException(
-                    "The triage queue is reserved for the recruiter tier",
+                    "The triage queue is reserved for the recruitment team and team leads",
                     Response.Status.FORBIDDEN);
         }
         return Response.ok(referralService.unsolicitedTriageQueue(actor)).build();
@@ -802,6 +820,18 @@ public class RecruitmentResource {
         enforceFlag();
         requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
+        // Converting IS hiring — markHired is the only writer of the HIRED
+        // stage — so this is the fourth final outcome of decision 7
+        // (2026-08-23). Creating an employee is an HR act (go-live D1/D2):
+        // canWriteDossier = ADMIN/HR, which matches the target table's
+        // convert row exactly and closes the gap where any profile-reader
+        // the BFF admitted could execute a hire.
+        UUID convertActor = currentActor();
+        if (!visibility.canWriteDossier(convertActor.toString())) {
+            throw new WebApplicationException(
+                    "Converting a hire to an employee is reserved for HR and admins",
+                    Response.Status.FORBIDDEN);
+        }
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
 
         // Fire-and-forget the document copy after the conversion tx has

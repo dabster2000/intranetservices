@@ -37,6 +37,17 @@ public record BoardPositionSummary(
          * practice's, so the page needs this to render the rest read-only
          * rather than letting a drag fail with a 403.
          */
-        boolean viewerCanDecide
+        boolean viewerCanDecide,
+        /**
+         * Whether the requesting user may close an outcome from this board —
+         * reject, withdraw, return-to-pool
+         * ({@code RecruitmentVisibility.canDecideFinalOutcome}, decision 7 of
+         * the 2026-08-23 access model). Always false when
+         * {@link #viewerCanDecide} is false; narrower than it for an
+         * {@code ASSISTANT_TEAMLEAD}, who moves cards but never closes an
+         * outcome. The board withholds the terminal card actions (and the
+         * REJECT half of record-decision) when this is false.
+         */
+        boolean viewerCanDecideFinal
 ) {
 }

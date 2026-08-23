@@ -221,6 +221,16 @@ public final class Permissions {
             // a team lead can put a name into the funnel without being handed
             // the whole recruiter tier.
             new Permission("recruitment:intake", "Recruitment — candidate intake", "Recruitment"),
+            // Nav-gate split (2026-08-23, docs/access/recruitment-access-model-target.md
+            // §5.2). The Inbox (/recruitment/triage) and the Settings surface both hung
+            // off recruitment:write, which every team lead holds — so "Inbox yes,
+            // Settings no" was inexpressible, and all 20 team leads saw two tabs whose
+            // every request 403s. Each surface gets its own key so the two can diverge:
+            // decision 12 later opens the Inbox to TEAMLEAD while Settings stays
+            // recruiter-tier. These keys gate page/nav visibility; the BFF routes
+            // behind the pages keep their own role arrays as the enforcement point.
+            new Permission("recruitment:triage", "Recruitment — inbox triage", "Recruitment"),
+            new Permission("recruitment:settings", "Recruitment — settings", "Recruitment"),
             new Permission("recruitment:admin", "Recruitment — admin", "Recruitment"),
 
             // Admin

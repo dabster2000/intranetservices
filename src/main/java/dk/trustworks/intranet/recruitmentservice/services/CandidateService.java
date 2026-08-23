@@ -410,6 +410,20 @@ public class CandidateService {
             where.append(" AND uuid NOT IN :partnerTrackOnly");
             params.put("partnerTrackOnly", partnerTrackOnly);
         }
+        // Assistant scoping (decisions 5/8, 2026-08-23): an assistant-scoped
+        // viewer sees only candidates with an application on a non-partner
+        // position in their practice — query-level, before pagination, like
+        // the partner-row gap above. No practice or no qualifying candidate
+        // resolves to an impossible predicate rather than a wide-open grid.
+        if (viewerUuid != null && visibility.isAssistantScopedViewer(viewerUuid)) {
+            List<String> practiceVisible = visibility.assistantVisibleCandidateUuids(viewerUuid);
+            if (practiceVisible.isEmpty()) {
+                where.append(" AND 1 = 0");
+            } else {
+                where.append(" AND uuid IN :assistantVisible");
+                params.put("assistantVisible", practiceVisible);
+            }
+        }
         if (search != null && !search.isBlank()) {
             // Free text spans name, email AND tags: a tag nobody can search
             // for is a label nobody uses. Tags live in a JSON array column
@@ -721,9 +735,9 @@ public class CandidateService {
             }
             targets.add(uuid.trim());
         }
-        if (!visibility.isRecruiterTier(actor.toString())) {
+        if (!visibility.canBulkTag(actor.toString())) {
             throw new WebApplicationException(
-                    "Bulk tagging is reserved for the recruiter tier",
+                    "Bulk tagging is reserved for the recruitment team and team leads",
                     Response.Status.FORBIDDEN);
         }
 
@@ -731,6 +745,19 @@ public class CandidateService {
         // answer the same 404 as nonexistent ones — batched, no N+1.
         java.util.Set<String> invisible = new java.util.HashSet<>(
                 visibility.partnerTrackOnlyCandidateUuids(actor.toString(), null));
+        // An assistant-scoped actor (decision 15, ◐ practice) sees only
+        // candidates with an application in their practice — everything
+        // else joins the invisible set and 404s the call, exactly like a
+        // partner-track row the actor is outside the circle of.
+        if (visibility.isAssistantScopedViewer(actor.toString())) {
+            java.util.Set<String> practiceVisible = new java.util.HashSet<>(
+                    visibility.assistantVisibleCandidateUuids(actor.toString()));
+            for (String target : targets) {
+                if (!practiceVisible.contains(target)) {
+                    invisible.add(target);
+                }
+            }
+        }
         Map<String, RecruitmentCandidate> byUuid = RecruitmentCandidate
                 .<RecruitmentCandidate>list("uuid in ?1", List.copyOf(targets)).stream()
                 .collect(java.util.stream.Collectors.toMap(RecruitmentCandidate::getUuid, c -> c));

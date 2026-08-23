@@ -48,6 +48,20 @@ public record ApplicationResponse(
          */
         boolean viewerCanDecide,
         /**
+         * Whether the requesting user may close an <em>outcome</em> on this
+         * application — hire, reject, withdraw, return-to-pool
+         * ({@code RecruitmentVisibility.canDecideFinalOutcome}, decision 7 of
+         * the 2026-08-23 access model). Always false when
+         * {@link #viewerCanDecide} is false; narrower than it for an
+         * {@code ASSISTANT_TEAMLEAD}, who moves stages but never closes an
+         * outcome. The page hides Reject/Withdraw/Return-to-pool — and the
+         * REJECT half of the interview decision — when this is false; the
+         * backend enforces the same rule on those endpoints. Old frontends
+         * that don't know the field simply keep gating everything on
+         * {@code viewerCanDecide}, which is never wider than before.
+         */
+        boolean viewerCanDecideFinal,
+        /**
          * Whether the requesting user <em>runs this hire</em> — the named
          * hiring owner, or a lead of the position's practice. Distinct from
          * {@link #viewerCanDecide} on purpose: it is what opens the read-only

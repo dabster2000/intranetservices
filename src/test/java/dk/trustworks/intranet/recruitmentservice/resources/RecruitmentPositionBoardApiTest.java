@@ -359,13 +359,15 @@ class RecruitmentPositionBoardApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void practiceLead_readsOwnPracticeBoard_butNeverPartnerContent() {
+    void practiceLeadRow_seesNoBoardAtAll() {
+        // Decision 11 (2026-08-23): a practice_lead row grants nothing in
+        // recruitment — the board of "their" practice answers the same 404
+        // as any other invisible position.
         given()
                 .header("X-Requested-By", practiceLeadUser)
                 .when().get(BOARD, practicePositionUuid)
                 .then()
-                .statusCode(200)
-                .body("position.uuid", Matchers.equalTo(practicePositionUuid));
+                .statusCode(404);
         given()
                 .header("X-Requested-By", practiceLeadUser)
                 .when().get(BOARD, partnerPositionUuid)

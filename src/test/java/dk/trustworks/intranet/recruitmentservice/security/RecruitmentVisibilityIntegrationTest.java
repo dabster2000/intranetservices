@@ -21,20 +21,26 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * P2 DoD (authz, query-level via {@code RecruitmentVisibility}):
+ * Authz, query-level via {@code RecruitmentVisibility} — rewritten
+ * 2026-08-23 for the access-model redesign
+ * ({@code docs/access/recruitment-access-model-target.md}); the previous
+ * version pinned the pre-redesign rules (the 2026-08-12 practice-lead
+ * grant among them) and is superseded, not extended:
  * <ul>
- *   <li>a partner-track position is invisible in list/get for a non-circle
- *       recruiter (HR) and teamlead — and visible after
- *       {@code CIRCLE_MEMBER_ADDED};</li>
- *   <li>a <em>current</em> practice lead ({@code enddate IS NULL}) has read
- *       access to their practice's non-partner positions; a former lead
- *       ({@code enddate} set) does not;</li>
- *   <li>ADMIN sees everything; the circle is a hard filter that ownership
- *       does not bypass.</li>
+ *   <li>a partner-track position is invisible in list/get to every
+ *       non-circle viewer below ADMIN — the hard filter is unchanged;</li>
+ *   <li><b>decision 1:</b> the read tier (HR/RECRUITMENT/TEAMLEAD) both
+ *       reads AND decides on every non-partner position;</li>
+ *   <li><b>decision 11:</b> {@code practice_lead} rows and led-team
+ *       practices grant nothing anywhere — rights come from roles only;</li>
+ *   <li><b>decisions 2–10:</b> {@code ASSISTANT_TEAMLEAD} carries the team
+ *       lead's capabilities scoped to {@code user.practice_uuid}, minus
+ *       final outcomes, candidate creation and the Inbox.</li>
  * </ul>
  * Fixtures are raw rows (users, roles, practice, practice_lead, teamroles,
  * positions, circle members) so the helper is tested in isolation from the
- * command handlers.
+ * command handlers. NOTE: {@code @QuarkusTest} — not in the CI fast tier;
+ * run deliberately against a local DB.
  */
 @QuarkusTest
 class RecruitmentVisibilityIntegrationTest {
@@ -46,56 +52,62 @@ class RecruitmentVisibilityIntegrationTest {
     EntityManager em;
 
     private String practiceUuid;
+    private String otherPracticeUuid;
     private String adminUser;
     private String recruiterUser;   // HR role — recruiter tier
-    private String teamleadUser;    // leads teamUuid via teamroles LEADER
-    private String currentLeadUser; // practice_lead row, enddate IS NULL
-    private String formerLeadUser;  // practice_lead row, enddate set
+    private String teamleadUser;    // TEAMLEAD role; leads teamUuid via teamroles LEADER
+    private String assistantUser;   // ASSISTANT_TEAMLEAD role; user.practice_uuid = practiceUuid
+    private String currentLeadUser; // practice_lead row, enddate IS NULL — NO role
     private String plainUser;       // no roles, no leads, no circles
     private String teamUuid;
 
     private String practicePositionUuid; // PRACTICE_TEAM on practiceUuid + teamUuid
     private String partnerPositionUuid;  // PARTNER
-    private String staffPositionUuid;    // STAFF_ROLE owned by plainUser
+    private String staffPositionUuid;    // STAFF_ROLE owned by plainUser, no practice
     /**
      * PRACTICE_TEAM on practiceUuid with NO team and NO named owner — the
      * production shape (every prod position has {@code team_uuid} NULL and
-     * almost none has an owner), and therefore the row that isolates the
-     * practice route from the pre-existing team and owner routes.
+     * almost none has an owner). Under decision 1 it belongs to every
+     * TEAMLEAD's decide set anyway; for the assistant it isolates the
+     * practice-membership route from the team and owner routes.
      */
     private String practiceOnlyPositionUuid;
+    /** PRACTICE_TEAM on otherPracticeUuid — the assistant's boundary row. */
+    private String otherPracticePositionUuid;
 
     private final List<Runnable> cleanupSteps = new ArrayList<>();
 
     @BeforeEach
     void seedFixtures() {
         practiceUuid = UUID.randomUUID().toString();
+        otherPracticeUuid = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
         recruiterUser = UUID.randomUUID().toString();
         teamleadUser = UUID.randomUUID().toString();
+        assistantUser = UUID.randomUUID().toString();
         currentLeadUser = UUID.randomUUID().toString();
-        formerLeadUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
         teamUuid = UUID.randomUUID().toString();
         practicePositionUuid = UUID.randomUUID().toString();
         partnerPositionUuid = UUID.randomUUID().toString();
         staffPositionUuid = UUID.randomUUID().toString();
         practiceOnlyPositionUuid = UUID.randomUUID().toString();
+        otherPracticePositionUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             for (String user : List.of(adminUser, recruiterUser, teamleadUser,
-                    currentLeadUser, formerLeadUser, plainUser)) {
+                    assistantUser, currentLeadUser, plainUser)) {
                 insertUser(user);
             }
             insertRole(adminUser, "ADMIN");
             insertRole(recruiterUser, "HR");
             insertRole(teamleadUser, "TEAMLEAD");
+            insertRole(assistantUser, "ASSISTANT_TEAMLEAD");
 
             insertPractice(practiceUuid);
+            insertPractice(otherPracticeUuid);
+            setUserPractice(assistantUser, practiceUuid);
             insertPracticeLead(currentLeadUser, practiceUuid, null);
-            insertPracticeLead(formerLeadUser, practiceUuid, "2025-12-31");
-            // The team belongs to the practice — the hop
-            // practicesOfCurrentlyLedTeams walks for "Your pipelines".
             insertTeam(teamUuid, practiceUuid);
             insertTeamLeader(teamleadUser, teamUuid);
 
@@ -104,6 +116,8 @@ class RecruitmentVisibilityIntegrationTest {
             insertPosition(staffPositionUuid, "Office manager", "STAFF_ROLE", null, null, plainUser);
             insertPosition(practiceOnlyPositionUuid, "Consultant (no team)", "PRACTICE_TEAM",
                     practiceUuid, null, null);
+            insertPosition(otherPracticePositionUuid, "Consultant (other practice)", "PRACTICE_TEAM",
+                    otherPracticeUuid, null, null);
         });
     }
 
@@ -111,13 +125,13 @@ class RecruitmentVisibilityIntegrationTest {
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
             List<String> positions = List.of(practicePositionUuid, partnerPositionUuid,
-                    staffPositionUuid, practiceOnlyPositionUuid);
+                    staffPositionUuid, practiceOnlyPositionUuid, otherPracticePositionUuid);
             em.createNativeQuery("DELETE FROM recruitment_circle_members WHERE position_uuid IN :p")
                     .setParameter("p", positions).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_positions WHERE uuid IN :p")
                     .setParameter("p", positions).executeUpdate();
             List<String> users = List.of(adminUser, recruiterUser, teamleadUser,
-                    currentLeadUser, formerLeadUser, plainUser);
+                    assistantUser, currentLeadUser, plainUser);
             em.createNativeQuery("DELETE FROM practice_lead WHERE useruuid IN :u")
                     .setParameter("u", users).executeUpdate();
             em.createNativeQuery("DELETE FROM teamroles WHERE useruuid IN :u")
@@ -126,8 +140,8 @@ class RecruitmentVisibilityIntegrationTest {
                     .setParameter("u", users).executeUpdate();
             em.createNativeQuery("DELETE FROM team WHERE uuid = :t")
                     .setParameter("t", teamUuid).executeUpdate();
-            em.createNativeQuery("DELETE FROM practice WHERE uuid = :p")
-                    .setParameter("p", practiceUuid).executeUpdate();
+            em.createNativeQuery("DELETE FROM practice WHERE uuid IN :p")
+                    .setParameter("p", List.of(practiceUuid, otherPracticeUuid)).executeUpdate();
             em.createNativeQuery("DELETE FROM user WHERE uuid IN :u")
                     .setParameter("u", users).executeUpdate();
         });
@@ -184,88 +198,130 @@ class RecruitmentVisibilityIntegrationTest {
         assertFalse(visible.contains(partnerPositionUuid));
     }
 
-    // ---- Involvement tier ---------------------------------------------------------
+    // ---- Decision 1: the read tier decides — one tier, company-wide -------------
 
     /**
-     * Go-live decision D3 (2026-08-10) moved {@code TEAMLEAD} into
-     * {@link RecruitmentVisibility#POSITION_READ_ROLES}, so a teamlead READS
-     * every non-partner position — including ones they are in no way involved
-     * with. This test asserted the opposite until 2026-08-11 and had been
-     * failing silently ever since (it is a {@code @QuarkusTest}, excluded from
-     * the CI deploy gate), because D3 changed the rule without changing it.
-     * <p>
-     * Reaffirmed as intended on 2026-08-11: the landing page narrows what it
-     * <em>leads with</em> ({@code ownPositionUuids}), while the positions list
-     * and the board picker deliberately stay wide so a teamlead can still go
-     * look at another practice's board on purpose. Acting on one they do not
-     * own is a separate, narrower question — {@code canDecideOnApplication}
-     * and {@code canMutatePosition}.
+     * The redesign's first decision: reading and deciding collapse. A
+     * TEAMLEAD acts on every non-partner pipeline, practice irrelevant —
+     * the old "reads widely, decides narrowly" split (and the 2026-08-12
+     * practice-run bridge built to soften it) is gone.
      */
     @Test
-    void teamlead_readsEveryNonPartnerPosition_evenUninvolved() {
-        List<String> visible = visibleUuids(teamleadUser);
-        assertTrue(visible.contains(practicePositionUuid), "position targeting the led team");
-        assertTrue(visible.contains(staffPositionUuid),
-                "D3: the read tier is company-wide for non-partner positions");
-        assertFalse(visible.contains(partnerPositionUuid),
-                "the partner circle stays a hard filter for every role but ADMIN");
-
-        // ...and the two narrower questions still answer no on that same row.
-        assertFalse(visibility.canMutatePosition(teamleadUser, position(staffPositionUuid)),
-                "reading it is not changing it");
-        assertFalse(visibility.ownPositionUuids(teamleadUser, allFixturePositions())
-                        .contains(staffPositionUuid),
-                "and it is not one of 'Your pipelines' either");
+    void teamlead_decidesOnEveryNonPartnerPosition_practiceIrrelevant() {
+        for (String uuid : List.of(practicePositionUuid, practiceOnlyPositionUuid,
+                staffPositionUuid, otherPracticePositionUuid)) {
+            RecruitmentPosition position = position(uuid);
+            assertTrue(canRead(teamleadUser, uuid));
+            assertTrue(visibility.canDecideOnApplication(teamleadUser, position),
+                    "decision 1: one tier — read is decide: " + uuid);
+            assertTrue(visibility.canMutatePosition(teamleadUser, position));
+            assertTrue(visibility.isRecruiterOrHiringOwner(teamleadUser, position),
+                    "the collapse includes the owner's elevated moves (stage skips)");
+            assertTrue(visibility.canDecideFinalOutcome(teamleadUser, position),
+                    "a team lead keeps all four final outcomes");
+        }
+        assertFalse(visibility.canDecideOnApplication(teamleadUser, position(partnerPositionUuid)),
+                "the partner circle stays a hard filter");
     }
 
-    // ---- The practice route (decided 2026-08-12) -------------------------------------
+    @Test
+    void decidablePositionUuids_matchesTheSingleRowGateForEveryViewer() {
+        List<RecruitmentPosition> all = allFixturePositions();
+        for (String viewer : List.of(adminUser, recruiterUser, teamleadUser,
+                assistantUser, currentLeadUser, plainUser)) {
+            Set<String> batched = visibility.decidablePositionUuids(viewer, all);
+            for (RecruitmentPosition position : all) {
+                assertEquals(visibility.canDecideOnApplication(viewer, position),
+                        batched.contains(position.getUuid()),
+                        "batched twin drifted from canDecideOnApplication for viewer "
+                                + viewer + " on " + position.getUuid());
+            }
+        }
+    }
+
+    // ---- Decision 11: the practice-lead route is gone ---------------------------
 
     /**
-     * The change that started it all: a team lead had decision rights only
-     * where someone had named them hiring owner or where the position carried
-     * their team — and in production no position carries a team, so they were
-     * read-only on their own practice's pipelines. Leading a team that belongs
-     * to the practice is now itself the involvement.
+     * The route that let Nicklas Grunnet Sandager (SALES/USER) and Anna
+     * Mette Forbord Hansen (no roles at all) hold decision rights over six
+     * and five open positions respectively: a {@code practice_lead} row was
+     * never role-gated. After decision 11, running a practice grants
+     * nothing — read, decide, own: all no.
      */
     @Test
-    void teamlead_decidesOnTheirPracticesPositions_withNoTeamAndNoOwnerOnTheRow() {
-        RecruitmentPosition ownPractice = position(practiceOnlyPositionUuid);
-        assertNull(ownPractice.getTeamUuid(), "the fixture must isolate the practice route");
-        assertNull(ownPractice.getHiringOwnerUuid());
-
-        assertTrue(visibility.canDecideOnApplication(teamleadUser, ownPractice),
-                "leading a team in the practice grants the owner's pipeline rights");
-        assertTrue(visibility.canMutatePosition(teamleadUser, ownPractice),
-                "and the same authority edits or closes the position");
-        assertTrue(visibility.isRecruiterOrHiringOwner(teamleadUser, ownPractice),
-                "including the owner's elevated moves — a forward stage skip");
+    void practiceLeadRow_grantsNothingAnywhere() {
+        assertFalse(visibleUuids(currentLeadUser).contains(practicePositionUuid),
+                "a current practice_lead row no longer grants read");
+        assertFalse(canRead(currentLeadUser, practiceOnlyPositionUuid));
+        assertFalse(visibility.canDecideOnApplication(currentLeadUser, position(practiceOnlyPositionUuid)));
+        assertFalse(visibility.canMutatePosition(currentLeadUser, position(practicePositionUuid)));
+        assertTrue(visibility.ownPositionUuids(currentLeadUser, allFixturePositions()).isEmpty(),
+                "and 'Your pipelines' counts none of them");
     }
 
-    /** Same rule, same set: what the landing page calls yours is what you may act on. */
     @Test
-    void practiceRoute_matchesTheYourPipelinesScoping() {
-        assertTrue(visibility.ownPositionUuids(teamleadUser, allFixturePositions())
-                        .contains(practiceOnlyPositionUuid),
-                "'Your pipelines' already counted it as theirs");
-        assertTrue(visibility.ownPractices(teamleadUser).contains(practiceUuid));
+    void teamleadsLedTeamPractice_noLongerFeedsYourPipelines() {
+        Set<String> own = visibility.ownPositionUuids(teamleadUser, allFixturePositions());
+        assertFalse(own.contains(practiceOnlyPositionUuid),
+                "decision 11: the led-team's practice no longer makes a position 'yours'");
+        assertTrue(visibility.canDecideOnApplication(teamleadUser, position(practiceOnlyPositionUuid)),
+                "...they still ACT on it — by role now, not by the practice hop");
     }
 
-    /** The boundary: another practice's position stays read-only. */
+    // ---- Decisions 2–5: the assistant, scoped to their practice -----------------
+
     @Test
-    void teamlead_cannotDecideOutsideTheirPractice() {
-        RecruitmentPosition elsewhere = position(staffPositionUuid);
-        assertTrue(canRead(teamleadUser, staffPositionUuid), "D3 still shows it to them");
-        assertFalse(visibility.canDecideOnApplication(teamleadUser, elsewhere));
-        assertFalse(visibility.canMutatePosition(teamleadUser, elsewhere));
-        assertFalse(visibility.isRecruiterOrHiringOwner(teamleadUser, elsewhere));
+    void assistant_readsAndDecidesWithinTheirPractice_only() {
+        List<String> visible = visibleUuids(assistantUser);
+        assertTrue(visible.contains(practicePositionUuid), "their practice's positions");
+        assertTrue(visible.contains(practiceOnlyPositionUuid));
+        assertFalse(visible.contains(otherPracticePositionUuid), "another practice: invisible");
+        assertFalse(visible.contains(staffPositionUuid), "no practice on the row: invisible");
+        assertFalse(visible.contains(partnerPositionUuid), "partner: the circle is the only key");
+
+        RecruitmentPosition inPractice = position(practiceOnlyPositionUuid);
+        assertTrue(canRead(assistantUser, practiceOnlyPositionUuid));
+        assertTrue(visibility.canDecideOnApplication(assistantUser, inPractice),
+                "same capability as a team lead, scoped to the practice");
+        assertTrue(visibility.canMutatePosition(assistantUser, inPractice),
+                "edit/close follows the decision gate");
+        assertTrue(visibility.isRecruiterOrHiringOwner(assistantUser, inPractice),
+                "skip stages: ◐ practice");
+        assertTrue(visibility.canManageCircle(assistantUser, inPractice),
+                "manage the hiring circle: ◐ practice");
+
+        RecruitmentPosition outside = position(otherPracticePositionUuid);
+        assertFalse(visibility.canDecideOnApplication(assistantUser, outside));
+        assertFalse(visibility.canMutatePosition(assistantUser, outside));
+        assertFalse(visibility.isRecruiterOrHiringOwner(assistantUser, outside));
     }
 
-    /**
-     * Running a practice must never become a back door into a confidential
-     * hire: on partner track the circle is still the only key.
-     */
+    /** Decision 7: an assistant moves stages but never closes an outcome. */
     @Test
-    void practiceRoute_neverOpensPartnerTrack() {
+    void assistant_neverDecidesFinalOutcomes_evenInTheirPractice() {
+        RecruitmentPosition inPractice = position(practiceOnlyPositionUuid);
+        assertTrue(visibility.canDecideOnApplication(assistantUser, inPractice),
+                "precondition: the stage-move gate is open");
+        assertFalse(visibility.canDecideFinalOutcome(assistantUser, inPractice),
+                "hire, reject, withdraw, return-to-pool: all four stay closed");
+    }
+
+    /** Decisions 8/10: no candidate creation; and no Inbox (decision 12's flip side). */
+    @Test
+    void assistant_createsNothing_andStaysOutOfTheInbox() {
+        assertFalse(visibility.canCreateCandidate(assistantUser),
+                "decision 10 — enforced on the role, whatever grants the console holds");
+        assertFalse(visibility.isInboxTier(assistantUser),
+                "decision 8 makes an assistant Inbox pointless; the tier excludes them");
+        assertTrue(visibility.isInboxTier(teamleadUser),
+                "decisions 12/13 open the Inbox to team leads");
+        assertTrue(visibility.isInboxTier(recruiterUser));
+        assertFalse(visibility.isInboxTier(plainUser));
+    }
+
+    /** The assistant's practice never opens partner track — even their own practice's. */
+    @Test
+    void assistantPracticeRoute_neverOpensPartnerTrack() {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "UPDATE recruitment_positions SET practice_uuid = :pr WHERE uuid = :p")
@@ -274,32 +330,82 @@ class RecruitmentVisibilityIntegrationTest {
                         .executeUpdate());
 
         RecruitmentPosition partner = position(partnerPositionUuid);
-        assertFalse(visibility.canDecideOnApplication(teamleadUser, partner),
-                "a practice lead is not a circle member");
-        assertFalse(visibility.canMutatePosition(teamleadUser, partner));
-        assertFalse(canRead(teamleadUser, partnerPositionUuid),
-                "and they cannot even see it");
+        assertFalse(canRead(assistantUser, partnerPositionUuid));
+        assertFalse(visibility.canDecideOnApplication(assistantUser, partner));
+        assertFalse(visibility.canManageCircle(assistantUser, partner),
+                "the circle-management practice route is non-partner only");
+    }
+
+    /** "Your pipelines": the assistant's practice IS their scope, so it is theirs. */
+    @Test
+    void assistant_ownPositions_areTheirPracticesPositions() {
+        Set<String> own = visibility.ownPositionUuids(assistantUser, allFixturePositions());
+        assertTrue(own.contains(practiceOnlyPositionUuid));
+        assertTrue(own.contains(practicePositionUuid));
+        assertFalse(own.contains(otherPracticePositionUuid));
+        assertFalse(own.contains(staffPositionUuid));
     }
 
     /**
-     * A registered practice lead was READ-only until 2026-08-12; Hans chose
-     * to line them up with the landing page's ownership rule, so they act too.
-     * A former lead still does not — the grant is temporal on both sides.
+     * The empty-practice guard's fail-closed twin: the rail
+     * ({@code RoleService}) refuses the assignment, but if the practice is
+     * cleared afterwards the assistant must resolve to nothing — a silently
+     * empty module, never a wide-open one.
      */
     @Test
-    void currentPracticeLead_decides_formerDoesNot() {
-        RecruitmentPosition ownPractice = position(practiceOnlyPositionUuid);
-        assertTrue(visibility.canDecideOnApplication(currentLeadUser, ownPractice));
-        assertFalse(visibility.canDecideOnApplication(formerLeadUser, ownPractice),
-                "a practice_lead row with enddate set grants nothing");
+    void assistant_withNoPractice_seesAndDecidesNothing() {
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("UPDATE user SET practice_uuid = NULL WHERE uuid = :u")
+                        .setParameter("u", assistantUser)
+                        .executeUpdate());
+        assertNull(visibility.practiceOfUser(assistantUser));
+        assertTrue(visibleUuids(assistantUser).isEmpty());
+        assertFalse(visibility.canDecideOnApplication(assistantUser, position(practiceOnlyPositionUuid)));
+        assertTrue(visibility.assistantVisibleCandidateUuids(assistantUser).isEmpty());
     }
 
-    /** A plain employee gains nothing: they lead no team and no practice. */
+    /** The role only adds; wider standing wins. A TEAMLEAD+assistant is a team lead. */
     @Test
-    void plainEmployee_gainsNothingFromThePracticeRoute() {
-        assertFalse(visibility.canDecideOnApplication(plainUser, position(practiceOnlyPositionUuid)));
-        assertTrue(visibility.ownPractices(plainUser).isEmpty());
+    void assistantRole_neverNarrowsWiderStanding() {
+        QuarkusTransaction.requiringNew().run(() -> insertRole(teamleadUser, "ASSISTANT_TEAMLEAD"));
+        RecruitmentPosition outside = position(otherPracticePositionUuid);
+        assertTrue(visibility.canDecideOnApplication(teamleadUser, outside),
+                "company-wide decide survives holding the assistant role too");
+        assertTrue(visibility.canDecideFinalOutcome(teamleadUser, outside),
+                "and so do final outcomes");
+        assertTrue(visibility.canCreateCandidate(teamleadUser),
+                "intake (via the TEAMLEAD grant) survives too");
     }
+
+    // ---- Position creation (the §8 gap, closed 2026-08-23) ----------------------
+
+    @Test
+    void positionCreation_partnerTrackIsRecruiterTierOnly() {
+        assertTrue(visibility.canCreatePosition(adminUser, RecruitmentHiringTrack.PARTNER, null));
+        assertTrue(visibility.canCreatePosition(recruiterUser, RecruitmentHiringTrack.PARTNER, null));
+        assertFalse(visibility.canCreatePosition(teamleadUser, RecruitmentHiringTrack.PARTNER, null),
+                "the gap this gate closes: a team lead could open a partner req");
+        assertFalse(visibility.canCreatePosition(assistantUser, RecruitmentHiringTrack.PARTNER, practiceUuid));
+        assertFalse(visibility.canCreatePosition(plainUser, RecruitmentHiringTrack.PARTNER, null));
+    }
+
+    @Test
+    void positionCreation_nonPartner_teamleadAnywhere_assistantOwnPracticeOnly() {
+        assertTrue(visibility.canCreatePosition(teamleadUser,
+                RecruitmentHiringTrack.PRACTICE_TEAM, otherPracticeUuid));
+        assertTrue(visibility.canCreatePosition(assistantUser,
+                RecruitmentHiringTrack.PRACTICE_TEAM, practiceUuid));
+        assertFalse(visibility.canCreatePosition(assistantUser,
+                RecruitmentHiringTrack.PRACTICE_TEAM, otherPracticeUuid),
+                "◐ practice: not someone else's");
+        assertFalse(visibility.canCreatePosition(assistantUser,
+                RecruitmentHiringTrack.PRACTICE_TEAM, null),
+                "a practice-less req is not in any assistant's scope");
+        assertFalse(visibility.canCreatePosition(plainUser,
+                RecruitmentHiringTrack.PRACTICE_TEAM, practiceUuid));
+    }
+
+    // ---- Involvement tier (unchanged routes: owner, led team, circle) -----------
 
     @Test
     void hiringOwner_seesOwnStaffPosition() {
@@ -310,85 +416,12 @@ class RecruitmentVisibilityIntegrationTest {
         assertTrue(canRead(plainUser, staffPositionUuid));
     }
 
-    // ---- Practice-lead read access (temporal) ----------------------------------------
-
-    @Test
-    void currentPracticeLead_readsTheirPracticesNonPartnerPositions() {
-        assertTrue(visibility.isCurrentPracticeLead(currentLeadUser, practiceUuid));
-        assertTrue(visibleUuids(currentLeadUser).contains(practicePositionUuid));
-        assertTrue(canRead(currentLeadUser, practicePositionUuid));
-    }
-
-    @Test
-    void formerPracticeLead_hasNoReadAccess() {
-        assertFalse(visibility.isCurrentPracticeLead(formerLeadUser, practiceUuid),
-                "a practice_lead row with enddate set is not a current lead");
-        assertFalse(visibleUuids(formerLeadUser).contains(practicePositionUuid));
-        assertFalse(canRead(formerLeadUser, practicePositionUuid));
-    }
-
-    @Test
-    void practiceLeadGrant_doesNotExtendToPartnerTrackOfTheSamePractice() {
-        QuarkusTransaction.requiringNew().run(() ->
-                em.createNativeQuery("UPDATE recruitment_positions SET practice_uuid = :pr WHERE uuid = :p")
-                        .setParameter("pr", practiceUuid)
-                        .setParameter("p", partnerPositionUuid)
-                        .executeUpdate());
-        assertFalse(visibleUuids(currentLeadUser).contains(partnerPositionUuid),
-                "practice-lead read access covers non-partner positions only");
-        assertFalse(canRead(currentLeadUser, partnerPositionUuid));
-    }
-
-    // ---- Circle management gate ----------------------------------------------------
-
-    @Test
-    void circleManagement_ownersRecruitersHrAndAdmin_only() {
-        addCircleMember(partnerPositionUuid, plainUser); // PARTICIPANT
-        RecruitmentPosition partner = position(partnerPositionUuid);
-
-        assertTrue(visibility.canManageCircle(adminUser, partner));
-        assertTrue(visibility.canManageCircle(recruiterUser, partner), "HR may always manage");
-        assertFalse(visibility.canManageCircle(plainUser, partner),
-                "a PARTICIPANT can see the position but not widen the circle");
-        assertFalse(visibility.canManageCircle(teamleadUser, partner));
-    }
-
-    // ---- Position mutation gate (edit / close) --------------------------------------
-    // Go-live spec §3, "Positions — create/edit/close": ADMIN/HR/RECRUITMENT
-    // everywhere, TEAMLEAD own only. Reading is not enough — D3 shows every
-    // teamlead every non-partner position, so without this gate the read tier
-    // doubles as a company-wide write tier.
-
-    @Test
-    void positionMutation_teamleadMayNotChangeAPositionTheyMerelyRead() {
-        RecruitmentPosition someoneElses = position(staffPositionUuid);
-
-        assertTrue(visibility.canReadPosition(teamleadUser, someoneElses),
-                "D3: a teamlead reads every non-partner position");
-        assertFalse(visibility.canMutatePosition(teamleadUser, someoneElses),
-                "...but reading it must not let them edit or close it");
-    }
-
     @Test
     void positionMutation_hiringOwnerMayChangeTheirOwn() {
         assertTrue(visibility.canMutatePosition(plainUser, position(staffPositionUuid)),
                 "the named hiring owner acts on their own position");
-    }
-
-    @Test
-    void positionMutation_currentLeadOfThePositionsTeamMayChange() {
-        assertTrue(visibility.canMutatePosition(teamleadUser, position(practicePositionUuid)),
-                "the position targets the team this user currently leads");
-    }
-
-    @Test
-    void positionMutation_teamleadInTheCircleMayChange() {
-        assertFalse(visibility.canMutatePosition(teamleadUser, position(staffPositionUuid)));
-
-        addCircleMember(staffPositionUuid, teamleadUser);
-
-        assertTrue(visibility.canMutatePosition(teamleadUser, position(staffPositionUuid)),
-                "circle membership grants a TEAMLEAD decision rights (D4)");
+        assertTrue(visibility.canDecideFinalOutcome(plainUser, position(staffPositionUuid)),
+                "involvement keeps final outcomes — only the assistant route lacks them");
     }
 
     @Test
@@ -406,27 +439,6 @@ class RecruitmentVisibilityIntegrationTest {
         assertTrue(visibility.canMutatePosition(adminUser, position(staffPositionUuid)));
     }
 
-    /**
-     * Reversed on 2026-08-12. Spec §7.2 had practice-lead access as read-only,
-     * which left the people actually running a practice unable to move a
-     * candidate through it; Hans chose to line the decision gate up with the
-     * landing page's "All open pipelines" ownership rule, and a current
-     * practice lead is one of that rule's four routes. Their <em>own</em>
-     * practice only — the boundary is asserted by
-     * {@link #teamlead_cannotDecideOutsideTheirPractice} — and a former lead
-     * still gets nothing ({@link #currentPracticeLead_decides_formerDoesNot}).
-     */
-    @Test
-    void positionMutation_currentPracticeLeadMayChangeTheirOwnPractices() {
-        RecruitmentPosition theirPractices = position(practicePositionUuid);
-
-        assertTrue(visibility.canReadPosition(currentLeadUser, theirPractices));
-        assertTrue(visibility.canMutatePosition(currentLeadUser, theirPractices),
-                "running the practice now carries the position owner's rights");
-        assertFalse(visibility.canMutatePosition(formerLeadUser, theirPractices),
-                "but only while they are actually leading it");
-    }
-
     @Test
     void positionMutation_partnerTrackKeepsTheCircleManagementRule() {
         addCircleMember(partnerPositionUuid, plainUser); // PARTICIPANT
@@ -435,76 +447,54 @@ class RecruitmentVisibilityIntegrationTest {
         assertTrue(visibility.canMutatePosition(adminUser, partner));
         assertTrue(visibility.canMutatePosition(recruiterUser, partner), "HR may always manage");
         assertFalse(visibility.canMutatePosition(plainUser, partner),
-                "a PARTICIPANT may look but not touch — unchanged by the new gate");
+                "a PARTICIPANT may look but not touch — unchanged by the redesign");
     }
 
-    // ---- "Your pipelines" ownership (landing card, 2026-08-11) -----------------------
-    // Presentation-only: which positions the landing LEADS with. Never widens
-    // or narrows read access.
+    // ---- Circle management gate ----------------------------------------------------
 
     @Test
-    void ownPositions_teamleadGetsTheirLedTeamsPractice_notTheWholeCompany() {
-        // The hop that matters in practice: this user has no practice_lead row
-        // and owns nothing — they simply lead a team, and that team belongs to
-        // a practice. Before this rule their card led with every non-partner
-        // position in the company.
-        Set<String> own = visibility.ownPositionUuids(teamleadUser, allFixturePositions());
+    void circleManagement_ownersRecruitersHrAdmin_andAssistantInPractice() {
+        addCircleMember(partnerPositionUuid, plainUser); // PARTICIPANT
+        RecruitmentPosition partner = position(partnerPositionUuid);
 
-        assertTrue(own.contains(practicePositionUuid), "the led team's practice");
-        assertFalse(own.contains(staffPositionUuid), "someone else's staff position");
-        assertTrue(visibility.canReadPosition(teamleadUser, position(staffPositionUuid)),
-                "read access is untouched — ownership is presentation only");
+        assertTrue(visibility.canManageCircle(adminUser, partner));
+        assertTrue(visibility.canManageCircle(recruiterUser, partner), "HR may always manage");
+        assertFalse(visibility.canManageCircle(plainUser, partner),
+                "a PARTICIPANT can see the position but not widen the circle");
+        assertFalse(visibility.canManageCircle(teamleadUser, partner),
+                "no seat, no partner-circle management — decision 1 does not reach here");
+        assertFalse(visibility.canManageCircle(assistantUser, partner),
+                "the assistant practice route never fires on partner track");
     }
 
+    // ---- "Your pipelines" ownership (landing card) -----------------------------------
+
     @Test
-    void ownPositions_hiringOwnerAndPracticeLeadBothCount() {
+    void ownPositions_namedOwnerAndCircleCount_roleTiersDoNot() {
         assertTrue(visibility.ownPositionUuids(plainUser, allFixturePositions())
                         .contains(staffPositionUuid),
                 "the named hiring owner");
-        assertTrue(visibility.ownPositionUuids(currentLeadUser, allFixturePositions())
-                        .contains(practicePositionUuid),
-                "a registered lead of the position's practice");
-    }
-
-    @Test
-    void ownPositions_formerLeadKeepsNothing() {
-        assertTrue(visibility.ownPositionUuids(formerLeadUser, allFixturePositions()).isEmpty(),
-                "a practice_lead row with enddate set stops counting, like everywhere else");
-    }
-
-    @Test
-    void ownPositions_anInvitedCircleMemberCountsToo() {
-        assertFalse(visibility.ownPositionUuids(plainUser, allFixturePositions())
-                .contains(practicePositionUuid));
+        assertTrue(visibility.ownPositionUuids(recruiterUser, allFixturePositions()).isEmpty(),
+                "HR reads everything and owns nothing");
 
         addCircleMember(practicePositionUuid, plainUser);
-
         assertTrue(visibility.ownPositionUuids(plainUser, allFixturePositions())
                         .contains(practicePositionUuid),
                 "being invited onto a hire puts it on your landing page");
     }
 
-    @Test
-    void ownPositions_areEmptyForSomeoneWithNoInvolvement() {
-        // The case the landing page must not turn into a redirect: a viewer
-        // who reads widely by role but owns nothing gets an empty card, not
-        // an empty page. (recruiterUser is HR — reads everything, owns none.)
-        assertTrue(visibility.ownPositionUuids(recruiterUser, allFixturePositions()).isEmpty());
-        assertTrue(visibility.filterPositions(recruiterUser, null, null, null).stream()
-                        .anyMatch(p -> p.getUuid().equals(practicePositionUuid)),
-                "...while still reading the very position that is not theirs");
-    }
+    // ---- Bulk tagging (decision 15) --------------------------------------------------
 
     @Test
-    void ownPositions_practicesOfLedTeams_isNotThePracticeLeadTable() {
-        // Two different mechanisms, deliberately: teamleadUser leads a TEAM
-        // (teamroles), currentLeadUser leads a PRACTICE (practice_lead).
-        // Neither implies the other.
-        assertTrue(visibility.practicesOfCurrentlyLedTeams(teamleadUser).contains(practiceUuid));
-        assertTrue(visibility.currentlyLedPractices(teamleadUser).isEmpty(),
-                "leading a team does not create a practice_lead row");
-        assertTrue(visibility.practicesOfCurrentlyLedTeams(currentLeadUser).isEmpty(),
-                "leading a practice does not make you a team lead");
+    void bulkTagging_recruitersTeamleadsAndAssistants_notPlainEmployees() {
+        assertTrue(visibility.canBulkTag(adminUser));
+        assertTrue(visibility.canBulkTag(recruiterUser));
+        assertTrue(visibility.canBulkTag(teamleadUser), "decision 15: ● for TEAMLEAD");
+        assertTrue(visibility.canBulkTag(assistantUser),
+                "◐ practice — target scoping happens per candidate in the service");
+        assertFalse(visibility.canBulkTag(plainUser));
+        assertFalse(visibility.canBulkTag(currentLeadUser),
+                "a practice_lead row is not a role (decision 11)");
     }
 
     // ---- Query filters on top of visibility ---------------------------------------
@@ -532,7 +522,11 @@ class RecruitmentVisibilityIntegrationTest {
         em.clear();
         return visibility.filterPositions(viewer, null, null, null).stream()
                 .map(RecruitmentPosition::getUuid)
-                .filter(this::isFixture)
+                .filter(uuid -> uuid.equals(practicePositionUuid)
+                        || uuid.equals(partnerPositionUuid)
+                        || uuid.equals(staffPositionUuid)
+                        || uuid.equals(practiceOnlyPositionUuid)
+                        || uuid.equals(otherPracticePositionUuid))
                 .toList();
     }
 
@@ -550,7 +544,7 @@ class RecruitmentVisibilityIntegrationTest {
         em.clear();
         return RecruitmentPosition.list("uuid in ?1",
                 List.of(practicePositionUuid, partnerPositionUuid, staffPositionUuid,
-                        practiceOnlyPositionUuid));
+                        practiceOnlyPositionUuid, otherPracticePositionUuid));
     }
 
     private void addCircleMember(String positionUuid, String userUuid) {
@@ -576,6 +570,14 @@ class RecruitmentVisibilityIntegrationTest {
                 .setParameter("uuid", uuid)
                 .setParameter("email", uuid + "@example.com")
                 .setParameter("username", uuid)
+                .executeUpdate();
+    }
+
+    /** Decision 3: the assistant's scope is {@code user.practice_uuid} — the membership field. */
+    private void setUserPractice(String userUuid, String practiceUuid) {
+        em.createNativeQuery("UPDATE user SET practice_uuid = :p WHERE uuid = :u")
+                .setParameter("p", practiceUuid)
+                .setParameter("u", userUuid)
                 .executeUpdate();
     }
 

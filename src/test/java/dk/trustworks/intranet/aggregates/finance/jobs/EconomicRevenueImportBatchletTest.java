@@ -156,6 +156,109 @@ class EconomicRevenueImportBatchletTest {
     }
 
     // ------------------------------------------------------------------
+    // Draft-mirror failure escalation (silent for five nights 2026-08-19..23)
+    // ------------------------------------------------------------------
+
+    @Test
+    void draftMirrorFailure_firesDistinctSlackAlert_andBookedImportStillRuns() {
+        when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new RuntimeException("Lock wait timeout exceeded; try restarting transaction"));
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        // Isolation preserved: the booked import must still run and succeed.
+        verify(refreshService, times(1)).refresh(any(LocalDate.class), any(LocalDate.class));
+
+        // Visibility gained: exactly one alert, carrying the distinct signature.
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(slackService, times(1)).sendMessage(eq(CHANNEL), msg.capture(), eq(TOKEN_KEY));
+        assertTrue(msg.getValue().contains("ECONOMIC_DRAFT_MIRROR_FAILED"),
+                "the alert must carry the monitorable signature");
+        assertTrue(msg.getValue().contains("BOOKED_PLUS_DRAFT"),
+                "the alert must state the actual impact surface");
+        assertNotNull(batchlet.lastDraftMirrorAlertSent.get(),
+                "mirror failure must arm the mirror's own rate limiter");
+        assertNull(batchlet.lastAlertSent.get(),
+                "the booked import succeeded — its alert state must stay clear");
+    }
+
+    @Test
+    void draftMirrorFailure_withinRateLimitWindow_suppressed() {
+        batchlet.lastDraftMirrorAlertSent.set(Instant.now().minus(Duration.ofMinutes(5)));
+        when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new RuntimeException("still down"));
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void draftMirrorFailure_afterRateLimitWindow_alertsAgain() {
+        // Nightly cadence (24h) is beyond the 6h window — a broken mirror alerts every night.
+        batchlet.lastDraftMirrorAlertSent.set(Instant.now().minus(Duration.ofHours(24)));
+        when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new RuntimeException("still down"));
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        verify(slackService, times(1)).sendMessage(eq(CHANNEL), anyString(), eq(TOKEN_KEY));
+    }
+
+    @Test
+    void draftMirrorSuccess_clearsMirrorAlertState() {
+        batchlet.lastDraftMirrorAlertSent.set(Instant.now());
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        assertNull(batchlet.lastDraftMirrorAlertSent.get(),
+                "a successful mirror run must clear its rate-limit timestamp");
+    }
+
+    @Test
+    void draftMirrorFailure_doesNotShareRateLimitWithImportAlert() {
+        // A recent BOOKED-import alert must not mask the mirror's alert: the two
+        // failure domains are isolated by design and must alert independently.
+        batchlet.lastAlertSent.set(Instant.now().minus(Duration.ofMinutes(5)));
+        when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new RuntimeException("mirror down"));
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(slackService, times(1)).sendMessage(eq(CHANNEL), msg.capture(), eq(TOKEN_KEY));
+        assertTrue(msg.getValue().contains("ECONOMIC_DRAFT_MIRROR_FAILED"));
+    }
+
+    @Test
+    void draftMirrorAlert_sanitizesTokens() {
+        when(refreshService.refreshDraftMirror(any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new RuntimeException(
+                        "e-conomic rejected X-AgreementGrantToken=abcdefghijklmnopqrstuvwxyz123456"));
+        when(refreshService.refresh(any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(emptyOutcome());
+
+        batchlet.scheduledRun();
+
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(slackService, times(1)).sendMessage(eq(CHANNEL), msg.capture(), eq(TOKEN_KEY));
+        assertFalse(msg.getValue().contains("abcdefghijklmnopqrstuvwxyz123456"),
+                "vendor tokens must never reach Slack");
+        assertTrue(msg.getValue().length() <= EconomicRevenueImportBatchlet.SLACK_MESSAGE_MAX_CHARS,
+                "message must respect the 200-char cap");
+    }
+
+    // ------------------------------------------------------------------
     // Rate-limiting
     // ------------------------------------------------------------------
 

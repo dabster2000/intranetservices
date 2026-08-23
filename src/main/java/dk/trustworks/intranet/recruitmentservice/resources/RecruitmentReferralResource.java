@@ -108,7 +108,7 @@ public class RecruitmentReferralResource {
     public PendingReferralsResponse pending() {
         enforceFlag();
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireInboxTier(actor);
         return referralService.listPending(actor);
     }
 
@@ -124,7 +124,7 @@ public class RecruitmentReferralResource {
         enforceFlag();
         Objects.requireNonNull(request, "request body must not be null");
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireInboxTier(actor);
         ReferralTriageResponse result = referralService.triage(referralUuid, request, actor);
         if (result.candidateUuid() != null) {
             return Response.created(URI.create("/recruitment/candidates/" + result.candidateUuid()))
@@ -137,14 +137,15 @@ public class RecruitmentReferralResource {
     // ---- Helpers --------------------------------------------------------------------
 
     /**
-     * The intake queues are recruiter-tier surfaces (spec §7.2): ADMIN, HR
-     * or RECRUITMENT role — a teamlead's pipeline involvement does not
-     * include the raw referral facts.
+     * The intake queues are Inbox-tier surfaces: ADMIN, HR, RECRUITMENT or
+     * TEAMLEAD. Decisions 12/13 (2026-08-23) opened the queues and their
+     * actions to team leads — widen the queue rather than hide the tab.
+     * The assistant stays out ({@code INBOX_TIER_ROLES}).
      */
-    private void requireRecruiterTier(UUID actor) {
-        if (!visibility.isRecruiterTier(actor.toString())) {
+    private void requireInboxTier(UUID actor) {
+        if (!visibility.isInboxTier(actor.toString())) {
             throw new WebApplicationException(
-                    "Referral triage is reserved for the recruiter tier",
+                    "Referral triage is reserved for the recruitment team and team leads",
                     Response.Status.FORBIDDEN);
         }
     }

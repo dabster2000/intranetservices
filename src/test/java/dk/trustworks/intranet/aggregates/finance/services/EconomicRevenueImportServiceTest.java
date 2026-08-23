@@ -510,6 +510,68 @@ class EconomicRevenueImportServiceTest {
     }
 
     @Test
+    @DisplayName("D2: the mirror's inserts share the wipe's transaction via a private, un-annotated body")
+    void testDraftMirrorInsertBodyIsPrivateAndUnannotated() throws Exception {
+        // ArC weaves interceptors by subclassing, so a this-call to a public
+        // @Transactional method IS intercepted (unlike Spring). replaceDraftMirror's
+        // this-call to the REQUIRES_NEW insertInvoiceAndItem therefore suspended the
+        // wipe's transaction — which still held next-key/gap locks over the
+        // type='PHANTOM' AND economics_posting_status='DRAFT' index range — and the
+        // fresh inner transaction inserted a 'DRAFT' row into exactly that range.
+        // A self-deadlock InnoDB cannot detect (the suspended outer waits on no lock),
+        // guaranteed to die at innodb_lock_wait_timeout=50s: the nightly 02:00:52
+        // LockTimeoutException in production, 2026-08-19..23. The shared insert body
+        // must be private (never intercepted) and carry no @Transactional of its own,
+        // making the same-transaction guarantee structural.
+        java.lang.reflect.Method body = EconomicRevenueImportService.class.getDeclaredMethod(
+                "doInsertInvoiceAndItem",
+                AggregatedVoucher.class, LocalDateTime.class, String.class);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(body.getModifiers()),
+                "doInsertInvoiceAndItem must be private so ArC can never intercept it");
+        assertNull(body.getAnnotation(jakarta.transaction.Transactional.class),
+                "doInsertInvoiceAndItem must not carry @Transactional — it joins the caller's tx");
+    }
+
+    @Test
+    @DisplayName("D2: replaceDraftMirror wipes and inserts through the shared EntityManager wiring")
+    void testReplaceDraftMirrorWipesThenInserts() {
+        service.dryRun = false;
+
+        Query deleteItems = mock(Query.class);
+        when(deleteItems.executeUpdate()).thenReturn(3);
+        when(em.createNativeQuery(contains("DELETE ii FROM invoiceitems"))).thenReturn(deleteItems);
+
+        Query deleteInvoices = mock(Query.class);
+        when(deleteInvoices.executeUpdate()).thenReturn(3);
+        when(em.createNativeQuery(contains("DELETE FROM invoices WHERE type = 'PHANTOM'")))
+                .thenReturn(deleteInvoices);
+
+        Query insertInvoice = mock(Query.class);
+        when(insertInvoice.setParameter(anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(insertInvoice);
+        when(insertInvoice.executeUpdate()).thenReturn(1);
+        when(em.createNativeQuery(contains("INSERT INTO invoices"))).thenReturn(insertInvoice);
+
+        Query insertItem = mock(Query.class);
+        when(insertItem.setParameter(anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(insertItem);
+        when(insertItem.executeUpdate()).thenReturn(1);
+        when(em.createNativeQuery(contains("INSERT INTO invoiceitems"))).thenReturn(insertItem);
+
+        EconomicRevenueImportService.DraftMirrorOutcome outcome =
+                service.replaceDraftMirror(List.of(sampleVoucher(AS_UUID, 9001, 555, "draft")));
+
+        assertEquals(3, outcome.deleted());
+        assertEquals(1, outcome.inserted());
+        assertEquals(new BigDecimal("1000.00"), outcome.totalDkk(),
+                "the -1000.00 credit entry is stored negated");
+        verify(deleteItems, times(1)).executeUpdate();
+        verify(deleteInvoices, times(1)).executeUpdate();
+        verify(insertInvoice, times(1)).executeUpdate();
+        verify(insertItem, times(1)).executeUpdate();
+    }
+
+    @Test
     @DisplayName("D2: a draft entry's customer invoice reference is parsed defensively")
     void testParseCustomerInvoiceNumber() {
         assertEquals(28233, EconomicRevenueImportService.parseCustomerInvoiceNumber("28233"));

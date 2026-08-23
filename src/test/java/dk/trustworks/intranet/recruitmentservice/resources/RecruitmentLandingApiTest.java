@@ -287,14 +287,20 @@ class RecruitmentLandingApiTest {
         assertEquals("INVOLVED", response.jsonPath().getString("viewerShape"));
         List<Map<String, Object>> tasks = tasks(response);
         assertTrue(hasTask(tasks, "IDLE_CANDIDATE", "applicationUuid", idleApplicationUuid),
-                "team lead owns the decision on their team's position");
+                "team lead owns the decision on their team's position — the"
+                        + " led-TEAM route survives the 2026-08-23 redesign"
+                        + " (only the practice hop is gone, decision 11)");
         assertFalse(hasTask(tasks, "PENDING_DECISION", "interviewUuid", interviewUuid),
                 "no decision task before the debrief is ready (scorecard still missing)");
         assertFalse(hasTask(tasks, "REFERRAL_TO_TRIAGE", null, null),
-                "intake queues are recruiter-tier only");
+                "this user holds no role at all — the Inbox is role-gated"
+                        + " (decision 12: recruiter tier + TEAMLEAD)");
         assertFalse(hasTask(tasks, "EMAIL_REVIEW", null, null));
         List<Map<String, Object>> pipelines = pipelines(response);
-        assertTrue(hasPipeline(pipelines, teamPositionUuid));
+        assertFalse(hasPipeline(pipelines, teamPositionUuid),
+                "decision 11: the led team's PRACTICE no longer makes its"
+                        + " positions 'yours' — the OWN card narrows to named"
+                        + " ownership and circle invitations");
         assertFalse(hasPipeline(pipelines, partnerPositionUuid));
     }
 
@@ -393,15 +399,18 @@ class RecruitmentLandingApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void teamlead_ownsThePracticeOfTheTeamTheyLead() {
-        // The hop that makes this useful: this user has no practice_lead row
-        // and owns no position — they lead a TEAM, and that team belongs to
-        // the practice the position is on.
+    void teamlead_ledTeamsPracticeNoLongerFeedsTheOwnCard() {
+        // Reversed by decision 11 (2026-08-23): this user leads a TEAM whose
+        // practice the position is on, and until the redesign that hop made
+        // the position "theirs". Practice hops are gone from recruitment —
+        // the OWN card narrows to named ownership and circle invitations,
+        // while the led-team route still lets them ACT on the position
+        // (asserted by teamlead_involvedShape_ownPositionTasksOnly).
         Response response = landingFor(teamleadUser);
 
         assertEquals("OWN", response.jsonPath().getString("pipelineScope"));
-        assertTrue(hasPipeline(pipelines(response), teamPositionUuid),
-                "their led team's practice is theirs");
+        assertFalse(hasPipeline(pipelines(response), teamPositionUuid),
+                "the led team's practice no longer makes its openings theirs");
     }
 
     @Test
@@ -416,23 +425,23 @@ class RecruitmentLandingApiTest {
     }
 
     /**
-     * Reversed on 2026-08-12 together with the decision gate: a current
-     * practice lead now acts on their practice, so the pipelines they read
-     * also produce decision-owned tasks. Before, the landing page listed a
-     * practice lead's pipelines but never asked them to do anything about
-     * them — which is precisely the gap the practice route closed.
+     * Reversed AGAIN on 2026-08-23 (decision 11), and this time removed: a
+     * {@code practice_lead} row grants no recruitment right at all any more.
+     * The 2026-08-12 grant this test used to pin was the route that let two
+     * people with no recruitment role hold decision rights over eleven open
+     * positions between them — rights now come from roles only, so a
+     * role-less practice lead lands exactly where any other employee does.
      */
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void practiceLead_readsPipelines_andOwnsTheirDecisionTasks() {
+    void practiceLeadRow_grantsNoLandingAtAll() {
         Response response = landingFor(practiceLeadUser);
 
-        assertEquals("INVOLVED", response.jsonPath().getString("viewerShape"));
-        assertTrue(hasPipeline(pipelines(response), teamPositionUuid),
-                "practice lead reads the practice's non-partner pipelines");
-        List<Map<String, Object>> tasks = tasks(response);
-        assertTrue(hasTask(tasks, "IDLE_CANDIDATE", "applicationUuid", idleApplicationUuid),
-                "running the practice now carries its decision tasks too");
+        assertEquals("EMPLOYEE", response.jsonPath().getString("viewerShape"));
+        assertTrue(pipelines(response).isEmpty(),
+                "running a practice reveals no pipelines (decision 11)");
+        assertTrue(tasks(response).isEmpty(),
+                "and produces no decision tasks");
     }
 
     @Test

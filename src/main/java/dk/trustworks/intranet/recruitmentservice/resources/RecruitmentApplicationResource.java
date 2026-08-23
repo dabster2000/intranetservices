@@ -242,7 +242,7 @@ public class RecruitmentApplicationResource {
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
-        requireDecisionRights(position, actor);
+        requireFinalOutcomeRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         boolean isRecruiterOrOwner = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
         RecruitmentApplication updated =
@@ -263,7 +263,7 @@ public class RecruitmentApplicationResource {
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
-        requireDecisionRights(position, actor);
+        requireFinalOutcomeRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         RecruitmentApplication updated = applicationService.withdraw(application, position, candidate,
                 request != null ? request.note() : null, actor);
@@ -282,7 +282,7 @@ public class RecruitmentApplicationResource {
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
-        requireDecisionRights(position, actor);
+        requireFinalOutcomeRights(position, actor);
         RecruitmentCandidate candidate = requireCandidate(UUID.fromString(application.getCandidateUuid()));
         RecruitmentApplication updated =
                 applicationService.returnToPool(application, position, candidate, actor);
@@ -414,15 +414,33 @@ public class RecruitmentApplicationResource {
     }
 
     /**
-     * Pipeline decisions require decision rights on the position (spec
-     * §7.2): admin/recruiter everywhere, teamlead/hiring owner on their own
-     * positions, circle OWNER/RECRUITER on partner track. A practice lead
-     * can read but never decide.
+     * Pipeline decisions require decision rights on the position: since
+     * decision 1 (2026-08-23) that is admin, HR, RECRUITMENT and every
+     * TEAMLEAD on any non-partner position, the ASSISTANT_TEAMLEAD within
+     * their practice, hiring owners and team leads by involvement, and
+     * circle OWNER/RECRUITER on partner track.
      */
     private void requireDecisionRights(RecruitmentPosition position, UUID actor) {
         if (!visibility.canDecideOnApplication(actor.toString(), position)) {
             throw new WebApplicationException(
                     "Only the recruiter, the hiring owner or the position's teamlead may act on this application",
+                    Response.Status.FORBIDDEN);
+        }
+    }
+
+    /**
+     * Final outcomes — reject, withdraw, return-to-pool (and hire, which
+     * lives on the conversion flow) — require
+     * {@code canDecideFinalOutcome} (decision 7, 2026-08-23): everything
+     * {@link #requireDecisionRights} accepts except the assistant practice
+     * route. An assistant moves candidates through stages but never closes
+     * an outcome either way.
+     */
+    private void requireFinalOutcomeRights(RecruitmentPosition position, UUID actor) {
+        if (!visibility.canDecideFinalOutcome(actor.toString(), position)) {
+            throw new WebApplicationException(
+                    "Closing an outcome — hire, reject, withdraw or return-to-pool — is reserved for"
+                            + " the recruiter tier, the hiring owner or the position's teamlead",
                     Response.Status.FORBIDDEN);
         }
     }

@@ -639,19 +639,22 @@ public class RecruitmentLandingService {
         if (raw.isEmpty()) {
             return List.of();
         }
-        // Partner hard filter, applied to events (spec §7.2): CIRCLE events
-        // require a visible position (fail closed on position-less CIRCLE
-        // rows); every event of a partner-track-only candidate drops too.
+        // Row visibility — the whole rule lives in feedRowVisible; the three
+        // inputs resolved here, once. Candidate-level events (created,
+        // pooled, referral facts) carry NO position, so until 2026-08-23
+        // they slipped past the position filter for EVERY viewer — an
+        // assistant (or a role-less hiring owner) saw the entire candidate
+        // intake in "Recent activity". Found by Hans on the assistant's
+        // first staging sign-in.
         Set<String> partnerOnlyCandidates = new HashSet<>(
                 visibility.partnerTrackOnlyCandidateUuids(viewerUuid, null));
+        boolean wholesaleCandidateReader = visibility.isProfileReadTier(viewerUuid);
+        boolean inboxTier = visibility.isInboxTier(viewerUuid);
+        Set<String> reachableCandidates = wholesaleCandidateReader ? Set.of()
+                : candidateUuidsWithApplicationOn(visiblePositionUuids);
         List<RecruitmentEvent> visible = raw.stream()
-                .filter(e -> e.getVisibility() != RecruitmentEventVisibility.CIRCLE
-                        || (e.getPositionUuid() != null
-                        && visiblePositionUuids.contains(e.getPositionUuid())))
-                .filter(e -> e.getPositionUuid() == null
-                        || visiblePositionUuids.contains(e.getPositionUuid()))
-                .filter(e -> e.getCandidateUuid() == null
-                        || !partnerOnlyCandidates.contains(e.getCandidateUuid()))
+                .filter(e -> feedRowVisible(e, wholesaleCandidateReader, inboxTier,
+                        visiblePositionUuids, reachableCandidates, partnerOnlyCandidates))
                 .limit(displayLimits.activityRows())
                 .toList();
 
@@ -680,6 +683,78 @@ public class RecruitmentLandingService {
                         e.getActorType() == null ? null : e.getActorType().name(),
                         e.getActorUuid() == null ? null : actorNames.get(e.getActorUuid())))
                 .toList();
+    }
+
+    /**
+     * May this feed row show to this viewer? One rule, four clauses, in
+     * order (spec §7.2 + the 2026-08-23 access model):
+     * <ol>
+     *   <li><b>Raw intake facts are Inbox-tier only</b> (decisions 8/12): a
+     *       referral's existence belongs to the people who work the queue —
+     *       ADMIN/HR/RECRUITMENT/TEAMLEAD — never to an assistant or an
+     *       involved-only viewer.</li>
+     *   <li><b>CIRCLE events need a visible position</b> — fail closed on a
+     *       position-less CIRCLE row.</li>
+     *   <li><b>Position-carrying events follow the position slice</b> the
+     *       caller passed (the OWN/ALL scope the pipelines card shows).</li>
+     *   <li><b>The partner hard filter</b> drops every event of a
+     *       partner-track-only candidate.</li>
+     *   <li><b>Candidate-level events</b> (no position: created, pooled,
+     *       e-mail) show wholesale only to the profile-read tier
+     *       (ADMIN/HR/RECRUITMENT/TEAMLEAD); everyone else — the assistant,
+     *       a role-less hiring owner — sees them only for candidates with an
+     *       application on one of their visible positions. This clause is
+     *       what stopped "Recent activity" from listing the whole candidate
+     *       intake to every signed-in viewer of the page.</li>
+     * </ol>
+     * Static and side-effect-free so the fast tier pins it
+     * ({@code RecruitmentLandingFeedVisibilityTest}) — the landing API test
+     * is a {@code @QuarkusTest} outside the CI deploy gate.
+     */
+    static boolean feedRowVisible(RecruitmentEvent event,
+                                  boolean wholesaleCandidateReader,
+                                  boolean inboxTier,
+                                  Set<String> visiblePositionUuids,
+                                  Set<String> reachableCandidateUuids,
+                                  Set<String> partnerOnlyCandidateUuids) {
+        if (event.getEventType() == RecruitmentEventType.REFERRAL_SUBMITTED && !inboxTier) {
+            return false;
+        }
+        if (event.getVisibility() == RecruitmentEventVisibility.CIRCLE
+                && (event.getPositionUuid() == null
+                    || !visiblePositionUuids.contains(event.getPositionUuid()))) {
+            return false;
+        }
+        if (event.getPositionUuid() != null
+                && !visiblePositionUuids.contains(event.getPositionUuid())) {
+            return false;
+        }
+        if (event.getCandidateUuid() != null
+                && partnerOnlyCandidateUuids.contains(event.getCandidateUuid())) {
+            return false;
+        }
+        if (event.getPositionUuid() == null && event.getCandidateUuid() != null
+                && !wholesaleCandidateReader
+                && !reachableCandidateUuids.contains(event.getCandidateUuid())) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * The candidates an involvement- or practice-scoped viewer reaches
+     * through their visible positions — every applicant, any application
+     * state (a rejected applicant's pooled/created rows still belong on the
+     * owner's feed). One query; empty when the viewer sees no positions.
+     */
+    private Set<String> candidateUuidsWithApplicationOn(Set<String> positionUuids) {
+        if (positionUuids == null || positionUuids.isEmpty()) {
+            return Set.of();
+        }
+        return RecruitmentApplication.<RecruitmentApplication>list("positionUuid in ?1",
+                        List.copyOf(positionUuids)).stream()
+                .map(RecruitmentApplication::getCandidateUuid)
+                .collect(Collectors.toSet());
     }
 
     // ------------------------------------------------------------------
