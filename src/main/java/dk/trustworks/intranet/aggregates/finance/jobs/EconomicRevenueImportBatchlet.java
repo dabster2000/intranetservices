@@ -34,7 +34,12 @@ import java.util.regex.Pattern;
  *
  * <p>Failure handling mirrors {@link OpexDistributionRefreshBatchlet}: all
  * exceptions are caught (so the scheduler keeps running), routed to JBoss
- * log (Sentry), and a Slack alert is posted with 6h rate-limiting.
+ * log (Sentry), and a Slack alert is posted with 6h rate-limiting. The draft
+ * mirror's failure is isolated from the booked import (a journals-API outage
+ * must never fail the booked numbers) but NOT silent: it logs the distinct
+ * signature {@code ECONOMIC_DRAFT_MIRROR_FAILED} and posts its own
+ * rate-limited Slack alert — it failed invisibly for five consecutive nights
+ * (2026-08-19..23) when the catch only logged.
  *
  * <p>Slack alert sanitization (additional vs. opex): the e-conomic REST
  * client error messages occasionally include the
@@ -77,6 +82,11 @@ public class EconomicRevenueImportBatchlet {
     // null encodes "no alert in flight". Prevents Slack spam across rolling outages.
     final AtomicReference<Instant> lastAlertSent = new AtomicReference<>(null);
 
+    // Separate rate-limit state for the draft mirror: its failures are isolated from
+    // the booked import by design, so its alerts must not share (and mask, or be
+    // masked by) the booked import's rate-limit window.
+    final AtomicReference<Instant> lastDraftMirrorAlertSent = new AtomicReference<>(null);
+
     @Scheduled(cron = "0 0 2 * * ?", identity = "economic-revenue-import")
     public void scheduledRun() {
         try {
@@ -97,8 +107,16 @@ public class EconomicRevenueImportBatchlet {
                 log.infof("e-conomic draft revenue mirror: dryRun=%s deleted=%d inserted=%d totalDkk=%s window=[%s..%s]",
                         draftMirror.dryRun(), draftMirror.deleted(), draftMirror.inserted(),
                         draftMirror.totalDkk(), from, to);
+                lastDraftMirrorAlertSent.set(null);
             } catch (Exception me) {
-                log.errorf(me, "e-conomic draft revenue mirror failed — booked import continues");
+                // Isolation from the booked import is deliberate; invisibility is not. This
+                // failed silently for five consecutive nights (2026-08-19..23) while job
+                // monitoring reported COMPLETED. Distinct signature + own-rate-limited Slack
+                // alert, styled after ECONOMICS_UPLOAD_TERMINAL_FAILED.
+                log.errorf(me, "ECONOMIC_DRAFT_MIRROR_FAILED: e-conomic draft revenue mirror failed — "
+                        + "BOOKED_PLUS_DRAFT revenue is stale/partial until the next successful run; "
+                        + "booked import continues");
+                fireDraftMirrorAlertIfNeeded(me);
             }
 
             DryRunOutcome outcome = refreshService.refresh(from, to);
@@ -149,6 +167,30 @@ public class EconomicRevenueImportBatchlet {
                 }
             });
         }
+    }
+
+    /**
+     * Draft-mirror failure alert: same channel, sanitizer and 6h rate-limit shape as
+     * {@link #fireSlackAlertIfNeeded}, but tracked by {@link #lastDraftMirrorAlertSent}
+     * so the two failure domains alert independently. With the nightly cadence the 6h
+     * window means one alert per broken night — noisy enough to be seen, quiet enough
+     * not to spam.
+     */
+    void fireDraftMirrorAlertIfNeeded(Exception e) {
+        Instant now = Instant.now();
+        Instant previous = lastDraftMirrorAlertSent.get();
+        if (previous != null
+                && Duration.between(previous, now).compareTo(ALERT_REPEAT_INTERVAL) < 0) {
+            log.debugf("draft mirror failure still active — suppressing duplicate Slack alert (last sent %s)", previous);
+            return;
+        }
+        // Signature and impact lead; the unbounded error text sits last so the
+        // 200-char cap truncates it, never the parts monitoring and humans key on.
+        String rawMsg = ":rotating_light: *ECONOMIC_DRAFT_MIRROR_FAILED*\n"
+                + "• impact: BOOKED_PLUS_DRAFT revenue stale — draft accruals missing until the next good 02:00 UTC run. Booked revenue unaffected.\n"
+                + "• error: `" + e.getClass().getSimpleName() + ": " + e.getMessage() + "`";
+        slackService.sendMessage(opsAlertChannel, sanitizeSlackMessage(rawMsg), "mother");
+        lastDraftMirrorAlertSent.set(now);
     }
 
     void fireSlackAlertIfNeeded(Exception e) {

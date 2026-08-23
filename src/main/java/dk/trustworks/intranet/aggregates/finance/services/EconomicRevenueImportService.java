@@ -484,12 +484,23 @@ public class EconomicRevenueImportService {
      * phase 1, so the locks taken here are held for milliseconds, not for the length
      * of three HTTP round-trips.
      *
-     * <p>Atomic on purpose: the wipe and every insert share this transaction
-     * ({@code insertInvoiceAndItem}'s REQUIRES_NEW does not engage on a self-call), so
-     * the mirror either fully reflects e-conomic's current drafts or is left exactly as
+     * <p>Atomic on purpose: the wipe and every insert share this transaction, so the
+     * mirror either fully reflects e-conomic's current drafts or is left exactly as
      * it was. No per-voucher catch — once a statement fails the transaction is
      * rollback-only, so continuing would count inserts that can never commit and report
      * a healthy run over a mirror that never changed.
+     *
+     * <p><b>The inserts MUST go through the private {@link #doInsertInvoiceAndItem},
+     * never the public REQUIRES_NEW overloads.</b> Quarkus ArC weaves interceptors by
+     * subclassing, so — unlike Spring — a plain {@code this}-call to a public
+     * {@code @Transactional} method IS intercepted. When this method called the
+     * REQUIRES_NEW overload directly, the wipe's transaction was suspended still
+     * holding its next-key/gap locks over the {@code type='PHANTOM' AND
+     * economics_posting_status='DRAFT'} index range, and the fresh inner transaction
+     * then inserted a row into exactly that range: a self-deadlock InnoDB cannot see
+     * (the outer holds locks but waits on no lock), guaranteed to die at
+     * {@code innodb_lock_wait_timeout} (50s). That is why the mirror failed at
+     * 02:00:52 every night 2026-08-19..23 in production.
      *
      * <p>The constraint violation is rethrown UNCHECKED deliberately: JTA rolls back on
      * unchecked exceptions only, so letting the checked one propagate would COMMIT a
@@ -504,7 +515,7 @@ public class EconomicRevenueImportService {
 
         for (AggregatedVoucher v : survivors) {
             try {
-                insertInvoiceAndItem(v, now, PostingStatus.DRAFT.name());
+                doInsertInvoiceAndItem(v, now, PostingStatus.DRAFT.name());
             } catch (SQLIntegrityConstraintViolationException collision) {
                 throw new IllegalStateException(String.format(
                         "draft mirror insert collided with an existing invoice "
@@ -1000,7 +1011,7 @@ public class EconomicRevenueImportService {
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void insertInvoiceAndItem(AggregatedVoucher v, LocalDateTime refreshedAt)
             throws SQLIntegrityConstraintViolationException {
-        insertInvoiceAndItem(v, refreshedAt, PostingStatus.BOOKED.name());
+        doInsertInvoiceAndItem(v, refreshedAt, PostingStatus.BOOKED.name());
     }
 
     /**
@@ -1011,6 +1022,23 @@ public class EconomicRevenueImportService {
      */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void insertInvoiceAndItem(AggregatedVoucher v, LocalDateTime refreshedAt, String postingStatus)
+            throws SQLIntegrityConstraintViolationException {
+        doInsertInvoiceAndItem(v, refreshedAt, postingStatus);
+    }
+
+    /**
+     * The insert body, deliberately private and un-annotated so it always joins the
+     * caller's transaction. The booked path reaches it through the REQUIRES_NEW
+     * overloads above (per-voucher isolation — one failing voucher must not roll back
+     * the batch); the draft mirror ({@link #replaceDraftMirror}) calls it directly so
+     * the inserts share the wipe's transaction. ArC intercepts even {@code this}-calls
+     * to public {@code @Transactional} methods (subclass-woven interceptors), so a
+     * REQUIRES_NEW self-call from the mirror suspended the wipe's lock-holding
+     * transaction and deadlocked against it — nightly 02:00:52 1205s in production,
+     * 2026-08-19..23. Private methods are never intercepted, which makes the same-tx
+     * guarantee structural rather than conventional.
+     */
+    private void doInsertInvoiceAndItem(AggregatedVoucher v, LocalDateTime refreshedAt, String postingStatus)
             throws SQLIntegrityConstraintViolationException {
         String invoiceUuid = UUID.randomUUID().toString();
         String itemUuid = UUID.randomUUID().toString();
