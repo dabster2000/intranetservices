@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
@@ -94,6 +95,19 @@ class DossierCreateGuardsTest {
 
         assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), e.getResponse().getStatus());
         assertEquals("TEMPLATE_INACTIVE", errorCodeOf(e));
+    }
+
+    @Test
+    void anEmployeeSigningTemplate_is400_TEMPLATE_NOT_RECRUITMENT() {
+        DocumentTemplateEntity employeeTemplate = template(TEMPLATE, true);
+        employeeTemplate.setTemplateUsage(TemplateUsage.EMPLOYEE_SIGNING);
+
+        WebApplicationException e = assertThrows(WebApplicationException.class,
+                () -> DossierService.resolveReopenTarget(
+                        TEMPLATE, employeeTemplate, activeCandidate(), List.of()));
+
+        assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), e.getResponse().getStatus());
+        assertEquals("TEMPLATE_NOT_RECRUITMENT", errorCodeOf(e));
     }
 
     @Test

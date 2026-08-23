@@ -12,6 +12,7 @@ import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity;
 import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
@@ -86,6 +87,7 @@ public class TemplateService {
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
+        entity.setTemplateUsage(dto.getTemplateUsage());
         entity.setSharepointType(dto.getSharepointType() != null ? dto.getSharepointType() : SharePointLocationType.EMPLOYEE);
         entity.setActive(dto.isActive());
         entity.setCreatedBy(currentUserUuid);
@@ -153,6 +155,7 @@ public class TemplateService {
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
+        entity.setTemplateUsage(dto.getTemplateUsage());
         if (dto.getSharepointType() != null) {
             entity.setSharepointType(dto.getSharepointType());
         }
@@ -262,6 +265,9 @@ public class TemplateService {
         if (dto.getCategory() == null) {
             throw new WebApplicationException("Template category is required", 400);
         }
+        if (dto.getTemplateUsage() == null) {
+            throw new WebApplicationException("Template usage is required", 400);
+        }
         if (dto.getDocuments() == null || dto.getDocuments().isEmpty()) {
             throw new WebApplicationException("At least one document is required", 400);
         }
@@ -296,6 +302,9 @@ public class TemplateService {
                 .name(entity.getName())
                 .description(entity.getDescription())
                 .category(entity.getCategory())
+                .templateUsage(entity.getTemplateUsage() == null
+                        ? TemplateUsage.RECRUITMENT_DOSSIER
+                        : entity.getTemplateUsage())
                 .sharepointType(entity.getSharepointType())
                 .active(entity.isActive())
                 .createdAt(entity.getCreatedAt())

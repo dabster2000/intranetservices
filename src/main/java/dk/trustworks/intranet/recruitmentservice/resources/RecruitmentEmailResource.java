@@ -205,7 +205,7 @@ public class RecruitmentEmailResource {
         // so a legacy PLAIN template is up-converted here rather than forcing
         // the dialog to carry two editing modes for an identical result.
         RecruitmentEmailRenderer.Rendered rendered = emailService.renderAsHtml(template, candidate,
-                positionForContext(candidate, request.applicationUuid()));
+                positionForContext(candidate, request.applicationUuid(), actor));
         return new RenderedEmailResponse(rendered.subject(), rendered.body(),
                 RecruitmentEmailBodyFormat.HTML.name(),
                 List.copyOf(rendered.unresolvedFields()));
@@ -224,7 +224,8 @@ public class RecruitmentEmailResource {
         requireSubjectAndBody(request.subject(), request.body(), sendFormat);
         requireNoUnresolvedLinks(request.subject(), request.body(), sendFormat);
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
-        String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
+        String applicationUuid = visibleApplicationOrNull(candidate,
+                request.applicationUuid(), actor);
         RecruitmentEmailService.RecruitmentPendingEmailResult result = emailService.sendManual(
                 candidate.getUuid(), blankToNull(request.templateUuid()), applicationUuid,
                 request.subject().trim(), request.body(), sendFormat, actor.toString(),
@@ -248,7 +249,7 @@ public class RecruitmentEmailResource {
         UUID actor = currentActor();
         requireRecruiterTier(actor);
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
-        String ownApplication = ownApplicationOrNull(candidate, applicationUuid);
+        String ownApplication = visibleApplicationOrNull(candidate, applicationUuid, actor);
         RecruitmentEmailTemplate template = blankToNull(templateUuid) == null ? null
                 : RecruitmentEmailTemplate.findById(templateUuid);
 
@@ -350,7 +351,8 @@ public class RecruitmentEmailResource {
         if (template == null) {
             throw new NotFoundException("Resource not found");
         }
-        String applicationUuid = ownApplicationOrNull(candidate, request.applicationUuid());
+        String applicationUuid = visibleApplicationOrNull(candidate,
+                request.applicationUuid(), actor);
         RecruitmentApplication application = applicationUuid == null ? null
                 : RecruitmentApplication.findById(applicationUuid);
         try {
@@ -385,19 +387,17 @@ public class RecruitmentEmailResource {
         enforceFlag();
         UUID actor = currentActor();
         requireRecruiterTier(actor);
-        List<PendingEmailResponse> rows = emailService.listPending().stream()
-                .map(pending -> {
-                    RecruitmentCandidate candidate =
-                            RecruitmentCandidate.findById(pending.getCandidateUuid());
-                    // Partner-circle hard filter (P8 read matrix): a queue
-                    // row must never reveal a candidate the viewer cannot
-                    // read.
-                    if (candidate == null
-                            || !visibility.canReadCandidateProfile(actor.toString(), candidate)) {
+        List<RecruitmentPendingEmail> pending = emailService.listPending();
+        PendingVisibility pendingVisibility = pendingVisibility(pending, actor);
+        List<PendingEmailResponse> rows = pending.stream()
+                .map(row -> {
+                    RecruitmentCandidate candidate = pendingVisibility.candidates()
+                            .get(row.getCandidateUuid());
+                    if (!pendingVisibility.canRead(row, candidate)) {
                         return null;
                     }
-                    return PendingEmailResponse.of(pending, candidate,
-                            snapshotCopies(pending, candidate));
+                    return PendingEmailResponse.of(row, candidate,
+                            snapshotCopies(row, candidate));
                 })
                 .filter(Objects::nonNull)
                 .toList();
@@ -476,6 +476,7 @@ public class RecruitmentEmailResource {
             return List.of();
         }
         return copyResolver.resolveExplicit(candidate,
+                        pending.getApplicationUuid(),
                         RecruitmentEmailCopyResolver.splitUserUuids(pending.getCopyUserUuids()))
                 .stream()
                 .map(recipient -> CopyRecipientResponse.of(recipient, true))
@@ -572,38 +573,134 @@ public class RecruitmentEmailResource {
         return candidate;
     }
 
-    /** Approve/dismiss re-check the row's candidate through the same read matrix. */
+    /** Approve/dismiss re-check both candidate and application route. */
     private RecruitmentPendingEmail requireVisiblePendingRow(UUID pendingUuid, UUID actor) {
         RecruitmentPendingEmail pending = RecruitmentPendingEmail.findById(pendingUuid.toString());
         if (pending == null) {
             throw new NotFoundException("Resource not found");
         }
-        requireVisibleCandidate(UUID.fromString(pending.getCandidateUuid()), actor);
+        PendingVisibility pendingVisibility = pendingVisibility(List.of(pending), actor);
+        RecruitmentCandidate candidate = pendingVisibility.candidates()
+                .get(pending.getCandidateUuid());
+        if (!pendingVisibility.canRead(pending, candidate)) {
+            throw new NotFoundException("Resource not found");
+        }
         return pending;
     }
 
-    /** The application context must belong to the addressed candidate. */
-    private String ownApplicationOrNull(RecruitmentCandidate candidate, String applicationUuid) {
+    /**
+     * Application context is an object boundary of its own. A recruiter may
+     * read a mixed candidate through an ordinary application while a PARTNER
+     * application on the same candidate remains circle-confidential. Treat an
+     * unknown, mismatched or unreadable application identically so the compose
+     * routes cannot become a hidden-position oracle.
+     */
+    private String visibleApplicationOrNull(RecruitmentCandidate candidate,
+                                            String applicationUuid,
+                                            UUID actor) {
         String value = blankToNull(applicationUuid);
         if (value == null) {
             return null;
         }
         RecruitmentApplication application = RecruitmentApplication.findById(value);
-        if (application == null || !application.getCandidateUuid().equals(candidate.getUuid())) {
-            throw badRequest("applicationUuid does not belong to this candidate");
+        RecruitmentPosition position = application == null ? null
+                : RecruitmentPosition.findById(application.getPositionUuid());
+        if (application == null
+                || !application.getCandidateUuid().equals(candidate.getUuid())
+                || position == null
+                || !visibility.canReadPosition(actor.toString(), position)) {
+            throw new NotFoundException("Resource not found");
         }
         return value;
     }
 
     private RecruitmentPosition positionForContext(RecruitmentCandidate candidate,
-                                                   String applicationUuid) {
-        String value = ownApplicationOrNull(candidate, applicationUuid);
+                                                   String applicationUuid,
+                                                   UUID actor) {
+        String value = visibleApplicationOrNull(candidate, applicationUuid, actor);
         if (value == null) {
             return null;
         }
         RecruitmentApplication application = RecruitmentApplication.findById(value);
         return application == null ? null
                 : RecruitmentPosition.findById(application.getPositionUuid());
+    }
+
+    /**
+     * Batch the pending queue's soft references once. Application-less rows
+     * remain candidate-scoped; application-bound rows require that exact
+     * position to be readable and that the soft reference still belongs to
+     * the row's candidate.
+     */
+    private PendingVisibility pendingVisibility(List<RecruitmentPendingEmail> rows, UUID actor) {
+        List<String> candidateUuids = rows.stream()
+                .map(RecruitmentPendingEmail::getCandidateUuid)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<String, RecruitmentCandidate> candidates = candidateUuids.isEmpty() ? Map.of()
+                : RecruitmentCandidate.<RecruitmentCandidate>list("uuid in ?1", candidateUuids)
+                        .stream().collect(Collectors.toMap(
+                                RecruitmentCandidate::getUuid, candidate -> candidate));
+
+        List<String> applicationUuids = rows.stream()
+                .map(RecruitmentPendingEmail::getApplicationUuid)
+                .filter(Objects::nonNull)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+        Map<String, RecruitmentApplication> applications = applicationUuids.isEmpty() ? Map.of()
+                : RecruitmentApplication.<RecruitmentApplication>list(
+                                "uuid in ?1", applicationUuids)
+                        .stream().collect(Collectors.toMap(
+                                RecruitmentApplication::getUuid, application -> application));
+
+        List<String> positionUuids = applications.values().stream()
+                .map(RecruitmentApplication::getPositionUuid)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        List<RecruitmentPosition> positions = positionUuids.isEmpty() ? List.of()
+                : RecruitmentPosition.list("uuid in ?1", positionUuids);
+        Set<String> readablePositions = visibility.readablePositionUuids(
+                actor.toString(), positions);
+        Set<String> partnerOnly = new LinkedHashSet<>(
+                visibility.partnerTrackOnlyCandidateUuids(actor.toString(), null));
+        boolean admin = visibility.rolesOf(actor.toString()).contains("ADMIN");
+        boolean mayReadHiredFiles = admin
+                || visibility.canReadHiredCandidateFiles(actor.toString());
+        Set<String> readableCandidates = candidates.values().stream()
+                .filter(candidate -> admin
+                        || (candidate.getStatus()
+                                        != dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus.HIRED
+                                || mayReadHiredFiles)
+                        && !partnerOnly.contains(candidate.getUuid()))
+                .map(RecruitmentCandidate::getUuid)
+                .collect(Collectors.toSet());
+        return new PendingVisibility(candidates, applications,
+                readableCandidates, readablePositions);
+    }
+
+    private record PendingVisibility(
+            Map<String, RecruitmentCandidate> candidates,
+            Map<String, RecruitmentApplication> applications,
+            Set<String> readableCandidates,
+            Set<String> readablePositions) {
+
+        private boolean canRead(RecruitmentPendingEmail pending,
+                                RecruitmentCandidate candidate) {
+            if (candidate == null || !readableCandidates.contains(candidate.getUuid())) {
+                return false;
+            }
+            String applicationUuid = blankToNull(pending.getApplicationUuid());
+            if (applicationUuid == null) {
+                return true;
+            }
+            RecruitmentApplication application = applications.get(applicationUuid);
+            return application != null
+                    && pending.getCandidateUuid().equals(application.getCandidateUuid())
+                    && readablePositions.contains(application.getPositionUuid());
+        }
     }
 
     /** Explicit input caps — {@code @Valid} is inert in this repo (§P4.9). */

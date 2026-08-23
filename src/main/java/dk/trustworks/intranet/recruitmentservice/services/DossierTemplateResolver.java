@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -85,6 +86,10 @@ public class DossierTemplateResolver {
         if (!template.isActive()) {
             throw templateError("TEMPLATE_INACTIVE",
                     "Template " + template.getName() + " is no longer active — pick a current one.");
+        }
+        if (template.getTemplateUsage() != TemplateUsage.RECRUITMENT_DOSSIER) {
+            throw templateError("TEMPLATE_NOT_RECRUITMENT",
+                    "Template " + template.getName() + " is not classified for recruitment dossiers.");
         }
         return template;
     }

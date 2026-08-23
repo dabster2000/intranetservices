@@ -44,7 +44,8 @@ class RecruitmentCandidateTimelineApiTest {
 
     private String recruiter;      // HR — recruiter tier + comp tier
     private String teamlead;       // LEADER of teamA — involved, comp tier, private-note author
-    private String hiringOwner;    // named hiring owner — involved, comp tier, NOT note tier
+    private String hiringOwner;    // named TEAMLEAD owner — dossier reader, NOT note tier
+    private String assistant;      // practice-scoped assistant — never a dossier reader
     private String practiceLead;   // current practice lead — involved, NOT comp tier
     private String circleHr;       // HR + circle member on the partner position
     private String adminUser;
@@ -72,6 +73,7 @@ class RecruitmentCandidateTimelineApiTest {
         recruiter = UUID.randomUUID().toString();
         teamlead = UUID.randomUUID().toString();
         hiringOwner = UUID.randomUUID().toString();
+        assistant = UUID.randomUUID().toString();
         practiceLead = UUID.randomUUID().toString();
         circleHr = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
@@ -84,13 +86,20 @@ class RecruitmentCandidateTimelineApiTest {
             P8ProfileFixtures.insertUser(em, recruiter, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, teamlead, "Tim", "Teamlead");
             P8ProfileFixtures.insertUser(em, hiringOwner, "Owen", "Owner");
+            P8ProfileFixtures.insertUser(em, assistant, "Rikke", "Assistant");
             P8ProfileFixtures.insertUser(em, practiceLead, "Pia", "Lead");
             P8ProfileFixtures.insertUser(em, circleHr, "Cirkel", "Recruiter");
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
             P8ProfileFixtures.insertRole(em, recruiter, "HR");
+            P8ProfileFixtures.insertRole(em, hiringOwner, "TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
+            em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
+                    .setParameter("practice", practiceUuid)
+                    .setParameter("user", assistant)
+                    .executeUpdate();
             P8ProfileFixtures.insertPracticeLead(em, practiceLead, practiceUuid);
             P8ProfileFixtures.insertTeamLeader(em, teamlead, teamA);
 
@@ -147,10 +156,20 @@ class RecruitmentCandidateTimelineApiTest {
     @AfterEach
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("""
+                            DELETE FROM candidate_dossier_revisions WHERE dossier_uuid IN
+                            (SELECT uuid FROM candidate_dossiers WHERE candidate_uuid = :candidate)
+                            """)
+                    .setParameter("candidate", candidate)
+                    .executeUpdate();
+            em.createNativeQuery("DELETE FROM candidate_dossiers WHERE candidate_uuid = :candidate")
+                    .setParameter("candidate", candidate)
+                    .executeUpdate();
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(candidate),
                     List.of(journeyPosition, partnerPosition),
-                    List.of(recruiter, teamlead, hiringOwner, practiceLead, circleHr, adminUser),
+                    List.of(recruiter, teamlead, hiringOwner, assistant,
+                            practiceLead, circleHr, adminUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousFlag);
         });
@@ -211,6 +230,30 @@ class RecruitmentCandidateTimelineApiTest {
                 .body("events.seq", Matchers.not(Matchers.hasItem((int) seqCircleEvent)));
     }
 
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void unreadablePositionRouteFailsClosed_evenWhenProducerStampedNormal() {
+        long staleNormalPartnerEvent = QuarkusTransaction.requiringNew().call(() ->
+                P8ProfileFixtures.insertEvent(em, "APPLICATION_STAGE_CHANGED", candidate,
+                        UUID.randomUUID().toString(), partnerPosition, "USER", circleHr,
+                        "NORMAL", "{\"from\":\"SCREENING\",\"to\":\"INTERVIEW_1\"}",
+                        null));
+
+        for (String outsideCircle : List.of(recruiter, assistant)) {
+            given().header("X-Requested-By", outsideCircle)
+                    .when().get(EVENTS, candidate)
+                    .then().statusCode(200)
+                    .body("events.seq", Matchers.not(
+                            Matchers.hasItem((int) staleNormalPartnerEvent)));
+        }
+        for (String allowed : List.of(circleHr, adminUser)) {
+            given().header("X-Requested-By", allowed)
+                    .when().get(EVENTS, candidate)
+                    .then().statusCode(200)
+                    .body("events.seq", Matchers.hasItem((int) staleNormalPartnerEvent));
+        }
+    }
+
     // ---- Private notes -------------------------------------------------------------
 
     @Test
@@ -238,18 +281,25 @@ class RecruitmentCandidateTimelineApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void salaryNote_piiOnlyForCompTier_othersGetRedactedEvent() {
-        // Practice lead: profile access, NOT comp tier — event present,
-        // pii withheld, piiRedacted flagged.
-        Response leadResponse = given().header("X-Requested-By", practiceLead)
+    void salaryNote_visibleWithPiiForCompTier_practiceLeadHasNoProfileAccess() {
+        // Decision 11 removed the practice-lead route entirely; the resource
+        // fails closed before event-level salary redaction is relevant.
+        given().header("X-Requested-By", practiceLead)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(404);
+
+        // Assistant in the candidate position's practice is explicitly in the
+        // pre-offer compensation tier and sees/registers salary expectations.
+        Response assistantResponse = given().header("X-Requested-By", assistant)
                 .when().get(EVENTS, candidate);
-        leadResponse.then().statusCode(200);
-        int leadIndex = leadResponse.jsonPath().getList("events.seq", Long.class)
+        assistantResponse.then().statusCode(200)
+                .body("compTier", Matchers.equalTo(true));
+        int assistantIndex = assistantResponse.jsonPath().getList("events.seq", Long.class)
                 .indexOf(seqSalaryNote);
-        assertTrue(leadIndex >= 0, "salary note must stay on the timeline");
-        assertNull(leadResponse.jsonPath().get("events[" + leadIndex + "].pii"));
-        assertEquals(Boolean.TRUE,
-                leadResponse.jsonPath().get("events[" + leadIndex + "].piiRedacted"));
+        assertTrue(assistantIndex >= 0, "salary note must stay on the assistant timeline");
+        assertEquals("PII_SENTINEL 55.000 om måneden",
+                assistantResponse.jsonPath().getString(
+                        "events[" + assistantIndex + "].pii.text"));
 
         // Recruiter (HR): comp tier — pii present.
         given().header("X-Requested-By", recruiter)
@@ -295,12 +345,15 @@ class RecruitmentCandidateTimelineApiTest {
                 .then().statusCode(200)
                 .body("compTier", Matchers.equalTo(true));
 
-        // Practice lead reads the profile but not the amount — the same
-        // verdict the salary event's piiRedacted carries above.
-        given().header("X-Requested-By", practiceLead)
+        given().header("X-Requested-By", assistant)
                 .when().get(EVENTS, candidate)
                 .then().statusCode(200)
-                .body("compTier", Matchers.equalTo(false));
+                .body("compTier", Matchers.equalTo(true));
+
+        // Practice leadership alone is no longer recruitment access.
+        given().header("X-Requested-By", practiceLead)
+                .when().get(EVENTS, candidate)
+                .then().statusCode(404);
     }
 
     /**
@@ -323,9 +376,193 @@ class RecruitmentCandidateTimelineApiTest {
         given().header("X-Requested-By", practiceLead)
                 .queryParam("beforeSeq", 1)
                 .when().get(EVENTS, candidate)
+                .then().statusCode(404);
+
+        given().header("X-Requested-By", assistant)
+                .queryParam("beforeSeq", 1)
+                .when().get(EVENTS, candidate)
                 .then().statusCode(200)
                 .body("events", Matchers.hasSize(0))
-                .body("compTier", Matchers.equalTo(false));
+                .body("compTier", Matchers.equalTo(true));
+    }
+
+    // ---- Offer-dossier boundary ---------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void dossierTimelineFacts_hiddenFromAssistant_visibleToEligibleTeamleadAndHr() {
+        DossierBoundaryEvents inserted = insertDossierBoundaryEvents();
+
+        Response assistantResponse = given().header("X-Requested-By", assistant)
+                .when().get(EVENTS, candidate);
+        assistantResponse.then().statusCode(200);
+        List<Long> assistantSeqs = assistantResponse.jsonPath().getList("events.seq", Long.class);
+
+        assertFalse(assistantSeqs.contains(inserted.dossierCreated()));
+        assertFalse(assistantSeqs.contains(inserted.signingCompleted()));
+        assertFalse(assistantSeqs.contains(inserted.contractDocument()));
+        assertFalse(assistantSeqs.contains(inserted.contractKindChanged()));
+        assertFalse(assistantSeqs.contains(inserted.flowLinkedDocument()));
+        assertFalse(assistantSeqs.contains(inserted.dossierOnlyUpdate()));
+        assertFalse(assistantSeqs.contains(inserted.recordCheckDrawn()));
+        assertFalse(assistantSeqs.contains(inserted.recordCheckOutcome()));
+
+        int offerIndex = assistantSeqs.indexOf(inserted.offerOpened());
+        assertTrue(offerIndex >= 0, "OFFER_OPENED remains ordinary stage progress");
+        assertEquals("INTERVIEW_1",
+                assistantResponse.jsonPath().getString(
+                        "events[" + offerIndex + "].payload.from_stage"));
+        assertNull(assistantResponse.jsonPath().get(
+                "events[" + offerIndex + "].payload.dossier_linked"));
+        assertNull(assistantResponse.jsonPath().get(
+                "events[" + offerIndex + "].payload.dossier_uuid"));
+
+        int mixedIndex = assistantSeqs.indexOf(inserted.mixedUpdate());
+        assertTrue(mixedIndex >= 0, "ordinary fields keep a mixed update visible");
+        assertEquals(List.of("phone"), assistantResponse.jsonPath().getList(
+                "events[" + mixedIndex + "].payload.changed_fields", String.class));
+        assertNull(assistantResponse.jsonPath().get(
+                "events[" + mixedIndex + "].payload.target_company_uuid"));
+        assertNull(assistantResponse.jsonPath().get(
+                "events[" + mixedIndex + "].pii.notes"));
+        assertEquals("+45 12345678", assistantResponse.jsonPath().getString(
+                "events[" + mixedIndex + "].pii.phone.after"));
+
+        // The restricted reclassification is newer than the original generic
+        // upload. Paging below it must not make that older filename reappear.
+        Response olderAssistantPage = given().header("X-Requested-By", assistant)
+                .queryParam("beforeSeq", inserted.contractKindChanged())
+                .when().get(EVENTS, candidate);
+        olderAssistantPage.then().statusCode(200);
+        assertFalse(olderAssistantPage.jsonPath().getList("events.seq", Long.class)
+                .contains(inserted.contractDocument()));
+
+        assertDossierReaderSeesFullTimeline(hiringOwner, inserted);
+        assertDossierReaderSeesFullTimeline(recruiter, inserted);
+    }
+
+    private void assertDossierReaderSeesFullTimeline(String viewer,
+                                                      DossierBoundaryEvents inserted) {
+        Response response = given().header("X-Requested-By", viewer)
+                .when().get(EVENTS, candidate);
+        response.then().statusCode(200);
+        List<Long> seqs = response.jsonPath().getList("events.seq", Long.class);
+        assertTrue(seqs.containsAll(List.of(
+                inserted.dossierCreated(), inserted.offerOpened(),
+                inserted.signingCompleted(), inserted.contractDocument(),
+                inserted.contractKindChanged(), inserted.flowLinkedDocument(),
+                inserted.dossierOnlyUpdate(), inserted.mixedUpdate(),
+                inserted.recordCheckDrawn(), inserted.recordCheckOutcome())));
+
+        int dossierIndex = seqs.indexOf(inserted.dossierCreated());
+        assertEquals("dossier-secret", response.jsonPath().getString(
+                "events[" + dossierIndex + "].payload.dossier_uuid"));
+        int offerIndex = seqs.indexOf(inserted.offerOpened());
+        assertEquals(Boolean.TRUE, response.jsonPath().get(
+                "events[" + offerIndex + "].payload.dossier_linked"));
+        int mixedIndex = seqs.indexOf(inserted.mixedUpdate());
+        assertTrue(response.jsonPath().getList(
+                "events[" + mixedIndex + "].payload.changed_fields", String.class)
+                .containsAll(List.of("phone", "notes", "target_company_uuid")));
+        assertEquals("Offer context", response.jsonPath().getString(
+                "events[" + mixedIndex + "].pii.notes.after"));
+    }
+
+    private DossierBoundaryEvents insertDossierBoundaryEvents() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            long dossierCreated = P8ProfileFixtures.insertEvent(em, "DOSSIER_CREATED", candidate,
+                    applicationUuid, journeyPosition, "USER", recruiter, "NORMAL",
+                    "{\"template_uuid\":\"template-secret\","
+                            + "\"dossier_uuid\":\"dossier-secret\",\"reopened\":false}",
+                    null);
+            long offerOpened = P8ProfileFixtures.insertEvent(em, "OFFER_OPENED", candidate,
+                    applicationUuid, journeyPosition, "USER", assistant, "NORMAL",
+                    "{\"from_stage\":\"INTERVIEW_1\",\"dossier_linked\":true,"
+                            + "\"dossier_uuid\":\"dossier-secret\"}", null);
+            long signingCompleted = P8ProfileFixtures.insertEvent(em, "SIGNING_COMPLETED", candidate,
+                    applicationUuid, journeyPosition, "SYSTEM", null, "NORMAL",
+                    "{\"case_key\":\"case-secret\",\"dossier_uuid\":\"dossier-secret\"}",
+                    null);
+            long contractDocument = P8ProfileFixtures.insertEvent(em, "DOCUMENT_UPLOADED", candidate,
+                    null, null, "SYSTEM", null, "NORMAL",
+                    "{\"file_uuid\":\"file-secret\",\"kind\":\"OTHER\","
+                            + "\"origin\":\"manual\",\"content_type\":\"application/pdf\"}",
+                    "{\"filename\":\"Jonna salary agreement.pdf\"}");
+            long contractKindChanged = P8ProfileFixtures.insertEvent(em,
+                    "DOCUMENT_KIND_CHANGED", candidate, null, null,
+                    "USER", recruiter, "NORMAL",
+                    "{\"file_uuid\":\"file-secret\",\"kind\":\"APPENDIX\","
+                            + "\"previous_kind\":\"OTHER\"}", null);
+            long flowLinkedDocument = P8ProfileFixtures.insertEvent(em,
+                    "DOCUMENT_UPLOADED", candidate, null, null,
+                    "SYSTEM", null, "NORMAL",
+                    "{\"file_uuid\":\"flow-file-secret\",\"kind\":\"OTHER\","
+                            + "\"origin\":\"manual\",\"content_type\":\"application/pdf\"}",
+                    "{\"filename\":\"Legacy offer.pdf\"}");
+            String dossierUuid = UUID.randomUUID().toString();
+            em.createNativeQuery("""
+                            INSERT INTO candidate_dossiers
+                                (uuid, candidate_uuid, template_uuid, status, created_at, updated_at)
+                            VALUES (:uuid, :candidate, :template, 'OPEN', NOW(), NOW())
+                            """)
+                    .setParameter("uuid", dossierUuid)
+                    .setParameter("candidate", candidate)
+                    .setParameter("template", UUID.randomUUID().toString())
+                    .executeUpdate();
+            em.createNativeQuery("""
+                            INSERT INTO candidate_dossier_revisions
+                                (uuid, dossier_uuid, version_number, kind,
+                                 placeholder_values_snapshot, signers_config_snapshot,
+                                 appendices_snapshot, generated_pdfs_snapshot,
+                                 recipient_email, sent_by_useruuid, created_at)
+                            VALUES (:uuid, :dossier, 1, 'REVIEW_PDF', '{}', '[]', '[]',
+                                    JSON_ARRAY(JSON_OBJECT('filename', 'Legacy offer.pdf',
+                                                           'fileUuid', 'flow-file-secret')),
+                                    'candidate@example.invalid', :actor, NOW())
+                            """)
+                    .setParameter("uuid", UUID.randomUUID().toString())
+                    .setParameter("dossier", dossierUuid)
+                    .setParameter("actor", recruiter)
+                    .executeUpdate();
+            long dossierOnlyUpdate = P8ProfileFixtures.insertEvent(em, "CANDIDATE_UPDATED", candidate,
+                    null, null, "USER", recruiter, "NORMAL",
+                    "{\"changed_fields\":[\"target_company_uuid\",\"target_start_date\",\"notes\"],"
+                            + "\"target_company_uuid\":{\"before\":null,\"after\":\"company-secret\"},"
+                            + "\"target_start_date\":{\"before\":null,\"after\":\"2026-10-01\"}}",
+                    "{\"notes\":{\"before\":null,\"after\":\"Secret offer note\"}}");
+            long mixedUpdate = P8ProfileFixtures.insertEvent(em, "CANDIDATE_UPDATED", candidate,
+                    null, null, "USER", recruiter, "NORMAL",
+                    "{\"changed_fields\":[\"phone\",\"notes\",\"target_company_uuid\"],"
+                            + "\"target_company_uuid\":{\"before\":null,\"after\":\"company-secret\"}}",
+                    "{\"phone\":{\"before\":null,\"after\":\"+45 12345678\"},"
+                            + "\"notes\":{\"before\":null,\"after\":\"Offer context\"}}");
+            long recordCheckDrawn = P8ProfileFixtures.insertEvent(em,
+                    "RECORD_CHECK_DRAWN", candidate, applicationUuid, journeyPosition,
+                    "SYSTEM", null, "NORMAL",
+                    "{\"selected\":true,\"rate_applied\":20,"
+                            + "\"check_uuid\":\"record-check-secret\"}", null);
+            long recordCheckOutcome = P8ProfileFixtures.insertEvent(em,
+                    "RECORD_CHECK_OUTCOME_RECORDED", candidate, applicationUuid,
+                    journeyPosition, "USER", recruiter, "NORMAL",
+                    "{\"outcome\":\"NOT_CLEAN\","
+                            + "\"check_uuid\":\"record-check-secret\"}", null);
+            return new DossierBoundaryEvents(dossierCreated, offerOpened, signingCompleted,
+                    contractDocument, contractKindChanged, flowLinkedDocument,
+                    dossierOnlyUpdate, mixedUpdate, recordCheckDrawn, recordCheckOutcome);
+        });
+    }
+
+    private record DossierBoundaryEvents(
+            long dossierCreated,
+            long offerOpened,
+            long signingCompleted,
+            long contractDocument,
+            long contractKindChanged,
+            long flowLinkedDocument,
+            long dossierOnlyUpdate,
+            long mixedUpdate,
+            long recordCheckDrawn,
+            long recordCheckOutcome) {
     }
 
     // ---- Pagination -----------------------------------------------------------------

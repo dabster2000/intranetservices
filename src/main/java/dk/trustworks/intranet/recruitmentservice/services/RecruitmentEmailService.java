@@ -370,7 +370,7 @@ public class RecruitmentEmailService {
         // and wins; a null list means "whatever the template asks for".
         EmailCopies copies = copyUserUuids == null
                 ? copiesFor(template, candidate, applicationUuid, actorUserUuid)
-                : copiesOf(candidate, copyUserUuids,
+                : copiesOf(candidate, applicationUuid, copyUserUuids,
                         copyMode != null ? copyMode
                                 : template != null ? template.getCopyMode()
                                         : RecruitmentEmailCopyMode.BCC);
@@ -477,7 +477,7 @@ public class RecruitmentEmailService {
         // involvement can have changed while the row waited.
         List<String> effectiveUuids = copyUserUuids != null ? copyUserUuids
                 : RecruitmentEmailCopyResolver.splitUserUuids(pending.getCopyUserUuids());
-        EmailCopies copies = copiesOf(candidate, effectiveUuids,
+        EmailCopies copies = copiesOf(candidate, pending.getApplicationUuid(), effectiveUuids,
                 copyMode != null ? copyMode : pending.getCopyMode());
         send(candidate, pending.getApplicationUuid(), positionUuidOf(pending.getApplicationUuid()),
                 pending.getTemplateKey(), pending.getTemplateUuid(),
@@ -702,9 +702,10 @@ public class RecruitmentEmailService {
     }
 
     /** An explicit per-send override: caller-chosen people, re-authorized here. */
-    public EmailCopies copiesOf(RecruitmentCandidate candidate, List<String> userUuids,
-                                RecruitmentEmailCopyMode mode) {
-        return new EmailCopies(mode, copyResolver.resolveExplicit(candidate, userUuids));
+    public EmailCopies copiesOf(RecruitmentCandidate candidate, String applicationUuid,
+                                List<String> userUuids, RecruitmentEmailCopyMode mode) {
+        return new EmailCopies(mode,
+                copyResolver.resolveExplicit(candidate, applicationUuid, userUuids));
     }
 
     // ------------------------------------------------------------------

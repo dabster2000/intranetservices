@@ -16,6 +16,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentApplicationTerminal;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
@@ -50,7 +51,9 @@ import java.util.stream.Collectors;
  * Query plan: one application fetch by position ({@code idx_ra_position_stage}
  * covers it), one batched candidate fetch, and at most one batched referrer
  * name lookup — grouping happens in Java (a position has dozens of
- * applications, not thousands). No N+1 anywhere.
+ * applications, not thousands). Offer-dossier authorization uses the
+ * canonical batched candidate-scoped gate, and dossier state is loaded only
+ * for the candidates that passed it. No N+1 anywhere.
  * <p>
  * Shape rules (P7 contract, binding):
  * <ul>
@@ -122,13 +125,28 @@ public class RecruitmentBoardService {
         boolean viewerCanDecide = visibility.canDecideOnApplication(viewerUuid, position);
         boolean viewerCanDecideFinal = viewerCanDecide
                 && visibility.canDecideFinalOutcome(viewerUuid, position);
-        SubStatusInputs subStatusInputs = loadSubStatusInputs(applications);
+        // There is deliberately no board-local role shortcut here. Dossier
+        // access is candidate-scoped (including named-owner and self-attach
+        // protections), so pass every distinct open OFFER candidate through
+        // the authoritative batched predicate and reuse its result.
+        List<RecruitmentCandidate> offerCandidates = applications.stream()
+                .filter(application -> !application.isTerminal()
+                        && application.getStage() == RecruitmentStage.OFFER)
+                .map(RecruitmentApplication::getCandidateUuid)
+                .distinct()
+                .map(candidates::get)
+                .filter(Objects::nonNull)
+                .toList();
+        Set<String> dossierReadableCandidates =
+                visibility.dossierReadableCandidateUuids(viewerUuid, offerCandidates);
+        SubStatusInputs subStatusInputs = loadSubStatusInputs(
+                applications, dossierReadableCandidates);
         // Read once per board, never per card — app_settings is a tiny table
         // but a lookup per card is still an N+1 by any other name.
         int idleThresholdDays = thresholds.candidateIdleDays();
         List<BoardColumn> columns = buildColumns(applications, stageSet, candidates,
                 referrerNames, now, position, subStatusInputs, viewerCanDecide,
-                idleThresholdDays);
+                viewerCanDecideFinal, dossierReadableCandidates, idleThresholdDays);
         BoardTerminalSummary terminal = buildTerminal(applications, candidates);
 
         return new PositionBoardResponse(
@@ -146,6 +164,8 @@ public class RecruitmentBoardService {
                                            RecruitmentPosition position,
                                            SubStatusInputs subStatusInputs,
                                            boolean viewerCanDecide,
+                                           boolean viewerCanDecideFinalOutcome,
+                                           Set<String> dossierReadableCandidates,
                                            int idleThresholdDays) {
         // Sort BEFORE grouping — groupingBy preserves encounter order, so
         // every column comes out oldest stageEnteredAt first (uuid as a
@@ -170,7 +190,10 @@ public class RecruitmentBoardService {
                                         referrerNames, now,
                                         deriveSubStatus(application, position,
                                                 subStatusInputs, nowCopenhagen,
-                                                viewerCanDecide),
+                                                viewerCanDecide,
+                                                viewerCanDecideFinalOutcome,
+                                                dossierReadableCandidates.contains(
+                                                        application.getCandidateUuid())),
                                         idleThresholdDays))
                                 .toList()))
                 .toList();
@@ -241,8 +264,14 @@ public class RecruitmentBoardService {
                 Map.of(), Map.of(), Set.of(), Set.of(), Set.of());
     }
 
-    /** Three batched queries + one native query — never per card. */
-    private SubStatusInputs loadSubStatusInputs(List<RecruitmentApplication> applications) {
+    /**
+     * Three batched queries plus one native dossier query. The dossier query
+     * is omitted entirely when the viewer has no candidate-scoped dossier
+     * capability on this board.
+     */
+    private SubStatusInputs loadSubStatusInputs(
+            List<RecruitmentApplication> applications,
+            Set<String> dossierReadableCandidates) {
         Map<String, Integer> roundByApplication = new HashMap<>();
         Set<String> offerCandidateSet = new HashSet<>();
         for (RecruitmentApplication application : applications) {
@@ -252,7 +281,8 @@ public class RecruitmentBoardService {
             Integer round = roundOf(application.getStage());
             if (round != null) {
                 roundByApplication.put(application.getUuid(), round);
-            } else if (application.getStage() == RecruitmentStage.OFFER) {
+            } else if (application.getStage() == RecruitmentStage.OFFER
+                    && dossierReadableCandidates.contains(application.getCandidateUuid())) {
                 offerCandidateSet.add(application.getCandidateUuid());
             }
         }
@@ -336,23 +366,38 @@ public class RecruitmentBoardService {
     /**
      * The ladder itself — static and pure so the DB-free tier pins every
      * rung. Interview stages: BOOK/BOOKING → AWAITING → VOTERING → DECIDE
-     * → INFORM; OFFER: TEAM_MISSING → CONTRACT_NOT_SENT →
-     * AWAITING_SIGNATURE → SIGNED (signing outranks the team gate — a
-     * signed contract is further along regardless). SCREENING/HIRED: null.
+     * → INFORM; dossier readers get OFFER: TEAM_MISSING →
+     * CONTRACT_NOT_SENT → AWAITING_SIGNATURE → SIGNED (signing
+     * outranks the team gate — a signed contract is further along
+     * regardless). Other profile readers get only the ordinary TEAM_MISSING
+     * prerequisite, otherwise a neutral {@code null}. SCREENING/HIRED: null.
      */
     static BoardCardSubStatus deriveSubStatus(RecruitmentApplication application,
                                               RecruitmentPosition position,
                                               SubStatusInputs inputs,
                                               LocalDateTime nowCopenhagen,
-                                              boolean viewerCanDecide) {
+                                              boolean viewerCanDecide,
+                                              boolean viewerCanDecideFinalOutcome,
+                                              boolean viewerCanReadDossier) {
         RecruitmentStage stage = application.getStage();
         if (roundOf(stage) != null) {
             return deriveInterviewSubStatus(
                     inputs.drivingInterviews().get(application.getUuid()),
                     inputs.bookingInFlight().contains(application.getUuid()),
-                    inputs.scorecardsByInterview(), nowCopenhagen, viewerCanDecide);
+                    inputs.scorecardsByInterview(), nowCopenhagen, viewerCanDecide,
+                    viewerCanDecideFinalOutcome);
         }
         if (stage == RecruitmentStage.OFFER) {
+            if (!viewerCanReadDossier) {
+                // Team assignment is ordinary recruitment state. Every
+                // other OFFER chip reveals whether a contract exists, was
+                // sent or was signed, and therefore follows canReadDossier.
+                if (position.getHiringTrack() == RecruitmentHiringTrack.PRACTICE_TEAM
+                        && application.getAssignedTeamUuid() == null) {
+                    return BoardCardSubStatus.of(BoardCardSubStatus.Code.TEAM_MISSING);
+                }
+                return null;
+            }
             String candidateUuid = application.getCandidateUuid();
             if (inputs.contractSigned().contains(candidateUuid)) {
                 return BoardCardSubStatus.of(BoardCardSubStatus.Code.SIGNED);
@@ -376,7 +421,8 @@ public class RecruitmentBoardService {
             boolean bookingInFlight,
             Map<String, List<RecruitmentScorecard>> scorecardsByInterview,
             LocalDateTime nowCopenhagen,
-            boolean viewerCanDecide) {
+            boolean viewerCanDecide,
+            boolean viewerCanDecideFinalOutcome) {
         if (interview == null) {
             return BoardCardSubStatus.of(bookingInFlight
                     ? BoardCardSubStatus.Code.BOOKING
@@ -388,10 +434,13 @@ public class RecruitmentBoardService {
                 ? 0 : interview.getInterviewerUuids().size();
 
         if (interview.getDecision() != null) {
+            boolean maySeeOutcome = viewerCanDecide
+                    && (interview.getDecision() != RecruitmentInterviewDecision.REJECT
+                        || viewerCanDecideFinalOutcome);
             return new BoardCardSubStatus(BoardCardSubStatus.Code.INFORM,
                     interview.getUuid(), interview.getScheduledAt(), interview.getLocation(),
                     scorecards.size(), expected,
-                    viewerCanDecide ? interview.getDecision() : null);
+                    maySeeOutcome ? interview.getDecision() : null);
         }
         boolean held = interview.getStatus() == RecruitmentInterviewStatus.HELD
                 || (interview.getScheduledAt() != null

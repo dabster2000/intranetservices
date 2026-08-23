@@ -2,7 +2,10 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.model.InterviewResource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.InterviewResourceCategory;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentPositionAccess;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.InterviewResourceService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -44,6 +47,12 @@ public class InterviewResourceResource {
     @Inject
     InterviewResourceService interviewResourceService;
 
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    RecruitmentVisibility visibility;
+
     // ---- DTOs ------------------------------------------------------------------
 
     /** Upload/create request — file travels base64 like template uploads. */
@@ -68,6 +77,7 @@ public class InterviewResourceResource {
     @POST
     @RolesAllowed({"recruitment:write"})
     public Response create(CreateRequest request) {
+        requireRecruiterTier();
         byte[] bytes;
         try {
             bytes = Base64.getDecoder().decode(request.fileContent() == null ? "" : request.fileContent());
@@ -86,6 +96,7 @@ public class InterviewResourceResource {
     @Path("/{uuid}")
     @RolesAllowed({"recruitment:write"})
     public InterviewResource update(@PathParam("uuid") String uuid, UpdateRequest request) {
+        requireRecruiterTier();
         return interviewResourceService.update(uuid, request.title(),
                 request.category() == null ? null : parseCategory(request.category()),
                 request.description());
@@ -95,6 +106,7 @@ public class InterviewResourceResource {
     @Path("/{uuid}")
     @RolesAllowed({"recruitment:write"})
     public Response delete(@PathParam("uuid") String uuid) {
+        requireRecruiterTier();
         interviewResourceService.softDelete(uuid);
         return Response.noContent().build();
     }
@@ -126,9 +138,28 @@ public class InterviewResourceResource {
     @Path("/pins/{positionUuid}")
     @RolesAllowed({"recruitment:write"})
     public Response replacePins(@PathParam("positionUuid") String positionUuid, PinsRequest request) {
+        RecruitmentPositionAccess.requireDecidablePosition(
+                visibility, actor(), positionUuid);
         interviewResourceService.replacePins(positionUuid,
                 request.resourceUuids() == null ? Set.of() : request.resourceUuids());
         return Response.noContent().build();
+    }
+
+    private void requireRecruiterTier() {
+        if (!visibility.isRecruiterTier(actor())) {
+            throw new WebApplicationException(
+                    "Managing the shared interview-resource library is reserved for recruitment",
+                    Response.Status.FORBIDDEN);
+        }
+    }
+
+    private String actor() {
+        String actor = requestHeaderHolder.getUserUuid();
+        if (actor == null || actor.isBlank()) {
+            throw new WebApplicationException(
+                    "X-Requested-By is required", Response.Status.FORBIDDEN);
+        }
+        return actor;
     }
 
     // ---- Helpers ---------------------------------------------------------------

@@ -42,6 +42,7 @@ class RecruitmentCandidateListViewsApiTest {
     private String hrUser;
     private String adminUser;
     private String circleHr;
+    private String assistantUser;
 
     private String normalPosition;
     private String partnerPosition;
@@ -52,6 +53,7 @@ class RecruitmentCandidateListViewsApiTest {
     private String partnerOnlyCandidate;
     private String noAppCandidate;
     private String hiredCandidate;
+    private String mixedScopeCandidate;
 
     private String tagMarker;
     private String previousFlag;
@@ -62,6 +64,7 @@ class RecruitmentCandidateListViewsApiTest {
         hrUser = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
         circleHr = UUID.randomUUID().toString();
+        assistantUser = UUID.randomUUID().toString();
         normalPosition = UUID.randomUUID().toString();
         partnerPosition = UUID.randomUUID().toString();
         activeCandidate = UUID.randomUUID().toString();
@@ -70,21 +73,28 @@ class RecruitmentCandidateListViewsApiTest {
         partnerOnlyCandidate = UUID.randomUUID().toString();
         noAppCandidate = UUID.randomUUID().toString();
         hiredCandidate = UUID.randomUUID().toString();
+        mixedScopeCandidate = UUID.randomUUID().toString();
         tagMarker = "p8view-" + UUID.randomUUID().toString().substring(0, 8);
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, hrUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
             P8ProfileFixtures.insertUser(em, circleHr, "Cirkel", "Recruiter");
+            P8ProfileFixtures.insertUser(em, assistantUser, "Assi", "Stent");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
+            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
+            em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
+                    .setParameter("practice", practiceUuid)
+                    .setParameter("user", assistantUser)
+                    .executeUpdate();
 
             P8ProfileFixtures.insertPosition(em, normalPosition, "Consultant",
                     "PRACTICE_TEAM", practiceUuid, null, null);
             P8ProfileFixtures.insertPosition(em, partnerPosition, "Partner hire",
-                    "PARTNER", null, null, null);
+                    "PARTNER", practiceUuid, null, null);
             P8ProfileFixtures.insertCircleMember(em, partnerPosition, circleHr);
 
             P8ProfileFixtures.insertCandidate(em, activeCandidate,
@@ -101,6 +111,8 @@ class RecruitmentCandidateListViewsApiTest {
                     "PII_SENTINEL Nul", "PII_SENTINEL Nyholm", "ACTIVE", null, null, hrUser);
             P8ProfileFixtures.insertCandidate(em, hiredCandidate,
                     "PII_SENTINEL Hans", "PII_SENTINEL Hyre", "HIRED", null, null, hrUser);
+            P8ProfileFixtures.insertCandidate(em, mixedScopeCandidate,
+                    "PII_SENTINEL Maja", "PII_SENTINEL Mixed", "ACTIVE", null, null, hrUser);
 
             P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
                     activeCandidate, normalPosition, "SCREENING");
@@ -111,6 +123,13 @@ class RecruitmentCandidateListViewsApiTest {
                     hiredCandidate, normalPosition, "HIRED");
             P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
                     partnerOnlyCandidate, partnerPosition, "SCREENING");
+            // Mixed scope: the ordinary application keeps the candidate in
+            // the assistant's profile scope, but only the confidential
+            // partner application is still in play.
+            P8ProfileFixtures.insertClosedApplication(em, UUID.randomUUID().toString(),
+                    mixedScopeCandidate, normalPosition, "REJECTED");
+            P8ProfileFixtures.insertOpenApplication(em, UUID.randomUUID().toString(),
+                    mixedScopeCandidate, partnerPosition, "SCREENING");
             // A closed application alone does not make a pipeline row.
             P8ProfileFixtures.insertClosedApplication(em, UUID.randomUUID().toString(),
                     pooledCandidate, normalPosition, "RETURNED_TO_POOL");
@@ -124,9 +143,10 @@ class RecruitmentCandidateListViewsApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(activeCandidate, pooledCandidate, silverCandidate,
-                            partnerOnlyCandidate, noAppCandidate, hiredCandidate),
+                            partnerOnlyCandidate, noAppCandidate, hiredCandidate,
+                            mixedScopeCandidate),
                     List.of(normalPosition, partnerPosition),
-                    List.of(hrUser, adminUser, circleHr),
+                    List.of(hrUser, adminUser, circleHr, assistantUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, DOSSIER_FLAG, previousFlag);
         });
@@ -270,6 +290,27 @@ class RecruitmentCandidateListViewsApiTest {
                 "ADMIN sees every row");
         assertTrue(listUuids(circleHr, null, null).contains(partnerOnlyCandidate),
                 "circle members see their partner rows");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void mixedScopePartnerApplication_cannotDriveAssistantOrOutsiderGridFilters() {
+        assertTrue(listUuids(assistantUser, null, null).contains(mixedScopeCandidate),
+                "the closed own-practice application keeps the profile in assistant scope");
+
+        assertFalse(listUuids(assistantUser, "view", "ACTIVE_PIPELINE")
+                        .contains(mixedScopeCandidate),
+                "a hidden partner application must not make the row look active");
+        assertFalse(listUuids(assistantUser, "practice", practiceUuid)
+                        .contains(mixedScopeCandidate),
+                "a hidden partner application must not answer a practice-filter probe");
+
+        assertFalse(listUuids(hrUser, "view", "ACTIVE_PIPELINE")
+                        .contains(mixedScopeCandidate),
+                "the same partner boundary applies to a non-circle HR viewer");
+        assertTrue(listUuids(circleHr, "view", "ACTIVE_PIPELINE")
+                        .contains(mixedScopeCandidate),
+                "explicit circle access still makes the partner route readable");
     }
 
     // ---- Row shape ------------------------------------------------------------------

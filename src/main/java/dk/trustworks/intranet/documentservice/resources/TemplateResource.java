@@ -5,6 +5,8 @@ import dk.trustworks.intranet.documentservice.dto.TemplatePlaceholderDTO;
 import dk.trustworks.intranet.documentservice.dto.WordTemplateUploadRequest;
 import dk.trustworks.intranet.documentservice.dto.WordTemplateUploadResponse;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
+import dk.trustworks.intranet.documentservice.security.TemplateAccessPolicy;
 import dk.trustworks.intranet.documentservice.services.TemplatePlaceholderAiService;
 import dk.trustworks.intranet.documentservice.services.TemplateService;
 import dk.trustworks.intranet.utils.services.WordDocumentService;
@@ -13,10 +15,8 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
-import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.SecurityContext;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Base64;
@@ -44,8 +44,8 @@ public class TemplateResource {
     @Inject
     TemplatePlaceholderAiService templatePlaceholderAiService;
 
-    @Context
-    SecurityContext securityContext;
+    @Inject
+    TemplateAccessPolicy accessPolicy;
 
     /**
      * Get all templates.
@@ -54,9 +54,12 @@ public class TemplateResource {
      * @return List of templates
      */
     @GET
-    public List<DocumentTemplateDTO> getAll(@QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive) {
-        log.infof("GET /templates?includeInactive=%s", includeInactive);
-        return templateService.findAll(includeInactive);
+    public List<DocumentTemplateDTO> getAll(
+            @QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive,
+            @QueryParam("usage") TemplateUsage usage) {
+        accessPolicy.requireCollectionRead(usage);
+        log.infof("GET /templates?includeInactive=%s&usage=%s", includeInactive, usage);
+        return accessPolicy.filterCollection(templateService.findAll(includeInactive), usage);
     }
 
     /**
@@ -68,6 +71,7 @@ public class TemplateResource {
     @GET
     @Path("/category/{category}")
     public List<DocumentTemplateDTO> getByCategory(@PathParam("category") TemplateCategory category) {
+        accessPolicy.requireManager();
         log.infof("GET /templates/category/%s", category);
         return templateService.findByCategory(category);
     }
@@ -82,7 +86,9 @@ public class TemplateResource {
     @Path("/{uuid}")
     public DocumentTemplateDTO getByUuid(@PathParam("uuid") String uuid) {
         log.infof("GET /templates/%s", uuid);
-        return templateService.findByUuid(uuid);
+        DocumentTemplateDTO template = templateService.findByUuid(uuid);
+        accessPolicy.requireTemplateRead(template);
+        return template;
     }
 
     /**
@@ -94,6 +100,7 @@ public class TemplateResource {
     @POST
     @RolesAllowed({"documents:write"})
     public Response create(@Valid DocumentTemplateDTO dto) {
+        accessPolicy.requireManager();
         String currentUser = getCurrentUserUuid();
         log.infof("POST /templates by user %s: %s", currentUser, dto.getName());
 
@@ -112,6 +119,7 @@ public class TemplateResource {
     @Path("/{uuid}")
     @RolesAllowed({"documents:write"})
     public DocumentTemplateDTO update(@PathParam("uuid") String uuid, @Valid DocumentTemplateDTO dto) {
+        accessPolicy.requireManager();
         String currentUser = getCurrentUserUuid();
         log.infof("PUT /templates/%s by user %s", uuid, currentUser);
         log.infof("  -> DTO name: %s, category: %s", dto.getName(), dto.getCategory());
@@ -137,6 +145,7 @@ public class TemplateResource {
     @Path("/{uuid}")
     @RolesAllowed({"documents:write"})
     public Response delete(@PathParam("uuid") String uuid) {
+        accessPolicy.requireManager();
         String currentUser = getCurrentUserUuid();
         log.infof("DELETE /templates/%s by user %s", uuid, currentUser);
 
@@ -154,6 +163,7 @@ public class TemplateResource {
     @Path("/{uuid}/validate")
     @RolesAllowed({"documents:write"})
     public Response validate(@PathParam("uuid") String uuid, @Valid DocumentTemplateDTO dto) {
+        accessPolicy.requireManager();
         log.infof("POST /templates/%s/validate", uuid);
 
         try {
@@ -172,10 +182,7 @@ public class TemplateResource {
      * @return User UUID or "system" if not available
      */
     private String getCurrentUserUuid() {
-        if (securityContext != null && securityContext.getUserPrincipal() != null) {
-            return securityContext.getUserPrincipal().getName();
-        }
-        return "system";
+        return accessPolicy.requireActor();
     }
 
     // =========================================================================
@@ -199,6 +206,7 @@ public class TemplateResource {
     @Path("/documents/upload")
     @RolesAllowed({"documents:write"})
     public Response uploadWordTemplate(WordTemplateUploadRequest request) {
+        accessPolicy.requireManager();
         log.infof("POST /templates/documents/upload: filename=%s, documentUuid=%s",
                 request.filename(), request.documentUuid());
 
@@ -258,6 +266,7 @@ public class TemplateResource {
     @Path("/documents/{fileUuid}/download")
     @Produces("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     public Response downloadWordTemplate(@PathParam("fileUuid") String fileUuid) {
+        accessPolicy.requireDocumentRead(fileUuid);
         log.infof("GET /templates/documents/%s/download", fileUuid);
 
         try {
@@ -300,6 +309,7 @@ public class TemplateResource {
     @Path("/documents/{fileUuid}/suggest-placeholders")
     @RolesAllowed({"documents:write"})
     public Response suggestPlaceholders(@PathParam("fileUuid") String fileUuid) {
+        accessPolicy.requireManager();
         log.infof("POST /templates/documents/%s/suggest-placeholders", fileUuid);
 
         try {
@@ -330,6 +340,7 @@ public class TemplateResource {
     @GET
     @Path("/documents/{fileUuid}/placeholders")
     public Response extractPlaceholders(@PathParam("fileUuid") String fileUuid) {
+        accessPolicy.requireDocumentRead(fileUuid);
         log.infof("GET /templates/documents/%s/placeholders", fileUuid);
 
         try {
@@ -360,6 +371,7 @@ public class TemplateResource {
     @Path("/documents/extract-placeholders")
     @RolesAllowed({"documents:write"})
     public Response extractPlaceholdersFromContent(WordTemplateUploadRequest request) {
+        accessPolicy.requireManager();
         log.infof("POST /templates/documents/extract-placeholders: filename=%s", request.filename());
 
         try {
@@ -390,6 +402,7 @@ public class TemplateResource {
     @Path("/documents/{fileUuid}")
     @RolesAllowed({"documents:write"})
     public Response deleteWordTemplate(@PathParam("fileUuid") String fileUuid) {
+        accessPolicy.requireManager();
         log.infof("DELETE /templates/documents/%s", fileUuid);
 
         try {

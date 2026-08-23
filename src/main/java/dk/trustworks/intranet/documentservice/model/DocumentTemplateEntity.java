@@ -2,6 +2,7 @@ package dk.trustworks.intranet.documentservice.model;
 
 import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
+import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
@@ -40,6 +41,16 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @NotNull(message = "Category is required")
     private TemplateCategory category;
+
+    /**
+     * Authorization classification. The fail-closed default prevents a newly
+     * inserted template from becoming employee-readable before HR explicitly
+     * classifies it.
+     */
+    @Column(name = "template_usage", nullable = false, length = 32)
+    @Enumerated(EnumType.STRING)
+    @NotNull(message = "Template usage is required")
+    private TemplateUsage templateUsage = TemplateUsage.RECRUITMENT_DOSSIER;
 
     /**
      * Determines which {@code sharepoint_locations} row receives the signed document

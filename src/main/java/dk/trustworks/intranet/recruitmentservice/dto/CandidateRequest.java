@@ -27,7 +27,10 @@ import java.util.Map;
  *       the name).</li>
  * </ul>
  * On PUT update, only supplied fields are applied — null fields are left
- * unchanged. {@code templateUuid} is ignored on update.
+ * unchanged. {@code templateUuid} is ignored on update. The dossier-era
+ * fields {@code targetCompanyUuid}, {@code targetStartDate} and {@code notes}
+ * require the HR/admin dossier-write capability; ordinary candidate fields
+ * and tags remain writable through the normal recruitment gate.
  * <p>
  * Deliberately absent: {@code lawfulBasis}, {@code art14*},
  * {@code retentionDeadline}, {@code poolStatus} — GDPR bookkeeping and pool
@@ -102,5 +105,15 @@ public record CandidateRequest(
      */
     public boolean opensDossier() {
         return templateUuid != null && !templateUuid.isBlank();
+    }
+
+    /**
+     * Whether a PATCH-style candidate update supplies any field owned by the
+     * offer dossier rather than the ordinary recruitment profile. Supplying
+     * an empty value still counts and therefore fails closed at the write
+     * gate; {@code templateUuid} is create-only and ignored on update.
+     */
+    public boolean updatesDossierMetadata() {
+        return targetCompanyUuid != null || targetStartDate != null || notes != null;
     }
 }

@@ -37,8 +37,10 @@ import static dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventT
 
 /**
  * P12 outbound Slack baseline (plan §P12): flat channel messages for the
- * five notification moments — new application, new referral, debrief
- * ready, signing completed, position opened. These flat messages remain
+ * four notification moments — new application, new referral, debrief
+ * ready and position opened. Offer-dossier/signing status deliberately has
+ * no channel or circle broadcast: those audiences are not equivalent to the
+ * candidate-scoped dossier-read capability. These flat messages remain
  * the permanent degradation path when the P22 living cards are off
  * (Slack companion spec §3.3). P18 adds two interviewer/owner-directed
  * DM moments on top: the interview-kit DM on the interview lifecycle
@@ -126,7 +128,7 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
     protected void handle(RecruitmentEvent event) throws Exception {
         switch (event.getEventType()) {
             case APPLICATION_CREATED, REFERRAL_SUBMITTED, SCORECARD_SUBMITTED,
-                 SIGNING_COMPLETED, POSITION_OPENED,
+                 POSITION_OPENED,
                  INTERVIEW_SCHEDULED, INTERVIEW_RESCHEDULED, INTERVIEW_CANCELLED -> {
             }
             default -> {
@@ -150,7 +152,6 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
             case APPLICATION_CREATED -> newApplication(event);
             case REFERRAL_SUBMITTED -> newReferral(event);
             case SCORECARD_SUBMITTED -> debriefReady(event);
-            case SIGNING_COMPLETED -> signingCompleted(event);
             case POSITION_OPENED -> positionOpened(event);
             default -> null;
         };
@@ -311,23 +312,6 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         return new Notification(facts.practiceUuid(), sb.toString());
     }
 
-    private Notification signingCompleted(RecruitmentEvent event) {
-        RecruitmentCandidate candidate = findCandidate(event.getCandidateUuid());
-        if (candidate == null) {
-            return null;
-        }
-        RecruitmentPosition position = findPosition(event.getPositionUuid());
-        SlackCandidateFacts facts = SlackCandidateFacts.of(candidate, position, null);
-        StringBuilder sb = new StringBuilder(256)
-                .append(":lower_left_fountain_pen: *Contract signed* — ").append(facts.displayName())
-                .append(" has completed signing");
-        if (facts.positionTitle() != null) {
-            sb.append(" for *").append(facts.positionTitle()).append('*');
-        }
-        sb.append(".\n").append(profileUrl(facts.candidateUuid()));
-        return new Notification(facts.practiceUuid(), sb.toString());
-    }
-
     private Notification positionOpened(RecruitmentEvent event) {
         RecruitmentPosition position = findPosition(event.getPositionUuid());
         if (position == null) {
@@ -379,9 +363,8 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
         if (event.getPositionUuid() != null) {
             positionUuids.add(event.getPositionUuid());
         } else if (event.getCandidateUuid() != null) {
-            // Position-less CIRCLE events (e.g. the fail-closed
-            // SIGNING_COMPLETED): every partner-track position the
-            // candidate has an application on.
+            // Defensive position-less CIRCLE event: resolve every
+            // partner-track position the candidate has an application on.
             RecruitmentApplication.<RecruitmentApplication>list("candidateUuid = ?1",
                             event.getCandidateUuid()).stream()
                     .map(RecruitmentApplication::getPositionUuid)

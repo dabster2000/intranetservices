@@ -54,6 +54,7 @@ class RecruitmentLandingApiTest {
     private String interviewerUser;
     private String employeeUser;
     private String circleOwnerUser;
+    private String circleRecruiterUser;
 
     private String teamPositionUuid;
     private String partnerPositionUuid;
@@ -66,6 +67,8 @@ class RecruitmentLandingApiTest {
     private String interviewUuid;
     private String referralUuid;
     private String pendingEmailUuid;
+    private String mixedPartnerApplicationUuid;
+    private String mixedPendingEmailUuid;
 
     /** TEAMLEAD role, leads no team, owns nothing — reads widely, owns nothing. */
     private String wideTeamleadUser;
@@ -84,6 +87,7 @@ class RecruitmentLandingApiTest {
         interviewerUser = UUID.randomUUID().toString();
         employeeUser = UUID.randomUUID().toString();
         circleOwnerUser = UUID.randomUUID().toString();
+        circleRecruiterUser = UUID.randomUUID().toString();
         teamPositionUuid = UUID.randomUUID().toString();
         partnerPositionUuid = UUID.randomUUID().toString();
         idleCandidateUuid = UUID.randomUUID().toString();
@@ -95,6 +99,8 @@ class RecruitmentLandingApiTest {
         interviewUuid = UUID.randomUUID().toString();
         referralUuid = UUID.randomUUID().toString();
         pendingEmailUuid = UUID.randomUUID().toString();
+        mixedPartnerApplicationUuid = UUID.randomUUID().toString();
+        mixedPendingEmailUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, recruiterUser, marker, "Recruiter");
@@ -104,6 +110,8 @@ class RecruitmentLandingApiTest {
             P8ProfileFixtures.insertUser(em, interviewerUser, marker, "Interviewer");
             P8ProfileFixtures.insertUser(em, employeeUser, marker, "Employee");
             P8ProfileFixtures.insertUser(em, circleOwnerUser, marker, "Circleowner");
+            P8ProfileFixtures.insertUser(em, circleRecruiterUser, marker, "Circlerecruiter");
+            P8ProfileFixtures.insertRole(em, circleRecruiterUser, "HR");
 
             P8ProfileFixtures.insertUser(em, wideTeamleadUser, marker, "Wideteamlead");
             P8ProfileFixtures.insertRole(em, wideTeamleadUser, "TEAMLEAD");
@@ -149,6 +157,8 @@ class RecruitmentLandingApiTest {
                             """)
                     .setParameter("p", partnerPositionUuid)
                     .setParameter("u", circleOwnerUser).executeUpdate();
+            P8ProfileFixtures.insertCircleMember(em, partnerPositionUuid,
+                    circleRecruiterUser);
             P8ProfileFixtures.insertCandidate(em, partnerCandidateUuid,
                     marker, "Partner", "ACTIVE", null, null, circleOwnerUser);
             P8ProfileFixtures.insertOpenApplication(em, partnerApplicationUuid,
@@ -190,6 +200,8 @@ class RecruitmentLandingApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             em.createNativeQuery("DELETE FROM recruitment_pending_emails WHERE uuid = :u")
                     .setParameter("u", pendingEmailUuid).executeUpdate();
+            em.createNativeQuery("DELETE FROM recruitment_pending_emails WHERE uuid = :u")
+                    .setParameter("u", mixedPendingEmailUuid).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_referrals WHERE uuid = :u")
                     .setParameter("u", referralUuid).executeUpdate();
             // Before cleanupRecruitmentRows: team.practice_uuid is an FK onto
@@ -200,7 +212,8 @@ class RecruitmentLandingApiTest {
                     List.of(idleCandidateUuid, partnerCandidateUuid, hiredCandidateUuid),
                     List.of(teamPositionUuid, partnerPositionUuid),
                     List.of(recruiterUser, teamleadUser, wideTeamleadUser, practiceLeadUser,
-                            interviewerUser, employeeUser, circleOwnerUser),
+                            interviewerUser, employeeUser, circleOwnerUser,
+                            circleRecruiterUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, PIPELINE_FLAG, previousFlag);
         });
@@ -225,6 +238,17 @@ class RecruitmentLandingApiTest {
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> tasks(Response response) {
         return response.jsonPath().getList("tasks");
+    }
+
+    private static int taskCount(Response response, String type) {
+        return tasks(response).stream()
+                .filter(task -> type.equals(task.get("type")))
+                .map(task -> task.get("count"))
+                .filter(Number.class::isInstance)
+                .map(Number.class::cast)
+                .mapToInt(Number::intValue)
+                .findFirst()
+                .orElse(0);
     }
 
     @SuppressWarnings("unchecked")
@@ -470,6 +494,39 @@ class RecruitmentLandingApiTest {
         assertTrue(hasTask(tasks(response), "IDLE_CANDIDATE", "applicationUuid",
                         partnerApplicationUuid),
                 "circle OWNER owns the partner decision tasks");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
+    void mixedCandidateHiddenPartnerPendingEmailDoesNotChangeOutsiderLandingCount() {
+        int outsiderBefore = taskCount(landingFor(recruiterUser), "EMAIL_REVIEW");
+        int circleBefore = taskCount(landingFor(circleRecruiterUser), "EMAIL_REVIEW");
+
+        QuarkusTransaction.requiringNew().run(() -> {
+            P8ProfileFixtures.insertOpenApplication(em, mixedPartnerApplicationUuid,
+                    idleCandidateUuid, partnerPositionUuid, "SCREENING");
+            em.createNativeQuery("""
+                            INSERT INTO recruitment_pending_emails
+                                (uuid, candidate_uuid, application_uuid, template_key, reason,
+                                 to_email, subject, body, status, created_at, updated_at, created_by)
+                            VALUES (:uuid, :candidate, :application, 'REJECTION_POST_INTERVIEW',
+                                    'REVIEW_FIRST_TEMPLATE', :to, :subject, 'Body', 'PENDING',
+                                    NOW(), NOW(), 'test')
+                            """)
+                    .setParameter("uuid", mixedPendingEmailUuid)
+                    .setParameter("candidate", idleCandidateUuid)
+                    .setParameter("application", mixedPartnerApplicationUuid)
+                    .setParameter("to", marker + ".mixed@example.com")
+                    .setParameter("subject", marker + " hidden partner subject")
+                    .executeUpdate();
+        });
+
+        assertEquals(outsiderBefore,
+                taskCount(landingFor(recruiterUser), "EMAIL_REVIEW"),
+                "a hidden partner route must not change the aggregate task count");
+        assertEquals(circleBefore + 1,
+                taskCount(landingFor(circleRecruiterUser), "EMAIL_REVIEW"),
+                "an explicit circle recruiter sees the application-bound row");
     }
 
     @Test

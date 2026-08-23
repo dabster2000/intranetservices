@@ -35,6 +35,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
@@ -296,9 +298,11 @@ public class RecruitmentInterviewService {
     public RecruitmentInterview cancel(RecruitmentInterview detached,
                                        RecruitmentApplication application,
                                        RecruitmentPosition position,
-                                       UUID actor) {
+                                       UUID actor,
+                                       boolean canDecideFinalOutcome) {
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
+        requireMayConsumePendingDecision(interview, canDecideFinalOutcome);
         interview.setStatus(RecruitmentInterviewStatus.CANCELLED);
         // A cancelled interview cannot carry a pending go/no-go — the
         // round is unheld again. Part of the same mutation, no extra event.
@@ -334,7 +338,8 @@ public class RecruitmentInterviewService {
                                                RecruitmentApplication application,
                                                RecruitmentPosition position,
                                                RecruitmentInterviewDecision decision,
-                                               UUID actor) {
+                                               UUID actor,
+                                               boolean canDecideFinalOutcome) {
         Objects.requireNonNull(decision, "decision must not be null");
         RecruitmentInterview interview = managed(detached);
         requireActive(interview);
@@ -349,6 +354,13 @@ public class RecruitmentInterviewService {
                             .formatted(application.getStage(), interview.roundStage()));
         }
         RecruitmentInterviewDecision previous = interview.getDecision();
+        if (!canDecideFinalOutcome
+                && decision == RecruitmentInterviewDecision.REJECT) {
+            throw new WebApplicationException(
+                    "Recording a no-go requires final-outcome authority",
+                    Response.Status.FORBIDDEN);
+        }
+        requireMayConsumePendingDecision(interview, canDecideFinalOutcome);
         interview.setDecision(decision);
         interview.setDecidedBy(actor.toString());
         interview.setDecidedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -371,11 +383,15 @@ public class RecruitmentInterviewService {
     public RecruitmentInterview clearDecision(RecruitmentInterview detached,
                                               RecruitmentApplication application,
                                               RecruitmentPosition position,
-                                              UUID actor) {
+                                              UUID actor,
+                                              boolean canDecideFinalOutcome) {
         RecruitmentInterview interview = managed(detached);
         RecruitmentInterviewDecision previous = interview.getDecision();
         if (previous == null) {
             return interview;
+        }
+        if (previous == RecruitmentInterviewDecision.REJECT) {
+            requireMayConsumePendingDecision(interview, canDecideFinalOutcome);
         }
         interview.setDecision(null);
         interview.setDecidedBy(null);
@@ -386,6 +402,17 @@ public class RecruitmentInterviewService {
                 .payload("previous_decision", previous.name())
                 .payload("stage", application.getStage().name()));
         return interview;
+    }
+
+    private static void requireMayConsumePendingDecision(
+            RecruitmentInterview interview,
+            boolean canDecideFinalOutcome) {
+        if (!canDecideFinalOutcome
+                && interview.getDecision() == RecruitmentInterviewDecision.REJECT) {
+            throw new WebApplicationException(
+                    "Changing a pending no-go requires final-outcome authority",
+                    Response.Status.FORBIDDEN);
+        }
     }
 
     /**
@@ -603,6 +630,8 @@ public class RecruitmentInterviewService {
         Map<String, RecruitmentApplication> applicationsByUuid = applications.stream()
                 .collect(Collectors.toMap(RecruitmentApplication::getUuid, a -> a));
         Map<String, RecruitmentPosition> positions = positionsOf(applications);
+        Set<String> readablePositionUuids = visibility.readablePositionUuids(
+                viewerUuid, positions.values());
         Map<String, RecruitmentCandidate> candidates = candidatesOf(applications);
         Map<String, List<RecruitmentScorecard>> scorecardsByInterview = scorecardsOf(interviews);
         Set<String> nameUuids = new LinkedHashSet<>();
@@ -624,12 +653,14 @@ public class RecruitmentInterviewService {
                             .filter(uuid -> !uuid.equals(viewerUuid))
                             .map(uuid -> names.getOrDefault(uuid, "Unknown"))
                             .toList();
-                    // Pipeline stage is withheld from viewers whose only key
-                    // to this candidate is the interview assignment (go-live
-                    // decision D10): an interviewer forms a view without
-                    // knowing where the process stands. Role holders — who
-                    // can open the full profile anyway — keep it.
-                    String stage = visibility.canReadCandidateProfile(viewerUuid, candidate)
+                    // Stage belongs to this application route, not to the
+                    // candidate profile as a whole. A mixed candidate may be
+                    // readable through an ordinary application while this
+                    // assigned interview remains on a circle-confidential
+                    // PARTNER route. Resolve the canonical position slice
+                    // once for the whole list so that route fact stays hidden
+                    // without introducing per-row authorization queries.
+                    String stage = readablePositionUuids.contains(application.getPositionUuid())
                             ? application.getStage().name()
                             : null;
                     return new MyInterviewRow(
@@ -778,6 +809,9 @@ public class RecruitmentInterviewService {
                                          boolean viewerCanDecide) {
         boolean ownSubmitted = scorecards.stream()
                 .anyMatch(s -> s.getInterviewerUuid().equals(viewerUuid));
+        boolean viewerCanReadPendingDecision = viewerCanDecide
+                && (interview.getDecision() != RecruitmentInterviewDecision.REJECT
+                    || visibility.canDecideFinalOutcome(viewerUuid, position));
         return new InterviewResponse(
                 interview.getUuid(),
                 application.getUuid(),
@@ -803,10 +837,11 @@ public class RecruitmentInterviewService {
                         && !candidate.getEmail().isBlank(),
                 interview.isOnlineMeeting(),
                 interview.getJoinUrl(),
-                // A pending decision is decider-only until the candidate is
-                // informed — everyone else learns it when the card moves.
-                viewerCanDecide ? interview.getDecision() : null,
-                viewerCanDecide ? interview.getDecidedAt() : null);
+                // An ordinary ADVANCE is visible to the stage-move tier. A
+                // pending REJECT stays inside the narrower final-outcome tier
+                // until the candidate is informed and the application moves.
+                viewerCanReadPendingDecision ? interview.getDecision() : null,
+                viewerCanReadPendingDecision ? interview.getDecidedAt() : null);
     }
 
     private static List<InterviewResponse.InterviewerInfo> interviewerInfos(
@@ -829,7 +864,10 @@ public class RecruitmentInterviewService {
 
     /** The latest CV on file, reusing the P8 documents derivation. */
     private String latestCvFileUuid(String candidateUuid) {
-        return profileReadService.documents(candidateUuid).documents().stream()
+        // My Interviews is a restricted interview-kit surface, not an offer
+        // dossier surface. Monotonic classification must win even when the
+        // latest display label says CV.
+        return profileReadService.documents(candidateUuid, false).documents().stream()
                 .filter(d -> "CV".equals(d.kind()))
                 .map(CandidateDocument::fileUuid)
                 .findFirst()

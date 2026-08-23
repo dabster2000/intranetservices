@@ -57,11 +57,24 @@ public class CandidateDocumentClassifier {
             KIND_APPENDIX, KIND_ID_DOCUMENT, KIND_OTHER);
 
     /**
+     * File kinds that belong to the offer dossier or onboarding flow. Reading
+     * the candidate profile alone never grants these files; callers must also
+     * hold the candidate-scoped dossier-read capability.
+     */
+    public static final Set<String> DOSSIER_RESTRICTED_KINDS = Set.of(
+            KIND_CONTRACT_DRAFT, KIND_SIGNED_DOCUMENT, KIND_APPENDIX, KIND_ID_DOCUMENT);
+
+    /**
      * Kinds a recruiter may assign when manually re-typing an
      * unclassified file — the full set: old files predate flow tracking,
      * so any of these can be the truthful answer.
      */
     public static final Set<String> ASSIGNABLE_KINDS = ALL_KINDS;
+
+    /** Whether the kind carries offer-dossier or onboarding material. */
+    public static boolean isDossierRestricted(String kind) {
+        return kind != null && DOSSIER_RESTRICTED_KINDS.contains(kind);
+    }
 
     private static final TypeReference<List<GeneratedPdfRef>> REF_LIST =
             new TypeReference<>() {

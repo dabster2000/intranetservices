@@ -23,9 +23,10 @@ public record ApplicationResponse(
         RecruitmentHiringTrack positionTrack,
         /**
          * The position's named hiring owner, denormalized like the other
-         * position facts. The UI needs it to answer "is the viewer running
-         * this hire?" — which is what opens the read-only offer/contract
-         * view — without fetching every position just to find out.
+         * position facts. The UI needs it as workflow context to answer "who
+         * is the named owner?" without fetching every position just to find
+         * out. It is not a dossier grant; only
+         * {@link #viewerCanReadDossier} may open the offer/contract view.
          * {@code null} when the position has no named owner.
          */
         String positionHiringOwnerUuid,
@@ -62,19 +63,29 @@ public record ApplicationResponse(
          */
         boolean viewerCanDecideFinal,
         /**
+         * Whether the requesting user may read the candidate's offer and
+         * contract dossier. This is the authoritative capability for showing
+         * the read-only Offer & Contract surface and is intentionally derived
+         * from {@code RecruitmentVisibility.canReadDossier}, the same
+         * predicate enforced by the dossier resource. It is false for an
+         * assistant-only viewer even when {@link #viewerRunsHire} is true;
+         * TEAMLEAD/HR/ADMIN combinations retain the access their broader
+         * standing grants.
+         */
+        boolean viewerCanReadDossier,
+        /**
          * Whether the requesting user <em>runs this hire</em> — the named
-         * hiring owner, or a lead of the position's practice. Distinct from
-         * {@link #viewerCanDecide} on purpose: it is what opens the read-only
-         * offer/contract view, and a recruiter who may decide everywhere is
-         * deliberately not in it.
+         * hiring owner; partner-track ownership also requires membership in
+         * that position's circle. Distinct from {@link #viewerCanDecide} on
+         * purpose: a recruiter who may decide everywhere is deliberately not
+         * in it.
          * <p>
-         * Deliberately the same predicate as {@code canReadDossier}'s
-         * hiring-owner branch ({@code RecruitmentVisibility
-         * .isHiringOwnerForCandidate}), so the page cannot offer a contract
-         * tab the backend then 404s. That includes the 2026-08-19 clause:
-         * an application the viewer filed themselves does not count, so an
-         * intake holder who attaches a candidate to their own position sees
-         * no contract tab appear.
+         * This remains useful as workflow context, but it is not an access
+         * grant: {@link #viewerCanReadDossier} is the only dossier-rendering
+         * capability. In particular, the assistant-only exclusion makes it
+         * possible for this field to be true while dossier readability is
+         * false. The 2026-08-19 self-attach clause still applies here: an
+         * application the viewer filed themselves does not count.
          */
         boolean viewerRunsHire
 ) {

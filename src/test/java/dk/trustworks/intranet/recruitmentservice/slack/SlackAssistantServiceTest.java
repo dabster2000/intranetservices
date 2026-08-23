@@ -73,6 +73,7 @@ class SlackAssistantServiceTest {
 
     private String marker;
     private String recruiterUuid;
+    private String assistantUuid;
     private String uninvolvedUuid;
     private String interviewerUuid;
     private String circleMemberUuid;
@@ -95,6 +96,7 @@ class SlackAssistantServiceTest {
     void seed() {
         marker = UUID.randomUUID().toString().substring(0, 8);
         recruiterUuid = UUID.randomUUID().toString();
+        assistantUuid = UUID.randomUUID().toString();
         uninvolvedUuid = UUID.randomUUID().toString();
         interviewerUuid = UUID.randomUUID().toString();
         circleMemberUuid = UUID.randomUUID().toString();
@@ -115,11 +117,17 @@ class SlackAssistantServiceTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, recruiterUuid, "Rita", "Recruiter");
             P8ProfileFixtures.insertRole(em, recruiterUuid, "HR");
+            P8ProfileFixtures.insertUser(em, assistantUuid, "Rikke", "Assistant");
+            P8ProfileFixtures.insertRole(em, assistantUuid, "ASSISTANT_TEAMLEAD");
             P8ProfileFixtures.insertUser(em, uninvolvedUuid, "Uno", "Uninvolved");
             P8ProfileFixtures.insertUser(em, interviewerUuid, "Ivan", "Interviewer");
             P8ProfileFixtures.insertUser(em, circleMemberUuid, "Carl", "Circle");
 
             P8ProfileFixtures.insertPractice(em, practiceUuid);
+            em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
+                    .setParameter("practice", practiceUuid)
+                    .setParameter("user", assistantUuid)
+                    .executeUpdate();
             P8ProfileFixtures.insertPosition(em, normalPositionUuid, normalPositionTitle,
                     "PRACTICE_TEAM", practiceUuid, null, null);
             P8ProfileFixtures.insertPosition(em, partnerPositionUuid, partnerPositionTitle,
@@ -164,7 +172,7 @@ class SlackAssistantServiceTest {
     @AfterEach
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
-            List<String> users = List.of(recruiterUuid, uninvolvedUuid,
+            List<String> users = List.of(recruiterUuid, assistantUuid, uninvolvedUuid,
                     interviewerUuid, circleMemberUuid);
             em.createNativeQuery("DELETE FROM recruitment_events WHERE actor_uuid IN (:u)")
                     .setParameter("u", users).executeUpdate();
@@ -394,6 +402,84 @@ class SlackAssistantServiceTest {
     }
 
     @Test
+    void lastActivity_dossierOnlyTypesHiddenFromAssistant_visibleToHr() {
+        mockIntent("CANDIDATE_STATUS", normalFirstName, null);
+        List<LastActivityCase> restricted = List.of(
+                new LastActivityCase("DOSSIER_CREATED",
+                        "{\"dossier_uuid\":\"dossier-secret\"}", "Dossier created"),
+                new LastActivityCase("SIGNING_COMPLETED",
+                        "{\"case_key\":\"case-secret\"}", "Signing completed"),
+                new LastActivityCase("RECORD_CHECK_DRAWN",
+                        "{\"selected\":true,\"rate_applied\":20}", "Record check drawn"),
+                new LastActivityCase("RECORD_CHECK_OUTCOME_RECORDED",
+                        "{\"outcome\":\"NOT_CLEAN\"}", "Record check outcome recorded"),
+                new LastActivityCase("DOCUMENT_UPLOADED",
+                        "{\"file_uuid\":\"file-secret\",\"kind\":\"CONTRACT_DRAFT\","
+                                + "\"origin\":\"dossier\"}", "Document uploaded"),
+                new LastActivityCase("DOCUMENT_KIND_CHANGED",
+                        "{\"file_uuid\":\"file-secret\",\"kind\":\"APPENDIX\","
+                                + "\"previous_kind\":\"OTHER\"}", "Document kind changed"),
+                new LastActivityCase("CANDIDATE_UPDATED",
+                        "{\"changed_fields\":[\"target_company_uuid\",\"notes\"]}",
+                        "Candidate updated"));
+
+        for (LastActivityCase activity : restricted) {
+            insertApplicationEvent(activity.eventType(), activity.payload());
+            String assistantReply = candidateReply(assistantUuid);
+            assertFalse(assistantReply.contains("Last activity:"),
+                    activity.eventType() + " leaked to assistant: " + assistantReply);
+
+            String hrReply = candidateReply(recruiterUuid);
+            assertTrue(hrReply.contains("Last activity: " + activity.label()), hrReply);
+        }
+
+        // OFFER_OPENED is ordinary pipeline progress, not dossier metadata.
+        insertApplicationEvent("OFFER_OPENED",
+                "{\"from_stage\":\"INTERVIEW_1\",\"dossier_linked\":true}");
+        assertTrue(candidateReply(assistantUuid).contains("Last activity: Offer opened"));
+
+        // A mixed candidate update remains ordinary when at least one visible
+        // profile field changed; the reply exposes only the event type.
+        insertApplicationEvent("CANDIDATE_UPDATED",
+                "{\"changed_fields\":[\"phone\",\"notes\"]}");
+        assertTrue(candidateReply(assistantUuid).contains("Last activity: Candidate updated"));
+    }
+
+    @Test
+    void lastActivity_historicallyRestrictedDocumentStaysHiddenAfterOrdinaryRelabels() {
+        String fileUuid = UUID.randomUUID().toString();
+        QuarkusTransaction.requiringNew().run(() -> {
+            P8ProfileFixtures.insertFileRow(em, fileUuid, normalCandidateUuid,
+                    "historically-restricted.pdf");
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_UPLOADED", normalCandidateUuid,
+                    normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
+                    "NORMAL", "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"OTHER\",\"origin\":\"manual\"}", null);
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_KIND_CHANGED", normalCandidateUuid,
+                    normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
+                    "NORMAL", "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"CONTRACT_DRAFT\",\"previous_kind\":\"OTHER\"}",
+                    null);
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_KIND_CHANGED", normalCandidateUuid,
+                    normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
+                    "NORMAL", "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"CV\",\"previous_kind\":\"CONTRACT_DRAFT\"}",
+                    null);
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_KIND_CHANGED", normalCandidateUuid,
+                    normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
+                    "NORMAL", "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"OTHER\",\"previous_kind\":\"CV\"}", null);
+        });
+
+        mockIntent("CANDIDATE_STATUS", normalFirstName, null);
+        String assistantReply = candidateReply(assistantUuid);
+        assertFalse(assistantReply.contains("Last activity:"), assistantReply);
+
+        String hrReply = candidateReply(recruiterUuid);
+        assertTrue(hrReply.contains("Last activity: Document kind changed"), hrReply);
+    }
+
+    @Test
     void heldRound_waitingOnScorecards_countsOnly_thenDebriefReady() {
         String interviewUuid = UUID.randomUUID().toString();
         QuarkusTransaction.requiringNew().run(() -> {
@@ -538,6 +624,22 @@ class SlackAssistantServiceTest {
     // =====================================================================
     // Helpers
     // =====================================================================
+
+    private record LastActivityCase(String eventType, String payload, String label) {
+    }
+
+    private void insertApplicationEvent(String eventType, String payload) {
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertEvent(em, eventType, normalCandidateUuid,
+                        normalApplicationUuid, normalPositionUuid, "USER", recruiterUuid,
+                        "NORMAL", payload, null));
+    }
+
+    private String candidateReply(String actorUuid) {
+        clearInvocations(slackService);
+        service.answerMention(actorUuid, DM_CHANNEL, THREAD_TS, "status?");
+        return threadReply();
+    }
 
     private void mockIntent(String intent, String candidateReference, String positionReference) {
         ObjectNode node = MAPPER.createObjectNode();

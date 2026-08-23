@@ -20,6 +20,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentIntervie
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCandidateFacts;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.slack.SlackRecruitmentViews;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -116,6 +117,9 @@ public class RecruitmentSlaService {
 
     @Inject
     RecruitmentFeatureFlag featureFlag;
+
+    @Inject
+    RecruitmentVisibility visibility;
 
     @Inject
     RecruitmentSlaThresholds thresholds;
@@ -431,16 +435,22 @@ public class RecruitmentSlaService {
         if (position == null) {
             return List.of();
         }
-        if (position.getHiringOwnerUuid() != null && !position.getHiringOwnerUuid().isBlank()) {
-            return List.of(position.getHiringOwnerUuid());
-        }
         if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            if (position.getHiringOwnerUuid() != null
+                    && !position.getHiringOwnerUuid().isBlank()
+                    && inTx(() -> visibility.canReadPosition(
+                            position.getHiringOwnerUuid(), position))) {
+                return List.of(position.getHiringOwnerUuid());
+            }
             return inTx(() -> RecruitmentCircleMember
                     .<RecruitmentCircleMember>list("positionUuid = ?1 and roleInCircle = ?2",
                             position.getUuid(), RecruitmentCircleRole.OWNER).stream()
                     .map(RecruitmentCircleMember::getUserUuid)
                     .distinct()
                     .toList());
+        }
+        if (position.getHiringOwnerUuid() != null && !position.getHiringOwnerUuid().isBlank()) {
+            return List.of(position.getHiringOwnerUuid());
         }
         if (position.getTeamUuid() != null && !position.getTeamUuid().isBlank()) {
             return inTx(() -> currentTeamLeaders(position.getTeamUuid()));

@@ -127,7 +127,7 @@ public class CandidateBriefService {
      * resolution stays in one place.
      */
     public List<CandidateDocument> briefDocuments(String candidateUuid) {
-        return profileReadService.documents(candidateUuid).documents().stream()
+        return profileReadService.documents(candidateUuid, false).documents().stream()
                 .filter(document -> BRIEF_DOCUMENT_KINDS.contains(document.kind()))
                 .toList();
     }

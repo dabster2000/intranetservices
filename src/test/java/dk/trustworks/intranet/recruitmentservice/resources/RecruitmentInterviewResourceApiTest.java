@@ -61,17 +61,22 @@ class RecruitmentInterviewResourceApiTest {
     private String teamUuid;
     private String recruiterUser;
     private String teamleadUser;
+    private String assistantUser;
     private String interviewerA;
     private String interviewerB;
     private String plainUser;
     private String staffOwner;
 
     private String teamPosition;
+    private String alternatePosition;
     private String staffPosition;
+    private String partnerPosition;
     private String candidateUuid;
     private String staffCandidateUuid;
     private String applicationUuid;
     private String staffApplicationUuid;
+    private String partnerApplicationUuid;
+    private String partnerInterviewUuid;
 
     private String previousInterviewsFlag;
     private String previousPipelineFlag;
@@ -84,32 +89,47 @@ class RecruitmentInterviewResourceApiTest {
         teamUuid = UUID.randomUUID().toString();
         recruiterUser = UUID.randomUUID().toString();
         teamleadUser = UUID.randomUUID().toString();
+        assistantUser = UUID.randomUUID().toString();
         interviewerA = UUID.randomUUID().toString();
         interviewerB = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
         staffOwner = UUID.randomUUID().toString();
         teamPosition = UUID.randomUUID().toString();
+        alternatePosition = UUID.randomUUID().toString();
         staffPosition = UUID.randomUUID().toString();
+        partnerPosition = UUID.randomUUID().toString();
         candidateUuid = UUID.randomUUID().toString();
         staffCandidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
         staffApplicationUuid = UUID.randomUUID().toString();
+        partnerApplicationUuid = UUID.randomUUID().toString();
+        partnerInterviewUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, recruiterUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, teamleadUser, "Tim", "Teamlead");
+            P8ProfileFixtures.insertUser(em, assistantUser, "Rikke", "Assistant");
             P8ProfileFixtures.insertUser(em, interviewerA, "Ida", "Interviewer");
             P8ProfileFixtures.insertUser(em, interviewerB, "Ib", "Interviewer");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
             P8ProfileFixtures.insertUser(em, staffOwner, "Owe", "Owner");
             P8ProfileFixtures.insertRole(em, recruiterUser, "HR");
             P8ProfileFixtures.insertRole(em, teamleadUser, "TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
+            em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
+                    .setParameter("practice", practiceUuid)
+                    .setParameter("user", assistantUser)
+                    .executeUpdate();
             P8ProfileFixtures.insertTeamLeader(em, teamleadUser, teamUuid);
 
             // Team position: standard template, stage set with two rounds.
             P8ProfileFixtures.insertPosition(em, teamPosition, "Consultant", "PRACTICE_TEAM",
                     practiceUuid, teamUuid, null,
+                    "[\"SCREENING\",\"INTERVIEW_1\",\"INTERVIEW_2\",\"OFFER\",\"HIRED\"]",
+                    P8ProfileFixtures.STANDARD_SCORECARD_TEMPLATE_JSON);
+            P8ProfileFixtures.insertPosition(em, alternatePosition, "Alternate consultant",
+                    "PRACTICE_TEAM", practiceUuid, teamUuid, null,
                     "[\"SCREENING\",\"INTERVIEW_1\",\"INTERVIEW_2\",\"OFFER\",\"HIRED\"]",
                     P8ProfileFixtures.STANDARD_SCORECARD_TEMPLATE_JSON);
             // Staff position: trimmed template (2 attributes), one round.
@@ -118,6 +138,8 @@ class RecruitmentInterviewResourceApiTest {
                     "[\"SCREENING\",\"INTERVIEW_1\",\"OFFER\",\"HIRED\"]",
                     "[{\"code\":\"CULTURE_FIT\",\"label\":\"Culture fit\"},"
                             + "{\"code\":\"UNCERTAINTY\",\"label\":\"Handling uncertainty\"}]");
+            P8ProfileFixtures.insertPosition(em, partnerPosition, "Partner", "PARTNER",
+                    practiceUuid, null, null);
 
             P8ProfileFixtures.insertCandidate(em, candidateUuid,
                     PII_SENTINEL + " Kim", PII_SENTINEL + " Kandidat", "ACTIVE", null, null,
@@ -129,6 +151,8 @@ class RecruitmentInterviewResourceApiTest {
                     teamPosition, "INTERVIEW_1");
             P8ProfileFixtures.insertOpenApplication(em, staffApplicationUuid, staffCandidateUuid,
                     staffPosition, "INTERVIEW_1");
+            P8ProfileFixtures.insertOpenApplication(em, partnerApplicationUuid, candidateUuid,
+                    partnerPosition, "OFFER");
 
             previousInterviewsFlag = P8ProfileFixtures.setFlag(em, INTERVIEWS_FLAG, "true");
             previousPipelineFlag = P8ProfileFixtures.setFlag(em, P8ProfileFixtures.PIPELINE_FLAG, "true");
@@ -140,9 +164,9 @@ class RecruitmentInterviewResourceApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(candidateUuid, staffCandidateUuid),
-                    List.of(teamPosition, staffPosition),
+                    List.of(teamPosition, alternatePosition, staffPosition, partnerPosition),
                     List.of(recruiterUser, teamleadUser, interviewerA, interviewerB,
-                            plainUser, staffOwner),
+                            plainUser, staffOwner, assistantUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, INTERVIEWS_FLAG, previousInterviewsFlag);
             P8ProfileFixtures.restoreFlag(em, P8ProfileFixtures.PIPELINE_FLAG, previousPipelineFlag);
@@ -246,6 +270,166 @@ class RecruitmentInterviewResourceApiTest {
     }
 
     // ---- The blind rule ------------------------------------------------------------
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
+    void assistantCanSeeAndClearAdvance() {
+        String interviewUuid = createRoundOne(teamleadUser, List.of(interviewerA));
+
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "ADVANCE"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(200);
+
+        given().header("X-Requested-By", assistantUser)
+                .when().get("/recruitment/candidates/{uuid}/interviews", candidateUuid)
+                .then().statusCode(200)
+                .body("interviews[0].decision", equalTo("ADVANCE"))
+                .body("interviews[0].decidedAt", notNullValue());
+
+        given().header("X-Requested-By", assistantUser)
+                .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
+                .then().statusCode(200)
+                .body("events.find { it.eventType == 'INTERVIEW_DECISION_RECORDED' }.payload.decision",
+                        equalTo("ADVANCE"));
+
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .when().delete("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(204);
+
+        // The assistant may record a fresh advance and consume it through an
+        // ordinary one-stage move; the new final-outcome guard is conditional.
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "ADVANCE"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(200);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("stage", "INTERVIEW_2"))
+                .when().post("/recruitment/applications/{uuid}/stage", applicationUuid)
+                .then().statusCode(200)
+                .body("stage", equalTo("INTERVIEW_2"));
+
+        given().header("X-Requested-By", teamleadUser)
+                .when().get("/recruitment/candidates/{uuid}/interviews", candidateUuid)
+                .then().statusCode(200)
+                .body("interviews[0].decision", nullValue())
+                .body("interviews[0].decidedAt", nullValue());
+
+        // Re-filing and cancellation remain available once no protected
+        // pending outcome would be erased.
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("positionUuid", alternatePosition))
+                .when().post("/recruitment/applications/{uuid}/move-position", applicationUuid)
+                .then().statusCode(200)
+                .body("positionUuid", equalTo(alternatePosition));
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/interviews/{uuid}/cancel", interviewUuid)
+                .then().statusCode(204);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
+    void assistantCannotReadOrClearReject_broaderRolesCan() {
+        String interviewUuid = createRoundOne(teamleadUser, List.of(interviewerA));
+
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "REJECT"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(200);
+
+        given().header("X-Requested-By", assistantUser)
+                .when().get("/recruitment/candidates/{uuid}/interviews", candidateUuid)
+                .then().statusCode(200)
+                .body("interviews[0].decision", nullValue())
+                .body("interviews[0].decidedAt", nullValue());
+        given().header("X-Requested-By", assistantUser)
+                .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
+                .then().statusCode(200)
+                .body("events.find { it.eventType == 'INTERVIEW_DECISION_RECORDED' }.payload.decision",
+                        nullValue());
+
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .when().delete("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "ADVANCE"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "REJECT"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/interviews/{uuid}/cancel", interviewUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("stage", "INTERVIEW_2"))
+                .when().post("/recruitment/applications/{uuid}/stage", applicationUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("positionUuid", alternatePosition))
+                .when().post("/recruitment/applications/{uuid}/move-position", applicationUuid)
+                .then().statusCode(403);
+
+        for (String broaderRoleUser : List.of(teamleadUser, recruiterUser)) {
+            given().header("X-Requested-By", broaderRoleUser)
+                    .when().get("/recruitment/candidates/{uuid}/interviews", candidateUuid)
+                    .then().statusCode(200)
+                    .body("interviews[0].decision", equalTo("REJECT"))
+                    .body("interviews[0].decidedAt", notNullValue());
+            given().header("X-Requested-By", broaderRoleUser)
+                    .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
+                    .then().statusCode(200)
+                    .body("events.find { it.eventType == 'INTERVIEW_DECISION_RECORDED' }.payload.decision",
+                            equalTo("REJECT"));
+        }
+
+        // TEAMLEAD may undo the pending final outcome.
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .when().delete("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(204);
+        // The target value alone is also protected once no decision is pending.
+        given().header("X-Requested-By", assistantUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "REJECT"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(403);
+        given().header("X-Requested-By", assistantUser)
+                .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
+                .then().statusCode(200)
+                .body("events.find { it.eventType == 'INTERVIEW_DECISION_CLEARED' }.payload.previous_decision",
+                        nullValue());
+        given().header("X-Requested-By", recruiterUser)
+                .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
+                .then().statusCode(200)
+                .body("events.find { it.eventType == 'INTERVIEW_DECISION_CLEARED' }.payload.previous_decision",
+                        equalTo("REJECT"));
+
+        // HR has the same positive clear path.
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("decision", "REJECT"))
+                .when().post("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(200);
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .when().delete("/recruitment/interviews/{uuid}/decision", interviewUuid)
+                .then().statusCode(204);
+    }
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
@@ -474,16 +658,15 @@ class RecruitmentInterviewResourceApiTest {
                 .contentType(ContentType.JSON)
                 .body(standardScorecardBody("YES", PII_SENTINEL + " candid remarks"))
                 .when().post("/recruitment/interviews/{uuid}/scorecards", interviewUuid)
-                .then().statusCode(200);
+                .then().statusCode(200)
+                .body("scorecards[0].notes",
+                        equalTo(PII_SENTINEL + " candid remarks"));
 
-        // The author reads their own notes on the timeline.
+        // Interview assignment opens the restricted scorecard/kit surface,
+        // not the full candidate timeline.
         given().header("X-Requested-By", interviewerA)
                 .when().get("/recruitment/candidates/{uuid}/events", candidateUuid)
-                .then().statusCode(200)
-                .body("events.find { it.eventType == 'SCORECARD_SUBMITTED' }.pii.notes",
-                        notNullValue())
-                .body("events.find { it.eventType == 'SCORECARD_SUBMITTED' }.piiRedacted",
-                        is(false));
+                .then().statusCode(404);
 
         // The recruiter sees the event but the notes stay redacted — the
         // timeline never undercuts the blind rule.
@@ -528,6 +711,63 @@ class RecruitmentInterviewResourceApiTest {
                 .body("totalCount", is(0));
     }
 
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
+    void mine_doesNotExposeCvUuidForMonotonicallyRestrictedFile() {
+        QuarkusTransaction.requiringNew().run(() -> {
+            String fileUuid = UUID.randomUUID().toString();
+            P8ProfileFixtures.insertFileRow(em, fileUuid, candidateUuid, "contract-disguised-as-cv.pdf");
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_UPLOADED", candidateUuid,
+                    applicationUuid, teamPosition, "CANDIDATE", null, "NORMAL",
+                    "{\"file_uuid\":\"" + fileUuid + "\",\"kind\":\"OTHER\"}", null);
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_KIND_CHANGED", candidateUuid,
+                    applicationUuid, teamPosition, "CANDIDATE", null, "NORMAL",
+                    "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"CONTRACT_DRAFT\",\"previous_kind\":\"OTHER\"}",
+                    null);
+            P8ProfileFixtures.insertEvent(em, "DOCUMENT_KIND_CHANGED", candidateUuid,
+                    applicationUuid, teamPosition, "CANDIDATE", null, "NORMAL",
+                    "{\"file_uuid\":\"" + fileUuid
+                            + "\",\"kind\":\"CV\",\"previous_kind\":\"CONTRACT_DRAFT\"}",
+                    null);
+        });
+        createRoundOne(teamleadUser, List.of(interviewerA));
+
+        given().header("X-Requested-By", interviewerA)
+                .when().get("/recruitment/interviews/mine")
+                .then().statusCode(200)
+                .body("totalCount", is(1))
+                .body("interviews[0].cvFileUuid", nullValue());
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
+    void mine_mixedCandidateDoesNotExposeHiddenPartnerApplicationStage() {
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertInterviewHoursAgo(em, partnerInterviewUuid,
+                        partnerApplicationUuid, "ROUND", 1,
+                        "[\"" + assistantUser + "\",\"" + recruiterUser + "\"]",
+                        "SCHEDULED", 1));
+
+        for (String outsider : List.of(assistantUser, recruiterUser)) {
+            given().header("X-Requested-By", outsider)
+                    .when().get("/recruitment/interviews/mine")
+                    .then().statusCode(200)
+                    .body("interviews.find { it.applicationUuid == '"
+                                    + partnerApplicationUuid + "' }.stage",
+                            nullValue());
+        }
+
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertCircleMember(em, partnerPosition, recruiterUser));
+        given().header("X-Requested-By", recruiterUser)
+                .when().get("/recruitment/interviews/mine")
+                .then().statusCode(200)
+                .body("interviews.find { it.applicationUuid == '"
+                                + partnerApplicationUuid + "' }.stage",
+                        equalTo("OFFER"));
+    }
+
     // ---- Flag gate ---------------------------------------------------------------------------
 
     @Test
@@ -561,7 +801,7 @@ class RecruitmentInterviewResourceApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write", "recruitment:interview"})
-    void candidateInterviews_visibleToProfileTier_andToAssignedInterviewer() {
+    void candidateInterviews_visibleToProfileTier_assignedInterviewerUsesMine() {
         String interviewUuid = createRoundOne(teamleadUser, List.of(interviewerA));
 
         given().header("X-Requested-By", recruiterUser)
@@ -571,9 +811,13 @@ class RecruitmentInterviewResourceApiTest {
                 .body("interviews[0].uuid", equalTo(interviewUuid))
                 .body("interviews[0].interviewers", hasSize(1));
 
-        // The assigned interviewer reaches the tab through the P11 grant.
+        // An interview assignment opens only the caller's restricted kit,
+        // not the full candidate-profile interview tab.
         given().header("X-Requested-By", interviewerA)
                 .when().get("/recruitment/candidates/{uuid}/interviews", candidateUuid)
+                .then().statusCode(404);
+        given().header("X-Requested-By", interviewerA)
+                .when().get("/recruitment/interviews/mine")
                 .then().statusCode(200)
                 .body("totalCount", is(1));
 

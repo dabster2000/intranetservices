@@ -30,9 +30,10 @@ import java.time.LocalDateTime;
  *                             all submitted scorecards, kept ones included)
  * @param scorecardsExpected   currently assigned interviewer count
  * @param decidedOutcome       the pending decision behind {@code INFORM} —
- *                             served ONLY to viewers with decision rights
- *                             on the position; null for read-only viewers,
- *                             whose chip stays outcome-neutral
+ *                             ADVANCE is served to ordinary decision holders;
+ *                             REJECT additionally requires final-outcome
+ *                             rights. Otherwise null, so the chip stays
+ *                             outcome-neutral without disclosing NO-GO.
  */
 public record BoardCardSubStatus(
         Code code,

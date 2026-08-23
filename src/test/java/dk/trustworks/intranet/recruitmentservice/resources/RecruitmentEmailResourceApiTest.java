@@ -54,6 +54,7 @@ class RecruitmentEmailResourceApiTest {
     private String recruiterUser;
     private String teamleadUser;
     private String adminUser;
+    private String circleRecruiterUser;
     private String positionUuid;
     private String candidateUuid;
     private String applicationUuid;
@@ -62,6 +63,7 @@ class RecruitmentEmailResourceApiTest {
     private String partnerPositionUuid;
     private String partnerCandidateUuid;
     private String partnerApplicationUuid;
+    private String mixedPartnerApplicationUuid;
 
     private String previousFlag;
     private String customTemplateKey;
@@ -72,6 +74,7 @@ class RecruitmentEmailResourceApiTest {
         recruiterUser = UUID.randomUUID().toString();
         teamleadUser = UUID.randomUUID().toString();
         adminUser = UUID.randomUUID().toString();
+        circleRecruiterUser = UUID.randomUUID().toString();
         positionUuid = UUID.randomUUID().toString();
         candidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
@@ -79,6 +82,7 @@ class RecruitmentEmailResourceApiTest {
         partnerPositionUuid = UUID.randomUUID().toString();
         partnerCandidateUuid = UUID.randomUUID().toString();
         partnerApplicationUuid = UUID.randomUUID().toString();
+        mixedPartnerApplicationUuid = UUID.randomUUID().toString();
         customTemplateKey = "TEST_" + UUID.randomUUID().toString()
                 .replace("-", "").substring(0, 12).toUpperCase();
 
@@ -86,9 +90,11 @@ class RecruitmentEmailResourceApiTest {
             P8ProfileFixtures.insertUser(em, recruiterUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, teamleadUser, "Tim", "Teamlead");
             P8ProfileFixtures.insertUser(em, adminUser, "Ada", "Admin");
+            P8ProfileFixtures.insertUser(em, circleRecruiterUser, "Cilla", "Circle");
             P8ProfileFixtures.insertRole(em, recruiterUser, "HR");
             P8ProfileFixtures.insertRole(em, teamleadUser, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
+            P8ProfileFixtures.insertRole(em, circleRecruiterUser, "HR");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             P8ProfileFixtures.insertPosition(em, positionUuid, "Løsningsarkitekt",
                     "PRACTICE_TEAM", practiceUuid, null, null);
@@ -105,10 +111,22 @@ class RecruitmentEmailResourceApiTest {
             // Partner-track-only candidate — invisible to non-circle HR.
             P8ProfileFixtures.insertPosition(em, partnerPositionUuid, "Partner hire",
                     "PARTNER", null, null, null);
+            em.createNativeQuery("UPDATE recruitment_positions SET hiring_owner_uuid = :owner "
+                            + "WHERE uuid = :position")
+                    .setParameter("owner", teamleadUser)
+                    .setParameter("position", partnerPositionUuid)
+                    .executeUpdate();
             P8ProfileFixtures.insertCandidate(em, partnerCandidateUuid,
                     "Pia", "Partner", "ACTIVE", null, null, adminUser);
             P8ProfileFixtures.insertOpenApplication(em, partnerApplicationUuid,
                     partnerCandidateUuid, partnerPositionUuid, "SCREENING");
+            P8ProfileFixtures.insertOpenApplication(em, mixedPartnerApplicationUuid,
+                    candidateUuid, partnerPositionUuid, "SCREENING");
+            P8ProfileFixtures.insertCircleMember(em, partnerPositionUuid,
+                    circleRecruiterUser);
+            P8ProfileFixtures.insertInterviewHoursAgo(em, UUID.randomUUID().toString(),
+                    mixedPartnerApplicationUuid, "ROUND", 1,
+                    "[\"" + teamleadUser + "\"]", "SCHEDULED", 1);
 
             previousFlag = P8ProfileFixtures.setFlag(em, INTERVIEWS_FLAG, "true");
         });
@@ -128,7 +146,7 @@ class RecruitmentEmailResourceApiTest {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(candidateUuid, partnerCandidateUuid),
                     List.of(positionUuid, partnerPositionUuid),
-                    List.of(recruiterUser, teamleadUser, adminUser),
+                    List.of(recruiterUser, teamleadUser, adminUser, circleRecruiterUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, INTERVIEWS_FLAG, previousFlag);
         });
@@ -137,18 +155,25 @@ class RecruitmentEmailResourceApiTest {
     // ---- helpers ---------------------------------------------------------------
 
     private String insertPendingRow(String candidate, String toEmail) {
+        return insertPendingRow(candidate, toEmail, null);
+    }
+
+    private String insertPendingRow(String candidate, String toEmail, String application) {
         String uuid = UUID.randomUUID().toString();
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery("""
                                 INSERT INTO recruitment_pending_emails
-                                    (uuid, candidate_uuid, template_key, reason, to_email, subject, body,
+                                    (uuid, candidate_uuid, application_uuid, template_key, reason,
+                                     to_email, subject, body,
                                      status, created_at, updated_at, created_by)
-                                VALUES (:uuid, :candidate, 'REJECTION_POST_INTERVIEW', 'REVIEW_FIRST_TEMPLATE',
+                                VALUES (:uuid, :candidate, :application,
+                                        'REJECTION_POST_INTERVIEW', 'REVIEW_FIRST_TEMPLATE',
                                         :to, 'Tak for samtalen', 'Kære kandidat', 'PENDING',
                                         NOW(), NOW(), 'test')
                                 """)
                         .setParameter("uuid", uuid)
                         .setParameter("candidate", candidate)
+                        .setParameter("application", application)
                         .setParameter("to", toEmail)
                         .executeUpdate());
         return uuid;
@@ -159,6 +184,15 @@ class RecruitmentEmailResourceApiTest {
                 ((Number) em.createNativeQuery("SELECT COUNT(*) FROM mail WHERE mail = :to")
                         .setParameter("to", candidateEmail)
                         .getSingleResult()).longValue());
+    }
+
+    private String storedBcc() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            Object value = em.createNativeQuery("SELECT bcc FROM mail WHERE mail = :to")
+                    .setParameter("to", candidateEmail)
+                    .getSingleResult();
+            return value == null ? null : value.toString();
+        });
     }
 
     // ---- Templates -------------------------------------------------------------
@@ -306,13 +340,78 @@ class RecruitmentEmailResourceApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
-    void manualSend_foreignApplicationContext_400() {
+    void manualSend_foreignApplicationContext_isUniform404() {
         given().header("X-Requested-By", recruiterUser)
                 .contentType(ContentType.JSON)
                 .body(Map.of("subject", "s", "body", "b",
                         "applicationUuid", partnerApplicationUuid))
                 .when().post("/recruitment/candidates/{uuid}/emails/send", candidateUuid)
-                .then().statusCode(400);
+                .then().statusCode(404);
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void mixedCandidate_hiddenPartnerApplicationCannotDriveComposeRoutes() {
+        String templateUuid = QuarkusTransaction.requiringNew().call(() ->
+                (String) em.createNativeQuery("SELECT uuid FROM recruitment_email_templates "
+                                + "WHERE template_key = 'ACKNOWLEDGEMENT'")
+                        .getSingleResult());
+
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("templateUuid", templateUuid,
+                        "applicationUuid", mixedPartnerApplicationUuid))
+                .when().post("/recruitment/candidates/{uuid}/emails/render", candidateUuid)
+                .then().statusCode(404);
+        given().header("X-Requested-By", recruiterUser)
+                .queryParam("applicationUuid", mixedPartnerApplicationUuid)
+                .when().get("/recruitment/candidates/{uuid}/emails/copy-options", candidateUuid)
+                .then().statusCode(404);
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("subject", "hidden route", "body", "must not send",
+                        "applicationUuid", mixedPartnerApplicationUuid))
+                .when().post("/recruitment/candidates/{uuid}/emails/send", candidateUuid)
+                .then().statusCode(404);
+        assertEquals(0, mailCount());
+
+        given().header("X-Requested-By", circleRecruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("templateUuid", templateUuid,
+                        "applicationUuid", mixedPartnerApplicationUuid))
+                .when().post("/recruitment/candidates/{uuid}/emails/render", candidateUuid)
+                .then().statusCode(200);
+        given().header("X-Requested-By", circleRecruiterUser)
+                .queryParam("applicationUuid", mixedPartnerApplicationUuid)
+                .when().get("/recruitment/candidates/{uuid}/emails/copy-options", candidateUuid)
+                .then().statusCode(200)
+                .body("recipients.userUuid", hasItem(circleRecruiterUser))
+                .body("recipients.userUuid", not(hasItem(teamleadUser)));
+
+        given().header("X-Requested-By", circleRecruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("subject", "visible circle route", "body", "safe to send",
+                        "applicationUuid", mixedPartnerApplicationUuid,
+                        "copyUserUuids", List.of(circleRecruiterUser, teamleadUser),
+                        "copyMode", "BCC"))
+                .when().post("/recruitment/candidates/{uuid}/emails/send", candidateUuid)
+                .then().statusCode(201);
+        assertEquals(circleRecruiterUser + "@example.com", storedBcc(),
+                "the circle recipient remains while the non-circle hiring owner is dropped");
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void noContextCopyPoolDoesNotEnumerateHiddenPartnerInterviewers() {
+        given().header("X-Requested-By", recruiterUser)
+                .when().get("/recruitment/candidates/{uuid}/emails/copy-options", candidateUuid)
+                .then().statusCode(200)
+                .body("recipients.userUuid", not(hasItem(teamleadUser)));
+
+        given().header("X-Requested-By", circleRecruiterUser)
+                .when().get("/recruitment/candidates/{uuid}/emails/copy-options", candidateUuid)
+                .then().statusCode(200)
+                .body("recipients.userUuid", hasItem(teamleadUser));
     }
 
     // ---- Review queue -----------------------------------------------------------
@@ -405,5 +504,52 @@ class RecruitmentEmailResourceApiTest {
                 .when().get("/recruitment/emails/pending")
                 .then().statusCode(200)
                 .body("pending.uuid", hasItem(pendingUuid));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void mixedCandidate_pendingPartnerRowsAreHiddenAndCannotBeResolvedOutsideCircle() {
+        String approveUuid = insertPendingRow(candidateUuid, candidateEmail,
+                mixedPartnerApplicationUuid);
+        String dismissUuid = insertPendingRow(candidateUuid, candidateEmail,
+                mixedPartnerApplicationUuid);
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                        "UPDATE recruitment_pending_emails SET copy_user_uuids = :copies "
+                                + "WHERE uuid = :uuid")
+                .setParameter("copies", circleRecruiterUser + "," + teamleadUser)
+                .setParameter("uuid", approveUuid)
+                .executeUpdate());
+
+        given().header("X-Requested-By", recruiterUser)
+                .when().get("/recruitment/emails/pending")
+                .then().statusCode(200)
+                .body("pending.uuid", not(hasItem(approveUuid)))
+                .body("pending.uuid", not(hasItem(dismissUuid)));
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/emails/pending/{uuid}/approve", approveUuid)
+                .then().statusCode(404);
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/emails/pending/{uuid}/dismiss", dismissUuid)
+                .then().statusCode(404);
+        assertEquals(0, mailCount());
+
+        given().header("X-Requested-By", circleRecruiterUser)
+                .when().get("/recruitment/emails/pending")
+                .then().statusCode(200)
+                .body("pending.uuid", hasItem(approveUuid))
+                .body("pending.uuid", hasItem(dismissUuid));
+        given().header("X-Requested-By", circleRecruiterUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/emails/pending/{uuid}/approve", approveUuid)
+                .then().statusCode(200);
+        given().header("X-Requested-By", circleRecruiterUser)
+                .contentType(ContentType.JSON)
+                .when().post("/recruitment/emails/pending/{uuid}/dismiss", dismissUuid)
+                .then().statusCode(200);
+        assertEquals(1, mailCount());
+        assertEquals(circleRecruiterUser + "@example.com", storedBcc(),
+                "pending approval re-authorizes its snapshot against the application route");
     }
 }

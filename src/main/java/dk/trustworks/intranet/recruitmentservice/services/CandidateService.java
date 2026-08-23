@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -354,12 +355,34 @@ public class CandidateService {
         StringBuilder where = new StringBuilder("1 = 1");
         Map<String, Object> params = new java.util.HashMap<>();
 
+        CandidateListView parsedView = view != null && !view.isBlank()
+                ? parseEnum(CandidateListView.class, view, "view")
+                : null;
+        boolean filtersOnApplications = parsedView == CandidateListView.ACTIVE_PIPELINE
+                || (practice != null && !practice.isBlank());
+        List<String> readablePositionUuids = filtersOnApplications
+                && viewerUuid != null && !viewerUuid.isBlank()
+                ? visibility.filterPositions(viewerUuid, null, null, null).stream()
+                        .map(RecruitmentPosition::getUuid)
+                        .toList()
+                : List.of();
+
+        // The profile boundary closes at hire for TEAMLEAD, assistant and
+        // involvement-only viewers. Apply that rule before count/pagination
+        // so the grid cannot leak a new employee's former candidate row and
+        // so totalCount remains truthful. HR/RECRUITMENT/ADMIN (and the
+        // dedicated GDPR grant) retain the canonical hired-file access.
+        if (!visibility.canReadHiredCandidateFiles(viewerUuid)) {
+            where.append(" AND status <> :invisibleHiredStatus");
+            params.put("invisibleHiredStatus", CandidateStatus.HIRED);
+        }
+
         if (statusFilter != null && !statusFilter.isBlank()) {
             where.append(" AND status = :status");
             params.put("status", parseEnum(CandidateStatus.class, statusFilter, "status"));
         }
-        if (view != null && !view.isBlank()) {
-            switch (parseEnum(CandidateListView.class, view, "view")) {
+        if (parsedView != null) {
+            switch (parsedView) {
                 case ACTIVE_PIPELINE -> {
                     // "Still in play" is NOT the same as "not terminal".
                     // HIRED is a STAGE, not a terminal: the conversion
@@ -369,10 +392,16 @@ public class CandidateService {
                     // bare "terminal IS NULL" keeps every converted hire
                     // in this view forever. Exclude the HIRED stage
                     // explicitly — exactly as markHired's contract demands.
-                    where.append(
-                            " AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a"
-                                    + " WHERE a.terminal IS NULL AND a.stage <> :viewClosedStage)");
-                    params.put("viewClosedStage", RecruitmentStage.HIRED);
+                    if (readablePositionUuids.isEmpty()) {
+                        where.append(" AND 1 = 0");
+                    } else {
+                        where.append(
+                                " AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a"
+                                        + " WHERE a.terminal IS NULL AND a.stage <> :viewClosedStage"
+                                        + " AND a.positionUuid IN :viewReadablePositions)");
+                        params.put("viewClosedStage", RecruitmentStage.HIRED);
+                        params.put("viewReadablePositions", readablePositionUuids);
+                    }
                 }
                 case TALENT_POOL -> {
                     where.append(" AND status = :viewStatus");
@@ -468,13 +497,23 @@ public class CandidateService {
         if (practice != null && !practice.isBlank()) {
             // "In a pipeline of this practice": at least one still-in-play
             // application (ACTIVE_PIPELINE's exact notion — terminal NULL,
-            // not at the HIRED stage) on a position of the practice.
-            where.append(" AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a,"
-                    + " RecruitmentPosition p WHERE p.uuid = a.positionUuid"
-                    + " AND a.terminal IS NULL AND a.stage <> :practiceHiredStage"
-                    + " AND p.practiceUuid = :practiceUuid)");
-            params.put("practiceHiredStage", RecruitmentStage.HIRED);
-            params.put("practiceUuid", practice);
+            // not at the HIRED stage) on a position of the practice. Bind the
+            // subquery to positions this viewer may actually read: otherwise
+            // a mixed candidate's hidden PARTNER application becomes an
+            // existence oracle through row presence and totalCount even
+            // though activeApplications correctly redacts that route.
+            if (readablePositionUuids.isEmpty()) {
+                where.append(" AND 1 = 0");
+            } else {
+                where.append(" AND uuid IN (SELECT a.candidateUuid FROM RecruitmentApplication a,"
+                        + " RecruitmentPosition p WHERE p.uuid = a.positionUuid"
+                        + " AND a.terminal IS NULL AND a.stage <> :practiceHiredStage"
+                        + " AND a.positionUuid IN :practiceReadablePositions"
+                        + " AND p.practiceUuid = :practiceUuid)");
+                params.put("practiceHiredStage", RecruitmentStage.HIRED);
+                params.put("practiceReadablePositions", readablePositionUuids);
+                params.put("practiceUuid", practice);
+            }
         }
 
         long totalCount = RecruitmentCandidate.count(where.toString(), params);
@@ -492,16 +531,29 @@ public class CandidateService {
                         : applicationService.openApplicationInfoByCandidate(
                                 viewerUuid,
                                 rows.stream().map(RecruitmentCandidate::getUuid).toList());
+        Set<String> dossierReadableCandidateUuids =
+                visibility.dossierReadableCandidateUuids(viewerUuid, rows);
 
         List<CandidateSummary> data = new ArrayList<>(rows.size());
         for (RecruitmentCandidate c : rows) {
-            Optional<CandidateDossier> dossier = findOpenOrLatestDossier(c.getUuid());
-            Optional<CandidateDossierRevision> latest = latestRevisionEntity(c.getUuid());
+            // The grid is a candidate-profile surface, not an offer-dossier
+            // surface. Do not even query contract metadata unless this exact
+            // viewer may read the candidate's dossier; a null viewer and every
+            // narrower role fail closed. This uses the same predicate as the
+            // dossier endpoints and the applications-envelope capability.
+            boolean viewerCanReadDossier =
+                    dossierReadableCandidateUuids.contains(c.getUuid());
+            Optional<CandidateDossier> dossier = viewerCanReadDossier
+                    ? findOpenOrLatestDossier(c.getUuid())
+                    : Optional.empty();
+            Optional<CandidateDossierRevision> latest = viewerCanReadDossier
+                    ? latestRevisionEntity(c.getUuid())
+                    : Optional.empty();
             data.add(new CandidateSummary(
                     c.getUuid(),
                     (c.getFirstName() + " " + c.getLastName()).trim(),
                     c.getEmail(),
-                    c.getTargetCompanyUuid(),
+                    viewerCanReadDossier ? c.getTargetCompanyUuid() : null,
                     dossier.map(CandidateDossier::getTemplateUuid).orElse(null),
                     c.getStatus(),
                     c.getPoolStatus(),
@@ -532,6 +584,11 @@ public class CandidateService {
     public CandidateResponse update(UUID candidateUuid, CandidateRequest req, UUID actor) {
         Objects.requireNonNull(req, "req must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
+        if (req.updatesDossierMetadata() && !visibility.canWriteDossier(actor.toString())) {
+            throw new WebApplicationException(
+                    "Offer-dossier fields may only be changed by HR or an administrator",
+                    Response.Status.FORBIDDEN);
+        }
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
 
         Map<String, Object> structuralChanges = new LinkedHashMap<>();
@@ -761,6 +818,12 @@ public class CandidateService {
         Map<String, RecruitmentCandidate> byUuid = RecruitmentCandidate
                 .<RecruitmentCandidate>list("uuid in ?1", List.copyOf(targets)).stream()
                 .collect(java.util.stream.Collectors.toMap(RecruitmentCandidate::getUuid, c -> c));
+        if (!visibility.canReadHiredCandidateFiles(actor.toString())) {
+            byUuid.values().stream()
+                    .filter(candidate -> candidate.getStatus() == CandidateStatus.HIRED)
+                    .map(RecruitmentCandidate::getUuid)
+                    .forEach(invisible::add);
+        }
         for (String uuid : targets) {
             if (!byUuid.containsKey(uuid) || invisible.contains(uuid)) {
                 throw new NotFoundException("Candidate not found: " + uuid);
@@ -943,6 +1006,15 @@ public class CandidateService {
      * an anonymous skeleton after GDPR anonymization (all-structural
      * payload, no pii section). Re-typing an already-overridden file is
      * allowed — mistakes stay correctable.
+     * <p>
+     * A change that enters or leaves an offer/onboarding classification is
+     * dossier work. A non-writer asking to change a file that any historical
+     * or flow-derived source has classified as restricted receives the same
+     * 404 as an unknown/foreign file, so the command cannot be used as a
+     * dossier-existence oracle. Promoting an ordinary visible file into a
+     * restricted kind is rejected with 403. CV/COVER_LETTER/OTHER-to-each-
+     * other corrections remain available through the normal recruitment
+     * write route.
      *
      * @return the document row as the Documents tab should now render it
      */
@@ -961,13 +1033,28 @@ public class CandidateService {
         dk.trustworks.intranet.fileservice.model.File file =
                 dk.trustworks.intranet.fileservice.model.File.findById(fileUuid);
         if (file == null || !candidate.getUuid().equals(file.getRelateduuid())) {
-            throw new NotFoundException("Document not found: " + fileUuid);
+            throw documentNotFound(fileUuid);
+        }
+        boolean canWriteDossier = visibility.canWriteDossier(actor.toString());
+        if (!canWriteDossier
+                && profileReadService.isDossierRestricted(candidate.getUuid(), fileUuid)) {
+            // Match the IDOR guard exactly: knowing a restricted file UUID
+            // must not disclose that an offer/onboarding document exists.
+            throw documentNotFound(fileUuid);
         }
         dk.trustworks.intranet.recruitmentservice.dto.CandidateDocument current =
-                profileReadService.documents(candidate.getUuid()).documents().stream()
+                // Full classification state is safe here only because the
+                // exact file passed the restricted-file 404 guard above.
+                profileReadService.documents(candidate.getUuid(), true).documents().stream()
                         .filter(d -> fileUuid.equals(d.fileUuid()))
                         .findFirst()
-                        .orElseThrow(() -> new NotFoundException("Document not found: " + fileUuid));
+                        .orElseThrow(() -> documentNotFound(fileUuid));
+        if (CandidateDocumentClassifier.isDossierRestricted(kind) && !canWriteDossier) {
+            throw new WebApplicationException(
+                    "Offer, contract and onboarding document classifications "
+                            + "may only be changed by HR or an administrator",
+                    Response.Status.FORBIDDEN);
+        }
         if (!current.kindEditable()) {
             throw new WebApplicationException(
                     "This document's kind is classified by the system and cannot be changed",
@@ -987,6 +1074,10 @@ public class CandidateService {
                 current.fileUuid(), current.filename(), current.contentType(),
                 current.sizeBytes(), current.uploadedAt(), kind,
                 current.origin(), current.duplicateReason(), true);
+    }
+
+    private static NotFoundException documentNotFound(String fileUuid) {
+        return new NotFoundException("Document not found: " + fileUuid);
     }
 
     /**

@@ -13,6 +13,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibili
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
@@ -112,6 +113,9 @@ public class RecruitmentLandingService {
      * Event types the feed renders — deliberately curated: process moves
      * and communication, no note events (private-note existence stays on
      * the profile timeline behind its authz) and no nudge bookkeeping.
+     * {@code SIGNING_COMPLETED} remains in the source set but is filtered by
+     * the candidate-scoped dossier capability before paging; OFFER_OPENED is
+     * ordinary pipeline progress and follows the normal feed boundary.
      */
     static final Set<RecruitmentEventType> FEED_TYPES = EnumSet.of(
             RecruitmentEventType.APPLICATION_CREATED,
@@ -237,7 +241,7 @@ public class RecruitmentLandingService {
         tasks.addAll(pendingDecisionTasks(decidableApplications, taskInterviews,
                 scorecardsByInterview, taskPositions, candidates, now));
         if (recruiterTier) {
-            emailReviewTask(viewerUuid).ifPresent(tasks::add);
+            emailReviewTask(viewerUuid, positionsByUuid.keySet()).ifPresent(tasks::add);
             referralTriageTask().ifPresent(tasks::add);
         }
 
@@ -465,12 +469,59 @@ public class RecruitmentLandingService {
     }
 
     /** Aggregate row for the review-before-send queue (P15 carry-over: the landing absorbs it). */
-    private java.util.Optional<LandingTask> emailReviewTask(String viewerUuid) {
-        List<String> partnerOnly =
-                visibility.partnerTrackOnlyCandidateUuids(viewerUuid, null);
-        Set<String> excluded = new HashSet<>(partnerOnly);
-        long count = emailService.listPending().stream()
-                .filter(pending -> !excluded.contains(pending.getCandidateUuid()))
+    private java.util.Optional<LandingTask> emailReviewTask(
+            String viewerUuid, Set<String> readablePositionUuids) {
+        List<RecruitmentPendingEmail> pending = emailService.listPending();
+        List<String> candidateUuids = pending.stream()
+                .map(RecruitmentPendingEmail::getCandidateUuid)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<String, RecruitmentCandidate> candidates = candidateUuids.isEmpty() ? Map.of()
+                : RecruitmentCandidate.<RecruitmentCandidate>list("uuid in ?1", candidateUuids)
+                        .stream().collect(Collectors.toMap(
+                                RecruitmentCandidate::getUuid, Function.identity()));
+        List<String> applicationUuids = pending.stream()
+                .map(RecruitmentPendingEmail::getApplicationUuid)
+                .filter(Objects::nonNull)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+        Map<String, RecruitmentApplication> applications = applicationUuids.isEmpty() ? Map.of()
+                : RecruitmentApplication.<RecruitmentApplication>list(
+                                "uuid in ?1", applicationUuids)
+                        .stream().collect(Collectors.toMap(
+                                RecruitmentApplication::getUuid, Function.identity()));
+        Set<String> partnerOnly = new HashSet<>(
+                visibility.partnerTrackOnlyCandidateUuids(viewerUuid, null));
+        boolean admin = visibility.rolesOf(viewerUuid).contains("ADMIN");
+        boolean mayReadHiredFiles = admin || visibility.canReadHiredCandidateFiles(viewerUuid);
+        Set<String> readableCandidates = candidates.values().stream()
+                .filter(candidate -> admin
+                        || (candidate.getStatus()
+                                        != dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus.HIRED
+                                || mayReadHiredFiles)
+                        && !partnerOnly.contains(candidate.getUuid()))
+                .map(RecruitmentCandidate::getUuid)
+                .collect(Collectors.toSet());
+
+        long count = pending.stream()
+                .filter(row -> {
+                    RecruitmentCandidate candidate = candidates.get(row.getCandidateUuid());
+                    if (candidate == null
+                            || !readableCandidates.contains(candidate.getUuid())) {
+                        return false;
+                    }
+                    if (row.getApplicationUuid() == null
+                            || row.getApplicationUuid().isBlank()) {
+                        return true;
+                    }
+                    RecruitmentApplication application =
+                            applications.get(row.getApplicationUuid());
+                    return application != null
+                            && row.getCandidateUuid().equals(application.getCandidateUuid())
+                            && readablePositionUuids.contains(application.getPositionUuid());
+                })
                 .count();
         return count == 0 ? java.util.Optional.empty()
                 : java.util.Optional.of(new LandingTask(LandingTask.TYPE_EMAIL_REVIEW,
@@ -652,17 +703,35 @@ public class RecruitmentLandingService {
         boolean inboxTier = visibility.isInboxTier(viewerUuid);
         Set<String> reachableCandidates = wholesaleCandidateReader ? Set.of()
                 : candidateUuidsWithApplicationOn(visiblePositionUuids);
-        List<RecruitmentEvent> visible = raw.stream()
+        List<RecruitmentEvent> scopeVisible = raw.stream()
                 .filter(e -> feedRowVisible(e, wholesaleCandidateReader, inboxTier,
                         visiblePositionUuids, reachableCandidates, partnerOnlyCandidates))
+                .toList();
+
+        // Resolve candidate rows once for both the candidate-scoped dossier
+        // predicate and display names. Filtering SIGNING_COMPLETED happens
+        // before the page limit so hidden rows cannot leave an artificially
+        // short feed when older ordinary activity is available.
+        Map<String, RecruitmentCandidate> candidates = candidatesByUuid(
+                scopeVisible.stream().map(RecruitmentEvent::getCandidateUuid)
+                        .filter(Objects::nonNull).collect(Collectors.toSet()),
+                preloadedCandidates);
+        List<RecruitmentCandidate> signingCandidates = scopeVisible.stream()
+                .filter(e -> e.getEventType() == RecruitmentEventType.SIGNING_COMPLETED)
+                .map(RecruitmentEvent::getCandidateUuid)
+                .filter(Objects::nonNull)
+                .distinct()
+                .map(candidates::get)
+                .filter(Objects::nonNull)
+                .toList();
+        Set<String> dossierReadableCandidates =
+                visibility.dossierReadableCandidateUuids(viewerUuid, signingCandidates);
+        List<RecruitmentEvent> visible = scopeVisible.stream()
+                .filter(e -> dossierFeedRowVisible(e, dossierReadableCandidates))
                 .limit(displayLimits.activityRows())
                 .toList();
 
-        // Batched name resolution — candidates, positions, actors.
-        Map<String, RecruitmentCandidate> candidates = candidatesByUuid(
-                visible.stream().map(RecruitmentEvent::getCandidateUuid)
-                        .filter(Objects::nonNull).collect(Collectors.toSet()),
-                preloadedCandidates);
+        // Remaining batched name resolution — positions and actors.
         Map<String, String> positionTitles = positionTitles(
                 visible.stream().map(RecruitmentEvent::getPositionUuid)
                         .filter(Objects::nonNull).collect(Collectors.toSet()));
@@ -739,6 +808,20 @@ public class RecruitmentLandingService {
             return false;
         }
         return true;
+    }
+
+    /**
+     * The offer/signing overlay on the ordinary feed boundary. A signing
+     * completion discloses contract status, so it fails closed without both
+     * a candidate UUID and the canonical candidate-scoped dossier grant.
+     * OFFER_OPENED and every other curated event remain ordinary progress.
+     */
+    static boolean dossierFeedRowVisible(
+            RecruitmentEvent event,
+            Set<String> dossierReadableCandidateUuids) {
+        return event.getEventType() != RecruitmentEventType.SIGNING_COMPLETED
+                || (event.getCandidateUuid() != null
+                    && dossierReadableCandidateUuids.contains(event.getCandidateUuid()));
     }
 
     /**

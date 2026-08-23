@@ -90,6 +90,8 @@ class RecruitmentOfferBridgeIntegrationTest {
                 em.createNativeQuery(
                                 "DELETE FROM recruitment_signing_completed_cases WHERE candidate_uuid IN :c")
                         .setParameter("c", candidateUuids).executeUpdate();
+                em.createNativeQuery("DELETE FROM recruitment_record_checks WHERE candidate_uuid IN :c")
+                        .setParameter("c", candidateUuids).executeUpdate();
                 em.createNativeQuery("DELETE FROM recruitment_applications WHERE candidate_uuid IN :c")
                         .setParameter("c", candidateUuids).executeUpdate();
                 em.createNativeQuery("DELETE FROM candidate_dossiers WHERE candidate_uuid IN :c")
@@ -115,7 +117,7 @@ class RecruitmentOfferBridgeIntegrationTest {
 
         changeStage(application, RecruitmentStage.OFFER, false);
 
-        RecruitmentEvent event = lastEvent(candidate);
+        RecruitmentEvent event = lastEventOfType(candidate, RecruitmentEventType.OFFER_OPENED);
         assertEquals(RecruitmentEventType.OFFER_OPENED, event.getEventType());
         assertEquals(candidate, event.getCandidateUuid());
         assertEquals(application, event.getApplicationUuid());
@@ -139,7 +141,7 @@ class RecruitmentOfferBridgeIntegrationTest {
 
         changeStage(application, RecruitmentStage.OFFER, false);
 
-        RecruitmentEvent event = lastEvent(candidate);
+        RecruitmentEvent event = lastEventOfType(candidate, RecruitmentEventType.OFFER_OPENED);
         assertEquals(RecruitmentEventType.OFFER_OPENED, event.getEventType());
         assertTrue(event.getPayload().contains("\"dossier_linked\":true"));
         assertTrue(event.getPayload().contains("\"dossier_uuid\":\"" + dossier + "\""));
@@ -175,7 +177,7 @@ class RecruitmentOfferBridgeIntegrationTest {
 
         changeStage(application, RecruitmentStage.OFFER, false);
 
-        RecruitmentEvent event = lastEvent(candidate);
+        RecruitmentEvent event = lastEventOfType(candidate, RecruitmentEventType.OFFER_OPENED);
         assertEquals(RecruitmentEventType.OFFER_OPENED, event.getEventType());
         assertEquals(RecruitmentEventVisibility.CIRCLE, event.getVisibility(),
                 "partner-track bridge events are circle-scoped");
@@ -189,7 +191,7 @@ class RecruitmentOfferBridgeIntegrationTest {
 
         changeStage(application, RecruitmentStage.OFFER, true); // recruiter fast-track
 
-        RecruitmentEvent event = lastEvent(candidate);
+        RecruitmentEvent event = lastEventOfType(candidate, RecruitmentEventType.OFFER_OPENED);
         assertEquals(RecruitmentEventType.OFFER_OPENED, event.getEventType());
         assertTrue(event.getPayload().contains("\"from_stage\":\"SCREENING\""));
         RecruitmentEventPiiAssertions.assertNoPiiInPayload(event);
@@ -478,7 +480,7 @@ class RecruitmentOfferBridgeIntegrationTest {
             RecruitmentApplication managed = RecruitmentApplication.findById(applicationUuid);
             applicationService.changeStage(managed,
                     RecruitmentPosition.findById(managed.getPositionUuid()), target,
-                    mayFastTrack, actor);
+                    mayFastTrack, true, actor);
         });
     }
 
@@ -510,6 +512,15 @@ class RecruitmentOfferBridgeIntegrationTest {
         List<RecruitmentEvent> events = eventsFor(candidateUuid);
         assertFalse(events.isEmpty(), "expected at least one event for " + candidateUuid);
         return events.get(events.size() - 1);
+    }
+
+    private RecruitmentEvent lastEventOfType(String candidateUuid,
+                                             RecruitmentEventType eventType) {
+        return eventsFor(candidateUuid).stream()
+                .filter(event -> event.getEventType() == eventType)
+                .reduce((first, second) -> second)
+                .orElseThrow(() -> new AssertionError(
+                        "expected " + eventType + " for " + candidateUuid));
     }
 
     private String insertCandidate() {
