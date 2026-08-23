@@ -49,6 +49,9 @@ public class SalaryService {
     dk.trustworks.intranet.aggregates.users.danlon.DanlonEventDetector danlonEventDetector;
 
     @Inject
+    dk.trustworks.intranet.hrletters.services.HrLetterService hrLetterService;
+
+    @Inject
     dk.trustworks.intranet.aggregates.users.danlon.DanlonAssignmentService danlonAssignmentService;
 
     public List<Salary> listAll(String useruuid) {
@@ -131,6 +134,10 @@ public class SalaryService {
             }
 
             sendUpdateEvent(reconciled(s.getUuid(), salary));
+
+            // HR letters: keep a pending lønregulering draft in sync with the
+            // edited row (internally guarded — never breaks the salary save).
+            notifyHrLetterUpdated(reconciled(s.getUuid(), salary));
         }, () -> {
             // CREATE NEW SALARY RECORD
             log.infof("Creating new salary record for user %s (UUID: %s, effective: %s, type: %s)",
@@ -138,6 +145,11 @@ public class SalaryService {
 
             persistNew(salary);
             sendCreateEvent(salary);
+
+            // HR letters: draft the § 8 lønregulering notice for HR to approve
+            // (skips first salary rows and amount-neutral edits; internally
+            // guarded — never breaks the salary save).
+            notifyHrLetterCreated(salary);
 
             // FIX: Check for salary type change even when creating new record
             // This handles the case where a new NORMAL salary record is created instead of updating existing HOURLY record
@@ -240,6 +252,16 @@ public class SalaryService {
         copy.setInternet(incoming.isInternet());
         copy.setPrayerDay(incoming.isPrayerDay());
         return copy;
+    }
+
+    /** Package-private seam for unit tests (the field is only null outside CDI). */
+    void notifyHrLetterCreated(Salary salary) {
+        if (hrLetterService != null) hrLetterService.onSalaryCreated(salary);
+    }
+
+    /** Package-private seam for unit tests (the field is only null outside CDI). */
+    void notifyHrLetterUpdated(Salary salary) {
+        if (hrLetterService != null) hrLetterService.onSalaryUpdated(salary);
     }
 
     /** Package-private seam for unit tests. */
