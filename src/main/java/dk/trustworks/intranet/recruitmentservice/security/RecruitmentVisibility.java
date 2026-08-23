@@ -247,6 +247,21 @@ public class RecruitmentVisibility {
     }
 
     /**
+     * Whether the viewer reads the whole (non-partner) candidate population
+     * — {@link #PROFILE_READ_ROLES} plus ADMIN. The batched twin question of
+     * {@link #canReadCandidateProfile}'s wholesale branch, for surfaces that
+     * scope many candidate-level rows at once (the landing activity feed):
+     * anyone below this tier sees a candidate-level row only for candidates
+     * they actually reach (the assistant's practice, an involved viewer's
+     * own positions' applicants).
+     */
+    public boolean isProfileReadTier(String userUuid) {
+        Set<String> roles = rolesOf(userUuid);
+        return roles.contains(ROLE_ADMIN)
+                || roles.stream().anyMatch(PROFILE_READ_ROLES::contains);
+    }
+
+    /**
      * The assistant's practice route (decisions 2–5): the viewer holds
      * {@code ASSISTANT_TEAMLEAD} and the position is a <b>non-partner</b>
      * position of the practice they belong to. Partner track is excluded
