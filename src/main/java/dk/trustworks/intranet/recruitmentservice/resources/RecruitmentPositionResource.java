@@ -155,6 +155,19 @@ public class RecruitmentPositionResource {
     public Response create(@Valid PositionRequest request) {
         enforceFlag();
         UUID actor = currentActor();
+        // Per-person gate (2026-08-23 access model, §8 gap fix): this
+        // endpoint previously had none at all — @RolesAllowed gates the API
+        // client, and hiringTrack comes straight off the request, so anyone
+        // the BFF admitted could open a PARTNER-track position. Recruiter
+        // tier opens anything; TEAMLEAD any non-partner; the assistant
+        // non-partner in their own practice.
+        if (!visibility.canCreatePosition(actor.toString(),
+                request.hiringTrack(), request.practiceUuid())) {
+            throw new WebApplicationException(
+                    "Opening this position is reserved for the recruitment team"
+                            + " and team leads (partner track: recruitment team only)",
+                    Response.Status.FORBIDDEN);
+        }
         RecruitmentPosition position = positionService.create(request, actor);
         stampMutationRight(position, actor.toString());
         return Response.created(URI.create("/recruitment/positions/" + position.getUuid()))

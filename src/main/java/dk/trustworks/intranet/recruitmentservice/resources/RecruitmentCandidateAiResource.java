@@ -168,7 +168,17 @@ public class RecruitmentCandidateAiResource {
                     "Needs an open application — attach the candidate to a position first");
         }
         RecruitmentPosition position = RecruitmentPosition.findById(anchor.getPositionUuid());
-        requireAiActionTier(viewer, position);
+        // Strictly the recruiter tier — NOT requireAiActionTier. Decision 1
+        // (2026-08-23) made every TEAMLEAD a decision holder on every
+        // non-partner position, so the decide-route half of the AI tier
+        // would have silently widened regeneration to all 20 team leads;
+        // the target table keeps it at ADMIN/HR/RECRUITMENT ("Regenerate
+        // the AI brief: ○ for TL and the assistant").
+        if (!visibility.isRecruiterTier(viewer.toString())) {
+            throw new WebApplicationException(
+                    "Regenerating the AI brief is reserved for the recruiter tier",
+                    Response.Status.FORBIDDEN);
+        }
 
         if (aiReadService.regenerationsToday(candidate.getUuid())
                 >= CandidateAiReadService.DAILY_REGENERATION_LIMIT) {

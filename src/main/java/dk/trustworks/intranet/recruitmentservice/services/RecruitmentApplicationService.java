@@ -651,6 +651,7 @@ public class RecruitmentApplicationService {
                 application.getStageEnteredAt(),
                 application.getCreatedAt(),
                 position != null && visibility.canDecideOnApplication(viewerUuid, position),
+                position != null && visibility.canDecideFinalOutcome(viewerUuid, position),
                 position != null
                         && visibility.isHiringOwnerForCandidate(viewerUuid,
                                 application.getCandidateUuid()));

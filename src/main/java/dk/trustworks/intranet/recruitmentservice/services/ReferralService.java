@@ -418,7 +418,7 @@ public class ReferralService {
      * @param actor the requesting user — must be recruiter tier (403 otherwise)
      */
     public PendingReferralsResponse listPending(UUID actor) {
-        requireRecruiterTier(actor);
+        requireInboxTier(actor);
         List<RecruitmentReferral> referrals = RecruitmentReferral.list(
                 "status = ?1 order by submittedAt", RecruitmentReferralStatus.SUBMITTED);
         Map<String, PendingReferralAiSuggestions> aiSuggestions =
@@ -652,7 +652,7 @@ public class ReferralService {
                                          UUID actor, String origin) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
-        requireRecruiterTier(actor);
+        requireInboxTier(actor);
         RecruitmentReferral referral = RecruitmentReferral.findById(referralUuid.toString());
         if (referral == null) {
             throw new NotFoundException("Referral not found: " + referralUuid);
@@ -802,7 +802,7 @@ public class ReferralService {
      * @param actor the requesting user — must be recruiter tier (403 otherwise)
      */
     public TriageQueueResponse unsolicitedTriageQueue(UUID actor) {
-        requireRecruiterTier(actor);
+        requireInboxTier(actor);
         List<RecruitmentCandidate> candidates = RecruitmentCandidate.list("""
                         createdByUseruuid = ?1 and status = ?2 and poolStatus is null
                         and uuid not in (select a.candidateUuid from RecruitmentApplication a)
@@ -863,16 +863,17 @@ public class ReferralService {
     // ---- Guards ----------------------------------------------------------------
 
     /**
-     * The recruiter-tier gate (spec §7.2: ADMIN, HR or RECRUITMENT), enforced at
-     * the service so no future caller (the P14 Slack twin included) can
-     * reach a recruiter surface without it. The resource keeps its own
-     * check — it answers first with the friendlier message.
+     * The Inbox-tier gate (decisions 12/13, 2026-08-23: ADMIN, HR,
+     * RECRUITMENT or TEAMLEAD), enforced at the service so no future caller
+     * (the P14 Slack twin included) can reach an intake surface without it.
+     * The resource keeps its own check — it answers first with the
+     * friendlier message.
      */
-    private void requireRecruiterTier(UUID actor) {
+    private void requireInboxTier(UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
-        if (!visibility.isRecruiterTier(actor.toString())) {
+        if (!visibility.isInboxTier(actor.toString())) {
             throw new WebApplicationException(
-                    "Reserved for the recruiter tier", Response.Status.FORBIDDEN);
+                    "Reserved for the recruitment team and team leads", Response.Status.FORBIDDEN);
         }
     }
 

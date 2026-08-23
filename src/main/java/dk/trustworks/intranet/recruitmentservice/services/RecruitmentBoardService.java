@@ -120,6 +120,8 @@ public class RecruitmentBoardService {
 
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         boolean viewerCanDecide = visibility.canDecideOnApplication(viewerUuid, position);
+        boolean viewerCanDecideFinal = viewerCanDecide
+                && visibility.canDecideFinalOutcome(viewerUuid, position);
         SubStatusInputs subStatusInputs = loadSubStatusInputs(applications);
         // Read once per board, never per card — app_settings is a tiny table
         // but a lookup per card is still an N+1 by any other name.
@@ -130,7 +132,7 @@ public class RecruitmentBoardService {
         BoardTerminalSummary terminal = buildTerminal(applications, candidates);
 
         return new PositionBoardResponse(
-                summarize(position, stageSet, viewerCanDecide),
+                summarize(position, stageSet, viewerCanDecide, viewerCanDecideFinal),
                 columns, terminal);
     }
 
@@ -534,7 +536,8 @@ public class RecruitmentBoardService {
 
     private static BoardPositionSummary summarize(RecruitmentPosition position,
                                                   List<String> stageSet,
-                                                  boolean viewerCanDecide) {
+                                                  boolean viewerCanDecide,
+                                                  boolean viewerCanDecideFinal) {
         return new BoardPositionSummary(
                 position.getUuid(),
                 position.getTitle(),
@@ -548,6 +551,7 @@ public class RecruitmentBoardService {
                 position.getStatus(),
                 position.getDemandRag(),
                 stageSet,
-                viewerCanDecide);
+                viewerCanDecide,
+                viewerCanDecideFinal);
     }
 }

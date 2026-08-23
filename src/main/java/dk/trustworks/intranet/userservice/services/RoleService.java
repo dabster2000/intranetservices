@@ -50,11 +50,40 @@ public class RoleService {
 
     @Transactional
     public void create(String useruuid, @Valid Role role) {
+        requirePracticeForAssistantTeamlead(useruuid, role);
         role.setUuid(UUID.randomUUID().toString());
         role.setUseruuid(useruuid);
         Role.persist(role);
         authzAuditService.record("USER_ROLE_ADDED", "user_role", useruuid,
                 null, Map.of("useruuid", useruuid, "role", role.getRole()));
+    }
+
+    /**
+     * The assignment rail for {@code ASSISTANT_TEAMLEAD} (recruitment access
+     * model 2026-08-23, decision 3 + the empty-practice guard): the role's
+     * entire reach is the practice the user belongs to
+     * ({@code user.practice_uuid}), so handing it to a user with no practice
+     * would produce a silently empty recruitment module for them — every
+     * screen blank, no error anywhere. Refused here, at assignment time,
+     * with a message that says what to fix instead.
+     */
+    private void requirePracticeForAssistantTeamlead(String useruuid, Role role) {
+        if (role.getRole() == null
+                || !"ASSISTANT_TEAMLEAD".equalsIgnoreCase(role.getRole().trim())) {
+            return;
+        }
+        List<?> rows = em.createNativeQuery(
+                        "SELECT practice_uuid FROM user WHERE uuid = :uuid")
+                .setParameter("uuid", useruuid)
+                .getResultList();
+        boolean hasPractice = !rows.isEmpty()
+                && rows.get(0) instanceof String practice && !practice.isBlank();
+        if (!hasPractice) {
+            throw new RoleAssignmentRailException(
+                    "Refused: ASSISTANT_TEAMLEAD is scoped to the practice the user belongs to,"
+                            + " and this user has no practice. Set their practice first"
+                            + " (user.practice_uuid), then assign the role.");
+        }
     }
 
     @Transactional

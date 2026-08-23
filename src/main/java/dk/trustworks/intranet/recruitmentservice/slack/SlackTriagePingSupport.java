@@ -43,9 +43,15 @@ public class SlackTriagePingSupport {
      * to its outcome so the buttons stop inviting clicks.
      */
     public Actionable resolveActionable(User actor, SlackInboundRequest request) {
-        if (!visibility.isRecruiterTier(actor.getUuid())) {
+        // Inbox tier, NOT recruiter tier: Slack interactivity reaches the
+        // backend without passing through the BFF, so this check must match
+        // the HTTP triage rule exactly — decisions 12/13 opened triage to
+        // TEAMLEAD, and a narrower gate here would give team leads a working
+        // web Inbox and a dead Slack button for the same referral.
+        if (!visibility.isInboxTier(actor.getUuid())) {
             return new Actionable(null, SlackInboundResponse.handled(
-                    "Referral triage is reserved for the recruitment team (HR, Recruitment or admin)."));
+                    "Referral triage is reserved for the recruitment team and team leads"
+                            + " (HR, Recruitment, team leads or admin)."));
         }
         String referralUuid = request.actionValue();
         RecruitmentReferral referral = referralUuid == null ? null

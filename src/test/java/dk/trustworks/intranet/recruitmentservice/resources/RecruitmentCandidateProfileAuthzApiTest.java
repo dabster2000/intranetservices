@@ -206,8 +206,11 @@ class RecruitmentCandidateProfileAuthzApiTest {
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read"})
-    void practiceLead_readsPracticeCandidates_neverPartnerContent() {
-        assertAllSurfaces(practiceLead, normalCandidate, 200);
+    void practiceLeadRow_readsNoCandidateAtAll() {
+        // Decision 11 (2026-08-23): the practice-lead involvement route is
+        // gone from the candidate profile too — a role-less practice lead
+        // answers 404 on every surface, like any other uninvolved employee.
+        assertAllSurfaces(practiceLead, normalCandidate, 404);
         assertAllSurfaces(practiceLead, partnerOnlyCandidate, 404);
     }
 

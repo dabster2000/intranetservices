@@ -7,6 +7,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateInterviewsResponse
 import dk.trustworks.intranet.recruitmentservice.dto.DebriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewDecisionRequest;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScheduleRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewScorecardsResponse;
@@ -233,6 +234,17 @@ public class RecruitmentInterviewResource {
         RecruitmentApplication application = applicationOf(interview);
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
+        // Recording a no-go is the first half of rejecting (the stage move
+        // that follows consumes the record), so it takes the final-outcome
+        // gate (decision 7): an assistant records ADVANCE only — target
+        // table "Record the interview decision: ◐ advance only".
+        if (request.decision() == RecruitmentInterviewDecision.REJECT
+                && !visibility.canDecideFinalOutcome(actor.toString(), position)) {
+            throw new WebApplicationException(
+                    "Recording a no-go starts a rejection, which is reserved for the recruiter"
+                            + " tier, the hiring owner or the position's teamlead",
+                    Response.Status.FORBIDDEN);
+        }
 
         interviewService.recordDecision(interview, application, position,
                 request.decision(), actor);

@@ -192,12 +192,16 @@ class RecruitmentApplicationVisibilityIntegrationTest {
     // ---- Decision tier ---------------------------------------------------------------
 
     @Test
-    void decisionTier_practiceLeadReadsButNeverDecides() {
+    void decisionTier_practiceLeadRowGrantsNothing() {
+        // Decision 11 (2026-08-23): the practice_lead route is gone from
+        // recruitment entirely — a role-less practice lead neither reads nor
+        // decides. (The P2 read grant, and the 2026-08-12 decide grant that
+        // followed it, are both removed; rights come from roles only.)
         RecruitmentPosition normal = position(normalPositionUuid);
-        assertTrue(visibility.canReadPosition(practiceLeadUser, normal),
-                "practice lead has read access (P2)");
+        assertFalse(visibility.canReadPosition(practiceLeadUser, normal),
+                "a practice_lead row no longer grants read");
         assertFalse(visibility.canDecideOnApplication(practiceLeadUser, normal),
-                "spec §7.2: stage moves/decisions are not a practice-lead capability");
+                "nor decisions");
     }
 
     @Test

@@ -38,8 +38,18 @@ public class RoleResource {
     @POST
     @Path("/{uuid}/roles")
     @RolesAllowed({"teams:write"})
-    public void create(@PathParam("uuid") String useruuid, @Valid Role role) {
-        roleService.create(useruuid, role);
+    public Response create(@PathParam("uuid") String useruuid, @Valid Role role) {
+        // 409 + message like the removal rails below — until 2026-08-23 only
+        // deletes had rails, so create had no catch; the assistant practice
+        // rail made a raw 500 here a real path.
+        try {
+            roleService.create(useruuid, role);
+            return Response.noContent().build();
+        } catch (RoleAssignmentRailException e) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity("{\"error\":\"" + e.getMessage() + "\"}")
+                    .build();
+        }
     }
 
     @DELETE
