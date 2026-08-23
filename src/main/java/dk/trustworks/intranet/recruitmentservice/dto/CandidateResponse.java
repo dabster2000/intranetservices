@@ -68,4 +68,60 @@ public record CandidateResponse(
         RevisionSummary latestRevision,
         String applicationUuid
 ) {
+
+    /**
+     * Copy for viewers who may read the candidate profile but not the offer
+     * dossier. Target-company/start facts, the dossier-era notes field,
+     * SharePoint hand-off state, and revision kind/version/timestamp must not
+     * cross that narrower boundary.
+     */
+    public CandidateResponse withoutDossierMetadata() {
+        if (targetCompanyUuid == null
+                && targetStartDate == null
+                && notes == null
+                && sharepointFolderPath == null
+                && sharepointMoveStatus == null
+                && latestRevision == null) {
+            return this;
+        }
+        return new CandidateResponse(
+                uuid,
+                firstName,
+                lastName,
+                email,
+                phone,
+                linkedinUrl,
+                null,
+                null,
+                null,
+                status,
+                poolStatus,
+                source,
+                sourceDetail,
+                referredByUserUuid,
+                externalReferrerName,
+                sponsoringPartnerUuid,
+                relevantTeamleadUuid,
+                tags,
+                educationLevel,
+                educationOther,
+                experienceLevel,
+                specializations,
+                securityClearance,
+                securityRelevant,
+                languages,
+                currentEmployer,
+                lawfulBasis,
+                art14Required,
+                art14Deadline,
+                declineReason,
+                convertedUserUuid,
+                null,
+                null,
+                createdByUseruuid,
+                createdAt,
+                updatedAt,
+                null,
+                applicationUuid);
+    }
 }

@@ -23,6 +23,8 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentSlackChannel;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCandidateFacts;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
+import dk.trustworks.intranet.recruitmentservice.services.CandidateDocumentClassifier;
+import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentInterviewService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.panache.common.Page;
@@ -46,6 +48,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * The P25 @Recruiting assistant (Slack spec §5.11): answers factual
@@ -110,6 +113,14 @@ public class SlackAssistantService {
     private static final DateTimeFormatter INTERVIEW_TIME =
             DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH);
 
+    /** Candidate-row fields owned by the offer dossier rather than the profile. */
+    private static final Set<String> DOSSIER_CANDIDATE_FIELDS = Set.of(
+            "target_company_uuid", "target_start_date", "notes");
+
+    /** Storage origins whose document activity is itself dossier information. */
+    private static final Set<String> DOSSIER_DOCUMENT_ORIGINS = Set.of(
+            "dossier", "signing", "onboarding");
+
     @Inject
     OpenAIService openAIService;
 
@@ -118,6 +129,9 @@ public class SlackAssistantService {
 
     @Inject
     RecruitmentVisibility visibility;
+
+    @Inject
+    CandidateProfileReadService candidateProfileReadService;
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
@@ -311,7 +325,8 @@ public class SlackAssistantService {
     private record CandidateView(RecruitmentCandidate candidate,
                                  List<ApplicationLine> openLines,
                                  boolean hadAnyApplications,
-                                 boolean circleContent) {
+                                 boolean circleContent,
+                                 boolean canReadDossier) {
     }
 
     private record ApplicationLine(RecruitmentApplication application,
@@ -345,7 +360,8 @@ public class SlackAssistantService {
         List<ApplicationLine> openLines = allowed.stream()
                 .filter(line -> line.application().getTerminal() == null)
                 .toList();
-        return new CandidateView(candidate, openLines, !applications.isEmpty(), circleContent);
+        return new CandidateView(candidate, openLines, !applications.isEmpty(), circleContent,
+                visibility.canReadDossier(actorUuid, candidate));
     }
 
     private Composed disambiguation(String safeReference, List<CandidateView> views) {
@@ -377,7 +393,7 @@ public class SlackAssistantService {
         } else {
             sb.append(" — here's where things stand:");
             for (ApplicationLine line : view.openLines()) {
-                appendOpenApplication(sb, line, facts);
+                appendOpenApplication(sb, line, facts, view.canReadDossier());
             }
         }
         sb.append("\n").append(profileLink(candidate.getUuid(), "Open profile"));
@@ -386,7 +402,8 @@ public class SlackAssistantService {
                 view.circleContent(), 1, List.copyOf(new LinkedHashSet<>(facts)));
     }
 
-    private void appendOpenApplication(StringBuilder sb, ApplicationLine line, List<String> facts) {
+    private void appendOpenApplication(StringBuilder sb, ApplicationLine line, List<String> facts,
+                                       boolean canReadDossier) {
         RecruitmentApplication application = line.application();
         RecruitmentPosition position = line.position();
         sb.append("\n• ")
@@ -401,7 +418,8 @@ public class SlackAssistantService {
                 "applicationUuid = ?1 and status <> ?2",
                 application.getUuid(), RecruitmentInterviewStatus.CANCELLED);
         String waitingOn = waitingOn(application, interviews, facts);
-        String lastActivity = lastActivity(application.getUuid());
+        String lastActivity = lastActivity(application.getUuid(),
+                application.getCandidateUuid(), canReadDossier);
         sb.append("\n   ↳ ").append(waitingOn);
         if (lastActivity != null) {
             sb.append(" · Last activity: ").append(lastActivity);
@@ -456,15 +474,104 @@ public class SlackAssistantService {
      * only, never content (a note's existence is structural; its text
      * stays in pii and never surfaces here).
      */
-    private String lastActivity(String applicationUuid) {
+    private String lastActivity(String applicationUuid, String candidateUuid,
+                                boolean canReadDossier) {
         RecruitmentEvent latest = RecruitmentEvent
                 .<RecruitmentEvent>find("applicationUuid = ?1", Sort.descending("seq"), applicationUuid)
                 .firstResult();
-        if (latest == null) {
+        if (latest == null
+                || (!canReadDossier && isDossierOnlyActivity(latest, candidateUuid))) {
             return null;
         }
         return SlackCandidateFacts.humanizeCode(latest.getEventType().name())
                 + " (" + relativeDays(latest.getOccurredAt()) + ")";
+    }
+
+    /**
+     * Event types whose mere presence reveals offer-dossier state. This is a
+     * type-only Slack answer, so returning no last-activity fact is the
+     * smallest fail-closed response; OFFER_OPENED remains ordinary pipeline
+     * progress and is intentionally not listed.
+     */
+    private boolean isDossierOnlyActivity(RecruitmentEvent event, String candidateUuid) {
+        return switch (event.getEventType()) {
+            case DOSSIER_CREATED, SIGNING_COMPLETED,
+                    RECORD_CHECK_DRAWN, RECORD_CHECK_OUTCOME_RECORDED -> true;
+            case DOCUMENT_UPLOADED, DOCUMENT_KIND_CHANGED ->
+                    dossierDocumentPayload(candidateUuid, event.getPayload());
+            case CANDIDATE_UPDATED -> dossierOnlyCandidateUpdate(event.getPayload());
+            default -> false;
+        };
+    }
+
+    private boolean dossierDocumentPayload(String candidateUuid, String rawPayload) {
+        JsonNode payload = payloadObject(rawPayload);
+        if (payload == null) {
+            return true;
+        }
+        if (CandidateDocumentClassifier.isDossierRestricted(text(payload, "kind"))
+                || CandidateDocumentClassifier.isDossierRestricted(text(payload, "previous_kind"))
+                || DOSSIER_DOCUMENT_ORIGINS.contains(text(payload, "origin"))) {
+            return true;
+        }
+
+        // The latest override can be ordinary-to-ordinary even when an older
+        // event (or a persisted signing/dossier reference) classified the
+        // same file as restricted. Reuse the profile/download predicate so
+        // Slack cannot become a weaker metadata boundary. Missing/malformed
+        // identifiers fail closed for viewers without dossier access.
+        String fileUuid = text(payload, "file_uuid");
+        if (candidateUuid == null || candidateUuid.isBlank()
+                || fileUuid == null || fileUuid.isBlank()) {
+            return true;
+        }
+        try {
+            UUID.fromString(fileUuid);
+            return candidateProfileReadService.isDossierRestricted(candidateUuid, fileUuid);
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+    }
+
+    private boolean dossierOnlyCandidateUpdate(String rawPayload) {
+        JsonNode payload = payloadObject(rawPayload);
+        if (payload == null) {
+            return true;
+        }
+        JsonNode changed = payload.get("changed_fields");
+        if (changed != null && changed.isArray()) {
+            for (JsonNode field : changed) {
+                if (field.isTextual() && !DOSSIER_CANDIDATE_FIELDS.contains(field.asText())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        var fieldNames = payload.fieldNames();
+        while (fieldNames.hasNext()) {
+            String field = fieldNames.next();
+            if (!"changed_fields".equals(field) && !DOSSIER_CANDIDATE_FIELDS.contains(field)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private JsonNode payloadObject(String rawPayload) {
+        if (rawPayload == null || rawPayload.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode payload = objectMapper.readTree(rawPayload);
+            return payload != null && payload.isObject() ? payload : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static String text(JsonNode payload, String field) {
+        JsonNode value = payload.get(field);
+        return value != null && value.isTextual() ? value.asText() : null;
     }
 
     private String oneLineStatus(CandidateView view) {

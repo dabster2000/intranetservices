@@ -53,6 +53,9 @@ import java.util.UUID;
  *   <li>Event-level filtering (CIRCLE events, private notes, salary pii)
  *       lives in {@link RecruitmentTimelineService}, applied AFTER profile
  *       access.</li>
+ *   <li>Offer/onboarding documents require the separate, candidate-scoped
+ *       {@link RecruitmentVisibility#canReadDossier} capability. Profile
+ *       readers without it see only CV, cover-letter and ordinary files.</li>
  *   <li>Feature flag {@code recruitment.pipeline.enabled}: off + non-admin
  *       caller → 404 (sibling-resource convention).</li>
  * </ul>
@@ -170,13 +173,16 @@ public class RecruitmentCandidateProfileResource {
         enforcePipelineFlag();
         UUID viewer = currentActor();
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, viewer);
-        return profileReadService.documents(candidate.getUuid());
+        return profileReadService.documents(
+                candidate.getUuid(),
+                visibility.canReadDossier(viewer.toString(), candidate));
     }
 
     /**
      * Stream one document's bytes. Two authz shapes meet here:
      * <ul>
-     *   <li>full-profile viewers get any of the candidate's files;</li>
+     *   <li>full-profile viewers get ordinary files; offer/onboarding kinds
+     *       additionally require the candidate-scoped dossier capability;</li>
      *   <li>restricted viewers (assigned interviewer / circle member) get
      *       only the files that appear on their brief — CV, cover letter
      *       and unclassified uploads. A contract draft, signed document,
@@ -201,7 +207,10 @@ public class RecruitmentCandidateProfileResource {
                 && !briefService.downloadableFileUuids(candidate.getUuid()).contains(fileUuid)) {
             throw new NotFoundException("Document not found: " + fileUuid);
         }
-        DocumentDownload download = profileReadService.download(candidate.getUuid(), fileUuid);
+        DocumentDownload download = profileReadService.download(
+                candidate.getUuid(),
+                fileUuid,
+                visibility.canReadDossier(viewer.toString(), candidate));
         return Response.ok(download.bytes(), download.contentType())
                 .header("Content-Disposition",
                         "attachment; filename=\"" + headerSafe(download.filename()) + "\"")

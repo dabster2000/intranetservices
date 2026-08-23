@@ -59,6 +59,11 @@ public class CandidateAiReadService {
     /** Daily regenerate budget per candidate (UTC day, contract §6.2). */
     public static final int DAILY_REGENERATION_LIMIT = 5;
 
+    private static final List<RecruitmentEventType> AI_EVENT_TYPES = List.of(
+            RecruitmentEventType.AI_SUGGESTIONS_GENERATED,
+            RecruitmentEventType.AI_BRIEF_GENERATED,
+            RecruitmentEventType.AI_SUGGESTION_RESOLVED);
+
     private static final com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>> JSON_OBJECT =
             new com.fasterxml.jackson.core.type.TypeReference<>() {
             };
@@ -82,11 +87,12 @@ public class CandidateAiReadService {
         Objects.requireNonNull(candidate, "candidate must not be null");
         boolean intakeOn = aiFlags.isIntakeEnabled();
         boolean briefOn = aiFlags.isBriefEnabled();
+        RouteScope routeScope = routeScope(viewerUuid, candidate.getUuid());
 
         AiBrief brief = null;
         List<AiSuggestionView> suggestions = List.of();
         if (briefOn) {
-            RecruitmentEvent briefEvent = latestVisible(viewerUuid, candidate.getUuid(),
+            RecruitmentEvent briefEvent = latestVisible(routeScope,
                     RecruitmentEventType.AI_BRIEF_GENERATED);
             if (briefEvent != null) {
                 Map<String, Object> pii = parse(briefEvent.getPii());
@@ -99,14 +105,14 @@ public class CandidateAiReadService {
             }
         }
         if (intakeOn) {
-            IntakeGeneration generation = latestVisibleIntakeGeneration(viewerUuid, candidate.getUuid());
+            IntakeGeneration generation = latestVisibleIntakeGeneration(routeScope);
             if (generation != null) {
-                suggestions = toViews(generation, resolvedSuggestionIds(candidate.getUuid()), candidate);
+                suggestions = toViews(generation, resolvedSuggestionIds(routeScope), candidate);
             }
         }
         return new CandidateAiStateResponse(brief, suggestions, new AiRegenerateInfo(
-                Math.max(0, DAILY_REGENERATION_LIMIT - regenerationsToday(candidate.getUuid())),
-                hasOpenApplication(candidate.getUuid())));
+                Math.max(0, DAILY_REGENERATION_LIMIT - regenerationsToday(routeScope)),
+                latestVisibleOpenApplication(routeScope) != null));
     }
 
     /**
@@ -115,7 +121,11 @@ public class CandidateAiReadService {
      * the resolve command (staleness is defined against THIS generation).
      */
     public IntakeGeneration latestVisibleIntakeGeneration(String viewerUuid, String candidateUuid) {
-        RecruitmentEvent event = latestVisible(viewerUuid, candidateUuid,
+        return latestVisibleIntakeGeneration(routeScope(viewerUuid, candidateUuid));
+    }
+
+    private IntakeGeneration latestVisibleIntakeGeneration(RouteScope routeScope) {
+        RecruitmentEvent event = latestVisible(routeScope,
                 RecruitmentEventType.AI_SUGGESTIONS_GENERATED);
         if (event == null) {
             return null;
@@ -137,12 +147,17 @@ public class CandidateAiReadService {
     }
 
     /** All resolved suggestion ids for the candidate (any generation). */
-    public Set<String> resolvedSuggestionIds(String candidateUuid) {
-        List<RecruitmentEvent> resolved = RecruitmentEvent.list(
-                "candidateUuid = ?1 and eventType = ?2",
-                candidateUuid, RecruitmentEventType.AI_SUGGESTION_RESOLVED);
+    public Set<String> resolvedSuggestionIds(String viewerUuid, String candidateUuid) {
+        return resolvedSuggestionIds(routeScope(viewerUuid, candidateUuid));
+    }
+
+    private Set<String> resolvedSuggestionIds(RouteScope routeScope) {
         Set<String> ids = new HashSet<>();
-        for (RecruitmentEvent event : resolved) {
+        for (RecruitmentEvent event : routeScope.events()) {
+            if (event.getEventType() != RecruitmentEventType.AI_SUGGESTION_RESOLVED
+                    || !routeScope.canRead(event)) {
+                continue;
+            }
             Map<String, Object> payload = parse(event.getPayload());
             if (payload.get("suggestion_id") instanceof String id) {
                 ids.add(id);
@@ -155,16 +170,20 @@ public class CandidateAiReadService {
      * Distinct regenerate-origin {@code generation_id}s appended today
      * (UTC) for the candidate — the 5/day rate-limit counter.
      */
-    public int regenerationsToday(String candidateUuid) {
+    public int regenerationsToday(String viewerUuid, String candidateUuid) {
+        return regenerationsToday(routeScope(viewerUuid, candidateUuid));
+    }
+
+    private int regenerationsToday(RouteScope routeScope) {
         LocalDateTime startOfDay = LocalDate.now(ZoneOffset.UTC).atStartOfDay();
-        List<RecruitmentEvent> events = RecruitmentEvent.list(
-                "candidateUuid = ?1 and eventType in ?2 and occurredAt >= ?3",
-                candidateUuid,
-                List.of(RecruitmentEventType.AI_SUGGESTIONS_GENERATED,
-                        RecruitmentEventType.AI_BRIEF_GENERATED),
-                startOfDay);
         Set<String> generationIds = new HashSet<>();
-        for (RecruitmentEvent event : events) {
+        for (RecruitmentEvent event : routeScope.events()) {
+            if ((event.getEventType() != RecruitmentEventType.AI_SUGGESTIONS_GENERATED
+                    && event.getEventType() != RecruitmentEventType.AI_BRIEF_GENERATED)
+                    || event.getOccurredAt().isBefore(startOfDay)
+                    || !routeScope.canRead(event)) {
+                continue;
+            }
             Map<String, Object> payload = parse(event.getPayload());
             if (AiIntakeGenerationService.ORIGIN_REGENERATE.equals(payload.get("origin"))
                     && payload.get("generation_id") instanceof String id) {
@@ -185,10 +204,28 @@ public class CandidateAiReadService {
      * {@code terminal} NULL by design, and intake AI on someone already
      * hired has nothing left to inform.
      */
-    public boolean hasOpenApplication(String candidateUuid) {
-        return RecruitmentApplication.count(
-                "candidateUuid = ?1 and terminal is null and stage <> ?2",
-                candidateUuid, RecruitmentStage.HIRED) > 0;
+    public boolean hasOpenApplication(String viewerUuid, String candidateUuid) {
+        return latestVisibleOpenApplication(viewerUuid, candidateUuid) != null;
+    }
+
+    /**
+     * The newest open application on a position this viewer may read. The
+     * query remains candidate-scoped, while the position predicate closes
+     * the mixed-candidate partner boundary before regeneration performs any
+     * AI call.
+     */
+    public RecruitmentApplication latestVisibleOpenApplication(
+            String viewerUuid, String candidateUuid) {
+        return latestVisibleOpenApplication(routeScope(viewerUuid, candidateUuid));
+    }
+
+    private RecruitmentApplication latestVisibleOpenApplication(RouteScope routeScope) {
+        return routeScope.applications().stream()
+                .filter(application -> application.getTerminal() == null)
+                .filter(application -> application.getStage() != RecruitmentStage.HIRED)
+                .filter(routeScope::canRead)
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -240,38 +277,64 @@ public class CandidateAiReadService {
      * invisible events are treated as absent, so the "latest generation"
      * is the latest VISIBLE one.
      */
-    private RecruitmentEvent latestVisible(String viewerUuid, String candidateUuid,
+    private RecruitmentEvent latestVisible(RouteScope routeScope,
                                            RecruitmentEventType type) {
+        return routeScope.events().stream()
+                .filter(event -> event.getEventType() == type)
+                .filter(routeScope::canRead)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * One bounded route snapshot per derived read: applications and AI
+     * events are loaded candidate-wide, their referenced positions in one
+     * query, and the canonical visibility helper resolves the readable set
+     * once. This prevents a stale NORMAL event stamp from bypassing a hidden
+     * partner position and keeps missing positions fail-closed for anchors.
+     */
+    private RouteScope routeScope(String viewerUuid, String candidateUuid) {
+        List<RecruitmentApplication> applications = RecruitmentApplication.list(
+                "candidateUuid = ?1 order by createdAt desc, uuid desc", candidateUuid);
         List<RecruitmentEvent> events = RecruitmentEvent.list(
-                "candidateUuid = ?1 and eventType = ?2 order by seq desc",
-                candidateUuid, type);
-        if (events.isEmpty()) {
-            return null;
+                "candidateUuid = ?1 and eventType in ?2 order by seq desc",
+                candidateUuid, AI_EVENT_TYPES);
+        List<String> positionUuids = java.util.stream.Stream.concat(
+                        applications.stream().map(RecruitmentApplication::getPositionUuid),
+                        events.stream().map(RecruitmentEvent::getPositionUuid))
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        List<RecruitmentPosition> positions = positionUuids.isEmpty() ? List.of()
+                : RecruitmentPosition.list("uuid in ?1", positionUuids);
+        boolean admin = viewerUuid != null
+                && visibility.rolesOf(viewerUuid).contains("ADMIN");
+        Set<String> readablePositions = viewerUuid == null || viewerUuid.isBlank()
+                ? Set.of()
+                : visibility.readablePositionUuids(viewerUuid, positions);
+        return new RouteScope(admin, applications, events, readablePositions);
+    }
+
+    private record RouteScope(
+            boolean admin,
+            List<RecruitmentApplication> applications,
+            List<RecruitmentEvent> events,
+            Set<String> readablePositions) {
+
+        private boolean canRead(RecruitmentApplication application) {
+            return application != null
+                    && readablePositions.contains(application.getPositionUuid());
         }
-        boolean admin = visibility.rolesOf(viewerUuid).contains("ADMIN");
-        Set<String> readable = null; // resolved lazily, once
-        for (RecruitmentEvent event : events) {
-            if (admin || event.getVisibility() != RecruitmentEventVisibility.CIRCLE) {
-                return event;
+
+        private boolean canRead(RecruitmentEvent event) {
+            if (admin) {
+                return true;
             }
-            if (event.getPositionUuid() == null) {
-                continue; // fail closed — position-less CIRCLE (timeline rule 1)
+            if (event.getPositionUuid() != null) {
+                return readablePositions.contains(event.getPositionUuid());
             }
-            if (readable == null) {
-                List<String> positionUuids = events.stream()
-                        .map(RecruitmentEvent::getPositionUuid)
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .toList();
-                List<RecruitmentPosition> positions = positionUuids.isEmpty() ? List.of()
-                        : RecruitmentPosition.list("uuid in ?1", positionUuids);
-                readable = visibility.readablePositionUuids(viewerUuid, positions);
-            }
-            if (readable.contains(event.getPositionUuid())) {
-                return event;
-            }
+            return event.getVisibility() != RecruitmentEventVisibility.CIRCLE;
         }
-        return null;
     }
 
     private static List<String> stringList(Object value) {

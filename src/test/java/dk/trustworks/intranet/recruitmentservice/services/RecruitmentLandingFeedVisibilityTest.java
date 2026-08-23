@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
+import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentLandingService.dossierFeedRowVisible;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentLandingService.feedRowVisible;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -111,5 +112,30 @@ class RecruitmentLandingFeedVisibilityTest {
                 IN_PRACTICE_POSITION);
         assertTrue(feedRowVisible(inCircle, true, true,
                 VISIBLE_POSITIONS, Set.of(), PARTNER_ONLY));
+    }
+
+    @Test
+    void signingCompleted_requiresCandidateScopedDossierCapability() {
+        RecruitmentEvent completed = event(
+                RecruitmentEventType.SIGNING_COMPLETED,
+                REACHABLE_CANDIDATE, IN_PRACTICE_POSITION);
+
+        assertFalse(dossierFeedRowVisible(completed, Set.of()),
+                "an assistant/profile reader must not learn that a contract was signed");
+        assertTrue(dossierFeedRowVisible(completed, Set.of(REACHABLE_CANDIDATE)),
+                "an eligible named TEAMLEAD or HR/admin keeps signing activity");
+
+        RecruitmentEvent malformed = event(
+                RecruitmentEventType.SIGNING_COMPLETED, null, IN_PRACTICE_POSITION);
+        assertFalse(dossierFeedRowVisible(malformed, Set.of(REACHABLE_CANDIDATE)),
+                "a signing event without a candidate must fail closed");
+    }
+
+    @Test
+    void offerOpened_remainsOrdinaryProgressWithoutDossierCapability() {
+        RecruitmentEvent offerOpened = event(
+                RecruitmentEventType.OFFER_OPENED,
+                REACHABLE_CANDIDATE, IN_PRACTICE_POSITION);
+        assertTrue(dossierFeedRowVisible(offerOpened, Set.of()));
     }
 }

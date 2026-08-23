@@ -99,6 +99,13 @@ public class RecruitmentEmailCopyResolver {
         if (candidate == null || roles == null || roles.isEmpty()) {
             return List.of();
         }
+        boolean applicationScoped = applicationUuid != null && !applicationUuid.isBlank();
+        RecruitmentPosition applicationPosition = applicationScoped
+                ? positionFor(candidate, applicationUuid)
+                : null;
+        if (applicationScoped && applicationPosition == null) {
+            return List.of();
+        }
         // Deduplicate by user, keeping the FIRST source that produced
         // them — enum order makes "Interviewer" win over "Hiring owner"
         // for someone who is both, which is the more informative label.
@@ -107,11 +114,13 @@ public class RecruitmentEmailCopyResolver {
             if (!roles.contains(role)) {
                 continue;
             }
-            for (String userUuid : userUuidsFor(role, candidate, applicationUuid, actorUserUuid)) {
+            for (String userUuid : userUuidsFor(
+                    role, candidate, applicationUuid, actorUserUuid)) {
                 if (userUuid == null || userUuid.isBlank() || byUser.containsKey(userUuid)) {
                     continue;
                 }
-                toRecipient(userUuid, role, candidate).ifPresent(r -> byUser.put(userUuid, r));
+                toRecipient(userUuid, role, candidate, applicationPosition)
+                        .ifPresent(r -> byUser.put(userUuid, r));
             }
         }
         List<CopyRecipient> resolved = new ArrayList<>(byUser.values());
@@ -144,8 +153,16 @@ public class RecruitmentEmailCopyResolver {
      * candidate matters more than a copy.
      */
     public List<CopyRecipient> resolveExplicit(RecruitmentCandidate candidate,
+                                               String applicationUuid,
                                                List<String> userUuids) {
         if (candidate == null || userUuids == null || userUuids.isEmpty()) {
+            return List.of();
+        }
+        boolean applicationScoped = applicationUuid != null && !applicationUuid.isBlank();
+        RecruitmentPosition applicationPosition = applicationScoped
+                ? positionFor(candidate, applicationUuid)
+                : null;
+        if (applicationScoped && applicationPosition == null) {
             return List.of();
         }
         Map<String, CopyRecipient> byUser = new LinkedHashMap<>();
@@ -158,7 +175,8 @@ public class RecruitmentEmailCopyResolver {
                         candidate.getUuid(), MAX_COPIES);
                 break;
             }
-            toRecipient(userUuid.trim(), null, candidate).ifPresent(r -> byUser.put(userUuid, r));
+            toRecipient(userUuid.trim(), null, candidate, applicationPosition)
+                    .ifPresent(r -> byUser.put(userUuid, r));
         }
         return List.copyOf(new ArrayList<>(byUser.values()));
     }
@@ -172,7 +190,8 @@ public class RecruitmentEmailCopyResolver {
                                       String applicationUuid,
                                       String actorUserUuid) {
         return switch (role) {
-            case INTERVIEWERS -> interviewerUuids(candidate, applicationUuid);
+            case INTERVIEWERS -> interviewerUuids(
+                    candidate, applicationUuid, actorUserUuid);
             case SENDER -> actorUserUuid == null || actorUserUuid.isBlank()
                     ? List.of() : List.of(actorUserUuid);
             case HIRING_OWNER -> hiringOwnerUuid(candidate, applicationUuid);
@@ -185,12 +204,22 @@ public class RecruitmentEmailCopyResolver {
      * application the candidate holds (an email with no application
      * context is about the person, not one process).
      */
-    private List<String> interviewerUuids(RecruitmentCandidate candidate, String applicationUuid) {
-        List<String> applicationUuids = applicationUuid != null && !applicationUuid.isBlank()
-                ? List.of(applicationUuid)
-                : RecruitmentApplication
-                        .<RecruitmentApplication>list("candidateUuid", candidate.getUuid())
-                        .stream().map(RecruitmentApplication::getUuid).toList();
+    private List<String> interviewerUuids(RecruitmentCandidate candidate,
+                                          String applicationUuid,
+                                          String actorUserUuid) {
+        List<String> applicationUuids;
+        if (applicationUuid != null && !applicationUuid.isBlank()) {
+            applicationUuids = List.of(applicationUuid);
+        } else if (actorUserUuid == null || actorUserUuid.isBlank()) {
+            // An automatic caller without an exact route cannot prove which
+            // of a mixed candidate's panels it may disclose.
+            applicationUuids = List.of();
+        } else {
+            applicationUuids = visibility.filterApplications(
+                            actorUserUuid, candidate.getUuid()).stream()
+                    .map(RecruitmentApplication::getUuid)
+                    .toList();
+        }
         if (applicationUuids.isEmpty()) {
             return List.of();
         }
@@ -235,8 +264,9 @@ public class RecruitmentEmailCopyResolver {
      * exist, have an address, and may read this candidate's profile.
      */
     private Optional<CopyRecipient> toRecipient(String userUuid,
-                                                          RecruitmentEmailCopyRole source,
-                                                          RecruitmentCandidate candidate) {
+                                                RecruitmentEmailCopyRole source,
+                                                RecruitmentCandidate candidate,
+                                                RecruitmentPosition applicationPosition) {
         User user = User.findById(userUuid);
         if (user == null || user.getEmail() == null || user.getEmail().isBlank()) {
             return Optional.empty();
@@ -244,6 +274,13 @@ public class RecruitmentEmailCopyResolver {
         if (!visibility.canReadCandidateProfile(userUuid, candidate)) {
             log.debugf("Copy recipient %s dropped for candidate %s — not authorized to read the profile",
                     userUuid, candidate.getUuid());
+            return Optional.empty();
+        }
+        if (applicationPosition != null
+                && !visibility.canReadPosition(userUuid, applicationPosition)) {
+            log.debugf("Copy recipient %s dropped for candidate %s — not authorized "
+                            + "to read application position %s",
+                    userUuid, candidate.getUuid(), applicationPosition.getUuid());
             return Optional.empty();
         }
         String email = user.getEmail().trim();

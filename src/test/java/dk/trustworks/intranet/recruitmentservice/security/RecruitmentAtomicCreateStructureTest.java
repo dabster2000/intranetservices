@@ -100,8 +100,12 @@ class RecruitmentAtomicCreateStructureTest {
         assertTrue(callees.contains("RecruitmentVisibility#canCreateCandidate"),
                 "@RolesAllowed gates the API client, not the person — the resource must call "
                         + "canCreateCandidate explicitly; actual callees: " + callees);
-        assertTrue(callees.contains("RecruitmentVisibility#isRecruiterTier"),
-                "the A3 dossier gate must be present on the create path; actual callees: " + callees);
+        assertTrue(callees.contains("RecruitmentVisibility#canWriteDossier"),
+                "the A3 dossier-metadata gate must use the canonical HR/admin capability; "
+                        + "actual callees: " + callees);
+        assertTrue(callees.contains("CandidateRequest#updatesDossierMetadata"),
+                "the A3 gate must cover target company, start date and legacy dossier notes, "
+                        + "not only templateUuid; actual callees: " + callees);
         assertTrue(callees.contains("RecruitmentPositionAccess#requireDecidablePosition"),
                 "the position leg must go through the shared 404-then-403 guard; "
                         + "actual callees: " + callees);

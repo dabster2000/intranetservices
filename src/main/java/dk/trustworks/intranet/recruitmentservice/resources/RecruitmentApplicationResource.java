@@ -102,10 +102,13 @@ public class RecruitmentApplicationResource {
     public ApplicationListResponse listForCandidate(@PathParam("uuid") UUID candidateUuid) {
         enforceFlag();
         UUID actor = currentActor();
-        requireVisibleCandidate(candidateUuid, actor);
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
+        boolean viewerCanReadDossier = visibility.canReadDossier(actor.toString(), candidate);
         List<ApplicationResponse> applications =
-                applicationService.listForCandidate(actor.toString(), candidateUuid.toString());
-        return new ApplicationListResponse(applications, applications.size());
+                applicationService.listForCandidate(
+                        actor.toString(), candidateUuid.toString(), viewerCanReadDossier);
+        return new ApplicationListResponse(
+                applications, applications.size(), viewerCanReadDossier);
     }
 
     /** Attach a candidate to a position (the application starts in SCREENING). */
@@ -178,8 +181,11 @@ public class RecruitmentApplicationResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
         boolean mayFastTrack = visibility.isRecruiterOrHiringOwner(actor.toString(), position);
+        boolean canDecideFinalOutcome =
+                visibility.canDecideFinalOutcome(actor.toString(), position);
         RecruitmentApplication updated =
-                applicationService.changeStage(application, position, request.stage(), mayFastTrack, actor);
+                applicationService.changeStage(application, position, request.stage(), mayFastTrack,
+                        canDecideFinalOutcome, actor);
         return applicationService.toResponse(updated, position, actor.toString());
     }
 
@@ -218,9 +224,12 @@ public class RecruitmentApplicationResource {
         // never be used to probe for confidential reqs.
         RecruitmentPosition target = requireVisiblePosition(request.positionUuid(), actor);
         requireDecisionRights(target, actor);
+        boolean canDecideFinalOutcome =
+                visibility.canDecideFinalOutcome(actor.toString(), from);
 
         RecruitmentApplication updated =
-                applicationService.moveToPosition(application, from, target, actor);
+                applicationService.moveToPosition(application, from, target,
+                        canDecideFinalOutcome, actor);
         return applicationService.toResponse(updated, target, actor.toString());
     }
 

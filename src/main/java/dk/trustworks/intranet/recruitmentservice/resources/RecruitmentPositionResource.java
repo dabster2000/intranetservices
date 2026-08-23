@@ -183,6 +183,7 @@ public class RecruitmentPositionResource {
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
         requireMutationRights(position, actor);
+        requireAssistantDestinationPractice(position, request, actor);
         RecruitmentPosition updated = positionService.update(position, request, actor);
         stampMutationRight(updated, actor.toString());
         return updated;
@@ -290,6 +291,31 @@ public class RecruitmentPositionResource {
                         : "Only the hiring owner, the current lead of the position's team, "
                                 + "a team lead in its circle (or HR/admin) may change this position",
                 Response.Status.FORBIDDEN);
+    }
+
+    /**
+     * The assistant's practice boundary applies to the destination row as
+     * well as the position as it existed when authorization ran. Without
+     * this second check an assistant could edit an own-practice position and
+     * move its mutable {@code practiceUuid} to another practice (or clear it),
+     * changing out-of-scope recruitment data before merely losing access to
+     * the result. Broader additive roles keep their normal authority, and an
+     * explicit partner-circle mutation remains governed by the circle gate.
+     */
+    private void requireAssistantDestinationPractice(RecruitmentPosition position,
+                                                     PositionRequest request,
+                                                     UUID actor) {
+        if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
+                || !visibility.isAssistantScopedViewer(actor.toString())) {
+            return;
+        }
+        String assistantPractice = visibility.practiceOfUser(actor.toString());
+        String destinationPractice = request == null ? null : request.practiceUuid();
+        if (assistantPractice == null || !assistantPractice.equals(destinationPractice)) {
+            throw new WebApplicationException(
+                    "A recruitment assistant may keep a position only in their own practice",
+                    Response.Status.FORBIDDEN);
+        }
     }
 
     /**

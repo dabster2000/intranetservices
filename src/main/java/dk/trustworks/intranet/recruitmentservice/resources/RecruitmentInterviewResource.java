@@ -210,7 +210,10 @@ public class RecruitmentInterviewResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
 
-        interviewService.cancel(interview, application, position, actor);
+        boolean canDecideFinalOutcome =
+                visibility.canDecideFinalOutcome(actor.toString(), position);
+        interviewService.cancel(interview, application, position, actor,
+                canDecideFinalOutcome);
         return Response.noContent().build();
     }
 
@@ -238,8 +241,10 @@ public class RecruitmentInterviewResource {
         // that follows consumes the record), so it takes the final-outcome
         // gate (decision 7): an assistant records ADVANCE only — target
         // table "Record the interview decision: ◐ advance only".
+        boolean canDecideFinalOutcome =
+                visibility.canDecideFinalOutcome(actor.toString(), position);
         if (request.decision() == RecruitmentInterviewDecision.REJECT
-                && !visibility.canDecideFinalOutcome(actor.toString(), position)) {
+                && !canDecideFinalOutcome) {
             throw new WebApplicationException(
                     "Recording a no-go starts a rejection, which is reserved for the recruiter"
                             + " tier, the hiring owner or the position's teamlead",
@@ -247,7 +252,7 @@ public class RecruitmentInterviewResource {
         }
 
         interviewService.recordDecision(interview, application, position,
-                request.decision(), actor);
+                request.decision(), actor, canDecideFinalOutcome);
         return interviewService.scorecardsFor(actor.toString(), interview, application, position);
     }
 
@@ -263,7 +268,10 @@ public class RecruitmentInterviewResource {
         RecruitmentPosition position = positionOf(application);
         requireDecisionRights(position, actor);
 
-        interviewService.clearDecision(interview, application, position, actor);
+        boolean canDecideFinalOutcome =
+                visibility.canDecideFinalOutcome(actor.toString(), position);
+        interviewService.clearDecision(interview, application, position, actor,
+                canDecideFinalOutcome);
         return Response.noContent().build();
     }
 
@@ -381,6 +389,7 @@ public class RecruitmentInterviewResource {
     @Path("/interviews/rooms/policy")
     @RolesAllowed({"recruitment:admin"})
     public MeetingRoomPolicyResponse roomPolicy() {
+        requireAdmin();
         enforceFlag();
         // roomLookup(), not listRooms(): the settings page states "no rooms
         // exist" as fact, so it must be able to tell an empty tenant from a
@@ -404,6 +413,7 @@ public class RecruitmentInterviewResource {
     @Path("/interviews/rooms/policy")
     @RolesAllowed({"recruitment:admin"})
     public MeetingRoomPolicyResponse saveRoomPolicy(@Valid MeetingRoomPolicyRequest request) {
+        requireAdmin();
         enforceFlag();
         if (request == null) {
             throw badRequest("A room policy body is required");
@@ -907,5 +917,16 @@ public class RecruitmentInterviewResource {
                     "X-Requested-By is not a valid UUID",
                     Response.Status.BAD_REQUEST);
         }
+    }
+
+    /** The admin client scope is not the acting user's ADMIN role. */
+    private UUID requireAdmin() {
+        UUID actor = currentActor();
+        if (!visibility.rolesOf(actor.toString()).contains("ADMIN")) {
+            throw new WebApplicationException(
+                    "The meeting-room policy is an administrator setting",
+                    Response.Status.FORBIDDEN);
+        }
+        return actor;
     }
 }

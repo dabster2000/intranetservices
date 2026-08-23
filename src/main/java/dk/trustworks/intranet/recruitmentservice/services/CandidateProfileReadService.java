@@ -23,6 +23,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -36,9 +37,11 @@ import java.util.stream.Collectors;
  * the read-only GDPR consents. A pure query service — no mutations, no
  * events. Authorization happens in the resources <em>before</em> any call
  * lands here ({@code canReadCandidateProfile} / {@code canReadApplication});
- * the one authorization rule this service owns is the download IDOR guard:
- * a file whose {@code relateduuid} does not match the candidate in the URL
- * answers the same 404 as a nonexistent one.
+ * the authorization rules this service owns are the download IDOR guard and
+ * the capability-aware exclusion of offer/onboarding document kinds. A file
+ * whose {@code relateduuid} does not match the candidate in the URL, or a
+ * dossier-restricted file requested without dossier-read capability, answers
+ * the same 404 as a nonexistent one.
  */
 @JBossLog
 @ApplicationScoped
@@ -114,14 +117,24 @@ public class CandidateProfileReadService {
      * — the CV/COVER_LETTER kind lives ONLY there, findings §P5). Two
      * queries total; newest upload first.
      */
-    public CandidateDocumentsResponse documents(String candidateUuid) {
+    /**
+     * Candidate documents for a profile viewer. Ordinary CV, cover-letter and
+     * unclassified files remain visible without dossier access; contract
+     * drafts, signed documents, appendices and identity documents do not.
+     * Every caller must state the capability explicitly so a restricted
+     * surface cannot accidentally inherit a privileged default.
+     */
+    public CandidateDocumentsResponse documents(String candidateUuid,
+                                                 boolean canReadDossier) {
         List<File> files = File.list("relateduuid", candidateUuid);
-        Map<String, DocumentEventFacts> facts = documentEventFacts(candidateUuid);
-        Map<String, String> overrides = kindOverrides(candidateUuid);
-        Map<String, String> derived = documentClassifier.derivedKinds(candidateUuid);
+        DocumentClassificationState classifications = documentClassifications(candidateUuid);
         List<CandidateDocument> documents = files.stream()
-                .map(file -> toDocument(file, facts.get(file.getUuid()),
-                        overrides.get(file.getUuid()), derived.get(file.getUuid())))
+                .filter(file -> canReadDossier
+                        || !classifications.isDossierRestricted(file.getUuid()))
+                .map(file -> toDocument(file,
+                        classifications.uploads().displayFacts().get(file.getUuid()),
+                        classifications.overrides().latestKinds().get(file.getUuid()),
+                        classifications.derivedKinds().get(file.getUuid())))
                 .sorted(Comparator.comparing(CandidateDocument::uploadedAt,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(CandidateDocument::fileUuid))
@@ -137,9 +150,22 @@ public class CandidateProfileReadService {
      * command as the server-side eligibility gate.
      */
     public boolean isKindEditable(String candidateUuid, String fileUuid) {
-        DocumentEventFacts facts = documentEventFacts(candidateUuid).get(fileUuid);
-        String derivedKind = documentClassifier.derivedKinds(candidateUuid).get(fileUuid);
+        DocumentClassificationState classifications = documentClassifications(candidateUuid);
+        DocumentEventFacts facts = classifications.uploads().displayFacts().get(fileUuid);
+        String derivedKind = classifications.derivedKinds().get(fileUuid);
         return systemKind(facts, derivedKind) == null;
+    }
+
+    /**
+     * Whether any classification source has ever identified this candidate file
+     * as offer, contract or onboarding material. This predicate is monotonic:
+     * the upload event, every manual-kind override and every persisted flow
+     * reference contribute, so a later ordinary display label cannot erase a
+     * prior restricted classification. Commands and read filtering share this
+     * method to avoid authorization drift.
+     */
+    public boolean isDossierRestricted(String candidateUuid, String fileUuid) {
+        return documentClassifications(candidateUuid).isDossierRestricted(fileUuid);
     }
 
     /**
@@ -148,10 +174,17 @@ public class CandidateProfileReadService {
      * {@code relateduuid} answers 404, never 403 — URL-guessed file uuids
      * cannot leak another candidate's documents.
      */
-    public DocumentDownload download(String candidateUuid, String fileUuid) {
+    public DocumentDownload download(String candidateUuid, String fileUuid,
+                                     boolean canReadDossier) {
         Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
         File meta = File.findById(fileUuid);
         if (meta == null || !candidateUuid.equals(meta.getRelateduuid())) {
+            throw new NotFoundException("Document not found: " + fileUuid);
+        }
+        DocumentClassificationState classifications = documentClassifications(candidateUuid);
+        if (!canReadDossier && classifications.isDossierRestricted(fileUuid)) {
+            // Same status/message shape as unknown and cross-candidate UUIDs:
+            // knowing the file UUID must not disclose that a dossier exists.
             throw new NotFoundException("Document not found: " + fileUuid);
         }
         File withBytes = s3FileService.findOne(fileUuid);
@@ -159,7 +192,7 @@ public class CandidateProfileReadService {
             // Metadata row without a retrievable S3 object — not downloadable.
             throw new NotFoundException("Document not found: " + fileUuid);
         }
-        DocumentEventFacts facts = documentEventFacts(candidateUuid).get(fileUuid);
+        DocumentEventFacts facts = classifications.uploads().displayFacts().get(fileUuid);
         String filename = meta.getFilename() != null && !meta.getFilename().isBlank()
                 ? meta.getFilename()
                 : "document";
@@ -207,25 +240,47 @@ public class CandidateProfileReadService {
     }
 
     /**
+     * Security classification is deliberately monotonic: if any trusted
+     * source identifies a file as offer/onboarding material, a later manual
+     * label cannot downgrade it into the ordinary-document audience.
+     */
+    private DocumentClassificationState documentClassifications(String candidateUuid) {
+        return new DocumentClassificationState(
+                documentEventFacts(candidateUuid),
+                kindOverrides(candidateUuid),
+                documentClassifier.derivedKinds(candidateUuid));
+    }
+
+    /**
      * Newest manual kind override per file uuid — the
      * {@code DOCUMENT_KIND_CHANGED} events in seq order, later wins.
+     * Every restricted value is retained separately for authorization even
+     * when a later ordinary value wins for display.
      * Unknown kinds are ignored (defensive: the command validates on
      * write, so this only guards against future enum drift).
      */
-    private Map<String, String> kindOverrides(String candidateUuid) {
+    private DocumentOverrideState kindOverrides(String candidateUuid) {
         List<RecruitmentEvent> events = RecruitmentEvent.list(
                 "candidateUuid = ?1 and eventType = ?2 order by seq",
                 candidateUuid, RecruitmentEventType.DOCUMENT_KIND_CHANGED);
         Map<String, String> overrides = new HashMap<>();
+        Set<String> restrictedFiles = new HashSet<>();
         for (RecruitmentEvent event : events) {
             Map<String, Object> payload = parsePayload(event.getPayload());
             if (payload.get("file_uuid") instanceof String key && !key.isBlank()
                     && payload.get("kind") instanceof String kind
                     && KNOWN_DOCUMENT_KINDS.contains(kind)) {
                 overrides.put(key, kind);
+                if (CandidateDocumentClassifier.isDossierRestricted(kind)) {
+                    restrictedFiles.add(key);
+                }
             }
         }
-        return overrides;
+        return new DocumentOverrideState(Map.copyOf(overrides), Set.copyOf(restrictedFiles));
+    }
+
+    private record DocumentOverrideState(Map<String, String> latestKinds,
+                                         Set<String> everRestrictedFiles) {
     }
 
     /** Enrichment facts parsed from one {@code DOCUMENT_UPLOADED} payload. */
@@ -234,12 +289,17 @@ public class CandidateProfileReadService {
                                       LocalDateTime occurredAt) {
     }
 
-    /** All the candidate's DOCUMENT_UPLOADED payloads, keyed by {@code file_uuid} (one query). */
-    private Map<String, DocumentEventFacts> documentEventFacts(String candidateUuid) {
+    /**
+     * All candidate {@code DOCUMENT_UPLOADED} payloads in one query. The
+     * first event supplies display metadata while every event contributes to
+     * the monotonic restricted-file set.
+     */
+    private DocumentUploadState documentEventFacts(String candidateUuid) {
         List<RecruitmentEvent> events = RecruitmentEvent.list(
                 "candidateUuid = ?1 and eventType = ?2 order by seq",
                 candidateUuid, RecruitmentEventType.DOCUMENT_UPLOADED);
         Map<String, DocumentEventFacts> facts = new HashMap<>();
+        Set<String> restrictedFiles = new HashSet<>();
         for (RecruitmentEvent event : events) {
             Map<String, Object> payload = parsePayload(event.getPayload());
             Object fileUuid = payload.get("file_uuid");
@@ -249,6 +309,9 @@ public class CandidateProfileReadService {
             String kind = payload.get("kind") instanceof String k && KNOWN_DOCUMENT_KINDS.contains(k)
                     ? k
                     : KIND_OTHER;
+            if (CandidateDocumentClassifier.isDossierRestricted(kind)) {
+                restrictedFiles.add(key);
+            }
             // First event wins — each upload emits exactly one event.
             facts.putIfAbsent(key, new DocumentEventFacts(
                     kind,
@@ -258,7 +321,23 @@ public class CandidateProfileReadService {
                     payload.get("size_bytes") instanceof Number n ? n.longValue() : null,
                     event.getOccurredAt()));
         }
-        return facts;
+        return new DocumentUploadState(Map.copyOf(facts), Set.copyOf(restrictedFiles));
+    }
+
+    private record DocumentUploadState(Map<String, DocumentEventFacts> displayFacts,
+                                       Set<String> everRestrictedFiles) {
+    }
+
+    private record DocumentClassificationState(
+            DocumentUploadState uploads,
+            DocumentOverrideState overrides,
+            Map<String, String> derivedKinds) {
+
+        boolean isDossierRestricted(String fileUuid) {
+            return uploads.everRestrictedFiles().contains(fileUuid)
+                    || overrides.everRestrictedFiles().contains(fileUuid)
+                    || CandidateDocumentClassifier.isDossierRestricted(derivedKinds.get(fileUuid));
+        }
     }
 
     private Map<String, Object> parsePayload(String json) {
@@ -268,7 +347,7 @@ public class CandidateProfileReadService {
         try {
             return objectMapper.readValue(json, JSON_OBJECT);
         } catch (Exception e) {
-            log.warn("Unparseable DOCUMENT_UPLOADED payload — skipping enrichment for one event");
+            log.warn("Unparseable document-classification payload — skipping one event");
             return Map.of();
         }
     }

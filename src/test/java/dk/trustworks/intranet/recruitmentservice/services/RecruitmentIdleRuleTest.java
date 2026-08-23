@@ -194,6 +194,20 @@ class RecruitmentIdleRuleTest {
     }
 
     @Test
+    void hiddenDossierEventsCannotResetAssistantVisibleIdleTiming() {
+        for (RecruitmentEventType hidden : List.of(
+                RecruitmentEventType.DOSSIER_CREATED,
+                RecruitmentEventType.RECORD_CHECK_DRAWN,
+                RecruitmentEventType.SIGNING_COMPLETED)) {
+            assertFalse(RecruitmentIdleRule.PROGRESS_EVENTS.contains(hidden),
+                    hidden + " must not suppress an assistant's idle task or become its exact "
+                            + "since/ageHours timestamp; that would reveal hidden dossier activity");
+        }
+        assertTrue(RecruitmentIdleRule.PROGRESS_EVENTS.contains(RecruitmentEventType.OFFER_OPENED),
+                "the ordinary visible offer-phase marker still restarts the idle clock");
+    }
+
+    @Test
     void handingWorkBackIsNotProgress() {
         for (RecruitmentEventType handback : List.of(
                 RecruitmentEventType.INTERVIEW_CANCELLED,

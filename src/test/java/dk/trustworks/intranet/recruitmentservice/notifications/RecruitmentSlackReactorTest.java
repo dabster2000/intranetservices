@@ -292,7 +292,7 @@ class RecruitmentSlackReactorTest {
     }
 
     @Test
-    void positionlessCircleEvent_resolvesCircleViaPartnerApplications() throws Exception {
+    void signingCompleted_neverBroadcastsToChannelsOrCircleMembers() {
         pipelineOnWithChannel("C-DEFAULT");
         String partnerPosition = UUID.randomUUID().toString();
         String partnerApplication = UUID.randomUUID().toString();
@@ -307,17 +307,15 @@ class RecruitmentSlackReactorTest {
             P8ProfileFixtures.insertCircleMember(em, partnerPosition, member);
         });
         try {
-            // The fail-closed SIGNING_COMPLETED shape: candidate subject only.
+            // A circle is a candidate-view audience, not a dossier audience.
+            // Signing status therefore has no outbound Slack notification.
             QuarkusTransaction.requiringNew().run(() ->
                     P8ProfileFixtures.insertEvent(em, "SIGNING_COMPLETED", candidateUuid,
                             null, null, "SYSTEM", null, "CIRCLE",
                             "{\"case_key\":\"case-1\"}", null));
             reactor.catchUp();
 
-            verify(slackService, never()).sendMessage(anyString(), anyString());
-            ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
-            verify(slackService, times(1)).sendMessage(any(User.class), message.capture());
-            assertTrue(message.getValue().contains("Contract signed"));
+            verifyNoInteractions(slackService);
         } finally {
             QuarkusTransaction.requiringNew().run(() -> {
                 // The partner application references the partner position
@@ -618,7 +616,7 @@ class RecruitmentSlackReactorTest {
     void sentinelPii_neverAppearsInAnyChannelMessage() {
         pipelineOnWithChannel("C-DEFAULT");
         QuarkusTransaction.requiringNew().run(() -> {
-            // Free text everywhere free text can live around the five pings.
+            // Free text everywhere free text can live around the remaining pings.
             String referralUuid = P12NotificationFixtures.insertReferral(em, actorUser,
                     "Bo Berg", PII_SENTINEL + " why-text", "SUBMITTED", null);
             P8ProfileFixtures.insertEvent(em, "REFERRAL_SUBMITTED", null, null, null,
@@ -639,7 +637,7 @@ class RecruitmentSlackReactorTest {
         reactor.catchUp();
 
         ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
-        verify(slackService, times(4)).sendMessage(anyString(), messages.capture());
+        verify(slackService, times(3)).sendMessage(anyString(), messages.capture());
         for (String message : messages.getAllValues()) {
             assertFalse(message.contains(PII_SENTINEL),
                     "free text leaked into a Slack message: " + message);

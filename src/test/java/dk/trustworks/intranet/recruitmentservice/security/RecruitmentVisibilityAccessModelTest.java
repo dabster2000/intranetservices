@@ -1,14 +1,19 @@
 package dk.trustworks.intranet.recruitmentservice.security;
 
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +42,9 @@ class RecruitmentVisibilityAccessModelTest {
         final Map<String, List<String>> ledTeams = new HashMap<>();
         final Map<String, Set<String>> circles = new HashMap<>();
         final Set<String> intakeHolders = new java.util.HashSet<>();
+        final Set<String> hiringOwners = new java.util.HashSet<>();
+        final Set<String> profileReaders = new java.util.HashSet<>();
+        final Set<String> assistantPracticeCandidates = new HashSet<>();
 
         @Override
         public Set<String> rolesOf(String userUuid) {
@@ -56,6 +64,19 @@ class RecruitmentVisibilityAccessModelTest {
         @Override
         public boolean isCircleMember(String userUuid, String positionUuid) {
             return circles.getOrDefault(userUuid, Set.of()).contains(positionUuid);
+        }
+
+        @Override
+        Set<String> circledPositionUuids(String viewerUuid) {
+            return circles.getOrDefault(viewerUuid, Set.of());
+        }
+
+        @Override
+        Map<String, RecruitmentCircleRole> circleRolesFor(String viewerUuid) {
+            Map<String, RecruitmentCircleRole> result = new HashMap<>();
+            circles.getOrDefault(viewerUuid, Set.of()).forEach(positionUuid ->
+                    result.put(positionUuid, RecruitmentCircleRole.OWNER));
+            return result;
         }
 
         @Override
@@ -79,6 +100,30 @@ class RecruitmentVisibilityAccessModelTest {
         boolean holdsRecruitmentIntakeGrant(String viewerUuid) {
             return intakeHolders.contains(viewerUuid);
         }
+
+        @Override
+        public boolean isHiringOwnerForCandidate(String viewerUuid, String candidateUuid) {
+            return hiringOwners.contains(viewerUuid);
+        }
+
+        @Override
+        public boolean canReadCandidateProfile(String viewerUuid,
+                                               RecruitmentCandidate candidate) {
+            return profileReaders.contains(viewerUuid)
+                    || super.canReadCandidateProfile(viewerUuid, candidate);
+        }
+
+        @Override
+        public boolean hasApplicationInAssistantPractice(String viewerUuid,
+                                                         String candidateUuid) {
+            return practiceOfUser(viewerUuid) != null
+                    && assistantPracticeCandidates.contains(candidateUuid);
+        }
+
+        @Override
+        public boolean isPartnerTrackOnly(String viewerUuid, String candidateUuid) {
+            return false;
+        }
     }
 
     private static RecruitmentPosition position(String uuid, RecruitmentHiringTrack track,
@@ -100,6 +145,7 @@ class RecruitmentVisibilityAccessModelTest {
         visibility.roles.put("teamlead", Set.of("TEAMLEAD", "USER"));
         visibility.roles.put("assistant", Set.of("ASSISTANT_TEAMLEAD", "USER"));
         visibility.roles.put("both", Set.of("TEAMLEAD", "ASSISTANT_TEAMLEAD"));
+        visibility.roles.put("recruiter", Set.of("RECRUITMENT", "USER"));
         visibility.roles.put("plain", Set.of("USER"));
         visibility.practices.put("assistant", PRACTICE);
         visibility.practices.put("both", PRACTICE);
@@ -114,6 +160,13 @@ class RecruitmentVisibilityAccessModelTest {
             position("p-partner", RecruitmentHiringTrack.PARTNER, PRACTICE, null, null);
     private static final RecruitmentPosition OWNED_BY_PLAIN =
             position("p-owned", RecruitmentHiringTrack.STAFF_ROLE, null, null, "plain");
+    private static final RecruitmentPosition OWNED_BY_ASSISTANT =
+            position("p-owned-assistant", RecruitmentHiringTrack.STAFF_ROLE, null, null, "assistant");
+    private static final RecruitmentPosition OUT_OF_PRACTICE_OWNED_BY_ASSISTANT =
+            position("p-owned-assistant-out", RecruitmentHiringTrack.STAFF_ROLE,
+                    OTHER_PRACTICE, "team-assistant", "assistant");
+    private static final RecruitmentPosition OWNED_BY_BOTH =
+            position("p-owned-both", RecruitmentHiringTrack.STAFF_ROLE, null, null, "both");
 
     // ---- Decision 1: the read tier decides, company-wide ------------------------
 
@@ -155,17 +208,89 @@ class RecruitmentVisibilityAccessModelTest {
     @Test
     void assistant_withNoPractice_failsClosed() {
         StubVisibility visibility = stub();
+        visibility.ledTeams.put("assistant", List.of("team-assistant"));
         visibility.practices.remove("assistant");
         assertFalse(visibility.canDecideOnApplication("assistant", IN_PRACTICE));
         assertFalse(visibility.canReadPosition("assistant", IN_PRACTICE));
+        assertFalse(visibility.canDecideOnApplication(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertFalse(visibility.canReadPosition(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertFalse(visibility.isRecruiterOrHiringOwner(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertFalse(visibility.isCompTierFor(
+                "assistant", List.of(OUT_OF_PRACTICE_OWNED_BY_ASSISTANT)));
     }
 
     @Test
     void assistant_readsExactlyWhatTheyDecideOn() {
         StubVisibility visibility = stub();
+        visibility.ledTeams.put("assistant", List.of("team-assistant"));
         assertTrue(visibility.canReadPosition("assistant", IN_PRACTICE));
         assertFalse(visibility.canReadPosition("assistant", OUT_OF_PRACTICE));
+        assertFalse(visibility.canReadPosition(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT),
+                "named ownership and current leadership cannot widen practice scope");
+        assertFalse(visibility.canDecideOnApplication(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertFalse(visibility.isRecruiterOrHiringOwner(
+                "assistant", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
         assertFalse(visibility.canReadPosition("assistant", PARTNER_IN_PRACTICE));
+    }
+
+    @Test
+    void assistantBatchedPositionPredicates_failClosedOutsidePractice() {
+        StubVisibility visibility = stub();
+        visibility.ledTeams.put("assistant", List.of("team-assistant"));
+        List<RecruitmentPosition> positions = List.of(
+                IN_PRACTICE, OUT_OF_PRACTICE_OWNED_BY_ASSISTANT);
+
+        assertEquals(Set.of(IN_PRACTICE.getUuid()),
+                visibility.readablePositionUuids("assistant", positions));
+        assertEquals(Set.of(IN_PRACTICE.getUuid()),
+                visibility.decidablePositionUuids("assistant", positions));
+        assertEquals(Set.of(IN_PRACTICE.getUuid()),
+                visibility.ownPositionUuids("assistant", positions));
+
+        visibility.practices.remove("assistant");
+        assertTrue(visibility.readablePositionUuids("assistant", positions).isEmpty());
+        assertTrue(visibility.decidablePositionUuids("assistant", positions).isEmpty());
+        assertTrue(visibility.ownPositionUuids("assistant", positions).isEmpty());
+    }
+
+    @Test
+    void assistantCandidateAndCompScope_cannotFallThroughToInvolvement() {
+        StubVisibility visibility = stub();
+        RecruitmentCandidate candidate = new RecruitmentCandidate();
+        candidate.setUuid("out-of-practice-candidate");
+        candidate.setStatus(CandidateStatus.ACTIVE);
+        visibility.ledTeams.put("assistant", List.of("team-assistant"));
+
+        assertFalse(visibility.canReadCandidateProfile("assistant", candidate));
+        assertFalse(visibility.isCompTierFor(
+                "assistant", List.of(OUT_OF_PRACTICE_OWNED_BY_ASSISTANT)));
+
+        visibility.assistantPracticeCandidates.add(candidate.getUuid());
+        assertTrue(visibility.canReadCandidateProfile("assistant", candidate));
+        assertTrue(visibility.isCompTierFor("assistant", List.of(IN_PRACTICE)));
+
+        visibility.practices.remove("assistant");
+        assertFalse(visibility.canReadCandidateProfile("assistant", candidate));
+        assertFalse(visibility.isCompTierFor("assistant", List.of(IN_PRACTICE)));
+    }
+
+    @Test
+    void assistantPlusTeamlead_keepsBroaderPositionCandidateAndCompRights() {
+        StubVisibility visibility = stub();
+        RecruitmentCandidate candidate = new RecruitmentCandidate();
+        candidate.setUuid("candidate");
+        candidate.setStatus(CandidateStatus.ACTIVE);
+
+        assertTrue(visibility.canReadPosition("both", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertTrue(visibility.canDecideOnApplication("both", OUT_OF_PRACTICE_OWNED_BY_ASSISTANT));
+        assertTrue(visibility.canReadCandidateProfile("both", candidate));
+        assertTrue(visibility.isCompTierFor(
+                "both", List.of(OUT_OF_PRACTICE_OWNED_BY_ASSISTANT)));
     }
 
     // ---- Decision 7: final outcomes need their own gate --------------------------
@@ -177,6 +302,19 @@ class RecruitmentVisibilityAccessModelTest {
                 "precondition: the stage-move gate is open");
         assertFalse(visibility.canDecideFinalOutcome("assistant", IN_PRACTICE),
                 "hire, reject, withdraw, return-to-pool: all four closed");
+    }
+
+    @Test
+    void decision7_namedOwnershipCannotBypassAssistantTerminalDenial() {
+        StubVisibility visibility = stub();
+        assertFalse(visibility.canDecideOnApplication("assistant", OWNED_BY_ASSISTANT),
+                "named ownership cannot bypass the assistant practice boundary");
+        assertFalse(visibility.canDecideFinalOutcome("assistant", OWNED_BY_ASSISTANT),
+                "assistant-only named owner still cannot hire, reject, withdraw, "
+                        + "return-to-pool or record NO-GO");
+
+        assertTrue(visibility.canDecideFinalOutcome("both", OWNED_BY_BOTH),
+                "a simultaneous TEAMLEAD keeps the broader role's terminal rights");
     }
 
     @Test
@@ -193,6 +331,49 @@ class RecruitmentVisibilityAccessModelTest {
         StubVisibility visibility = stub();
         assertTrue(visibility.canDecideOnApplication("both", OUT_OF_PRACTICE));
         assertTrue(visibility.canDecideFinalOutcome("both", OUT_OF_PRACTICE));
+    }
+
+    // ---- Decision 9: offer dossier remains outside assistant scope ---------------
+
+    @Test
+    void assistantNamedHiringOwner_stillCannotReadDossier_broaderRolesKeepAccess() {
+        StubVisibility visibility = stub();
+        RecruitmentCandidate candidate = new RecruitmentCandidate();
+        candidate.setUuid("candidate");
+        visibility.hiringOwners.addAll(Set.of(
+                "assistant", "teamlead", "both", "recruiter", "plain"));
+        visibility.profileReaders.addAll(Set.of(
+                "assistant", "teamlead", "both", "recruiter", "plain"));
+
+        assertFalse(visibility.canReadDossier("assistant", candidate),
+                "assistant-only is denied before named-owner involvement is considered");
+        assertTrue(visibility.canReadDossier("teamlead", candidate),
+                "an eligible named TEAMLEAD keeps the read-only dossier view");
+        assertTrue(visibility.canReadDossier("both", candidate),
+                "ASSISTANT_TEAMLEAD never narrows simultaneous TEAMLEAD standing");
+        assertFalse(visibility.canReadDossier("recruiter", candidate),
+                "RECRUITMENT-only named ownership is not dossier access");
+        assertFalse(visibility.canReadDossier("plain", candidate),
+                "plain named ownership is not dossier access");
+        assertTrue(visibility.canReadDossier("hr", candidate));
+        assertTrue(visibility.canReadDossier("admin", candidate));
+    }
+
+    @Test
+    void dossierWritesRemainHrAdminOnly_andRoleCompositionIsAdditive() {
+        StubVisibility visibility = stub();
+
+        assertFalse(visibility.canWriteDossier("assistant"));
+        assertFalse(visibility.canWriteDossier("teamlead"));
+        assertFalse(visibility.canWriteDossier("both"),
+                "ASSISTANT_TEAMLEAD+TEAMLEAD still has no offer-dossier write role");
+        assertFalse(visibility.canWriteDossier("recruiter"));
+        assertTrue(visibility.canWriteDossier("hr"));
+        assertTrue(visibility.canWriteDossier("admin"));
+
+        visibility.roles.put("assistant-hr", Set.of("ASSISTANT_TEAMLEAD", "HR"));
+        assertTrue(visibility.canWriteDossier("assistant-hr"),
+                "the assistant role must not narrow a simultaneous HR role");
     }
 
     // ---- Decision 10: assistants never create candidates -------------------------

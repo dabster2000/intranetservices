@@ -142,6 +142,32 @@ class RecruitmentBoardSubStatusTest {
         assertNull(reader.decidedOutcome(), "read-only viewers get an outcome-neutral chip");
     }
 
+    @Test
+    void assistantDecisionRightsExposeAdvanceButNotReject() {
+        RecruitmentInterview interview = interview(2, NOW.minusDays(2), null);
+        SubStatusInputs inputs = inputsWith(interview);
+
+        interview.setDecision(RecruitmentInterviewDecision.ADVANCE);
+        BoardCardSubStatus advance = derive(application(RecruitmentStage.INTERVIEW_2),
+                practicePosition(), inputs, true, false, true);
+        assertEquals(RecruitmentInterviewDecision.ADVANCE, advance.decidedOutcome(),
+                "assistant may record and read GO/ADVANCE");
+
+        interview.setDecision(RecruitmentInterviewDecision.REJECT);
+        BoardCardSubStatus assistantReject = derive(
+                application(RecruitmentStage.INTERVIEW_2), practicePosition(),
+                inputs, true, false, true);
+        assertEquals(BoardCardSubStatus.Code.INFORM, assistantReject.code());
+        assertNull(assistantReject.decidedOutcome(),
+                "ordinary stage rights must not disclose a pending NO-GO");
+
+        BoardCardSubStatus finalOutcomeHolder = derive(
+                application(RecruitmentStage.INTERVIEW_2), practicePosition(),
+                inputs, true, true, true);
+        assertEquals(RecruitmentInterviewDecision.REJECT,
+                finalOutcomeHolder.decidedOutcome());
+    }
+
     /**
      * The held-pivot compares Copenhagen wall-clock against the stored
      * wall-clock — a slot starting exactly now counts as held (the
@@ -202,6 +228,32 @@ class RecruitmentBoardSubStatusTest {
         assertEquals(BoardCardSubStatus.Code.CONTRACT_NOT_SENT, sub.code());
     }
 
+    @Test
+    void offer_dossierSubstatuses_areNeutralWithoutDossierCapability() {
+        RecruitmentApplication application = application(RecruitmentStage.OFFER);
+        application.setAssignedTeamUuid("team-1");
+
+        assertNull(derive(application, practicePosition(), SubStatusInputs.EMPTY,
+                true, false), "contract-not-sent reveals dossier state");
+
+        SubStatusInputs sent = new SubStatusInputs(Map.of(), Map.of(), Set.of(),
+                Set.of(CAND), Set.of());
+        assertNull(derive(application, practicePosition(), sent,
+                true, false), "awaiting-signature reveals dossier state");
+
+        SubStatusInputs signed = new SubStatusInputs(Map.of(), Map.of(), Set.of(),
+                Set.of(CAND), Set.of(CAND));
+        assertNull(derive(application, practicePosition(), signed,
+                true, false), "signed reveals dossier state");
+    }
+
+    @Test
+    void offer_teamMissing_remainsOrdinaryWithoutDossierCapability() {
+        BoardCardSubStatus sub = derive(application(RecruitmentStage.OFFER),
+                practicePosition(), SubStatusInputs.EMPTY, true, false);
+        assertEquals(BoardCardSubStatus.Code.TEAM_MISSING, sub.code());
+    }
+
     // ---- No ladder ---------------------------------------------------------
 
     @Test
@@ -228,8 +280,28 @@ class RecruitmentBoardSubStatusTest {
                                              RecruitmentPosition position,
                                              SubStatusInputs inputs,
                                              boolean viewerCanDecide) {
+        return derive(application, position, inputs, viewerCanDecide,
+                viewerCanDecide, true);
+    }
+
+    private static BoardCardSubStatus derive(RecruitmentApplication application,
+                                             RecruitmentPosition position,
+                                             SubStatusInputs inputs,
+                                             boolean viewerCanDecide,
+                                             boolean viewerCanReadDossier) {
+        return derive(application, position, inputs, viewerCanDecide,
+                viewerCanDecide, viewerCanReadDossier);
+    }
+
+    private static BoardCardSubStatus derive(RecruitmentApplication application,
+                                             RecruitmentPosition position,
+                                             SubStatusInputs inputs,
+                                             boolean viewerCanDecide,
+                                             boolean viewerCanDecideFinalOutcome,
+                                             boolean viewerCanReadDossier) {
         return RecruitmentBoardService.deriveSubStatus(application, position, inputs,
-                NOW, viewerCanDecide);
+                NOW, viewerCanDecide, viewerCanDecideFinalOutcome,
+                viewerCanReadDossier);
     }
 
     private static RecruitmentApplication application(RecruitmentStage stage) {

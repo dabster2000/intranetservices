@@ -91,7 +91,7 @@ public class RecordCheckService {
                 .payload("selected", selected)
                 .payload("rate_applied", rate)
                 .payload("check_uuid", check.getUuid());
-        if (position != null && position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+        if (position == null || position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
             event.visibility(RecruitmentEventVisibility.CIRCLE);
         }
         eventRecorder.record(event);
@@ -149,13 +149,29 @@ public class RecordCheckService {
         check.setVerifiedBy(actor.toString());
         check.setVerifiedAt(LocalDateTime.now(ZoneOffset.UTC));
 
-        eventRecorder.record(RecruitmentEventBuilder
+        RecruitmentEventBuilder event = RecruitmentEventBuilder
                 .event(RecruitmentEventType.RECORD_CHECK_OUTCOME_RECORDED)
                 .candidate(candidateUuid)
                 .application(check.getApplicationUuid())
                 .actorUser(actor.toString())
                 .payload("outcome", outcome.name())
-                .payload("check_uuid", check.getUuid()));
+                .payload("check_uuid", check.getUuid());
+
+        // Preserve the source application's partner boundary on this later
+        // candidate-wide compliance event. Otherwise a named owner who reads
+        // the dossier through a separate ordinary application can learn that
+        // a hidden partner route exists. Broken linkage fails closed.
+        RecruitmentApplication application = check.getApplicationUuid() == null
+                ? null : RecruitmentApplication.findById(check.getApplicationUuid());
+        RecruitmentPosition position = application == null
+                ? null : RecruitmentPosition.findById(application.getPositionUuid());
+        if (application != null) {
+            event.position(application.getPositionUuid());
+        }
+        if (position == null || position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            event.visibility(RecruitmentEventVisibility.CIRCLE);
+        }
+        eventRecorder.record(event);
         return check;
     }
 

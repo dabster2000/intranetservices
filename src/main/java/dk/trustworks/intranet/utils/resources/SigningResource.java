@@ -1,7 +1,14 @@
 package dk.trustworks.intranet.utils.resources;
 
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
+import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
+import dk.trustworks.intranet.documentservice.security.TemplateAccessPolicy;
+import dk.trustworks.intranet.security.AuthorizationService;
+import dk.trustworks.intranet.security.DataScope;
+import dk.trustworks.intranet.security.ScopeGuard;
+import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
@@ -23,9 +30,13 @@ import jakarta.ws.rs.core.SecurityContext;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 
+import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
@@ -53,7 +64,16 @@ public class SigningResource {
     SigningService signingService;
 
     @Inject
+    TemplateAccessPolicy templateAccessPolicy;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
+
+    @Inject
+    AuthorizationService authorizationService;
+
+    @Inject
+    ScopeGuard scopeGuard;
 
     /**
      * Creates a new document signing case.
@@ -95,11 +115,13 @@ public class SigningResource {
         log.infof("POST /utils/signing/cases - Creating signing case for document: %s",
             request != null ? request.documentName() : "null");
 
+        if (request == null) {
+            return badRequest("REQUEST_NULL", "Request body is required");
+        }
+        String targetUserUuid = requireEmployeeWriteAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+
         try {
-            // Validate request
-            if (request == null) {
-                return badRequest("REQUEST_NULL", "Request body is required");
-            }
 
             SigningCaseResponse response = signingService.createCase(request);
 
@@ -108,7 +130,6 @@ public class SigningResource {
             // Save minimal record for async processing (NEW ASYNC PATTERN)
             // Status will be fetched by background batch job to avoid NextSign race condition.
             try {
-                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
@@ -186,11 +207,16 @@ public class SigningResource {
         log.infof("POST /utils/signing/cases/from-template - Creating signing case from template for document: %s",
             request != null ? request.documentName() : "null");
 
+        if (request == null) {
+            return badRequest("REQUEST_NULL", "Request body is required");
+        }
+        String targetUserUuid = requireEmployeeWriteAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+
         try {
-            // Validate request
-            if (request == null) {
-                return badRequest("REQUEST_NULL", "Request body is required");
-            }
+
+            request.validate();
+            requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
             // Always use multi-document method (multi-document pattern is the only supported pattern)
             int additionalCount = request.additionalDocuments() != null ? request.additionalDocuments().size() : 0;
@@ -216,7 +242,6 @@ public class SigningResource {
             // SharePoint location is resolved from the user's active company + template's
             // sharepoint_type (no longer specified by the caller).
             try {
-                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
@@ -268,13 +293,66 @@ public class SigningResource {
         if (templateUuid == null || templateUuid.isBlank() || userUuid == null) {
             return null;
         }
-        dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity template =
-            dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity.findById(templateUuid);
+        DocumentTemplateEntity template = DocumentTemplateEntity.findById(templateUuid);
         if (template == null) {
             log.warnf("Template not found for SharePoint resolution: %s", templateUuid);
             return null;
         }
         return signingService.resolveSharepointLocationUuid(userUuid, template.getSharepointType());
+    }
+
+    /**
+     * Bind the generic employee-signing flow to its server-side template rows.
+     *
+     * <p>The client supplies {@code templateUuid} and document file UUIDs so it
+     * can render previews before sending. Those identifiers are untrusted: a
+     * caller could otherwise pair an ordinary employee template with a
+     * recruitment contract file and bypass the protected template endpoints.
+     * Recruitment dossiers use their dedicated recruitment services and never
+     * pass through this generic employee-signing resource.</p>
+     */
+    private void requireEmployeeSigningTemplateDocuments(
+            String templateUuid,
+            List<TemplateDocumentDTO> requestedDocuments) {
+        String resolvedTemplateUuid = templateUuid == null ? "" : templateUuid.trim();
+        if (resolvedTemplateUuid.isEmpty()) {
+            throw new IllegalArgumentException("Employee signing template is required");
+        }
+
+        DocumentTemplateEntity template = DocumentTemplateEntity.findById(resolvedTemplateUuid);
+        if (templateAccessPolicy.isRecruitmentTemplate(template)) {
+            throw new IllegalArgumentException("Template is not available for employee signing");
+        }
+        if (requestedDocuments == null || requestedDocuments.isEmpty()) {
+            throw new IllegalArgumentException("At least one template document is required");
+        }
+
+        Set<String> templateFileUuids = TemplateDocumentEntity
+                .findByTemplateUuid(resolvedTemplateUuid)
+                .stream()
+                .map(TemplateDocumentEntity::getFileUuid)
+                .filter(fileUuid -> fileUuid != null && !fileUuid.isBlank())
+                .collect(Collectors.toSet());
+
+        for (TemplateDocumentDTO requestedDocument : requestedDocuments) {
+            String fileUuid = requestedDocument == null || requestedDocument.getFileUuid() == null
+                    ? ""
+                    : requestedDocument.getFileUuid().trim();
+            if (fileUuid.isEmpty() || !templateFileUuids.contains(fileUuid)) {
+                throw new IllegalArgumentException(
+                        "Template document is not part of the selected employee-signing template");
+            }
+
+            // File UUIDs were not unique in the legacy schema. If the same
+            // stored file is also owned by a recruitment/dossier template,
+            // keep the stricter classification and refuse the generic route.
+            boolean hasRestrictedOwner = TemplateDocumentEntity.findByFileUuid(fileUuid).stream()
+                    .anyMatch(owner -> templateAccessPolicy.isRecruitmentTemplate(owner.getTemplate()));
+            if (hasRestrictedOwner) {
+                throw new IllegalArgumentException(
+                        "Template document is not available for employee signing");
+            }
+        }
     }
 
     /**
@@ -324,7 +402,10 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response previewTemplateDocuments(PreviewTemplateRequest request) {
+    public Response previewTemplateDocuments(
+            PreviewTemplateRequest request,
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
         log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s) (templateUuid: %s)",
             request != null && request.documents() != null ? request.documents().size() : 0,
             request != null ? request.templateUuid() : null);
@@ -341,9 +422,14 @@ public class SigningResource {
             log.debugf("Preview formValues keys: %s", String.join(",", request.formValues().keySet()));
         }
 
+        if (request == null) {
+            return badRequest("REQUEST_NULL", "Request body is required");
+        }
+        requireEmployeeWriteAccess(resolveTargetUserUuid(userUuid, securityContext));
+
         try {
-            // Validate request
             request.validate();
+            requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
             // Generate preview documents directly from the documents in the request
             // Pass templateUuid for type-aware placeholder formatting (e.g., Danish currency)
@@ -411,11 +497,13 @@ public class SigningResource {
         log.infof("POST /utils/signing/cases/multi-document - Creating multi-document signing case with %d documents",
             request != null && request.documents() != null ? request.documents().size() : 0);
 
+        if (request == null) {
+            return badRequest("REQUEST_NULL", "Request body is required");
+        }
+        String targetUserUuid = requireEmployeeWriteAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+
         try {
-            // Validate request
-            if (request == null) {
-                return badRequest("REQUEST_NULL", "Request body is required");
-            }
 
             SigningCaseResponse response = signingService.createMultiDocumentCase(request);
 
@@ -423,7 +511,6 @@ public class SigningResource {
 
             // Save minimal record for async processing.
             try {
-                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.getDisplayName();
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
                 String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
@@ -498,15 +585,20 @@ public class SigningResource {
     })
     public Response getCaseStatus(
         @Parameter(description = "The NextSign case key", required = true)
-        @PathParam("caseKey") String caseKey
+        @PathParam("caseKey") String caseKey,
+        @QueryParam("userUuid") String userUuid,
+        @Context SecurityContext securityContext
     ) {
         log.infof("GET /utils/signing/cases/%s - Fetching case status", caseKey);
 
-        try {
-            if (caseKey == null || caseKey.isBlank()) {
-                return badRequest("INVALID_CASE_KEY", "Case key is required");
-            }
+        if (caseKey == null || caseKey.isBlank()) {
+            return badRequest("INVALID_CASE_KEY", "Case key is required");
+        }
+        String targetUserUuid = requireEmployeeReadAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+        requireCaseOwnedBy(caseKey, targetUserUuid);
 
+        try {
             SigningCaseStatus status = signingService.getStatus(caseKey);
 
             log.infof("Case status retrieved. CaseKey: %s, Status: %s, Completed: %d/%d",
@@ -579,10 +671,16 @@ public class SigningResource {
         @Parameter(description = "The NextSign case key", required = true)
         @PathParam("caseKey") String caseKey,
         @Parameter(description = "Document index (0 for first document)", required = false)
-        @PathParam("documentIndex") @DefaultValue("0") int documentIndex
+        @PathParam("documentIndex") @DefaultValue("0") int documentIndex,
+        @QueryParam("userUuid") String userUuid,
+        @Context SecurityContext securityContext
     ) {
         log.infof("GET /utils/signing/cases/%s/documents/%d - Download request",
             caseKey, documentIndex);
+
+        String targetUserUuid = requireEmployeeReadAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+        requireCaseOwnedBy(caseKey, targetUserUuid);
 
         try {
             byte[] pdfBytes = signingService.downloadSignedDocument(caseKey, documentIndex);
@@ -662,10 +760,10 @@ public class SigningResource {
             @Context SecurityContext securityContext) {
         log.info("GET /utils/signing/cases - Listing user's signing cases");
 
-        try {
-            // Resolve target user UUID from query param or JWT token
-            String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
+        String targetUserUuid = requireEmployeeReadAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
 
+        try {
             List<SigningCaseStatus> cases = signingService.listUserCases(targetUserUuid);
 
             log.infof("Found %d cases for user %s", cases.size(), targetUserUuid);
@@ -713,9 +811,14 @@ public class SigningResource {
             @Context SecurityContext securityContext) {
         log.info("POST /utils/signing/cases/sync - Syncing with NextSign");
 
-        try {
-            String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
+        // NextSign's list API is company-wide and does not provide a trusted
+        // employee ownership key for legacy cases. Treat this legacy import as
+        // an admin operation; allowing a team-scoped actor to supply a target
+        // UUID would let newly discovered cases be attributed to that target.
+        requireAdminHuman();
+        String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
 
+        try {
             int syncedCount = signingService.syncCasesFromNextSign(targetUserUuid);
 
             return Response.ok(Map.of(
@@ -769,6 +872,7 @@ public class SigningResource {
     })
     public Response getProcessingStats() {
         log.debug("GET /utils/signing/processing-stats - Getting async processing statistics");
+        requireAdminHuman();
 
         try {
             Map<String, Long> stats = signingCaseRepository.countByProcessingStatus();
@@ -812,6 +916,7 @@ public class SigningResource {
     })
     public Response listAllCasesAdmin() {
         log.info("GET /utils/signing/admin/cases - Admin listing all signing cases");
+        requireAdminHuman();
         try {
             List<AdminSigningCaseDTO> cases = signingService.listAllCasesAdmin();
             log.infof("Admin: returning %d cases", cases.size());
@@ -846,6 +951,7 @@ public class SigningResource {
     })
     public Response syncAllCases() {
         log.info("POST /utils/signing/admin/sync - Admin syncing all cases");
+        requireAdminHuman();
         try {
             int syncedCount = signingService.syncAllCasesFromNextSign();
             return Response.ok(Map.of(
@@ -879,6 +985,8 @@ public class SigningResource {
         @PathParam("caseKey") String caseKey
     ) {
         log.infof("POST /utils/signing/admin/retry-upload/%s - Retrying SharePoint upload", caseKey);
+        requireAdminHuman();
+        requireKnownCase(caseKey);
         try {
             signingService.retryFailedSharePointUpload(caseKey);
             return Response.ok(Map.of(
@@ -913,6 +1021,7 @@ public class SigningResource {
     })
     public Response retryAllSharePointUploads() {
         log.info("POST /utils/signing/admin/retry-uploads - Retrying all failed SharePoint uploads");
+        requireAdminHuman();
         try {
             int count = signingService.retryAllFailedSharePointUploads();
             return Response.ok(Map.of(
@@ -948,6 +1057,8 @@ public class SigningResource {
     })
     public Response getCaseDetail(@PathParam("caseKey") String caseKey) {
         log.infof("GET /utils/signing/cases/%s/detail", caseKey);
+        requireAdminHuman();
+        requireKnownCase(caseKey);
         try {
             var detail = signingService.getCaseDetail(caseKey);
             return Response.ok(detail).build();
@@ -979,6 +1090,8 @@ public class SigningResource {
     })
     public Response deleteCase(@PathParam("caseKey") String caseKey) {
         log.infof("DELETE /utils/signing/cases/%s", caseKey);
+        requireAdminHuman();
+        requireKnownCase(caseKey);
         try {
             signingService.deleteCase(caseKey);
             return Response.ok(Map.of("status", "deleted", "message", "Case deleted successfully")).build();
@@ -1013,6 +1126,8 @@ public class SigningResource {
         @PathParam("index") int index
     ) {
         log.infof("POST /utils/signing/cases/%s/documents/%d/download-url", caseKey, index);
+        requireAdminHuman();
+        requireKnownCase(caseKey);
         try {
             var response = signingService.getSignedDocumentDownloadUrl(caseKey, index);
             return Response.ok(Map.of(
@@ -1028,6 +1143,71 @@ public class SigningResource {
             log.errorf(e, "Failed to get download URL for case %s doc %d", caseKey, index);
             return serverError("DOWNLOAD_URL_FAILED", "Failed to get download URL: " + e.getMessage());
         }
+    }
+
+    // --- Human/object authorization helpers ---
+
+    private String requireEmployeeReadAccess(String targetUserUuid) {
+        return requireEmployeeAccess(targetUserUuid, false);
+    }
+
+    private String requireEmployeeWriteAccess(String targetUserUuid) {
+        return requireEmployeeAccess(targetUserUuid, true);
+    }
+
+    /**
+     * Mirrors the employee BFF's canonical salaries-data decision. Reads keep
+     * intrinsic OWN access; signing previews and mutations disable OWN while
+     * preserving valid TEAM/PRACTICE/COMPANY and ALL reach. Unlike the older
+     * generic {@link ScopeGuard} convenience, this surface is deliberately
+     * fail-closed for machine/headerless traffic because it exposes or creates
+     * employee signing documents.
+     */
+    private String requireEmployeeAccess(String targetUserUuid, boolean mutation) {
+        String actor = scopeGuard.actorOrNull();
+        if (actor == null) {
+            throw new ForbiddenException("An acting user is required for employee signing");
+        }
+        Set<DataScope> disabledScopes = mutation
+                ? EnumSet.of(DataScope.OWN)
+                : Set.of();
+        AuthorizationService.AccessDecision decision = authorizationService.decideSubjectAccess(
+                actor,
+                "salaries:read",
+                targetUserUuid,
+                LocalDate.now(),
+                disabledScopes);
+        if (!decision.allowed()) {
+            log.infof("Employee signing denied — target %s outside actor %s's reach (%s)",
+                    targetUserUuid, actor, decision.reason());
+            throw new ForbiddenException("This employee's signing data is outside your reach");
+        }
+        return targetUserUuid;
+    }
+
+    /** Human admin routes must not inherit the service JWT's broad scopes. */
+    private void requireAdminHuman() {
+        if (!scopeGuard.actorHasUnbounded("admin:read")) {
+            throw new ForbiddenException("Administrator access is required");
+        }
+    }
+
+    /** Resolve a provider case locally before making any external call. */
+    private SigningCase requireKnownCase(String caseKey) {
+        if (caseKey == null || caseKey.isBlank()) {
+            throw new NotFoundException("Signing case not found");
+        }
+        return signingCaseRepository.findByCaseKey(caseKey)
+                .orElseThrow(() -> new NotFoundException("Signing case not found"));
+    }
+
+    /** Unknown and cross-employee case keys are intentionally indistinguishable. */
+    private SigningCase requireCaseOwnedBy(String caseKey, String targetUserUuid) {
+        SigningCase signingCase = requireKnownCase(caseKey);
+        if (!targetUserUuid.equals(signingCase.getUserUuid())) {
+            throw new NotFoundException("Signing case not found");
+        }
+        return signingCase;
     }
 
     // --- Helper methods for error responses ---

@@ -3,7 +3,9 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 import dk.trustworks.intranet.recruitmentservice.dto.ReportsResponse;
 import dk.trustworks.intranet.recruitmentservice.reporting.RecruitmentReportingProjector;
 import dk.trustworks.intranet.recruitmentservice.reporting.RecruitmentReportingReadService;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -67,6 +69,12 @@ public class RecruitmentReportsResource {
     @Inject
     EntityManager em;
 
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    RecruitmentVisibility visibility;
+
     /**
      * The full report bundle. Defaults to the current fiscal year
      * (July → June, {@code docs/finalized/shared/fiscal-year.md}) when no
@@ -76,6 +84,7 @@ public class RecruitmentReportsResource {
     @RolesAllowed({"recruitment:read"})
     public ReportsResponse reports(@QueryParam("from") String fromParam,
                                    @QueryParam("to") String toParam) {
+        requireRecruiterTier();
         enforceFlag();
         YearMonth[] range = resolveRange(fromParam, toParam);
         return readService.reports(range[0], range[1], projector.watermark(), streamHead());
@@ -90,12 +99,38 @@ public class RecruitmentReportsResource {
     @Path("/rebuild")
     @RolesAllowed({"recruitment:admin"})
     public Response rebuild() {
+        requireAdmin();
         RecruitmentReportingProjector.RebuildSummary summary = projector.rebuild();
         log.infof("Reporting projection rebuild via admin endpoint: %s", summary);
         return Response.ok(summary).build();
     }
 
     // ------------------------------------------------------------------
+
+    private String actor() {
+        String actor = requestHeaderHolder.getUserUuid();
+        if (actor == null || actor.isBlank()) {
+            throw new WebApplicationException(
+                    "X-Requested-By is required", Response.Status.FORBIDDEN);
+        }
+        return actor;
+    }
+
+    private void requireRecruiterTier() {
+        if (!visibility.isRecruiterTier(actor())) {
+            throw new WebApplicationException(
+                    "Recruitment reports are reserved for the recruitment team",
+                    Response.Status.FORBIDDEN);
+        }
+    }
+
+    private void requireAdmin() {
+        if (!visibility.rolesOf(actor()).contains("ADMIN")) {
+            throw new WebApplicationException(
+                    "Rebuilding recruitment reports is an administrator action",
+                    Response.Status.FORBIDDEN);
+        }
+    }
 
     /** Flag off + non-admin caller → 404 (module convention, P2 idiom). */
     private void enforceFlag() {

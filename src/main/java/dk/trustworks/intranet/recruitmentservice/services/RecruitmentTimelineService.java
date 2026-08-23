@@ -21,6 +21,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,12 @@ import java.util.stream.Collectors;
  *       {@code piiRedacted=true} and reads notes through the blind-filtered
  *       scorecards/debrief endpoints. The timeline must never undercut the
  *       server-side blind rule (spec §5.3);</li>
+ *   <li>offer-dossier events and fields follow the separate
+ *       {@link RecruitmentVisibility#canReadDossier} capability: unauthorized
+ *       profile viewers never receive dossier lifecycle/document events or
+ *       dossier-owned candidate fields. The ordinary {@code OFFER_OPENED}
+ *       stage milestone remains visible, without dossier existence/UUID
+ *       metadata;</li>
  *   <li>every other event includes {@code pii} for anyone with profile
  *       access.</li>
  * </ul>
@@ -70,11 +77,22 @@ public class RecruitmentTimelineService {
             new TypeReference<>() {
             };
 
+    /** Candidate-row fields owned by the legacy offer-dossier editor. */
+    private static final Set<String> DOSSIER_CANDIDATE_FIELDS = Set.of(
+            "target_company_uuid", "target_start_date", "notes");
+
+    /** Storage origins that always carry offer/onboarding documents. */
+    private static final Set<String> DOSSIER_DOCUMENT_ORIGINS = Set.of(
+            "dossier", "signing", "onboarding");
+
     @Inject
     ObjectMapper objectMapper;
 
     @Inject
     RecruitmentVisibility visibility;
+
+    @Inject
+    CandidateDocumentClassifier documentClassifier;
 
     @Inject
     EntityManager em;
@@ -120,6 +138,7 @@ public class RecruitmentTimelineService {
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
         boolean noteTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
+        boolean canReadDossier = visibility.canReadDossier(viewerUuid, candidate);
 
         // Positions once: the candidate's application positions (comp tier)
         // plus any position an event references (CIRCLE filter + names).
@@ -151,16 +170,19 @@ public class RecruitmentTimelineService {
         Map<String, RecruitmentEvent> newestEditByNoteId = loadNoteEdits(candidate.getUuid());
 
         // Event-level filtering over the full remainder, then one page.
-        Map<Long, Map<String, Object>> payloads = new HashMap<>();
+        Map<Long, Map<String, Object>> payloads = raw.stream().collect(Collectors.toMap(
+                RecruitmentEvent::getSeq, event -> parseJson(event.getPayload())));
+        Set<String> dossierRestrictedFileUuids =
+                loadDossierRestrictedFileUuids(candidate.getUuid());
         List<RecruitmentEvent> visible = new ArrayList<>();
         for (RecruitmentEvent event : raw) {
-            Map<String, Object> payload = parseJson(event.getPayload());
-            payloads.put(event.getSeq(), payload);
+            Map<String, Object> payload = payloads.get(event.getSeq());
             if (event.getEventType() == RecruitmentEventType.NOTE_EDITED) {
                 // Never a feed row of its own — it rides along on the note.
                 continue;
             }
-            if (isVisible(event, payload, viewerUuid, admin, noteTier, readablePositions)) {
+            if (isVisible(event, payload, viewerUuid, admin, noteTier,
+                    canReadDossier, readablePositions, dossierRestrictedFileUuids)) {
                 visible.add(event);
             }
         }
@@ -168,9 +190,13 @@ public class RecruitmentTimelineService {
         List<RecruitmentEvent> page = visible.size() > limit ? visible.subList(0, limit) : visible;
 
         Map<String, String> actorNames = resolveActorNames(page);
+        Map<String, Boolean> canReadFinalOutcomeByPosition = new HashMap<>();
         List<TimelineEvent> events = page.stream()
                 .map(event -> toDto(event, payloads.get(event.getSeq()),
                         actorNames, positions, compTier, viewerUuid, admin,
+                        canReadDossier,
+                        canReadFinalOutcome(event, viewerUuid, positions,
+                                canReadFinalOutcomeByPosition),
                         newestEditByNoteId.get(event.getEventId())))
                 .toList();
         return new CandidateTimelineResponse(events, hasMore, compTier);
@@ -180,19 +206,108 @@ public class RecruitmentTimelineService {
 
     private static boolean isVisible(RecruitmentEvent event, Map<String, Object> payload,
                                      String viewerUuid, boolean admin, boolean noteTier,
-                                     Set<String> readablePositions) {
+                                     boolean canReadDossier,
+                                     Set<String> readablePositions,
+                                     Set<String> dossierRestrictedFileUuids) {
+        if (!admin && event.getPositionUuid() != null
+                && !readablePositions.contains(event.getPositionUuid())) {
+            // Enforce the current position boundary independently of the
+            // producer's visibility stamp. A stale NORMAL label must not
+            // expose partner or out-of-practice route facts on a mixed-scope
+            // candidate whose ordinary profile is otherwise readable.
+            return false;
+        }
         if (!admin && event.getVisibility() == RecruitmentEventVisibility.CIRCLE
-                && (event.getPositionUuid() == null
-                    || !readablePositions.contains(event.getPositionUuid()))) {
-            // Partner-track content outside the viewer's circles: fail
-            // closed, including the defensive position-less case.
+                && event.getPositionUuid() == null) {
+            // A position-less CIRCLE event has no route against which to
+            // prove membership, so it fails closed.
             return false;
         }
         if (event.getEventType() == RecruitmentEventType.NOTE_ADDED
                 && Boolean.TRUE.equals(payload.get("private"))) {
             return noteTier || viewerUuid.equals(event.getActorUuid());
         }
+        if (!canReadDossier
+                && isDossierOnlyEvent(event, payload, dossierRestrictedFileUuids)) {
+            return false;
+        }
         return true;
+    }
+
+    /**
+     * Whether this event would disclose the offer/onboarding dossier to a
+     * profile viewer who lacks the candidate-scoped dossier capability.
+     */
+    private static boolean isDossierOnlyEvent(RecruitmentEvent event,
+                                              Map<String, Object> payload,
+                                              Set<String> dossierRestrictedFileUuids) {
+        return switch (event.getEventType()) {
+            case DOSSIER_CREATED, SIGNING_COMPLETED,
+                    RECORD_CHECK_DRAWN, RECORD_CHECK_OUTCOME_RECORDED -> true;
+            case DOCUMENT_UPLOADED, DOCUMENT_KIND_CHANGED ->
+                    isDossierDocumentEvent(payload, dossierRestrictedFileUuids);
+            case CANDIDATE_UPDATED -> !hasOrdinaryCandidateUpdateField(payload);
+            default -> false;
+        };
+    }
+
+    private static boolean isDossierDocumentEvent(
+            Map<String, Object> payload,
+            Set<String> dossierRestrictedFileUuids) {
+        String fileUuid = stringValue(payload.get("file_uuid"));
+        return (fileUuid != null && dossierRestrictedFileUuids.contains(fileUuid))
+                || hasDossierDocumentClassification(payload);
+    }
+
+    private static boolean hasDossierDocumentClassification(Map<String, Object> payload) {
+        return CandidateDocumentClassifier.isDossierRestricted(stringValue(payload.get("kind")))
+                || CandidateDocumentClassifier.isDossierRestricted(
+                        stringValue(payload.get("previous_kind")))
+                || DOSSIER_DOCUMENT_ORIGINS.contains(stringValue(payload.get("origin")));
+    }
+
+    /**
+     * Every file that has ever crossed the dossier/onboarding boundary. The
+     * set applies to the file's whole event history: an earlier generic upload
+     * row (including its filename) must not reappear merely because the
+     * restricted classification was appended later. Treating a prior
+     * restricted kind as sticky also fails closed if historical data contains
+     * a later manual downgrade.
+     */
+    private Set<String> loadDossierRestrictedFileUuids(String candidateUuid) {
+        List<RecruitmentEvent> events = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType in ?2 order by seq",
+                candidateUuid,
+                List.of(RecruitmentEventType.DOCUMENT_UPLOADED,
+                        RecruitmentEventType.DOCUMENT_KIND_CHANGED));
+        Set<String> restricted = documentClassifier.derivedKinds(candidateUuid).entrySet().stream()
+                .filter(entry -> CandidateDocumentClassifier.isDossierRestricted(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toCollection(HashSet::new));
+        for (RecruitmentEvent event : events) {
+            Map<String, Object> payload = parseJson(event.getPayload());
+            String fileUuid = stringValue(payload.get("file_uuid"));
+            if (fileUuid != null && hasDossierDocumentClassification(payload)) {
+                restricted.add(fileUuid);
+            }
+        }
+        return Set.copyOf(restricted);
+    }
+
+    /** Mixed profile updates survive; a dossier-only update disappears. */
+    private static boolean hasOrdinaryCandidateUpdateField(Map<String, Object> payload) {
+        Object changed = payload.get("changed_fields");
+        if (changed instanceof Collection<?> fields) {
+            return fields.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .anyMatch(field -> !DOSSIER_CANDIDATE_FIELDS.contains(field));
+        }
+        // Defensive legacy shape: keep a row only when its structural payload
+        // contains an ordinary field. PII is sanitized independently below.
+        return payload.keySet().stream()
+                .filter(key -> !"changed_fields".equals(key))
+                .anyMatch(key -> !DOSSIER_CANDIDATE_FIELDS.contains(key));
     }
 
     // ---- Shaping ----------------------------------------------------------------
@@ -201,6 +316,8 @@ public class RecruitmentTimelineService {
                                 Map<String, String> actorNames,
                                 Map<String, RecruitmentPosition> positions,
                                 boolean compTier, String viewerUuid, boolean admin,
+                                boolean canReadDossier,
+                                boolean canReadFinalOutcome,
                                 RecruitmentEvent newestEdit) {
         boolean salaryNote = event.getEventType() == RecruitmentEventType.NOTE_ADDED
                 && NoteRequest.FIELD_SALARY_EXPECTATION.equals(payload.get("field"));
@@ -215,6 +332,21 @@ public class RecruitmentTimelineService {
                 ? null
                 : parseJson(event.getPii());
         boolean piiRedacted = redactPii && event.getPii() != null;
+
+        if (!canReadDossier) {
+            payload = withoutDossierPayload(event.getEventType(), payload);
+            if (event.getEventType() == RecruitmentEventType.CANDIDATE_UPDATED
+                    && pii != null) {
+                pii = withoutKeys(pii, DOSSIER_CANDIDATE_FIELDS);
+                if (pii.isEmpty()) {
+                    pii = null;
+                }
+            }
+        }
+
+        if (!canReadFinalOutcome) {
+            payload = withoutFinalOutcomePayload(event.getEventType(), payload);
+        }
 
         // Fold the newest edit into a discussion note: the displayed text
         // is the edit's, the payload gains the "edited" marker, and the
@@ -254,6 +386,84 @@ public class RecruitmentTimelineService {
                 payload,
                 pii,
                 piiRedacted);
+    }
+
+    /** Retain ordinary progress while removing offer-dossier facts. */
+    private static Map<String, Object> withoutDossierPayload(
+            RecruitmentEventType type, Map<String, Object> payload) {
+        if (type == RecruitmentEventType.OFFER_OPENED) {
+            return withoutKeys(payload, Set.of("dossier_linked", "dossier_uuid"));
+        }
+        if (type != RecruitmentEventType.CANDIDATE_UPDATED) {
+            return payload;
+        }
+
+        Map<String, Object> sanitized = withoutKeys(payload, DOSSIER_CANDIDATE_FIELDS);
+        Object changed = payload.get("changed_fields");
+        if (changed instanceof Collection<?> fields) {
+            List<String> ordinaryFields = fields.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .filter(field -> !DOSSIER_CANDIDATE_FIELDS.contains(field))
+                    .toList();
+            sanitized = new HashMap<>(sanitized);
+            sanitized.put("changed_fields", ordinaryFields);
+        }
+        return sanitized;
+    }
+
+    /** Keep the decision milestone while withholding a pending no-go value. */
+    private static Map<String, Object> withoutFinalOutcomePayload(
+            RecruitmentEventType type, Map<String, Object> payload) {
+        if (type == RecruitmentEventType.INTERVIEW_DECISION_RECORDED) {
+            Set<String> restrictedKeys = new HashSet<>();
+            if ("REJECT".equals(payload.get("decision"))) {
+                restrictedKeys.add("decision");
+            }
+            if ("REJECT".equals(payload.get("previous_decision"))) {
+                restrictedKeys.add("previous_decision");
+            }
+            return withoutKeys(payload, restrictedKeys);
+        }
+        if (type == RecruitmentEventType.INTERVIEW_DECISION_CLEARED
+                && "REJECT".equals(payload.get("previous_decision"))) {
+            return withoutKeys(payload, Set.of("previous_decision"));
+        }
+        return payload;
+    }
+
+    private boolean canReadFinalOutcome(
+            RecruitmentEvent event,
+            String viewerUuid,
+            Map<String, RecruitmentPosition> positions,
+            Map<String, Boolean> cache) {
+        if (event.getEventType() != RecruitmentEventType.INTERVIEW_DECISION_RECORDED
+                && event.getEventType() != RecruitmentEventType.INTERVIEW_DECISION_CLEARED) {
+            return true;
+        }
+        String positionUuid = event.getPositionUuid();
+        if (positionUuid == null) {
+            return false;
+        }
+        return cache.computeIfAbsent(positionUuid, uuid -> {
+            RecruitmentPosition position = positions.get(uuid);
+            return position != null && visibility.canDecideFinalOutcome(viewerUuid, position);
+        });
+    }
+
+    private static Map<String, Object> withoutKeys(Map<String, Object> source,
+                                                   Set<String> keys) {
+        if (source == null || source.isEmpty()
+                || source.keySet().stream().noneMatch(keys::contains)) {
+            return source;
+        }
+        Map<String, Object> sanitized = new HashMap<>(source);
+        keys.forEach(sanitized::remove);
+        return sanitized;
+    }
+
+    private static String stringValue(Object value) {
+        return value instanceof String text ? text : null;
     }
 
     // ---- Batched lookups --------------------------------------------------------

@@ -106,6 +106,8 @@ class RecruitmentApplicationServiceIntegrationTest {
                         .setParameter("c", candidateUuids).executeUpdate();
                 em.createNativeQuery("DELETE FROM recruitment_consents WHERE candidate_uuid IN :c")
                         .setParameter("c", candidateUuids).executeUpdate();
+                em.createNativeQuery("DELETE FROM recruitment_record_checks WHERE candidate_uuid IN :c")
+                        .setParameter("c", candidateUuids).executeUpdate();
                 em.createNativeQuery("DELETE FROM recruitment_applications WHERE candidate_uuid IN :c")
                         .setParameter("c", candidateUuids).executeUpdate();
                 em.createNativeQuery("DELETE FROM recruitment_candidates WHERE uuid IN :c")
@@ -303,12 +305,17 @@ class RecruitmentApplicationServiceIntegrationTest {
     }
 
     @Test
-    void create_terminalCandidate_conflicts() {
+    void create_reconsiderableCandidate_reopensThem() {
         String candidate = insertCandidate(null);
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery("UPDATE recruitment_candidates SET status = 'DECLINED' WHERE uuid = :c")
                         .setParameter("c", candidate).executeUpdate());
-        assertThrows(BusinessRuleViolation.class, () -> create(candidate, positionUuid));
+
+        create(candidate, positionUuid);
+
+        assertEquals(CandidateStatus.ACTIVE, reloadCandidate(candidate).getStatus());
+        assertEquals(List.of(RecruitmentEventType.CANDIDATE_UPDATED,
+                RecruitmentEventType.APPLICATION_CREATED), eventTypes(candidate));
     }
 
     @Test
@@ -383,10 +390,14 @@ class RecruitmentApplicationServiceIntegrationTest {
         // followed by OFFER_OPENED — the timeline shows both.
         changeStage(application, RecruitmentStage.OFFER, true);
         List<RecruitmentEvent> events = eventsFor(candidate);
-        RecruitmentEvent stageChanged = events.get(events.size() - 2);
+        RecruitmentEvent stageChanged = events.stream()
+                .filter(event -> event.getEventType() == RecruitmentEventType.APPLICATION_STAGE_CHANGED)
+                .findFirst()
+                .orElseThrow();
         assertEquals(RecruitmentEventType.APPLICATION_STAGE_CHANGED, stageChanged.getEventType());
         assertTrue(stageChanged.getPayload().contains("\"skipped_stages\":true"));
-        assertEquals(RecruitmentEventType.OFFER_OPENED, lastEvent(candidate).getEventType(),
+        assertTrue(events.stream().anyMatch(event -> event.getEventType()
+                        == RecruitmentEventType.OFFER_OPENED),
                 "a fast-track entry into OFFER fires the P10 offer bridge");
     }
 
@@ -624,8 +635,9 @@ class RecruitmentApplicationServiceIntegrationTest {
         // HIRED and ANONYMIZED stay hard blocks — only the two reconsiderable
         // terminals were relaxed.
         String candidate = insertCandidate(null);
-        mutate(() -> RecruitmentCandidate.<RecruitmentCandidate>findById(candidate)
-                .markHired(UUID.randomUUID(), actor));
+        QuarkusTransaction.requiringNew().run(() ->
+                em.createNativeQuery("UPDATE recruitment_candidates SET status = 'HIRED' WHERE uuid = :c")
+                        .setParameter("c", candidate).executeUpdate());
 
         assertThrows(BusinessRuleViolation.class, () -> create(candidate, positionUuid));
     }
@@ -727,7 +739,7 @@ class RecruitmentApplicationServiceIntegrationTest {
             RecruitmentApplication managed = RecruitmentApplication.findById(application.getUuid());
             applicationService.changeStage(managed,
                     RecruitmentPosition.findById(managed.getPositionUuid()), target,
-                    mayFastTrack, actor);
+                    mayFastTrack, true, actor);
         });
     }
 
@@ -740,7 +752,7 @@ class RecruitmentApplicationServiceIntegrationTest {
             return applicationService.moveToPosition(
                     RecruitmentApplication.findById(application.getUuid()),
                     RecruitmentPosition.findById(fromPositionUuid),
-                    RecruitmentPosition.findById(toPositionUuid), actor);
+                    RecruitmentPosition.findById(toPositionUuid), true, actor);
         });
     }
 

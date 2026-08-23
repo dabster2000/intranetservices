@@ -83,6 +83,12 @@ public final class RecruitmentIdleRule {
      *       / {@code CANDIDATE_UPDATED} / {@code AI_*} — real work, but
      *       invisible to the candidate, who is the one deciding whether to
      *       keep waiting. "We wrote about you" is not "we moved you".</li>
+     *   <li>{@code DOSSIER_CREATED} / {@code RECORD_CHECK_DRAWN} /
+     *       {@code SIGNING_COMPLETED} — offer-dossier facts hidden from
+     *       recruitment assistants. Counting them would leak their exact
+     *       timing through the assistant-visible idle task's {@code since}
+     *       and {@code ageHours}; {@code OFFER_OPENED} remains the ordinary,
+     *       visible progress marker for this phase.</li>
      *   <li>{@code CONSENT_REQUESTED} / {@code CONSENT_GRANTED} — GDPR
      *       bookkeeping that runs on its own clock, unrelated to whether
      *       anyone is working the application.</li>
@@ -119,9 +125,6 @@ public final class RecruitmentIdleRule {
             RecruitmentEventType.SCORECARD_SUBMITTED,
             RecruitmentEventType.INTERVIEW_DECISION_RECORDED,
             RecruitmentEventType.OFFER_OPENED,
-            RecruitmentEventType.DOSSIER_CREATED,
-            RecruitmentEventType.SIGNING_COMPLETED,
-            RecruitmentEventType.RECORD_CHECK_DRAWN,
             RecruitmentEventType.SCHEDULING_REQUEST_CREATED,
             RecruitmentEventType.SLOT_PROPOSED,
             RecruitmentEventType.OPTIONS_SENT,

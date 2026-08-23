@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.ai.AiIntakeGenerationService;
-import dk.trustworks.intranet.recruitmentservice.ai.AiIntakeReactor;
 import dk.trustworks.intranet.recruitmentservice.dto.AiResolveRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateAiStateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
@@ -162,7 +161,8 @@ public class RecruitmentCandidateAiResource {
         UUID viewer = currentActor();
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, viewer);
 
-        RecruitmentApplication anchor = AiIntakeReactor.latestOpenApplication(candidate.getUuid());
+        RecruitmentApplication anchor = aiReadService.latestVisibleOpenApplication(
+                viewer.toString(), candidate.getUuid());
         if (anchor == null) {
             throw error(Response.Status.BAD_REQUEST, "NO_OPEN_APPLICATION",
                     "Needs an open application — attach the candidate to a position first");
@@ -180,7 +180,7 @@ public class RecruitmentCandidateAiResource {
                     Response.Status.FORBIDDEN);
         }
 
-        if (aiReadService.regenerationsToday(candidate.getUuid())
+        if (aiReadService.regenerationsToday(viewer.toString(), candidate.getUuid())
                 >= CandidateAiReadService.DAILY_REGENERATION_LIMIT) {
             throw error(Response.Status.TOO_MANY_REQUESTS, "RATE_LIMITED",
                     "AI regeneration limit reached for today ("
@@ -230,7 +230,7 @@ public class RecruitmentCandidateAiResource {
         // and the accept path still runs through CandidateService.update's
         // canonical validation. Regenerate keeps its tier gate — it spends
         // rate-limited AI calls; resolving spends nothing.
-        if (aiReadService.resolvedSuggestionIds(candidate.getUuid())
+        if (aiReadService.resolvedSuggestionIds(viewer.toString(), candidate.getUuid())
                 .contains(request.suggestionId())) {
             // Double-click safe: already resolved ⇒ 200 no-op, no new events.
             return aiReadService.state(viewer.toString(), candidate);

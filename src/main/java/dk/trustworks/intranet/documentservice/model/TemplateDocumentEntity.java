@@ -110,4 +110,13 @@ public class TemplateDocumentEntity extends PanacheEntityBase {
     public static TemplateDocumentEntity findByUuid(String uuid) {
         return find("uuid = ?1", uuid).firstResult();
     }
+
+    /**
+     * Resolve every template that references a stored file. File UUIDs were
+     * not declared unique in the legacy schema, so authorization must inspect
+     * all owners and deny when any owner is recruitment-classified.
+     */
+    public static List<TemplateDocumentEntity> findByFileUuid(String fileUuid) {
+        return find("fileUuid = ?1", fileUuid).list();
+    }
 }

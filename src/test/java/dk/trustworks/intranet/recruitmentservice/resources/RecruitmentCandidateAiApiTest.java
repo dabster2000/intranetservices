@@ -55,10 +55,14 @@ class RecruitmentCandidateAiApiTest {
 
     private String practiceUuid;
     private String hrUser;
+    private String circleHrUser;
+    private String assistantUser;
     private String plainUser;
     private String positionUuid;
+    private String partnerPositionUuid;
     private String candidateUuid;
     private String applicationUuid;
+    private String hiddenPartnerApplicationUuid;
 
     private String previousPipeline;
     private String previousIntake;
@@ -68,22 +72,39 @@ class RecruitmentCandidateAiApiTest {
     void seed() {
         practiceUuid = UUID.randomUUID().toString();
         hrUser = UUID.randomUUID().toString();
+        circleHrUser = UUID.randomUUID().toString();
+        assistantUser = UUID.randomUUID().toString();
         plainUser = UUID.randomUUID().toString();
         positionUuid = UUID.randomUUID().toString();
+        partnerPositionUuid = UUID.randomUUID().toString();
         candidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
+        hiddenPartnerApplicationUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, hrUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
+            P8ProfileFixtures.insertUser(em, circleHrUser, "Cilla", "Circle");
+            P8ProfileFixtures.insertRole(em, circleHrUser, "HR");
+            P8ProfileFixtures.insertUser(em, assistantUser, "Assi", "Stent");
+            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
+            em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
+                    .setParameter("practice", practiceUuid)
+                    .setParameter("user", assistantUser)
+                    .executeUpdate();
             P8ProfileFixtures.insertPosition(em, positionUuid, "Consultant",
                     "PRACTICE_TEAM", practiceUuid, null, null);
+            P8ProfileFixtures.insertPosition(em, partnerPositionUuid, "Partner",
+                    "PARTNER", practiceUuid, null, null);
+            P8ProfileFixtures.insertCircleMember(em, partnerPositionUuid, circleHrUser);
             P8ProfileFixtures.insertCandidate(em, candidateUuid,
                     PII_SENTINEL + " Anna", PII_SENTINEL + " Ager", "ACTIVE", null, null, hrUser);
             P8ProfileFixtures.insertOpenApplication(em, applicationUuid,
                     candidateUuid, positionUuid, "SCREENING");
+            P8ProfileFixtures.insertOpenApplication(em, hiddenPartnerApplicationUuid,
+                    candidateUuid, partnerPositionUuid, "SCREENING");
             previousPipeline = P8ProfileFixtures.setFlag(em, P8ProfileFixtures.PIPELINE_FLAG, "true");
             previousIntake = P8ProfileFixtures.setFlag(em, INTAKE_FLAG, "true");
             previousBrief = P8ProfileFixtures.setFlag(em, BRIEF_FLAG, "true");
@@ -96,8 +117,8 @@ class RecruitmentCandidateAiApiTest {
     void cleanup() {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
-                    List.of(candidateUuid), List.of(positionUuid),
-                    List.of(hrUser, plainUser), practiceUuid);
+                    List.of(candidateUuid), List.of(positionUuid, partnerPositionUuid),
+                    List.of(hrUser, circleHrUser, assistantUser, plainUser), practiceUuid);
             P8ProfileFixtures.restoreFlag(em, P8ProfileFixtures.PIPELINE_FLAG, previousPipeline);
             P8ProfileFixtures.restoreFlag(em, INTAKE_FLAG, previousIntake);
             P8ProfileFixtures.restoreFlag(em, BRIEF_FLAG, previousBrief);
@@ -134,6 +155,19 @@ class RecruitmentCandidateAiApiTest {
                         "{\"generation_id\":\"" + generationId + "\",\"origin\":\"reactor\","
                                 + "\"model\":\"test-model\",\"prompt_version\":\"brief-v1\"}",
                         "{\"bullets\":[\"" + PII_SENTINEL + " punkt et\",\"punkt to\",\"punkt tre\"]}"));
+    }
+
+    private void seedHiddenPartnerRegeneration(String generationId) {
+        String payload = "{\"generation_id\":\"" + generationId
+                + "\",\"origin\":\"regenerate\",\"model\":\"hidden\","
+                + "\"prompt_version\":\"intake-v1\",\"fields\":[\"EDUCATION_LEVEL\"]}";
+        String pii = "{\"suggestions\":[{\"id\":\"" + generationId
+                + ":EDUCATION_LEVEL\",\"field\":\"EDUCATION_LEVEL\","
+                + "\"value\":\"BACHELOR\",\"evidence\":\"hidden partner evidence\"}]}";
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertEvent(em, "AI_SUGGESTIONS_GENERATED", candidateUuid,
+                        hiddenPartnerApplicationUuid, partnerPositionUuid, "SYSTEM", null,
+                        "NORMAL", payload, pii));
     }
 
     private void resolveOk(String suggestionId, boolean accepted) {
@@ -466,6 +500,53 @@ class RecruitmentCandidateAiApiTest {
                 .when().post("/recruitment/candidates/{uuid}/ai/regenerate", candidateUuid)
                 .then().statusCode(400)
                 .body("error", equalTo("NO_OPEN_APPLICATION"));
+    }
+
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void mixedCandidate_hiddenPartnerAiStateAndAnchorRequireCircleAccess() throws Exception {
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                        "UPDATE recruitment_applications SET terminal = 'REJECTED' WHERE uuid = :u")
+                .setParameter("u", applicationUuid).executeUpdate());
+        seedHiddenPartnerRegeneration("hidden-regen");
+
+        for (String outsider : List.of(hrUser, assistantUser)) {
+            given().header("X-Requested-By", outsider)
+                    .when().get("/recruitment/candidates/{uuid}/ai/state", candidateUuid)
+                    .then().statusCode(200)
+                    .body("suggestions", hasSize(0))
+                    .body("regenerate.remainingToday", equalTo(5))
+                    .body("regenerate.hasOpenApplication", equalTo(false));
+        }
+        int generationsBefore = events("AI_SUGGESTIONS_GENERATED").size();
+        given().header("X-Requested-By", hrUser)
+                .when().post("/recruitment/candidates/{uuid}/ai/regenerate", candidateUuid)
+                .then().statusCode(400)
+                .body("error", equalTo("NO_OPEN_APPLICATION"));
+        assertEquals(generationsBefore, events("AI_SUGGESTIONS_GENERATED").size(),
+                "a hidden partner anchor must cause no generation side effect");
+
+        given().header("X-Requested-By", circleHrUser)
+                .when().get("/recruitment/candidates/{uuid}/ai/state", candidateUuid)
+                .then().statusCode(200)
+                .body("suggestions", hasSize(1))
+                .body("suggestions[0].generationId", equalTo("hidden-regen"))
+                .body("regenerate.remainingToday", equalTo(4))
+                .body("regenerate.hasOpenApplication", equalTo(true));
+
+        when(openAIService.askQuestionWithSchema(anyString(), anyString(), any(), any(),
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn("""
+                {"suggestions":{"educationLevel":null,"educationLevelEvidence":null,
+                 "experienceLevel":null,"experienceLevelEvidence":null,
+                 "specializations":null,"specializationsEvidence":null,
+                 "languages":null,"languagesEvidence":null,
+                 "currentEmployer":null,"currentEmployerEvidence":null},
+                 "brief":["Punkt et","Punkt to","Punkt tre"]}
+                """);
+        given().header("X-Requested-By", circleHrUser)
+                .when().post("/recruitment/candidates/{uuid}/ai/regenerate", candidateUuid)
+                .then().statusCode(200)
+                .body("regenerate.remainingToday", equalTo(3));
     }
 
     // ---- authz --------------------------------------------------------------------

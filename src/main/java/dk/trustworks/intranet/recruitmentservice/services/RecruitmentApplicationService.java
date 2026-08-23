@@ -19,6 +19,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewDecision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
@@ -263,10 +264,13 @@ public class RecruitmentApplicationService {
     public RecruitmentApplication changeStage(RecruitmentApplication application,
                                               RecruitmentPosition position,
                                               RecruitmentStage target,
-                                              boolean mayFastTrack, UUID actor) {
+                                              boolean mayFastTrack,
+                                              boolean canDecideFinalOutcome,
+                                              UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
         application = managedApplication(application);
         StageMove move = application.moveToStage(target, position.getStageSet());
+        requireMayConsumePendingDecisions(application, canDecideFinalOutcome);
         clearPendingDecisions(application);
         if (move.direction() == RecruitmentApplication.MoveDirection.FORWARD
                 && move.skippedStages() && !mayFastTrack) {
@@ -331,7 +335,9 @@ public class RecruitmentApplicationService {
     @Transactional
     public RecruitmentApplication moveToPosition(RecruitmentApplication application,
                                                  RecruitmentPosition from,
-                                                 RecruitmentPosition target, UUID actor) {
+                                                 RecruitmentPosition target,
+                                                 boolean canDecideFinalOutcome,
+                                                 UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
         Objects.requireNonNull(target, "target position must not be null");
         application = managedApplication(application);
@@ -351,6 +357,7 @@ public class RecruitmentApplicationService {
 
         RecruitmentApplication.PositionMove move =
                 application.moveToPosition(target.getUuid(), stageCodesOf(target));
+        requireMayConsumePendingDecisions(application, canDecideFinalOutcome);
         clearPendingDecisions(application);
 
         // Subject the event to the TARGET position (where the application
@@ -591,11 +598,30 @@ public class RecruitmentApplicationService {
      * viewers ({@link RecruitmentVisibility#filterApplications}).
      */
     public List<ApplicationResponse> listForCandidate(String viewerUuid, String candidateUuid) {
+        return listForCandidate(
+                viewerUuid,
+                candidateUuid,
+                visibility.canReadDossier(viewerUuid, candidateUuid));
+    }
+
+    /**
+     * Variant used by the candidate applications endpoint after it has loaded
+     * the candidate and computed the dossier capability once. The same answer
+     * is copied onto every application row for mutation-response compatibility,
+     * while the list envelope remains authoritative even for zero applications.
+     */
+    public List<ApplicationResponse> listForCandidate(String viewerUuid,
+                                                      String candidateUuid,
+                                                      boolean viewerCanReadDossier) {
         List<RecruitmentApplication> applications =
                 visibility.filterApplications(viewerUuid, candidateUuid);
         Map<String, RecruitmentPosition> positions = positionsOf(applications);
         return applications.stream()
-                .map(a -> toResponse(a, positions.get(a.getPositionUuid()), viewerUuid))
+                .map(a -> toResponse(
+                        a,
+                        positions.get(a.getPositionUuid()),
+                        viewerUuid,
+                        viewerCanReadDossier))
                 .toList();
     }
 
@@ -627,7 +653,7 @@ public class RecruitmentApplicationService {
     }
 
     /**
-     * Wire mapping with the position facts denormalized in, plus the two
+     * Wire mapping with the position facts denormalized in, plus the
      * viewer-rights answers the UI needs to decide what to render. The
      * viewer is required: a response that claimed no rights because nobody
      * passed a viewer would silently hide every button.
@@ -635,6 +661,17 @@ public class RecruitmentApplicationService {
     public ApplicationResponse toResponse(RecruitmentApplication application,
                                           RecruitmentPosition position,
                                           String viewerUuid) {
+        return toResponse(
+                application,
+                position,
+                viewerUuid,
+                visibility.canReadDossier(viewerUuid, application.getCandidateUuid()));
+    }
+
+    private ApplicationResponse toResponse(RecruitmentApplication application,
+                                           RecruitmentPosition position,
+                                           String viewerUuid,
+                                           boolean viewerCanReadDossier) {
         return new ApplicationResponse(
                 application.getUuid(),
                 application.getCandidateUuid(),
@@ -652,6 +689,7 @@ public class RecruitmentApplicationService {
                 application.getCreatedAt(),
                 position != null && visibility.canDecideOnApplication(viewerUuid, position),
                 position != null && visibility.canDecideFinalOutcome(viewerUuid, position),
+                viewerCanReadDossier,
                 position != null
                         && visibility.isHiringOwnerForCandidate(viewerUuid,
                                 application.getCandidateUuid()));
@@ -700,6 +738,28 @@ public class RecruitmentApplicationService {
             interview.setDecision(null);
             interview.setDecidedBy(null);
             interview.setDecidedAt(null);
+        }
+    }
+
+    /**
+     * An assistant may perform ordinary pipeline moves, but those commands
+     * must not become an indirect way to erase a broader actor's pending
+     * no-go. Evaluate the managed application inside the mutation transaction
+     * before any pending decisions are consumed.
+     */
+    private static void requireMayConsumePendingDecisions(
+            RecruitmentApplication application,
+            boolean canDecideFinalOutcome) {
+        if (canDecideFinalOutcome) {
+            return;
+        }
+        long pendingRejects = RecruitmentInterview.count(
+                "applicationUuid = ?1 and decision = ?2",
+                application.getUuid(), RecruitmentInterviewDecision.REJECT);
+        if (pendingRejects > 0) {
+            throw new WebApplicationException(
+                    "This move would consume a pending no-go and requires final-outcome authority",
+                    Response.Status.FORBIDDEN);
         }
     }
 

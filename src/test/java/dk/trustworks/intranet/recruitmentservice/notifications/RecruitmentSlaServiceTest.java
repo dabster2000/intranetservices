@@ -483,6 +483,51 @@ class RecruitmentSlaServiceTest {
     }
 
     @Test
+    void ownerLadder_partnerTrack_skipsNamedNonCircleOwner_andFallsBackToCircleOwner() {
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("UPDATE recruitment_positions SET hiring_track = 'PARTNER' "
+                            + "WHERE uuid = :uuid")
+                    .setParameter("uuid", positionUuid).executeUpdate();
+            em.createNativeQuery("""
+                            INSERT INTO recruitment_circle_members
+                                (position_uuid, user_uuid, role_in_circle, added_at, added_by_uuid)
+                            VALUES (:p, :u, 'OWNER', NOW(3), :u)
+                            """)
+                    .setParameter("p", positionUuid)
+                    .setParameter("u", interviewerUser).executeUpdate();
+            P8ProfileFixtures.backdateApplicationStageEntry(em, applicationUuid, 10);
+        });
+
+        slaService.sweep();
+
+        assertTrue(dmTextsTo(ownerUser).isEmpty(),
+                "named ownership alone never reveals a partner recruitment");
+        assertEquals(1, dmTextsTo(interviewerUser).size(),
+                "the canonical circle OWNER fallback receives the nudge");
+        List<RecruitmentEvent> events = eventsOf(RecruitmentEventType.CANDIDATE_IDLE_NUDGED);
+        assertEquals(1, events.size());
+        assertTrue(events.get(0).getPayload()
+                .contains("\"nudged_user_uuids\":[\"" + interviewerUser + "\"]"));
+        assertEquals("CIRCLE", events.get(0).getVisibility().name());
+    }
+
+    @Test
+    void ownerLadder_partnerTrack_keepsNamedOwnerWhenTheyAreInTheCircle() {
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("UPDATE recruitment_positions SET hiring_track = 'PARTNER' "
+                            + "WHERE uuid = :uuid")
+                    .setParameter("uuid", positionUuid).executeUpdate();
+            P8ProfileFixtures.insertCircleMember(em, positionUuid, ownerUser);
+            P8ProfileFixtures.backdateApplicationStageEntry(em, applicationUuid, 10);
+        });
+
+        slaService.sweep();
+
+        assertEquals(1, dmTextsTo(ownerUser).size());
+        assertEquals(1, eventsOf(RecruitmentEventType.CANDIDATE_IDLE_NUDGED).size());
+    }
+
+    @Test
     void ownerLadder_nobodyResolvable_visibleSkip_noEvent() {
         QuarkusTransaction.requiringNew().run(() -> {
             em.createNativeQuery("UPDATE recruitment_positions SET hiring_owner_uuid = NULL "

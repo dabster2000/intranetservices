@@ -80,6 +80,7 @@ class RecruitmentEmailDraftApiTest {
     private String practiceUuid;
     private String recruiterUser;
     private String teamleadUser;
+    private String circleRecruiterUser;
     private String positionUuid;
     private String candidateUuid;
     private String applicationUuid;
@@ -90,6 +91,7 @@ class RecruitmentEmailDraftApiTest {
     private String partnerPositionUuid;
     private String partnerCandidateUuid;
     private String partnerApplicationUuid;
+    private String mixedPartnerApplicationUuid;
 
     private String previousInterviewsFlag;
     private String previousComposerFlag;
@@ -99,6 +101,7 @@ class RecruitmentEmailDraftApiTest {
         practiceUuid = UUID.randomUUID().toString();
         recruiterUser = UUID.randomUUID().toString();
         teamleadUser = UUID.randomUUID().toString();
+        circleRecruiterUser = UUID.randomUUID().toString();
         positionUuid = UUID.randomUUID().toString();
         candidateUuid = UUID.randomUUID().toString();
         applicationUuid = UUID.randomUUID().toString();
@@ -109,12 +112,15 @@ class RecruitmentEmailDraftApiTest {
         partnerPositionUuid = UUID.randomUUID().toString();
         partnerCandidateUuid = UUID.randomUUID().toString();
         partnerApplicationUuid = UUID.randomUUID().toString();
+        mixedPartnerApplicationUuid = UUID.randomUUID().toString();
 
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, recruiterUser, "Rina", "Recruiter");
             P8ProfileFixtures.insertUser(em, teamleadUser, "Tim", "Teamlead");
+            P8ProfileFixtures.insertUser(em, circleRecruiterUser, "Cilla", "Circle");
             P8ProfileFixtures.insertRole(em, recruiterUser, "HR");
             P8ProfileFixtures.insertRole(em, teamleadUser, "TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, circleRecruiterUser, "HR");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             P8ProfileFixtures.insertPosition(em, positionUuid, "Løsningsarkitekt",
                     "PRACTICE_TEAM", practiceUuid, null, null);
@@ -139,6 +145,10 @@ class RecruitmentEmailDraftApiTest {
                     "Pia", "Partner", "ACTIVE", null, null, recruiterUser);
             P8ProfileFixtures.insertOpenApplication(em, partnerApplicationUuid,
                     partnerCandidateUuid, partnerPositionUuid, "SCREENING");
+            P8ProfileFixtures.insertOpenApplication(em, mixedPartnerApplicationUuid,
+                    candidateUuid, partnerPositionUuid, "SCREENING");
+            P8ProfileFixtures.insertCircleMember(em, partnerPositionUuid,
+                    circleRecruiterUser);
 
             previousInterviewsFlag = P8ProfileFixtures.setFlag(em, INTERVIEWS_FLAG, "true");
             previousComposerFlag = P8ProfileFixtures.setFlag(em, COMPOSER_FLAG, "true");
@@ -155,7 +165,7 @@ class RecruitmentEmailDraftApiTest {
             P8ProfileFixtures.cleanupRecruitmentRows(em,
                     List.of(candidateUuid, partnerCandidateUuid),
                     List.of(positionUuid, partnerPositionUuid),
-                    List.of(recruiterUser, teamleadUser),
+                    List.of(recruiterUser, teamleadUser, circleRecruiterUser),
                     practiceUuid);
             P8ProfileFixtures.restoreFlag(em, INTERVIEWS_FLAG, previousInterviewsFlag);
             P8ProfileFixtures.restoreFlag(em, COMPOSER_FLAG, previousComposerFlag);
@@ -384,11 +394,36 @@ class RecruitmentEmailDraftApiTest {
                 "partner-track drafts follow the fail-closed CIRCLE posture");
     }
 
+    @Test
+    @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
+    void draft_mixedCandidateHiddenPartnerContextRequiresCircleAccess() {
+        given().header("X-Requested-By", recruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("templateUuid", templateUuid,
+                        "applicationUuid", mixedPartnerApplicationUuid))
+                .when().post("/recruitment/candidates/{uuid}/emails/draft", candidateUuid)
+                .then().statusCode(404);
+
+        stubDraft("Kære Søren, fortrolig partnertekst.");
+        given().header("X-Requested-By", circleRecruiterUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("templateUuid", templateUuid,
+                        "applicationUuid", mixedPartnerApplicationUuid))
+                .when().post("/recruitment/candidates/{uuid}/emails/draft", candidateUuid)
+                .then().statusCode(200);
+
+        List<RecruitmentEvent> drafts = events(candidateUuid,
+                RecruitmentEventType.AI_EMAIL_DRAFT_GENERATED);
+        assertEquals(1, drafts.size());
+        assertEquals(mixedPartnerApplicationUuid, drafts.get(0).getApplicationUuid());
+        assertEquals(RecruitmentEventVisibility.CIRCLE, drafts.get(0).getVisibility());
+    }
+
     // ---- Validation + upstream failure ----------------------------------------------
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
-    void draft_validation_missingTemplate400_unknownTemplate404_foreignApplication400_longInstruction400() {
+    void draft_validation_missingTemplate400_unknownTemplate404_foreignApplication404_longInstruction400() {
         given().header("X-Requested-By", recruiterUser)
                 .contentType(ContentType.JSON)
                 .body(Map.of("instruction", "hej"))
@@ -406,7 +441,7 @@ class RecruitmentEmailDraftApiTest {
                 .body(Map.of("templateUuid", templateUuid,
                         "applicationUuid", partnerApplicationUuid))
                 .when().post("/recruitment/candidates/{uuid}/emails/draft", candidateUuid)
-                .then().statusCode(400);
+                .then().statusCode(404);
 
         given().header("X-Requested-By", recruiterUser)
                 .contentType(ContentType.JSON)

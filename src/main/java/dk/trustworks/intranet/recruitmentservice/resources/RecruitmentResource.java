@@ -276,17 +276,22 @@ public class RecruitmentResource {
                         "practice must be a practice uuid", Response.Status.BAD_REQUEST);
             }
         }
-        // Lenient viewer resolution: rows carry per-viewer application info
-        // (P4) when the X-Requested-By header is present; legacy callers
-        // without it still get the list (with empty application lists)
-        // rather than a 400 — deploy-order safety. The P8 partner-row gap
-        // filter treats a missing viewer as circle-less (fail closed).
-        String viewer = requestHeaderHolder.getUserUuid();
+        // Candidate rows contain direct PII, so the trusted client scope is
+        // not sufficient on its own: every list must resolve the acting
+        // person and apply that person's candidate boundary. In particular,
+        // a missing header must not degrade to a company-wide non-partner
+        // list with only partner-track rows removed.
+        String viewer = currentActor().toString();
+        if (!visibility.canBrowseCandidateGrid(viewer)) {
+            throw new WebApplicationException(
+                    "Browsing the candidate database is reserved for the hiring tier",
+                    Response.Status.FORBIDDEN);
+        }
         CandidateListResponse result = candidateService.list(
                 status, search, tag, education, experience, specialization, clearance,
                 practice == null || practice.isBlank() ? null : practice.trim(),
                 source, view, page, size,
-                viewer != null && !viewer.isBlank() ? viewer : null);
+                viewer);
         return Response.ok(result).build();
     }
 
@@ -334,12 +339,13 @@ public class RecruitmentResource {
      *       {@code @RolesAllowed} gates the API client, not the person (the
      *       BFF's token carries {@code admin:*}, which
      *       {@code AdminScopeAugmentor} expands to every key).</li>
-     *   <li><b>Dossier gate</b> → 403. {@code templateUuid} in the body
-     *       opens a {@code CandidateDossier} — the offer/contract surface,
-     *       which is ADMIN/HR (+ recruiter tier) only. Without this check
-     *       the narrow {@code recruitment:intake} grant would silently buy
-     *       the contract flow through a body field, which go-live decision
-     *       D17 denies the team lead explicitly. Checked BEFORE any write.</li>
+     *   <li><b>Dossier gate</b> → 403. {@code templateUuid},
+     *       {@code targetCompanyUuid}, {@code targetStartDate} and the legacy
+     *       dossier {@code notes} field belong to the offer/contract surface,
+     *       which only ADMIN/HR may write. Without this check the narrow
+     *       {@code recruitment:intake} grant would silently buy contract
+     *       metadata writes through ordinary create fields. Checked BEFORE
+     *       any write.</li>
      *   <li>Position resolution → <b>404, never 403</b>: an invisible
      *       partner-track req must be indistinguishable from a nonexistent
      *       one. Then decision rights → 403
@@ -365,15 +371,15 @@ public class RecruitmentResource {
                             + "the candidate-intake grant",
                     Response.Status.FORBIDDEN);
         }
-        if (request.opensDossier() && !visibility.isRecruiterTier(actor.toString())) {
-            // A3: the dossier path is the offer/contract surface. The
-            // "is a template present?" question is answered by
-            // CandidateRequest.opensDossier() and nowhere else — the service
-            // branches on the SAME call, so this gate cannot be walked past
-            // by a value the two sides read differently (see that javadoc).
+        if ((request.opensDossier() || request.updatesDossierMetadata())
+                && !visibility.canWriteDossier(actor.toString())) {
+            // A3: both opening a dossier and pre-populating its legacy
+            // candidate fields are offer/contract writes. Keep the template
+            // predicate shared with CandidateService, and reuse the same
+            // metadata predicate as CandidateService.update so create and
+            // update cannot drift into different field classifications.
             throw new WebApplicationException(
-                    "The offer and contract are handled by HR — create the candidate without a "
-                            + "template and hand over from there.",
+                    "Offer-dossier metadata may only be set by HR or an administrator",
                     Response.Status.FORBIDDEN);
         }
         RecruitmentPosition position = positionUuid == null
@@ -398,9 +404,9 @@ public class RecruitmentResource {
     @Path("/candidates/{uuid}")
     public Response getCandidate(@PathParam("uuid") UUID uuid) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
         return candidateService.findById(uuid)
-                .map(dto -> Response.ok(dto).build())
+                .map(dto -> Response.ok(candidateResponseForViewer(candidate, dto)).build())
                 .orElseThrow(() -> new NotFoundException("Candidate not found: " + uuid));
     }
 
@@ -410,10 +416,10 @@ public class RecruitmentResource {
     public Response updateCandidate(@PathParam("uuid") UUID uuid,
                                     @Valid CandidateRequest request) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse updated = candidateService.update(uuid, request, currentActor());
-        return Response.ok(updated).build();
+        return Response.ok(candidateResponseForViewer(candidate, updated)).build();
     }
 
     @POST
@@ -422,10 +428,11 @@ public class RecruitmentResource {
     public Response declineCandidate(@PathParam("uuid") UUID uuid,
                                      @Valid DeclineRequest request) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
+        requireCandidateFinalOutcomeRights(candidate);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse result = candidateService.decline(uuid, request.reason(), currentActor());
-        return Response.ok(result).build();
+        return Response.ok(candidateResponseForViewer(candidate, result)).build();
     }
 
     @POST
@@ -434,10 +441,11 @@ public class RecruitmentResource {
     public Response withdrawCandidate(@PathParam("uuid") UUID uuid,
                                       @Valid WithdrawRequest request) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
+        requireCandidateFinalOutcomeRights(candidate);
         Objects.requireNonNull(request, "request body must not be null");
         CandidateResponse result = candidateService.withdraw(uuid, request.reason(), currentActor());
-        return Response.ok(result).build();
+        return Response.ok(candidateResponseForViewer(candidate, result)).build();
     }
 
     /**
@@ -578,6 +586,11 @@ public class RecruitmentResource {
                     Response.Status.BAD_REQUEST);
         }
         UUID actor = currentActor();
+        if (!visibility.canCreateCandidate(actor.toString())) {
+            throw new WebApplicationException(
+                    "Duplicate checking is reserved for people who may create candidates",
+                    Response.Status.FORBIDDEN);
+        }
         return Response.ok(
                 dedupeService.check(request.email(), request.linkedinUrl(), actor.toString())).build();
     }
@@ -597,9 +610,10 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response poolCandidate(@PathParam("uuid") UUID uuid, PoolRequest request) {
         enforcePipelineFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
         CandidatePoolStatus bucket = request != null ? request.poolStatus() : null;
-        return Response.ok(candidateService.pool(uuid, bucket, currentActor())).build();
+        CandidateResponse response = candidateService.pool(uuid, bucket, currentActor());
+        return Response.ok(candidateResponseForViewer(candidate, response)).build();
     }
 
     /** Bring a pooled candidate back to ACTIVE. Gate as {@code poolCandidate}. */
@@ -608,8 +622,9 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response unpoolCandidate(@PathParam("uuid") UUID uuid) {
         enforcePipelineFlag();
-        requireVisibleCandidate(uuid);
-        return Response.ok(candidateService.unpool(uuid, currentActor())).build();
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
+        CandidateResponse response = candidateService.unpool(uuid, currentActor());
+        return Response.ok(candidateResponseForViewer(candidate, response)).build();
     }
 
     /** Replace the candidate's tag set (empty list clears). Gate as {@code poolCandidate}. */
@@ -618,9 +633,10 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response updateTags(@PathParam("uuid") UUID uuid, @Valid TagsRequest request) {
         enforcePipelineFlag();
-        requireVisibleCandidate(uuid);
+        RecruitmentCandidate candidate = requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
-        return Response.ok(candidateService.updateTags(uuid, request.tags(), currentActor())).build();
+        CandidateResponse response = candidateService.updateTags(uuid, request.tags(), currentActor());
+        return Response.ok(candidateResponseForViewer(candidate, response)).build();
     }
 
     /**
@@ -679,6 +695,7 @@ public class RecruitmentResource {
                              @PathParam("eventId") String eventId,
                              @Valid NoteEditRequest request) {
         enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
         RecruitmentEvent event = candidateService.editNote(uuid, eventId, request, currentActor());
         return Response.ok(Map.of(
@@ -872,7 +889,7 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response redrivePromotion(@PathParam("uuid") UUID uuid) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        requireDossierWritable(uuid);
         s3EmployeePromotionService.runPromotion(uuid, true);
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(uuid.toString());
         return Response.ok(Map.of(
@@ -895,7 +912,7 @@ public class RecruitmentResource {
     @RolesAllowed({"recruitment:write"})
     public Response restorePromotionStaging(@PathParam("uuid") UUID uuid) {
         enforceFlag();
-        requireVisibleCandidate(uuid);
+        requireDossierWritable(uuid);
         try {
             return Response.ok(promotionStagingRestoreService.restoreStaging(uuid.toString())).build();
         } catch (IllegalArgumentException e) {
@@ -1614,8 +1631,11 @@ public class RecruitmentResource {
      * ADMIN always passes; the profile-read tier (HR/RECRUITMENT/TEAMLEAD)
      * passes except for partner-track-only candidates outside their circles;
      * everyone else needs ownership or current leadership of a non-partner
-     * position the candidate applied to; HIRED files narrow to
-     * HR/RECRUITMENT/DPO. An existing-but-invisible candidate answers the
+     * position the candidate applied to. Assistant-only viewers are the
+     * exception: their full-profile route is exclusively candidates attached
+     * to non-partner positions in their own practice, and missing practice
+     * fails closed. HIRED files narrow to HR/RECRUITMENT/DPO. An
+     * existing-but-invisible candidate answers the
      * same 404 as a nonexistent one — a partner-track candidate's existence
      * must not leak.
      * <p>
@@ -1638,12 +1658,50 @@ public class RecruitmentResource {
     }
 
     /**
+     * Authorization for the two pre-ATS candidate-level terminal routes.
+     * Candidate visibility is only the existence-hiding first gate; closing
+     * the candidate and all open dossiers additionally requires the canonical
+     * final-outcome right across every associated position. A visible but
+     * unauthorized candidate answers 403, matching the application-level
+     * terminal endpoints.
+     */
+    private void requireCandidateFinalOutcomeRights(RecruitmentCandidate candidate) {
+        String viewer = requestHeaderHolder.getUserUuid();
+        if (!visibility.canDecideCandidateFinalOutcome(viewer, candidate)) {
+            throw new WebApplicationException(
+                    "Closing a candidate outcome is reserved for the recruiter tier, "
+                            + "the hiring owner or the position's teamlead",
+                    Response.Status.FORBIDDEN);
+        }
+    }
+
+    /**
+     * Candidate profile visibility is deliberately wider than offer-dossier
+     * visibility. Strip target-company/start details, dossier-era notes,
+     * SharePoint hand-off state and the embedded latest-revision summary from
+     * every candidate response unless the same backend predicate used by
+     * dossier reads grants this viewer access. Missing actor context fails
+     * closed.
+     */
+    private CandidateResponse candidateResponseForViewer(RecruitmentCandidate candidate,
+                                                         CandidateResponse response) {
+        String viewer = requestHeaderHolder.getUserUuid();
+        if (response == null
+                || visibility.canReadDossier(viewer, candidate)) {
+            return response;
+        }
+        return response.withoutDossierMetadata();
+    }
+
+    /**
      * The dossier READ gate ({@link RecruitmentVisibility#canReadDossier}):
-     * ADMIN, HR, or the named hiring owner of one of the candidate's
-     * positions. Everyone else — including RECRUITMENT and the wider
-     * TEAMLEAD population — answers 404, the same as a nonexistent
-     * candidate: whether a contract exists is not something this endpoint
-     * may reveal.
+     * ADMIN, HR, or the eligible named {@code TEAMLEAD} hiring owner of one
+     * of the candidate's positions (with circle membership required when
+     * that position is partner track). Everyone else — including an
+     * assistant-only named owner, RECRUITMENT, a plain named owner and the
+     * wider unnamed TEAMLEAD population — answers 404, the same as a
+     * nonexistent candidate: whether a contract exists is not something
+     * this endpoint may reveal.
      * <p>
      * Until 2026-08-11 the whole dossier family shared
      * {@link #requireVisibleCandidate}, i.e. the candidate-profile tier.

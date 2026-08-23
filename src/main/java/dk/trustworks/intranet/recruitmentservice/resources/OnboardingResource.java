@@ -6,8 +6,10 @@ import dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse.FieldFlags;
 import dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse.Submitted;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
+import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.OnboardingUploadService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.PermitAll;
@@ -49,6 +51,9 @@ public class OnboardingResource {
 
     @Inject
     OnboardingUploadService onboardingUploadService;
+
+    @Inject
+    RecruitmentVisibility visibility;
 
     // ── Public endpoint ────────────────────────────────────────────────────────
 
@@ -176,6 +181,7 @@ public class OnboardingResource {
     @RolesAllowed({"recruitment:read"})
     @Path("/tokens/candidate/{candidateUuid}")
     public Response getForCandidate(@PathParam("candidateUuid") String candidateUuid) {
+        requireCandidateDossierReadable(candidateUuid);
         return OnboardingUploadToken.findByCandidate(candidateUuid)
                 .map(t -> Response.ok(OnboardingTokenResponse.from(t)).build())
                 .orElse(Response.noContent().build());
@@ -185,6 +191,7 @@ public class OnboardingResource {
     @RolesAllowed({"users:read"})
     @Path("/tokens/user/{userUuid}")
     public Response getForUser(@PathParam("userUuid") String userUuid) {
+        requireHrOrAdminWithoutExistenceLeak();
         return OnboardingUploadToken.findByUser(userUuid)
                 .map(t -> Response.ok(OnboardingTokenResponse.from(t)).build())
                 .orElse(Response.noContent().build());
@@ -198,6 +205,11 @@ public class OnboardingResource {
     @RolesAllowed({"recruitment:write"})
     @Path("/tokens")
     public Response create(@Valid OnboardingTokenRequest req) {
+        if (req == null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"Request body is required\"}")
+                    .build();
+        }
         if (req.candidateUuid() == null && req.userUuid() == null) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity("{\"error\":\"Either candidateUuid or userUuid must be provided\"}")
@@ -207,6 +219,12 @@ public class OnboardingResource {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity("{\"error\":\"Only one of candidateUuid or userUuid may be provided\"}")
                     .build();
+        }
+
+        if (req.candidateUuid() != null) {
+            requireCandidateDossierWritable(req.candidateUuid());
+        } else {
+            requireHrOrAdminWithoutExistenceLeak();
         }
 
         // Delete any existing token for this owner before creating a new one
@@ -238,8 +256,7 @@ public class OnboardingResource {
     @RolesAllowed({"recruitment:write"})
     @Path("/tokens/{uuid}")
     public OnboardingTokenResponse update(@PathParam("uuid") String uuid, @Valid OnboardingTokenRequest req) {
-        OnboardingUploadToken token = OnboardingUploadToken.findById(uuid);
-        if (token == null) throw new NotFoundException("Token not found: " + uuid);
+        OnboardingUploadToken token = requireWritableToken(uuid);
         token.setShowDriversLicense(req.showDriversLicense());
         token.setShowHealthInsurance(req.showHealthInsurance());
         token.setShowCriminalRecord(req.showCriminalRecord());
@@ -252,10 +269,65 @@ public class OnboardingResource {
     @RolesAllowed({"recruitment:write"})
     @Path("/tokens/{uuid}")
     public Response delete(@PathParam("uuid") String uuid) {
-        OnboardingUploadToken token = OnboardingUploadToken.findById(uuid);
-        if (token == null) throw new NotFoundException("Token not found: " + uuid);
+        OnboardingUploadToken token = requireWritableToken(uuid);
         token.delete();
         log.infof("[OnboardingResource] Deleted token %s", uuid);
         return Response.noContent().build();
+    }
+
+    // ── Protected-route authorization ─────────────────────────────────────────
+
+    /**
+     * Candidate upload links are part of Offer & Contract. A token is
+     * therefore readable only by the canonical dossier audience, never by a
+     * caller who merely holds the recruitment client scope.
+     */
+    private RecruitmentCandidate requireCandidateDossierReadable(String candidateUuid) {
+        String viewer = requestHeaderHolder.getUserUuid();
+        RecruitmentCandidate candidate = candidateUuid == null
+                ? null
+                : RecruitmentCandidate.findById(candidateUuid);
+        if (candidate == null
+                || viewer == null || viewer.isBlank()
+                || !visibility.canReadDossier(viewer, candidate)) {
+            throw new NotFoundException("Onboarding token not found");
+        }
+        return candidate;
+    }
+
+    /** HR/admin write gate, layered after the candidate-aware no-leak read gate. */
+    private RecruitmentCandidate requireCandidateDossierWritable(String candidateUuid) {
+        RecruitmentCandidate candidate = requireCandidateDossierReadable(candidateUuid);
+        if (!visibility.canWriteDossier(requestHeaderHolder.getUserUuid())) {
+            throw new ForbiddenException(
+                    "Candidate onboarding upload links are managed by HR or administrators");
+        }
+        return candidate;
+    }
+
+    /**
+     * Employee-owned tokens have no narrower readable tier: both reads and
+     * writes are HR/admin operations. Return the same 404 as an unknown owner
+     * or token so an arbitrary identifier is not an employee-document oracle.
+     */
+    private void requireHrOrAdminWithoutExistenceLeak() {
+        String viewer = requestHeaderHolder.getUserUuid();
+        if (viewer == null || viewer.isBlank() || !visibility.canWriteDossier(viewer)) {
+            throw new NotFoundException("Onboarding token not found");
+        }
+    }
+
+    /** Resolve the immutable token owner, then authorize against that owner. */
+    private OnboardingUploadToken requireWritableToken(String tokenUuid) {
+        OnboardingUploadToken token = OnboardingUploadToken.findById(tokenUuid);
+        if (token == null) {
+            throw new NotFoundException("Onboarding token not found");
+        }
+        if (token.getCandidateUuid() != null && !token.getCandidateUuid().isBlank()) {
+            requireCandidateDossierWritable(token.getCandidateUuid());
+        } else {
+            requireHrOrAdminWithoutExistenceLeak();
+        }
+        return token;
     }
 }
