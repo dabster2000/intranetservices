@@ -4,25 +4,30 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.vacationservice.dto.CreateVacationImportRequest;
 import dk.trustworks.intranet.vacationservice.dto.MatchImportRowRequest;
 import dk.trustworks.intranet.vacationservice.dto.VacationImportBatchDTO;
 import dk.trustworks.intranet.vacationservice.dto.VacationImportRowDTO;
 import dk.trustworks.intranet.vacationservice.engine.DanlonCsvParser;
+import dk.trustworks.intranet.vacationservice.engine.ImportBaselinePlanner;
+import dk.trustworks.intranet.vacationservice.engine.ImportBaselinePlanner.BaselineEntry;
+import dk.trustworks.intranet.vacationservice.engine.ImportCompanyGate;
 import dk.trustworks.intranet.vacationservice.engine.NameNormalizer;
-import dk.trustworks.intranet.vacationservice.engine.VacationBalanceEngine;
 import dk.trustworks.intranet.vacationservice.engine.VacationBalanceEngine.PolicyRate;
 import dk.trustworks.intranet.vacationservice.model.DanlonNameMapping;
 import dk.trustworks.intranet.vacationservice.model.VacationImportBatch;
 import dk.trustworks.intranet.vacationservice.model.VacationImportRow;
 import dk.trustworks.intranet.vacationservice.model.enums.VacationEntrySource;
-import dk.trustworks.intranet.vacationservice.model.enums.VacationEntryType;
 import dk.trustworks.intranet.vacationservice.model.enums.VacationImportBatchStatus;
 import dk.trustworks.intranet.vacationservice.model.enums.VacationImportRowStatus;
-import dk.trustworks.intranet.vacationservice.model.enums.VacationPoolType;
+import dk.trustworks.intranet.vacationservice.model.enums.VacationImportRowStatus.Bucket;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Status;
+import jakarta.transaction.Synchronization;
 import jakarta.transaction.Transactional;
+import jakarta.transaction.TransactionSynchronizationRegistry;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.WebApplicationException;
@@ -33,14 +38,15 @@ import java.io.UncheckedIOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
-
-import static dk.trustworks.intranet.vacationservice.engine.VacationRules.round2;
-import static dk.trustworks.intranet.vacationservice.engine.VacationRules.startOf;
+import java.util.stream.Collectors;
 
 /**
  * The Danløn feriepengeforpligtelse upload pipeline: parse → match → review →
@@ -48,6 +54,14 @@ import static dk.trustworks.intranet.vacationservice.engine.VacationRules.startO
  * everything the ledger and payroll stamps said up to that date, for exactly
  * the (user, ferieår) pairs the file carries — employees or years absent from
  * the file are untouched, so an upload can only override, never erase.
+ *
+ * <p>A file speaks only for its own company. Danløn exports one line per
+ * employment record, so a person who has transferred between the Trustworks
+ * companies still appears in their former employer's export with a historical
+ * record — and because payroll moves the available balance at the transfer,
+ * the receiving company's figures already contain it. Matching therefore has
+ * two steps: who is this, and does this company's file get to speak for them
+ * on the batch's as-of date. See {@link #applyCompanyGate}.</p>
  */
 @JBossLog
 @ApplicationScoped
@@ -63,10 +77,16 @@ public class VacationImportService {
     UserService userService;
 
     @Inject
+    EmploymentCompanyLookup employmentCompanyLookup;
+
+    @Inject
     VacationPolicyService policyService;
 
     @Inject
     VacationLedgerService ledgerService;
+
+    @Inject
+    TransactionSynchronizationRegistry txSyncRegistry;
 
     /** Shape persisted verbatim in {@code vacation_import_rows.raw_json}. */
     public record RawRow(String bogfoeringsgruppe, Map<Integer, RawYear> years) {
@@ -113,8 +133,9 @@ public class VacationImportService {
             usersByNormalizedName.computeIfAbsent(NameNormalizer.normalize(user.getFullname()), k -> new java.util.ArrayList<>()).add(user);
         }
 
-        int matched = 0;
-        int unmatched = 0;
+        // Pass one: identify the person. Nothing is judged yet — the company
+        // gate below needs the whole set of resolved users so it can ask about
+        // all of them in one query.
         List<VacationImportRow> rows = new java.util.ArrayList<>();
         for (DanlonCsvParser.ParsedRow parsedRow : parsed.rows()) {
             VacationImportRow row = new VacationImportRow();
@@ -131,25 +152,123 @@ public class VacationImportService {
                         List<User> candidates = usersByNormalizedName.getOrDefault(normalized, List.of());
                         return candidates.size() == 1 ? candidates.get(0).getUuid() : null;
                     });
-            if (resolved != null) {
-                row.setUseruuid(resolved);
-                row.setMatchStatus(VacationImportRowStatus.AUTO);
-                matched++;
-            } else {
-                row.setMatchStatus(VacationImportRowStatus.UNMATCHED);
-                unmatched++;
-            }
+            row.setUseruuid(resolved);
             rows.add(row);
         }
 
+        applyCompanyGate(batch, rows);
+
         batch.setRowCount(rows.size());
-        batch.setMatchedCount(matched);
-        batch.setUnmatchedCount(unmatched);
+        refreshCountsFrom(batch, rows);
         batch.persist();
         rows.forEach(row -> row.persist());
-        log.infof("vacation-import: batch %s uploaded by %s — %d rows, %d matched, %d unmatched, as of %s",
-                batch.getUuid(), actorUuid, rows.size(), matched, unmatched, request.asOfDate());
+        log.infof("vacation-import: batch %s uploaded by %s — %d rows, %d to apply, %d to resolve, %d skipped, as of %s",
+                batch.getUuid(), actorUuid, rows.size(), batch.getMatchedCount(), batch.getUnmatchedCount(),
+                rows.size() - batch.getMatchedCount() - batch.getUnmatchedCount(), request.asOfDate());
         return toDTO(batch, rows);
+    }
+
+    /**
+     * Decides, for every row that resolved to a person, whether this company's
+     * file is entitled to state that person's balance on the batch's as-of
+     * date — and records the evidence either way.
+     *
+     * <p>The date is {@code batch.asOfDate}, never today. The file is a
+     * statement about one instant, and the transfer rule ("payroll moves the
+     * available balance, so the receiving company's figures already contain
+     * the old company's remainder") has a different answer either side of the
+     * transfer. Judging an as-of-June A/S export against today's employment
+     * would exclude a person who transferred in August — from the only file
+     * that lists them for June — and hand them no baseline at all, silently.</p>
+     *
+     * <p>The company comes from {@link EmploymentCompanyLookup}, one targeted
+     * {@code userstatus} query, and emphatically not from
+     * {@code User.getUserStatus}: the users above are loaded shallow for name
+     * matching, a shallow User carries no statuses, and {@code getUserStatus}
+     * answers an empty timeline with a synthetic TERMINATED status whose
+     * company is null. Every employee in every file would come back
+     * UNKNOWN_COMPANY, and nothing would throw or log.</p>
+     */
+    private void applyCompanyGate(VacationImportBatch batch, List<VacationImportRow> rows) {
+        Set<String> resolvedUsers = rows.stream()
+                .map(VacationImportRow::getUseruuid)
+                .filter(useruuid -> useruuid != null && !useruuid.isBlank())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<String, String> companyByUser = employmentCompanyLookup.companiesAt(resolvedUsers, batch.getAsOfDate());
+
+        Map<String, String> companyNames = new HashMap<>();
+        for (VacationImportRow row : rows) {
+            String companyAtAsOf = row.getUseruuid() == null ? null : companyByUser.get(row.getUseruuid());
+            row.setCompanyAtAsOf(companyAtAsOf);
+            row.setMatchStatus(ImportCompanyGate.verdict(row.getUseruuid(), companyAtAsOf, batch.getCompanyuuid()));
+
+            // Same spirit as logMergedRows: the skip is correct, but it is also
+            // invisible — a person simply stops appearing in the apply. Name
+            // them, so an operator can check the transfer really happened.
+            if (row.getMatchStatus() == VacationImportRowStatus.OTHER_COMPANY) {
+                log.warnf("vacation-import: batch %s line %d skips \"%s\" (user %s) — userstatus puts them at %s on %s, "
+                                + "not at the batch company %s; their balance was transferred with them",
+                        batch.getUuid(), row.getLineNo(), row.getDanlonName(), row.getUseruuid(),
+                        companyName(companyNames, companyAtAsOf), batch.getAsOfDate(),
+                        companyName(companyNames, batch.getCompanyuuid()));
+            }
+        }
+
+        // A whole file with no determinable company is a system fault, not a
+        // data fault — it is precisely what the shallow-User regression looks
+        // like from the outside. Say so distinctly; the alternative is HR
+        // staring at 200 rows they cannot resolve.
+        if (!resolvedUsers.isEmpty() && companyByUser.isEmpty()) {
+            log.errorf("vacation-import: batch %s resolved %d employees but the userstatus lookup returned a company for "
+                            + "none of them as of %s — this is a lookup fault, not a data fault",
+                    batch.getUuid(), resolvedUsers.size(), batch.getAsOfDate());
+        }
+    }
+
+    /**
+     * Refuses a batch that was uploaded before the company gate existed.
+     *
+     * <p>{@link #applyCompanyGate} runs in {@code createBatch} and nowhere
+     * else, and {@code apply} deliberately trusts the stored verdict so an HR
+     * override is never silently undone. A batch uploaded before this feature
+     * shipped therefore carries pre-gate verdicts: every row AUTO or MANUAL,
+     * none of them ever checked against an employment record. Applying it
+     * would post exactly the stale cross-company baselines the gate exists to
+     * stop — and the review screen would show "all rows will apply", which
+     * reads as a clean, gated batch rather than an unchecked one.</p>
+     *
+     * <p>The fingerprint is exact rather than heuristic: {@link
+     * ImportCompanyGate#verdict} returns AUTO only when the resolved company
+     * equals the batch company, so a post-gate AUTO row always carries a
+     * company. AUTO with none can only have been written before the gate.</p>
+     *
+     * <p>A pre-gate batch in which HR happened to resolve <em>every</em> row by
+     * hand is not caught, because MANUAL legitimately carries no company when
+     * the timeline cannot place the person. That is the intended blind spot:
+     * MANUAL is an explicit human decision, which is the one thing the gate
+     * never overrules anyway.</p>
+     */
+    private void requireGatedBatch(VacationImportBatch batch, List<VacationImportRow> rows) {
+        long ungated = rows.stream()
+                .filter(row -> ImportCompanyGate.isUngatedAutoRow(row.getMatchStatus(), row.getCompanyAtAsOf()))
+                .count();
+        if (ungated == 0) return;
+        log.warnf("vacation-import: refusing batch %s — %d auto-matched rows carry no company verdict, so it predates "
+                + "the employment gate and was never checked against userstatus", batch.getUuid(), ungated);
+        throw new WebApplicationException(
+                "This upload was made before the import started checking employment records, so its "
+                        + ungated + " auto-matched rows were never verified against the company they belong to. "
+                        + "Upload the file again to have it checked — your saved name matches are reused.",
+                Response.Status.CONFLICT);
+    }
+
+    /** Company names for log lines only; resolved once per company per batch. */
+    private String companyName(Map<String, String> cache, String companyuuid) {
+        if (companyuuid == null) return "an unknown company";
+        return cache.computeIfAbsent(companyuuid, uuid -> {
+            Company company = Company.findById(uuid);
+            return company == null || company.getName() == null ? uuid : company.getName();
+        });
     }
 
     // ── Review ────────────────────────────────────────────────────────────
@@ -178,6 +297,8 @@ public class VacationImportService {
 
         if (request != null && request.ignore()) {
             row.setUseruuid(null);
+            // The evidence described a person this row no longer points at.
+            row.setCompanyAtAsOf(null);
             row.setMatchStatus(VacationImportRowStatus.IGNORED);
         } else {
             if (request == null || request.useruuid() == null || request.useruuid().isBlank()) {
@@ -188,7 +309,24 @@ public class VacationImportService {
                 throw new BadRequestException("Unknown user: " + request.useruuid());
             }
             row.setUseruuid(user.getUuid());
+            // MANUAL is HR's override and is final: the company gate runs once,
+            // in createBatch, and apply trusts the stored status. Re-deriving
+            // the verdict at apply time would silently undo every override.
+            // The company is still recorded — as evidence, and as the trigger
+            // for the audit line below.
+            String companyAtAsOf = employmentCompanyLookup
+                    .companiesAt(List.of(user.getUuid()), batch.getAsOfDate())
+                    .get(user.getUuid());
+            row.setCompanyAtAsOf(companyAtAsOf);
             row.setMatchStatus(VacationImportRowStatus.MANUAL);
+            if (companyAtAsOf == null || !companyAtAsOf.equals(batch.getCompanyuuid())) {
+                Map<String, String> companyNames = new HashMap<>();
+                log.warnf("vacation-import: batch %s line %d overridden by %s onto user %s (%s) whose company on %s is %s, "
+                                + "not the batch company %s — imported deliberately",
+                        batchUuid, row.getLineNo(), actorUuid, user.getUuid(), user.getFullname(),
+                        batch.getAsOfDate(), companyName(companyNames, companyAtAsOf),
+                        companyName(companyNames, batch.getCompanyuuid()));
+            }
             rememberMapping(row.getDanlonName(), user.getUuid(), actorUuid);
         }
 
@@ -212,13 +350,22 @@ public class VacationImportService {
     }
 
     private void refreshCounts(VacationImportBatch batch) {
-        List<VacationImportRow> rows = VacationImportRow.findByBatch(batch.getUuid());
+        refreshCountsFrom(batch, VacationImportRow.findByBatch(batch.getUuid()));
+    }
+
+    /**
+     * Counts by {@link Bucket}, not by constant. {@code matchedCount} is
+     * everything that will be applied and {@code unmatchedCount} everything
+     * that blocks the apply — so UNKNOWN_COMPANY lands in the number the
+     * review screen already gates its Apply button on, and a status added
+     * later cannot fall between the two and become invisible.
+     */
+    private void refreshCountsFrom(VacationImportBatch batch, List<VacationImportRow> rows) {
         batch.setMatchedCount((int) rows.stream()
-                .filter(r -> r.getMatchStatus() == VacationImportRowStatus.AUTO
-                        || r.getMatchStatus() == VacationImportRowStatus.MANUAL)
+                .filter(r -> r.getMatchStatus().bucket() == Bucket.APPLIES)
                 .count());
         batch.setUnmatchedCount((int) rows.stream()
-                .filter(r -> r.getMatchStatus() == VacationImportRowStatus.UNMATCHED)
+                .filter(r -> r.getMatchStatus().bucket() == Bucket.BLOCKS)
                 .count());
     }
 
@@ -231,64 +378,144 @@ public class VacationImportService {
             throw new WebApplicationException("The batch is already applied", Response.Status.CONFLICT);
         }
         List<VacationImportRow> rows = VacationImportRow.findByBatch(batchUuid);
-        long unresolved = rows.stream()
-                .filter(r -> r.getMatchStatus() == VacationImportRowStatus.UNMATCHED)
-                .count();
-        if (unresolved > 0) {
+
+        // Everything in the BLOCKS bucket, not just UNMATCHED. An
+        // UNKNOWN_COMPANY row is a person the system cannot place, and dropping
+        // it silently is the one outcome the company gate exists to prevent —
+        // so it stops the apply exactly as an unmatched name does. The two
+        // cases need different actions from HR, so they are counted and named
+        // separately in the message.
+        Map<VacationImportRowStatus, Long> blocking = rows.stream()
+                .filter(r -> r.getMatchStatus().bucket() == Bucket.BLOCKS)
+                .collect(Collectors.groupingBy(VacationImportRow::getMatchStatus,
+                        () -> new EnumMap<>(VacationImportRowStatus.class), Collectors.counting()));
+        if (!blocking.isEmpty()) {
+            String detail = blocking.entrySet().stream()
+                    .map(entry -> switch (entry.getKey()) {
+                        case UNMATCHED -> entry.getValue() + " unmatched — no single employee carries that Danløn name";
+                        case UNKNOWN_COMPANY -> entry.getValue() + " with no employment record on " + batch.getAsOfDate()
+                                + " — nothing says which company holds their balance";
+                        // Wording only; the bucket above is what decides.
+                        default -> entry.getValue() + " " + entry.getKey();
+                    })
+                    .collect(Collectors.joining("; "));
             throw new WebApplicationException(
-                    unresolved + " rows are still unmatched — resolve or ignore them first", Response.Status.CONFLICT);
+                    "The batch still has rows to resolve: " + detail + ". Match them to an employee or ignore them first.",
+                    Response.Status.CONFLICT);
         }
 
-        List<PolicyRate> policies = policyService.rates();
-        int entriesPosted = 0;
-        for (VacationImportRow row : rows) {
-            if (row.getMatchStatus() == VacationImportRowStatus.IGNORED) continue;
-            RawRow raw = readRawJson(row.getRawJson());
-            for (Map.Entry<Integer, RawRow.RawYear> yearEntry : raw.years().entrySet()) {
-                entriesPosted += postBaselines(batch, row.getUseruuid(), yearEntry.getKey(), yearEntry.getValue(),
-                        policies, actorUuid);
-            }
-        }
+        requireGatedBatch(batch, rows);
 
+        // Claim the batch before posting anything. The status check above is a
+        // plain read, so two simultaneous applies would both pass it and both
+        // post the same baselines — every baseline in a batch shares the as-of
+        // date and the batch uuid, so the keys would be identical and the loser
+        // would surface as a bare duplicate-key 409 explaining nothing. The
+        // conditional update takes the row lock, matches nothing for the second
+        // caller, and sends it the same message as any other late apply.
+        LocalDateTime appliedAt = LocalDateTime.now();
+        int claimed = VacationImportBatch.update(
+                "status = ?1, appliedAt = ?2, appliedBy = ?3 WHERE uuid = ?4 AND status = ?5",
+                VacationImportBatchStatus.APPLIED, appliedAt, actorUuid, batchUuid, VacationImportBatchStatus.PENDING);
+        if (claimed == 0) {
+            throw new WebApplicationException("The batch is already applied", Response.Status.CONFLICT);
+        }
         batch.setStatus(VacationImportBatchStatus.APPLIED);
-        batch.setAppliedAt(LocalDateTime.now());
+        batch.setAppliedAt(appliedAt);
         batch.setAppliedBy(actorUuid);
-        log.infof("vacation-import: batch %s applied by %s — %d baseline entries", batchUuid, actorUuid, entriesPosted);
+
+        // The planner merges the lines of anyone Danløn listed more than once
+        // before it splits anything into pools — see ImportBaselinePlanner for
+        // why that order is the whole point.
+        List<PolicyRate> policies = policyService.rates();
+        List<BaselineEntry> plan = ImportBaselinePlanner.plan(toPlannerRows(rows), policies);
+        logMergedRows(batchUuid, rows);
+        plan.forEach(entry -> persistBaseline(batch, entry, actorUuid));
+
+        // Say "posting", not "applied". The old wording claimed success from
+        // inside the transaction: when the duplicate-key violation took the
+        // Technology batch down at commit, the log read "batch … applied … 208
+        // baseline entries" on all six failed attempts and pointed the
+        // investigation away from the writer. Whether the work survived is
+        // only knowable after completion, so that is where success is logged.
+        log.infof("vacation-import: batch %s posting %d baseline entries for %s",
+                batchUuid, plan.size(), actorUuid);
+        logOutcomeAfterCompletion(batchUuid, actorUuid, plan.size());
         return toDTO(batch, rows);
     }
 
     /**
-     * Splits the combined Danløn figures into the two pools: earned days
-     * proportionally by the policy rates at the ferieår's start (2.08 : 0.42
-     * by default), used days ferie-first — matching the engine's spend order —
-     * with any excess charged to ferie as overdraft.
+     * Records who was merged, because the merge leaves no trace of itself.
+     *
+     * <p>Before the planner, two Danløn lines for one person collided on the
+     * ledger's dedup key and the apply died loudly. That collision was also,
+     * accidentally, the only automatic detector of the opposite mistake — two
+     * different people whose names normalise to one existing user, silently
+     * summed onto whichever of them holds the account. Merging by design
+     * removes the alarm, so the merge has to announce itself instead: the
+     * batch's rows stay in {@code vacation_import_rows} for the audit, and
+     * this line tells an operator which employees to go and check.</p>
      */
-    private int postBaselines(VacationImportBatch batch, String useruuid, int ferieaar, RawRow.RawYear figures,
-                              List<PolicyRate> policies, String actorUuid) {
-        double ferieRate = VacationBalanceEngine.rateFor(policies, VacationPoolType.FERIE, startOf(ferieaar));
-        double ffRate = VacationBalanceEngine.rateFor(policies, VacationPoolType.FERIEFRIDAGE, startOf(ferieaar));
-        double totalRate = ferieRate + ffRate;
-        double ferieShare = totalRate <= 0 ? 1.0 : ferieRate / totalRate;
-
-        double earnedFerie = round2(figures.earnedDays() * ferieShare);
-        double earnedFf = round2(figures.earnedDays() - earnedFerie);
-        double usedFerie = Math.min(figures.usedDays(), earnedFerie);
-        double usedFf = Math.min(earnedFf, round2(figures.usedDays() - usedFerie));
-        double excess = round2(figures.usedDays() - usedFerie - usedFf);
-        if (excess > 0) usedFerie = round2(usedFerie + excess);
-
-        persistBaseline(batch, useruuid, ferieaar, VacationPoolType.FERIE, VacationEntryType.IMPORT_BASELINE_EARNED, earnedFerie, actorUuid);
-        persistBaseline(batch, useruuid, ferieaar, VacationPoolType.FERIE, VacationEntryType.IMPORT_BASELINE_USED, usedFerie, actorUuid);
-        persistBaseline(batch, useruuid, ferieaar, VacationPoolType.FERIEFRIDAGE, VacationEntryType.IMPORT_BASELINE_EARNED, earnedFf, actorUuid);
-        persistBaseline(batch, useruuid, ferieaar, VacationPoolType.FERIEFRIDAGE, VacationEntryType.IMPORT_BASELINE_USED, usedFf, actorUuid);
-        return 4;
+    private void logMergedRows(String batchUuid, List<VacationImportRow> rows) {
+        Map<String, List<Integer>> linesByUser = new LinkedHashMap<>();
+        for (VacationImportRow row : rows) {
+            // Only the rows that will actually be merged. Counting a skipped
+            // line here would warn about a merge that is not going to happen —
+            // an AUTO + OTHER_COMPANY pair is one line applied, not two summed.
+            if (row.getMatchStatus().bucket() != Bucket.APPLIES) continue;
+            if (row.getUseruuid() == null || row.getUseruuid().isBlank()) continue;
+            linesByUser.computeIfAbsent(row.getUseruuid(), k -> new java.util.ArrayList<>()).add(row.getLineNo());
+        }
+        linesByUser.forEach((useruuid, lines) -> {
+            if (lines.size() < 2) return;
+            log.warnf("vacation-import: batch %s merges %d lines %s onto user %s — verify they are one person",
+                    batchUuid, lines.size(), lines, useruuid);
+        });
     }
 
-    private void persistBaseline(VacationImportBatch batch, String useruuid, int ferieaar, VacationPoolType pool,
-                                 VacationEntryType type, double days, String actorUuid) {
+    /**
+     * Logs the committed outcome, so a rollback can never leave a success line
+     * behind. Registered interposed, matching {@code AggregateEventSender}; if
+     * there is no transaction to hang it on there is nothing to roll back
+     * either, and the pre-commit line above already stands as the record.
+     */
+    private void logOutcomeAfterCompletion(String batchUuid, String actorUuid, int entries) {
+        try {
+            txSyncRegistry.registerInterposedSynchronization(new Synchronization() {
+                @Override
+                public void beforeCompletion() {
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status == Status.STATUS_COMMITTED) {
+                        log.infof("vacation-import: batch %s applied by %s — %d baseline entries committed",
+                                batchUuid, actorUuid, entries);
+                    } else {
+                        log.errorf("vacation-import: batch %s NOT applied — the transaction rolled back (status %d); "
+                                + "the batch stays PENDING and no baseline was written", batchUuid, status);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            log.debugf("vacation-import: batch %s has no transaction to report completion on", batchUuid);
+        }
+    }
+
+    /** Adapts the persisted rows to the planner's view of them — figures only. */
+    private List<ImportBaselinePlanner.Row> toPlannerRows(List<VacationImportRow> rows) {
+        return rows.stream().map(row -> {
+            Map<Integer, ImportBaselinePlanner.Figures> years = new LinkedHashMap<>();
+            readRawJson(row.getRawJson()).years().forEach((ferieaar, figures) -> years.put(ferieaar,
+                    new ImportBaselinePlanner.Figures(figures.earnedDays(), figures.usedDays())));
+            return new ImportBaselinePlanner.Row(row.getUseruuid(), row.getMatchStatus(), years);
+        }).toList();
+    }
+
+    private void persistBaseline(VacationImportBatch batch, BaselineEntry entry, String actorUuid) {
         // Zero-value baselines post too: "Danløn says 0" is an override statement.
-        ledgerService.buildEntry(useruuid, ferieaar, pool, type, days, batch.getAsOfDate(),
-                VacationEntrySource.DANLON_IMPORT, batch.getUuid(),
+        ledgerService.buildEntry(entry.useruuid(), entry.ferieaar(), entry.pool(), entry.type(), entry.days(),
+                batch.getAsOfDate(), VacationEntrySource.DANLON_IMPORT, batch.getUuid(),
                 "Danløn-import " + batch.getFilename(), actorUuid).persist();
     }
 
@@ -335,14 +562,17 @@ public class VacationImportService {
                     log.debugf("vacation-import: could not resolve user %s", row.getUseruuid());
                 }
             }
+            Map<String, String> companyNames = new HashMap<>();
             rowDTOs = rows.stream().map(row -> {
                 RawRow raw = readRawJson(row.getRawJson());
                 Map<Integer, VacationImportRowDTO.YearFiguresDTO> years = new LinkedHashMap<>();
                 raw.years().forEach((year, figures) -> years.put(year, new VacationImportRowDTO.YearFiguresDTO(
                         figures.earnedDays(), figures.usedDays(), figures.earnedKrRaw(), figures.provisionKrRaw())));
+                String companyAtAsOfName = row.getCompanyAtAsOf() == null
+                        ? null : companyName(companyNames, row.getCompanyAtAsOf());
                 return new VacationImportRowDTO(row.getUuid(), row.getLineNo(), row.getDanlonName(),
                         row.getUseruuid(), names.get(row.getUseruuid()),
-                        row.getMatchStatus().name(), years);
+                        row.getMatchStatus().name(), row.getCompanyAtAsOf(), companyAtAsOfName, years);
             }).toList();
         }
         return new VacationImportBatchDTO(batch.getUuid(), batch.getCompanyuuid(), batch.getFilename(),
