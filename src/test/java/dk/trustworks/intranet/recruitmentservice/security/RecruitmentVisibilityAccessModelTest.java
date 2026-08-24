@@ -40,6 +40,15 @@ class RecruitmentVisibilityAccessModelTest {
         final Map<String, Set<String>> roles = new HashMap<>();
         final Map<String, String> practices = new HashMap<>();
         final Map<String, List<String>> ledTeams = new HashMap<>();
+        /**
+         * Practices of the teams the user currently leads — the landing
+         * card's "is this mine to worry about?" hop
+         * ({@code RecruitmentLandingService.taskInScope}). Deliberately
+         * separate from {@link #practices} ({@code user.practice_uuid}, the
+         * assistant's scope): in production every team lead's own practice
+         * differs from the practice of the team they lead.
+         */
+        final Map<String, Set<String>> ledPractices = new HashMap<>();
         final Map<String, Set<String>> circles = new HashMap<>();
         final Set<String> intakeHolders = new java.util.HashSet<>();
         final Set<String> hiringOwners = new java.util.HashSet<>();
@@ -59,6 +68,11 @@ class RecruitmentVisibilityAccessModelTest {
         @Override
         public List<String> currentlyLedTeams(String userUuid) {
             return ledTeams.getOrDefault(userUuid, List.of());
+        }
+
+        @Override
+        public Set<String> ledPracticeUuids(String userUuid) {
+            return ledPractices.getOrDefault(userUuid, Set.of());
         }
 
         @Override
@@ -188,6 +202,25 @@ class RecruitmentVisibilityAccessModelTest {
         StubVisibility visibility = stub();
         assertTrue(visibility.canDecideFinalOutcome("teamlead", OUT_OF_PRACTICE));
         assertTrue(visibility.canDecideFinalOutcome("hr", OUT_OF_PRACTICE));
+    }
+
+    /**
+     * {@code ledPracticeUuids} is an attention hop, not a rights hop. It
+     * feeds the landing card's {@code taskInScope} and nothing else —
+     * decision 11 removed the practice routes from read/decide in 2026-08-23
+     * and this must not quietly put one back.
+     */
+    @Test
+    void ledPractice_grantsNoReadOrDecideRight() {
+        StubVisibility visibility = stub();
+        visibility.ledPractices.put("plain", Set.of(PRACTICE));
+
+        assertFalse(visibility.canReadPosition("plain", IN_PRACTICE),
+                "leading a team in the practice reveals no position");
+        assertFalse(visibility.canDecideOnApplication("plain", IN_PRACTICE),
+                "…and confers no decision right either");
+        assertTrue(visibility.readablePositionUuids("plain", List.of(IN_PRACTICE)).isEmpty());
+        assertTrue(visibility.decidablePositionUuids("plain", List.of(IN_PRACTICE)).isEmpty());
     }
 
     // ---- Decisions 2–5: assistant practice scoping ------------------------------

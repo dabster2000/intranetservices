@@ -298,6 +298,49 @@ public class RecruitmentVisibility {
     }
 
     /**
+     * Practice uuids of the teams the viewer <em>currently</em> leads — the
+     * same temporal {@code teamroles} LEADER rows as
+     * {@link #currentlyLedTeams}, walked on to {@code team.practice_uuid}.
+     * <p>
+     * <b>Not a rights method.</b> Decision 11 (2026-08-23) removed every
+     * practice hop from read and decide rights and this does not put one
+     * back: nothing in {@link #filterPositions}, {@link #canDecideOnApplication}
+     * or {@link #decidablePositionUuids} consults it. Its only consumer is
+     * the landing page's "My tasks" card, which answers the narrower
+     * question <em>"is this mine to worry about?"</em> — see
+     * {@code RecruitmentLandingService.taskInScope}.
+     * <p>
+     * Deliberately NOT {@link #practiceOfUser}: in production every one of
+     * the 13 team leads has a {@code user.practice_uuid} that differs from
+     * the practice of the team they lead (or none at all), so the membership
+     * hop would scope the card to the wrong practice. And deliberately not
+     * routed through {@code position.team_uuid} either — that column is NULL
+     * for every production position, so a team hop alone reaches nothing.
+     * <p>
+     * Teams with no practice contribute nothing (they are reached through
+     * {@link #currentlyLedTeams} instead), so the result never holds nulls.
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> ledPracticeUuids(String userUuid) {
+        if (userUuid == null || userUuid.isBlank()) {
+            return Set.of();
+        }
+        List<String> rows = em.createNativeQuery("""
+                        SELECT DISTINCT t.practice_uuid
+                        FROM teamroles tr
+                        JOIN team t ON t.uuid = tr.teamuuid
+                        WHERE tr.useruuid = :user AND tr.membertype = 'LEADER'
+                          AND tr.startdate <= :today
+                          AND (tr.enddate > :today OR tr.enddate IS NULL)
+                          AND t.practice_uuid IS NOT NULL
+                        """)
+                .setParameter("user", userUuid)
+                .setParameter("today", LocalDate.now())
+                .getResultList();
+        return new HashSet<>(rows);
+    }
+
+    /**
      * Whether the viewer belongs to the recruiter tier for module-wide
      * queues (spec §7.2): {@code ADMIN}, {@code HR} or {@code RECRUITMENT}.
      * The P6 referral triage queue and the unsolicited-applicant queue gate

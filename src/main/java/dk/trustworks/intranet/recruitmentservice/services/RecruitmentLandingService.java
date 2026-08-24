@@ -57,7 +57,8 @@ import java.util.stream.Collectors;
  * {@link RecruitmentVisibility}: positions are query-level filtered
  * (partner circles stay a hard filter), decision-owned tasks come from
  * {@code decidablePositionUuids} (the shared batched twin of
- * {@code canDecideOnApplication}, not a copy of it), and the activity
+ * {@code canDecideOnApplication}, not a copy of it) <em>narrowed</em> by
+ * {@link #taskInScope} to what the viewer actually runs, and the activity
  * feed drops CIRCLE events outside the viewer's circles plus every event
  * of partner-track-only candidates. Feed rows carry structural facts and
  * names only — never event {@code pii}.
@@ -80,8 +81,14 @@ import java.util.stream.Collectors;
  * there is something to do about it right now.</em> A row that fails either
  * half is not a smaller task, it is noise — and noise on this card is
  * expensive, because the card's promise is "when this list is empty, you're
- * done". Three rules keep the assertion true:
+ * done". Four rules keep the assertion true:
  * <ul>
+ *   <li><b>"You" means the pipelines you run</b> — {@link #taskInScope}.
+ *       Decision and idle rows are narrowed from "every non-partner
+ *       position you may decide on" to the practices and teams the viewer
+ *       currently LEADS, plus what is already theirs by name or circle
+ *       seat. The recruiter tier is never narrowed. Rights are untouched;
+ *       this is attention, not authorization.</li>
  *   <li><b>Idle rows go through {@link RecruitmentIdleRule}</b> — a truthful
  *       clock (last real progress, not last stage change) plus a court check
  *       (booked, out with the scheduling automation, waiting on a colleague's
@@ -212,8 +219,29 @@ public class RecruitmentLandingService {
         // route.
         Set<String> decidablePositionUuids =
                 visibility.decidablePositionUuids(viewerUuid, visiblePositions);
+
+        // "May I act on this?" is not "is this mine to worry about?". Since
+        // go-live decision D3 a TEAMLEAD decides on every non-partner
+        // position in the company, which handed all twenty of them the same
+        // 34-application task universe. The card is narrowed (never the read
+        // or decide rights) to what the viewer actually runs: the practices
+        // of the teams they currently LEAD, the teams themselves, and the
+        // positions that are already theirs by name or circle seat. The
+        // recruiter tier is never narrowed — the world is their job.
+        //
+        // Hoisted above the "Your pipelines" scope below, which reuses the
+        // same set instead of asking for it a second time.
+        Set<String> ownPositionUuids = recruiterTier ? Set.of()
+                : visibility.ownPositionUuids(viewerUuid, visiblePositions);
+        Set<String> ledPractices = recruiterTier ? Set.of()
+                : visibility.ledPracticeUuids(viewerUuid);
+        Set<String> ledTeams = recruiterTier ? Set.of()
+                : new HashSet<>(visibility.currentlyLedTeams(viewerUuid));
+        Set<String> taskPositionUuids = taskPositionUuids(decidablePositionUuids,
+                positionsByUuid, recruiterTier, ledPractices, ledTeams, ownPositionUuids);
+
         List<RecruitmentApplication> decidableApplications = openApplications.stream()
-                .filter(a -> decidablePositionUuids.contains(a.getPositionUuid()))
+                .filter(a -> taskPositionUuids.contains(a.getPositionUuid()))
                 .toList();
 
         // Every non-cancelled interview on the whole open slice, not just the
@@ -292,8 +320,11 @@ public class RecruitmentLandingService {
 
         // Any status, like positionsByUuid: the feed covers closed positions
         // too, so narrowing it must use the same breadth it replaces.
+        // (ownPositionUuids is already in hand from the task narrowing above;
+        // ownOnly is only ever true for a non-recruiter viewer, so the
+        // recruiter-tier short circuit there cannot leak into this branch.)
         Set<String> scopedPositionUuids = ownOnly
-                ? visibility.ownPositionUuids(viewerUuid, visiblePositions)
+                ? ownPositionUuids
                 : positionsByUuid.keySet();
         List<RecruitmentPosition> scopedOpenPositions = ownOnly
                 ? openPositions.stream()
@@ -305,7 +336,8 @@ public class RecruitmentLandingService {
         // §6.1: an interviewer sees interviews + scorecards only.
         List<LandingPipeline> pipelines = interviewer
                 ? List.of()
-                : pipelines(scopedOpenPositions, openByPosition, idleFacts, now);
+                : pipelines(scopedOpenPositions, openByPosition, recruiterTier, taskPositionUuids,
+                        idleFacts, now);
         List<LandingActivity> activity = interviewer
                 ? List.of()
                 : activityFeed(viewerUuid, scopedPositionUuids, candidates);
@@ -338,6 +370,92 @@ public class RecruitmentLandingService {
     // ------------------------------------------------------------------
     // Decision-owner resolution (batched canDecideOnApplication twin)
     // ------------------------------------------------------------------
+
+    /**
+     * Whether a position's candidates may raise a task <em>for this viewer</em>
+     * — the "is this mine to worry about?" half of the card, applied on top
+     * of (never instead of) {@code decidablePositionUuids}.
+     *
+     * <p>Since go-live decision D3 a {@code TEAMLEAD} decides on every
+     * non-partner position, so every team lead in production carried the
+     * whole company's in-play applications on "My tasks". Rights were not
+     * the problem — attention was. Four routes keep a row:</p>
+     * <ol>
+     *   <li><b>Recruiter tier</b> (ADMIN/HR/RECRUITMENT) — never narrowed;
+     *       the world is their job (spec §6.1).</li>
+     *   <li><b>Already theirs</b> — named hiring owner, a circle seat, or
+     *       the assistant's own practice ({@code ownPositionUuids}).</li>
+     *   <li><b>The practice of a team they currently LEAD</b>
+     *       ({@link RecruitmentVisibility#ledPracticeUuids}). LEADER only,
+     *       not SPONSOR: sponsorship spans practices and would remove
+     *       almost all of the narrowing.</li>
+     *   <li><b>The team itself</b> — {@code RecruitmentVisibility} treats
+     *       "current lead of the position's team" as a first-class grant in
+     *       three places, and a team whose practice is NULL is reachable no
+     *       other way.</li>
+     * </ol>
+     *
+     * <p>"No team ⇒ no tasks" falls out by construction: with all three sets
+     * empty and no recruiter role, nothing survives, {@code
+     * decidableApplications} collapses, and both {@code PENDING_DECISION} and
+     * {@code IDLE_CANDIDATE} vanish. {@code OVERDUE_SCORECARD} is
+     * deliberately outside this predicate — it is a personal assignment built
+     * from the viewer's own interviews, the only content the INTERVIEWER
+     * shape ever gets, and the counterpart of the idle rule's
+     * {@code AWAITING_SCORECARDS} suppression: scoping it would suppress an
+     * application from every idle list <em>because</em> a colleague owes a
+     * scorecard, while that colleague no longer sees the nag.</p>
+     *
+     * <p>Static and side-effect-free so the fast tier pins it
+     * ({@code RecruitmentLandingTaskScopeTest}) — the landing API test is a
+     * {@code @QuarkusTest} outside the CI deploy gate.</p>
+     */
+    static boolean taskInScope(RecruitmentPosition position,
+                               boolean recruiterTier,
+                               Set<String> ledPractices,
+                               Set<String> ledTeams,
+                               Set<String> ownPositionUuids) {
+        if (recruiterTier) {
+            return true;
+        }
+        if (position == null) {
+            return false;
+        }
+        if (ownPositionUuids.contains(position.getUuid())) {
+            return true;
+        }
+        if (position.getPracticeUuid() != null
+                && ledPractices.contains(position.getPracticeUuid())) {
+            return true;
+        }
+        return position.getTeamUuid() != null
+                && ledTeams.contains(position.getTeamUuid());
+    }
+
+    /**
+     * The position slice the task rows are built from: the decidable slice
+     * narrowed by {@link #taskInScope}.
+     *
+     * <p>Extracted from {@code build()} so the DB-free deploy gate pins the
+     * <em>wiring</em>, not only the predicate. The load-bearing property is
+     * that this is a filter over {@code decidablePositionUuids} and never a
+     * union with anything: a bug that turned it into a union would hand a
+     * viewer task rows for a position they may not act on, and a unit test
+     * of {@code taskInScope} alone would still pass. An unknown uuid (no
+     * entry in {@code positionsByUuid}) fails closed below the recruiter
+     * tier.
+     */
+    static Set<String> taskPositionUuids(Set<String> decidablePositionUuids,
+                                         Map<String, RecruitmentPosition> positionsByUuid,
+                                         boolean recruiterTier,
+                                         Set<String> ledPractices,
+                                         Set<String> ledTeams,
+                                         Set<String> ownPositionUuids) {
+        return decidablePositionUuids.stream()
+                .filter(uuid -> taskInScope(positionsByUuid.get(uuid), recruiterTier,
+                        ledPractices, ledTeams, ownPositionUuids))
+                .collect(Collectors.toSet());
+    }
 
     // ------------------------------------------------------------------
     // Task builders
@@ -608,9 +726,26 @@ public class RecruitmentLandingService {
      * {@code stage_entered_at} comparison of its own, so the amber number and
      * the task list disagreed on the same screen and taught the viewer to
      * trust neither.
+     * <p>
+     * {@code taskPositionUuids} is that population's position slice — the
+     * decidable positions that survive {@link #taskInScope}. A pipeline the
+     * viewer reads but whose candidates raise no task for them (another
+     * practice, on {@code scope=ALL}) shows its open count and stage columns
+     * and an idle count of zero, because zero is how many of those rows the
+     * card above will list.
+     * <p>
+     * {@code recruiterTier} short-circuits that gate entirely. The practice
+     * narrowing was asked for on behalf of team leads only, and the recruiter
+     * tier is never narrowed anywhere else on this page; without the
+     * short-circuit a RECRUITMENT-only viewer would silently lose the idle
+     * count on a partner pipeline they can read but are not circled on
+     * (decidablePositionUuids excludes PARTNER for anyone below HR), which is
+     * a narrowing nobody requested.
      */
     private List<LandingPipeline> pipelines(List<RecruitmentPosition> openPositions,
                                             Map<String, List<RecruitmentApplication>> openByPosition,
+                                            boolean recruiterTier,
+                                            Set<String> taskPositionUuids,
                                             Map<String, RecruitmentIdleRule.Facts> idleFacts,
                                             LocalDateTime now) {
         LocalDateTime idleCutoff = now.minusDays(thresholds.candidateIdleDays());
@@ -629,9 +764,13 @@ public class RecruitmentLandingService {
                             .map(stage -> new LandingStageCount(stage,
                                     byStage.getOrDefault(stage, 0L).intValue()))
                             .toList();
-                    int idleCount = (int) open.stream()
-                            .filter(a -> RecruitmentIdleRule.isIdleTask(idleFacts.get(a.getUuid()), idleCutoff))
-                            .count();
+                    int idleCount = recruiterTier
+                            || taskPositionUuids.contains(position.getUuid())
+                            ? (int) open.stream()
+                                    .filter(a -> RecruitmentIdleRule.isIdleTask(
+                                            idleFacts.get(a.getUuid()), idleCutoff))
+                                    .count()
+                            : 0;
                     return new LandingPipeline(position.getUuid(), position.getTitle(),
                             position.getPracticeName(),
                             position.getHiringTrack() == null ? null
