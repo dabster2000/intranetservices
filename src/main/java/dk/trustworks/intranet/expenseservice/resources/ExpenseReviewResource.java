@@ -58,6 +58,24 @@ public class ExpenseReviewResource {
         }
     }
 
+    /**
+     * W3: the whole account plan an employee's expense may be assigned to — active
+     * accounts of their current company, grouped by category, minus the 9998 fallback.
+     * Feeds the "Assign account" picker so Finance never has to look a GL number up in
+     * e-conomic. Same restriction as the assign call itself, so every listed account
+     * is accepted by {@code POST /expenses/{uuid}/review/assign-account}.
+     */
+    @GET
+    @Path("/assignable-accounts")
+    @RolesAllowed({"expenses:review"})
+    public List<ExpenseAccountSuggestionService.PlanCategory> assignableAccounts(
+            @QueryParam("useruuid") String useruuid) {
+        if (useruuid == null || useruuid.isBlank()) {
+            throw new BadRequestException("useruuid is required");
+        }
+        return suggestions.assignablePlanFor(useruuid);
+    }
+
     @GET
     @RolesAllowed({"expenses:review"})
     public List<ExpenseReviewListItemDTO> queue(

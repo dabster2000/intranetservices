@@ -12,6 +12,7 @@ import jakarta.ws.rs.BadRequestException;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -21,6 +22,9 @@ import java.util.stream.Collectors;
  * most-used accounts, restricted to active accounts of their current company. The
  * 9998 fallback ("Other – not sure") is never suggested: it is the reason the row
  * is in the queue in the first place.
+ *
+ * <p>{@link #assignablePlanFor} exposes the same restriction as the whole picker list,
+ * so Finance can choose an account without looking the number up in e-conomic.
  */
 @ApplicationScoped
 public class ExpenseAccountSuggestionService {
@@ -29,6 +33,17 @@ public class ExpenseAccountSuggestionService {
     public static final int FALLBACK_ACCOUNT = 9998;
 
     public record Suggestion(int account, String accountName, int timesUsed) {}
+
+    /**
+     * One pickable account. Field names mirror the {@code /expenses/categories} DTO the
+     * employee-facing expense form already consumes, so the frontend reuses one picker
+     * component and one type for both flows.
+     */
+    public record PlanAccount(int accountNumber, String accountName, boolean defaultAccount) {}
+
+    /** One category of {@link PlanAccount}s. {@code defaultCategory} holds the most-used account. */
+    public record PlanCategory(String categoryName, boolean defaultCategory,
+                               List<PlanAccount> expenseAccounts) {}
 
     @Inject UserService userService;
     @Inject EntityManager em;
@@ -46,6 +61,37 @@ public class ExpenseAccountSuggestionService {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = q.getResultList();
         return topSuggestions(rows, assignable, limit);
+    }
+
+    /**
+     * The employee's whole assignable account plan, grouped by category — what the
+     * "Assign account" picker lists. Same restriction as {@link #requireAssignable}
+     * (active accounts of the employee's current company, minus the 9998 fallback),
+     * narrowed further to active categories so Finance sees exactly the plan the
+     * employee submits against. Never a superset of what the assign call accepts.
+     *
+     * <p>The employee's own most-used account is flagged {@code defaultAccount} (and its
+     * category {@code defaultCategory}) so the picker can pre-select it.
+     */
+    public List<PlanCategory> assignablePlanFor(String useruuid) {
+        Company company = companyOf(useruuid);
+        if (company == null) return List.of();
+
+        // Projection, not a `join fetch` — no collection fetch, no in-memory pagination.
+        List<Object[]> rows = em.createQuery(
+                        "select c.categoryName, a.accountNumber, a.accountName " +
+                        "from ExpenseCategory c join c.expenseAccounts a " +
+                        "where c.active = true and a.active = true " +
+                        "  and a.companyuuid = :companyuuid and a.accountNumber <> :fallback " +
+                        "order by c.categoryName, a.accountNumber", Object[].class)
+                .setParameter("companyuuid", company.getUuid())
+                .setParameter("fallback", FALLBACK_ACCOUNT)
+                .getResultList();
+
+        List<Suggestion> top = suggestFor(useruuid, 1);
+        int mostUsed = top.isEmpty() ? Integer.MIN_VALUE : top.get(0).account();
+
+        return groupByCategory(rows, mostUsed);
     }
 
     /**
@@ -108,5 +154,25 @@ public class ExpenseAccountSuggestionService {
             out.add(new Suggestion(account, name, ((Number) row[1]).intValue()));
         }
         return List.copyOf(out);
+    }
+
+    /**
+     * Pure grouping of {@code [categoryName, accountNumber, accountName]} rows into
+     * categories, preserving the query's ordering and flagging {@code mostUsed}.
+     * Package-private static for plain unit tests.
+     */
+    static List<PlanCategory> groupByCategory(List<Object[]> rows, int mostUsed) {
+        Map<String, List<PlanAccount>> byCategory = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            int accountNumber = ((Number) row[1]).intValue();
+            byCategory.computeIfAbsent((String) row[0], k -> new ArrayList<>())
+                    .add(new PlanAccount(accountNumber, (String) row[2], accountNumber == mostUsed));
+        }
+        return byCategory.entrySet().stream()
+                .map(e -> new PlanCategory(
+                        e.getKey(),
+                        e.getValue().stream().anyMatch(PlanAccount::defaultAccount),
+                        List.copyOf(e.getValue())))
+                .toList();
     }
 }
