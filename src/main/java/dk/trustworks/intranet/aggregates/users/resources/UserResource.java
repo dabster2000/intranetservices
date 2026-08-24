@@ -359,12 +359,11 @@ public class UserResource {
         return achievementsAPI.findByUseruuid(useruuid);
     }
 
-    @GET
-    @Path("/{useruuid}/vacation")
-    @RolesAllowed({"vacation:read"})
-    public List<WorkFull> findVacationByUser(@PathParam("useruuid") String useruuid) {
-        return workService.findVacationByUser(useruuid);
-    }
+    // GET /users/{useruuid}/vacation now belongs to the vacation-ledger module
+    // (dk.trustworks.intranet.vacationservice), which answers it with a
+    // VacationOverviewDTO of computed balances. The registered-vacation
+    // timesheet rows this method used to return are still served by
+    // GET /vacation/user/{useruuid}, which calls the same WorkService method.
 
     @GET
     @Path("/vacation/sum")
