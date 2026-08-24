@@ -76,6 +76,9 @@ public class TeamResource {
     TeamDashboardService teamDashboardService;
 
     @Inject
+    dk.trustworks.intranet.vacationservice.services.VacationBalanceService vacationBalanceService;
+
+    @Inject
     PracticeService practiceService;
 
     @Inject
@@ -522,5 +525,15 @@ public class TeamResource {
     public List<TeamSalaryBandDTO> getSalaryBandPositioning(@PathParam("teamuuid") String teamuuid) {
         teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
         return teamPeopleService.getSalaryBandPositioning(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/vacation")
+    @RolesAllowed({"dashboard:read"})
+    public List<dk.trustworks.intranet.vacationservice.dto.VacationBalanceSummaryDTO> getVacationBalances(
+            @PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        List<User> members = teamService.getUsersByTeam(teamuuid, LocalDate.now().withDayOfMonth(1));
+        return vacationBalanceService.summaries(members);
     }
 }

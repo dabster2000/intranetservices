@@ -18,7 +18,8 @@ import dk.trustworks.intranet.domain.user.entity.SalarySupplement;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.TransportationRegistration;
-import dk.trustworks.intranet.userservice.model.VacationPool;
+import dk.trustworks.intranet.vacationservice.dto.VacationPoolDTO;
+import dk.trustworks.intranet.vacationservice.services.VacationBalanceService;
 import dk.trustworks.intranet.security.AuthorizationService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeResolution;
@@ -42,6 +43,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.SICKNESS;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
@@ -62,7 +65,7 @@ public class SalaryResource {
     SalaryService salaryService;
 
     @Inject
-    VacationService vacationService;
+    VacationBalanceService vacationBalanceService;
 
     @Inject
     WorkService workService;
@@ -209,26 +212,17 @@ public class SalaryResource {
             log.errorf(e, "Error processing vacation for user: %s, month: %s", useruuid, date);
         }
 
-        // Process available vacation days
+        // Remaining vacation per open ferieår (ferie + feriefridage)
         try {
-            VacationPool vacationPool = null;// vacationService.calculateRemainingVacationDays(useruuid);
-            if (vacationPool == null) {
-                log.warnf("VacationPool is null for user: %s", useruuid);
-            } else {
-                vacationService.getActiveVacationPeriods().forEach(period -> {
-                    try {
-                        VacationPool pool = vacationPool.findPool(period.getKey());
-                        double remainingVacationDays = pool != null ? pool.getRemainingVacation() : 0.0;
-                        payments.add(new SalaryPayment(
-                                date,
-                                "Available vacation (test) " + period.getValue().getYear(),
-                                NumberUtils.round(remainingVacationDays, 2) + " days"
-                        ));
-                    } catch (Exception ex) {
-                        log.errorf(ex, "Error processing vacation pool for period: %s, user: %s", period.getKey(), useruuid);
-                    }
-                });
-            }
+            vacationBalanceService.overview(useruuid).pools().stream()
+                    .filter(VacationPoolDTO::open)
+                    .collect(Collectors.groupingBy(VacationPoolDTO::label,
+                            TreeMap::new, Collectors.summingDouble(VacationPoolDTO::remaining)))
+                    .forEach((label, remaining) -> payments.add(new SalaryPayment(
+                            date,
+                            "Ferie til rådighed " + label,
+                            NumberUtils.round(remaining, 2) + " days"
+                    )));
         } catch (Exception e) {
             log.errorf(e, "Error calculating remaining vacation days for user: %s", useruuid);
         }

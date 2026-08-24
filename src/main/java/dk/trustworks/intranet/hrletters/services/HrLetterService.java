@@ -22,6 +22,8 @@ import dk.trustworks.intranet.hrletters.model.enums.HrLetterStatus;
 import dk.trustworks.intranet.hrletters.model.enums.HrLetterType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.utils.dto.signing.PreviewTemplateResponse;
+import dk.trustworks.intranet.vacationservice.model.enums.VacationEntrySource;
+import dk.trustworks.intranet.vacationservice.services.VacationLedgerService;
 import dk.trustworks.intranet.utils.services.SigningService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -94,6 +96,9 @@ public class HrLetterService {
 
     @Inject
     SlackService slackService;
+
+    @Inject
+    VacationLedgerService vacationLedgerService;
 
     @ConfigProperty(name = "dk.trustworks.hrletters.base-url", defaultValue = "https://intra.trustworks.dk")
     String frontendBaseUrl;
@@ -301,6 +306,10 @@ public class HrLetterService {
             throw e;
         }
 
+        if (letter.getLetterType() == HrLetterType.VACATION_TRANSFER) {
+            postVacationTransferBestEffort(letter, actorUuid);
+        }
+
         notifyEmployeeBestEffort(letter);
         return toDTO(requireLetter(letterUuid));
     }
@@ -413,6 +422,27 @@ public class HrLetterService {
             log.warnf("hr-letters: could not resolve name for %s: %s", userUuid, e.getMessage());
         }
         return verb + " " + name + " den " + STAMP_FORMAT.format(at) + " via intranettet";
+    }
+
+    /**
+     * The signed agreement is the source of truth; the ledger follows it.
+     * Idempotent per letter uuid (a retried approval never double-posts), and
+     * a posting failure must not undo the approval — it is logged loudly for
+     * a manual posting instead.
+     */
+    private void postVacationTransferBestEffort(HrLetter letter, String actorUuid) {
+        try {
+            JsonNode payload = readPayload(letter);
+            double days = payload.path("days").asDouble();
+            int fromYear = payload.path("fromYear").asInt();
+            vacationLedgerService.applyTransfer(letter.getUseruuid(), fromYear, days,
+                    VacationEntrySource.HR_LETTER, letter.getUuid(),
+                    "Ferieoverførsel " + vacationYearLabel(fromYear) + " → " + vacationYearLabel(fromYear + 1),
+                    actorUuid);
+        } catch (Exception e) {
+            log.errorf(e, "hr-letters: letter %s is approved but the vacation ledger posting FAILED — post the transfer manually",
+                    letter.getUuid());
+        }
     }
 
     private void compensateStoredDocuments(List<String> documentUuids, String actorUuid) {
