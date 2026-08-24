@@ -8,8 +8,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -74,6 +76,7 @@ public class PlaceholderFormattingService {
 
         log.infof("Formatting %d placeholder values using %d placeholder definitions from template %s",
             formValues.size(), fieldTypes.size(), templateUuid);
+        warnOnKeyDrift(templateUuid, formValues.keySet(), fieldTypes.keySet());
 
         // Format values based on type
         Map<String, String> formatted = new HashMap<>();
@@ -87,6 +90,35 @@ public class PlaceholderFormattingService {
         }
 
         return formatted;
+    }
+
+    /**
+     * Logs when the supplied value keys and the template's declared
+     * placeholder keys disagree.
+     * <p>
+     * poi-tl substitutes with its default {@code DiscardHandler}, so a
+     * {@code {{TAG}}} whose key is absent from the value map is silently
+     * deleted from the rendered document rather than left visible. A key
+     * mismatch therefore produces a well-formed document with blank merge
+     * fields and no error anywhere — which is how a blank employment
+     * contract reached a signer on 2026-08-24. Only keys are logged, never
+     * values: placeholder values routinely carry salary and personal data.
+     */
+    private void warnOnKeyDrift(String templateUuid, Set<String> suppliedKeys, Set<String> declaredKeys) {
+        Set<String> unknown = new LinkedHashSet<>(suppliedKeys);
+        unknown.removeAll(declaredKeys);
+        if (!unknown.isEmpty()) {
+            log.warnf("Template %s received %d placeholder key(s) it does not declare: %s"
+                    + " — those values will not reach the document",
+                templateUuid, unknown.size(), unknown);
+        }
+        Set<String> missing = new LinkedHashSet<>(declaredKeys);
+        missing.removeAll(suppliedKeys);
+        if (!missing.isEmpty()) {
+            log.warnf("Template %s declares %d placeholder(s) with no supplied value: %s"
+                    + " — those tags will render blank",
+                templateUuid, missing.size(), missing);
+        }
     }
 
     /**

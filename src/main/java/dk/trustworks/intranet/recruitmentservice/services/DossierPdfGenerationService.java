@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
+import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse.PdfArtifactRef;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
@@ -14,9 +15,12 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Generates the PDF artifacts that ship with a {@link CandidateDossierRevision}.
@@ -115,6 +119,7 @@ public class DossierPdfGenerationService {
                 .count();
         log.infof("Effective placeholder keys for template %s: %s (non-blank=%d/%d)",
                 templateUuid, effectiveValues.keySet(), nonBlank, effectiveValues.size());
+        assertKeysMatchTemplate(templateUuid, effectiveValues.keySet());
 
         List<GeneratedPdf> out = new ArrayList<>(templateDocs.size());
         for (TemplateDocumentEntity doc : templateDocs) {
@@ -151,6 +156,61 @@ public class DossierPdfGenerationService {
     }
 
     // ---- helpers ---------------------------------------------------------------
+
+    /**
+     * Guards against shipping a contract whose every merge field came out
+     * blank.
+     * <p>
+     * poi-tl is configured with its default {@code DiscardHandler}: a
+     * {@code {{TAG}}} with no matching entry in the value map is silently
+     * deleted rather than left visible. So a value map keyed on anything
+     * other than the template's declared placeholder keys renders a
+     * perfectly formatted document with every value missing — which is
+     * exactly how a blank employment contract reached a signer on
+     * 2026-08-24 (the recruitment dossier BFF route stopped renaming the
+     * backend's {@code placeholderKey} to the frontend's {@code key}, so the
+     * form persisted synthetic {@code placeholder_&lt;section&gt;_&lt;index&gt;}
+     * keys).
+     * <p>
+     * A total mismatch is never a legitimate state, so it fails loudly.
+     * A partial mismatch is only logged: templates legitimately carry
+     * optional fields, and callers may deliberately omit them.
+     */
+    private void assertKeysMatchTemplate(String templateUuid, Set<String> suppliedKeys) {
+        if (suppliedKeys.isEmpty()) {
+            return;
+        }
+        Set<String> declared = TemplatePlaceholderEntity
+                .<TemplatePlaceholderEntity>find("template.uuid = ?1", templateUuid)
+                .list()
+                .stream()
+                .map(TemplatePlaceholderEntity::getPlaceholderKey)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (declared.isEmpty()) {
+            return;
+        }
+
+        Set<String> unknown = new LinkedHashSet<>(suppliedKeys);
+        unknown.removeAll(declared);
+        if (unknown.size() == suppliedKeys.size()) {
+            throw new IllegalStateException(
+                    "Refusing to render template " + templateUuid
+                            + ": none of the supplied placeholder keys " + suppliedKeys
+                            + " match the template's declared keys " + declared
+                            + ". Every merge field would render blank.");
+        }
+        if (!unknown.isEmpty()) {
+            log.warnf("Template %s received %d placeholder key(s) it does not declare: %s",
+                    templateUuid, unknown.size(), unknown);
+        }
+        Set<String> missing = new LinkedHashSet<>(declared);
+        missing.removeAll(suppliedKeys);
+        if (!missing.isEmpty()) {
+            log.warnf("Template %s has %d declared placeholder(s) with no supplied value: %s",
+                    templateUuid, missing.size(), missing);
+        }
+    }
 
     private Map<String, String> readPlaceholderSnapshot(CandidateDossierRevision revision) {
         if (revision.getPlaceholderValuesSnapshot() == null
