@@ -176,7 +176,17 @@ public class RecruitmentLandingService {
      *                ever widen back to what visibility already allows.
      */
     public LandingResponse build(String viewerUuid, boolean showAll) {
+        // TWO CLOCKS — see the note on RecruitmentSlaService. `now` stays UTC
+        // because that is the domain of every audit column this page measures
+        // (submittedAt, stageEnteredAt, the idle rule's lastProgressAt).
+        // `nowCph` is for scheduledAt and everything derived from it
+        // (RecruitmentIdleFacts.endOf / .booked), which is naive Copenhagen
+        // wall-clock. This page and the SLA sweep MUST feed the shared idle
+        // loader the same clock: that loader exists so the "My tasks" row and
+        // the Slack nudge can never disagree about the same candidate, and a
+        // one-hour skew between them reintroduces exactly that.
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime nowCph = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
         Set<String> roles = visibility.rolesOf(viewerUuid);
         boolean admin = roles.contains("ADMIN");
         boolean recruiterTier = admin || roles.contains("HR") || roles.contains("RECRUITMENT");
@@ -265,9 +275,9 @@ public class RecruitmentLandingService {
         // ---- Tasks, in urgency order --------------------------------------
         List<LandingTask> tasks = new ArrayList<>();
         tasks.addAll(overdueScorecardTasks(viewerUuid, ownInterviews, taskApplications,
-                taskPositions, candidates, scorecardsByInterview, now));
+                taskPositions, candidates, scorecardsByInterview, nowCph));
         tasks.addAll(pendingDecisionTasks(decidableApplications, taskInterviews,
-                scorecardsByInterview, taskPositions, candidates, now));
+                scorecardsByInterview, taskPositions, candidates, now, nowCph));
         if (recruiterTier) {
             emailReviewTask(viewerUuid, positionsByUuid.keySet()).ifPresent(tasks::add);
             referralTriageTask().ifPresent(tasks::add);
@@ -279,7 +289,7 @@ public class RecruitmentLandingService {
         // task rows below, the pipelines' idle badge and (through the same
         // loader) the nightly SLA sweep, so the three can never disagree.
         Map<String, RecruitmentIdleRule.Facts> idleFacts = idleFactsLoader.load(
-                openApplications, taskPositions, taskInterviews, scorecardsByInterview, now);
+                openApplications, taskPositions, taskInterviews, scorecardsByInterview, nowCph);
         tasks.addAll(idleCandidateTasks(decidableApplications, taskPositions, candidates,
                 idleFacts, now));
 
@@ -294,7 +304,7 @@ public class RecruitmentLandingService {
                 .distinct()
                 .count();
         int interviewsNext7Days = interviewsNext7Days(shape, ownInterviews,
-                openApplications, now);
+                openApplications, nowCph);
         int openTasks = tasks.stream()
                 .mapToInt(t -> t.count() != null ? t.count() : 1)
                 .sum();
@@ -337,13 +347,13 @@ public class RecruitmentLandingService {
         List<LandingPipeline> pipelines = interviewer
                 ? List.of()
                 : pipelines(scopedOpenPositions, openByPosition, recruiterTier, taskPositionUuids,
-                        idleFacts, now);
+                        idleFacts, nowCph);
         List<LandingActivity> activity = interviewer
                 ? List.of()
                 : activityFeed(viewerUuid, scopedPositionUuids, candidates);
 
         List<LandingInterview> upcoming = upcomingInterviews(viewerUuid, ownInterviews,
-                taskApplications, taskPositions, candidates, scorecardsByInterview, now);
+                taskApplications, taskPositions, candidates, scorecardsByInterview, nowCph);
 
         return new LandingResponse(shape, kpis, tasks, pipelines, upcoming, activity,
                 ownOnly ? LandingResponse.PIPELINE_SCOPE_OWN
@@ -538,11 +548,14 @@ public class RecruitmentLandingService {
                                                    Map<String, List<RecruitmentScorecard>> scorecards,
                                                    Map<String, RecruitmentPosition> positions,
                                                    Map<String, RecruitmentCandidate> candidates,
-                                                   LocalDateTime now) {
+                                                   LocalDateTime now,
+                                                   LocalDateTime nowCph) {
         Map<String, List<RecruitmentInterview>> byApplication = interviews.stream()
                 .filter(i -> i.getKind() == RecruitmentInterviewKind.ROUND)
                 .collect(Collectors.groupingBy(RecruitmentInterview::getApplicationUuid));
-        Set<String> booked = RecruitmentIdleFacts.booked(interviews, now);
+        // booked() reads scheduledAt (Copenhagen); readySince below is
+        // submittedAt (UTC). One method, both domains.
+        Set<String> booked = RecruitmentIdleFacts.booked(interviews, nowCph);
 
         List<LandingTask> tasks = new ArrayList<>();
         for (RecruitmentApplication application : decidable) {

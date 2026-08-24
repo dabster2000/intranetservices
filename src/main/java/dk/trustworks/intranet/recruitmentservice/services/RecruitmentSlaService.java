@@ -94,6 +94,35 @@ import java.util.stream.Collectors;
  * is a no-op; nothing is backfilled on later enable beyond what still
  * matches a trigger condition at that time.
  *
+ * <h3>TWO CLOCKS — read this before touching any {@code now}</h3>
+ * This module stores timestamps in two different domains, and every
+ * comparison here must use the clock matching the column it reads:
+ * <ul>
+ *   <li><b>Copenhagen wall-clock</b> — {@code RecruitmentInterview.scheduledAt}
+ *       and everything derived from it ({@link RecruitmentIdleFacts#endOf},
+ *       {@link RecruitmentIdleFacts#booked}). Naive local time as the
+ *       scheduler typed it.</li>
+ *   <li><b>UTC</b> — every audit timestamp: {@code RecruitmentEvent.occurredAt}
+ *       ({@code RecruitmentEventRecorder}), {@code RecruitmentScorecard.submittedAt},
+ *       {@code RecruitmentApplication.stageEnteredAt}, and the
+ *       {@code lastProgressAt} the idle rule derives from them.</li>
+ * </ul>
+ * Until 2026-08-24 all three sweeps read one UTC clock, which was right for
+ * the audit columns and 1–2 hours wrong against {@code scheduledAt} — so a
+ * "24 hours after the interview" nudge actually fired 22 or 23 hours after
+ * it in summer. Swinging every read to Copenhagen instead would merely move
+ * the error onto the audit columns. Neither single clock is correct, because
+ * {@link #sweepOverdueScorecards} and {@link #sweepIdleCandidates} each
+ * compare against BOTH domains — the latter feeds a Copenhagen clock to
+ * {@link RecruitmentIdleFacts#load} and a UTC one to the idle cutoff in the
+ * same pass. {@link #sweepStalledDebriefs} touches only audit columns and is
+ * therefore pure UTC.
+ *
+ * <p>{@code RecruitmentLandingService} carries the same split and MUST feed
+ * the shared idle loader the same clock this sweep does: that loader exists
+ * so the "My tasks" row and the Slack nudge can never disagree about one
+ * candidate, and a one-hour skew between them reintroduces exactly that.
+ *
  * <h3>Recipient resolution (owner ladder)</h3>
  * For the two owner pings: the position's {@code hiring_owner_uuid} when
  * set; else on partner track the circle {@code OWNER} members; else the
@@ -189,8 +218,12 @@ public class RecruitmentSlaService {
 
     private void sweepOverdueScorecards(Counters counters) {
         int thresholdHours = inTx(thresholds::scorecardOverdueHours);
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        LocalDateTime cutoff = now.minusHours(thresholdHours);
+        // Two clocks, because this method compares against columns from two
+        // different domains — see the class note on TWO CLOCKS. scheduledAt
+        // is Copenhagen wall-clock; a nudge event's occurredAt is UTC.
+        LocalDateTime nowCph = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
+        LocalDateTime nowUtc = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime cutoff = nowCph.minusHours(thresholdHours);
 
         List<RecruitmentInterview> overdue = inTx(() -> RecruitmentInterview.list(
                 "kind = ?1 and status <> ?2 and scheduledAt is not null and scheduledAt <= ?3",
@@ -211,7 +244,7 @@ public class RecruitmentSlaService {
                     .getOrDefault(interview.getUuid(), List.of()).stream()
                     .map(RecruitmentScorecard::getInterviewerUuid)
                     .collect(Collectors.toSet());
-            long overdueHours = ChronoUnit.HOURS.between(interview.getScheduledAt(), now);
+            long overdueHours = ChronoUnit.HOURS.between(interview.getScheduledAt(), nowCph);
 
             for (String interviewerUuid : interview.getInterviewerUuids()) {
                 if (submitted.contains(interviewerUuid)) {
@@ -223,8 +256,8 @@ public class RecruitmentSlaService {
                     continue; // hard cap
                 }
                 if (!priorNudges.isEmpty()
-                        && newest(priorNudges).isAfter(now.minusHours(thresholdHours))) {
-                    continue; // one nudge per threshold period
+                        && newest(priorNudges).isAfter(nowUtc.minusHours(thresholdHours))) {
+                    continue; // one nudge per threshold period (occurredAt is UTC)
                 }
                 int nudgeNumber = priorNudges.size() + 1;
                 String message = scorecardNudgeText(candidate, position,
@@ -263,6 +296,8 @@ public class RecruitmentSlaService {
 
     private void sweepStalledDebriefs(Counters counters) {
         int thresholdHours = inTx(thresholds::debriefStalledHours);
+        // UTC throughout: this method reads only submittedAt and occurredAt,
+        // never scheduledAt or endOf. See the class note on TWO CLOCKS.
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
         List<RecruitmentInterview> rounds = inTx(() -> RecruitmentInterview.list(
@@ -342,8 +377,14 @@ public class RecruitmentSlaService {
 
     private void sweepIdleCandidates(Counters counters) {
         int thresholdDays = inTx(thresholds::candidateIdleDays);
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        LocalDateTime cutoff = now.minusDays(thresholdDays);
+        // Two clocks, and this method is the reason the distinction matters
+        // most — see the class note on TWO CLOCKS. The idle CUTOFF measures
+        // stageEnteredAt and lastProgressAt, both UTC. The facts LOADER
+        // measures scheduledAt and endOf, both Copenhagen. One clock for
+        // both is wrong whichever one you pick.
+        LocalDateTime nowCph = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
+        LocalDateTime nowUtc = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime cutoff = nowUtc.minusDays(thresholdDays);
 
         // Candidates for the trigger: the stage clock is only a cheap
         // pre-filter here. stage_entered_at can never be NEWER than the idle
@@ -366,7 +407,7 @@ public class RecruitmentSlaService {
         // Slack and the page disagreed about the same candidate on the same
         // morning, which is how a nudge channel becomes background noise.
         Map<String, RecruitmentIdleRule.Facts> facts =
-                inTx(() -> idleFacts.load(idle, ctx.positions, now));
+                inTx(() -> idleFacts.load(idle, ctx.positions, nowCph));
 
         for (RecruitmentApplication application : idle) {
             RecruitmentIdleRule.Facts applicationFacts = facts.get(application.getUuid());
@@ -380,12 +421,12 @@ public class RecruitmentSlaService {
             }
             LocalDateTime lastNudge = newestNudgeFor(ctx, RecruitmentEventType.CANDIDATE_IDLE_NUDGED,
                     "application_uuid", application.getUuid());
-            if (lastNudge != null && lastNudge.isAfter(now.minusDays(thresholdDays))) {
+            if (lastNudge != null && lastNudge.isAfter(nowUtc.minusDays(thresholdDays))) {
                 continue; // re-ping at most once per threshold period
             }
             RecruitmentPosition position = ctx.positions.get(application.getPositionUuid());
             RecruitmentCandidate candidate = ctx.candidates.get(application.getCandidateUuid());
-            long daysIdle = ChronoUnit.DAYS.between(applicationFacts.lastProgressAt(), now);
+            long daysIdle = ChronoUnit.DAYS.between(applicationFacts.lastProgressAt(), nowUtc);
 
             List<String> owners = resolveOwners(position);
             if (owners.isEmpty()) {

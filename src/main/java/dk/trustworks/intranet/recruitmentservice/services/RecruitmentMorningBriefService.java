@@ -78,8 +78,12 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class RecruitmentMorningBriefService {
 
-    /** Interview timestamps are wall-clock Europe/Copenhagen (the P11 model). */
-    static final ZoneId COPENHAGEN = ZoneId.of("Europe/Copenhagen");
+    /**
+     * Interview timestamps are wall-clock Europe/Copenhagen (the P11 model).
+     * Aliased to the single definition on {@link RecruitmentIdleFacts} so the
+     * briefs and the sweeps can never drift onto different clocks.
+     */
+    static final ZoneId COPENHAGEN = RecruitmentIdleFacts.COPENHAGEN;
 
     private static final DateTimeFormatter DAY_HEADER =
             DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.ENGLISH);

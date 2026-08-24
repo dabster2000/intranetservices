@@ -16,6 +16,7 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -217,6 +218,21 @@ public class RecruitmentIdleFacts {
                 .stream()
                 .collect(Collectors.groupingBy(RecruitmentScorecard::getInterviewUuid));
     }
+
+    /**
+     * The zone every recruitment wall-clock comparison must use.
+     *
+     * <p>{@code RecruitmentInterview.scheduledAt} is a naive
+     * {@code LocalDateTime} holding Europe/Copenhagen wall-clock as the
+     * scheduler typed it. Comparing it against {@code now(ZoneOffset.UTC)}
+     * — which the SLA sweep did until 2026-08-24 — is off by one hour in
+     * winter and two in summer. That was invisible against a 24 h threshold
+     * and is fatal against a 20-minute one: a summer sweep would have
+     * decided a meeting had ended while it still had an hour to run, and
+     * DMed the interviewer in front of the candidate. One definition,
+     * so a new sweep cannot copy the broken shape.
+     */
+    static final ZoneId COPENHAGEN = ZoneId.of("Europe/Copenhagen");
 
     /** When the meeting is actually over — the start plus its booked duration. */
     static LocalDateTime endOf(RecruitmentInterview interview) {
