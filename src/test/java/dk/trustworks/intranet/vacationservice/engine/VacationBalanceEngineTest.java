@@ -328,6 +328,40 @@ class VacationBalanceEngineTest {
                 + accruedBetween(result, LocalDate.of(2026, 9, 30), LocalDate.of(2026, 11, 30)), 0.05);
     }
 
+    @Test
+    void projection_reachesIntoTheNextFerieaarEvenWithNothingBookedInIt() {
+        // Late August: the current ferieår has stopped earning, nothing is
+        // registered after 31 Aug, and no accrual entry for the next year can
+        // exist yet (the job only posts completed months). The planner must
+        // still show the next year filling up.
+        List<LedgerFact> facts = accrualRange(2025, YearMonth.of(2025, 9), YearMonth.of(2026, 7));
+        LocalDate today = LocalDate.of(2026, 8, 24);
+
+        Result result = VacationBalanceEngine.compute(POLICIES, facts, List.of(), fullCoverage(), today);
+        List<ProjectionPoint> series = VacationBalanceEngine.projection(result, today, null);
+
+        PoolStatus next = pool(result, 2026, VacationPoolType.FERIE);
+        assertEquals(0.0, next.earnedToDate(), 0.01);
+        assertEquals(24.96, next.projectedEarnedTotal(), 0.01); // 12 × 2.08
+        assertFalse(VacationRules.isOpen(2026, today), "ferieår 2026 has not started on 24 Aug 2026");
+
+        // The series runs to the end of the next year's usage window …
+        assertEquals(LocalDate.of(2027, 12, 31), series.get(series.size() - 1).date());
+        // … and climbs again from September instead of flat-lining: the old
+        // span stopped at 31 Dec 2026 with the current year already fully
+        // earned, so every month-end carried the same number.
+        assertEquals(24.96, point(series, LocalDate.of(2026, 8, 31)).ferieRemaining(), 0.01);
+        assertEquals(27.04, point(series, LocalDate.of(2026, 9, 30)).ferieRemaining(), 0.01);
+        assertEquals(33.28, point(series, LocalDate.of(2026, 12, 31)).ferieRemaining(), 0.01);
+        // 2025 expires on 31 Dec 2026; from January only the new year remains.
+        assertEquals(10.40, point(series, LocalDate.of(2027, 1, 31)).ferieRemaining(), 0.01);
+    }
+
+    private static ProjectionPoint point(List<ProjectionPoint> series, LocalDate date) {
+        return series.stream().filter(p -> p.date().equals(date)).findFirst()
+                .orElseThrow(() -> new AssertionError("No projection point for " + date));
+    }
+
     private static double accruedBetween(Result result, LocalDate from, LocalDate to) {
         return result.pools().stream()
                 .filter(p -> p.pool == VacationPoolType.FERIE)

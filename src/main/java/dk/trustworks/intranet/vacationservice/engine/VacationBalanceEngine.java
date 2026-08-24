@@ -76,7 +76,8 @@ public final class VacationBalanceEngine {
         NEGATIVE_PROJECTED
     }
 
-    public record Warning(WarningType type, int ferieaar, double days, String message) {
+    /** {@code pool} identifies which of the two pools the warning is about. */
+    public record Warning(WarningType type, VacationPoolType pool, int ferieaar, double days, String message) {
     }
 
     /** Per (ferieår, pool) status. Mutable during computation, read-only after. */
@@ -210,6 +211,13 @@ public final class VacationBalanceEngine {
             maxYear = Math.max(maxYear, y);
         }
         minYear = Math.max(minYear, LEDGER_EPOCH_FERIEAAR - 2); // sanity bound; epoch minus transfers-in headroom
+        // The next ferieår is always modelled, even with nothing booked in it
+        // yet. Accrual is only posted for completed months, so no ledger fact
+        // ever exists for it before its first October — without this the span
+        // would depend on whether the employee happens to have registered a
+        // day after 1 September, which is what made two colleagues' planning
+        // charts end 12 months apart.
+        maxYear = Math.max(maxYear, currentYear + 1);
         Map<Integer, Map<VacationPoolType, PoolStatus>> pools = new TreeMap<>();
         for (int y = minYear; y <= maxYear; y++) {
             Map<VacationPoolType, PoolStatus> byPool = new LinkedHashMap<>();
@@ -381,7 +389,7 @@ public final class VacationBalanceEngine {
         for (PoolStatus pool : pools) {
             // Forskudsferie: booked beyond even the projected entitlement.
             if (isOpen(pool.ferieaar, today) && pool.remainingProjected() < -EPS) {
-                warnings.add(new Warning(WarningType.NEGATIVE_PROJECTED, pool.ferieaar,
+                warnings.add(new Warning(WarningType.NEGATIVE_PROJECTED, pool.pool, pool.ferieaar,
                         round2(-pool.remainingProjected()),
                         (pool.pool == VacationPoolType.FERIE ? "Ferie" : "Feriefridage")
                                 + " for ferieår " + label(pool.ferieaar)
@@ -400,14 +408,14 @@ public final class VacationBalanceEngine {
                     double atRisk = round2(Math.min(Math.max(0, pool.remaining()),
                             Math.max(0, STATUTORY_PROTECTED_DAYS - pool.usedTotal())));
                     if (atRisk > EPS) {
-                        warnings.add(new Warning(WarningType.FORFEIT_RISK, closingYear, atRisk,
+                        warnings.add(new Warning(WarningType.FORFEIT_RISK, VacationPoolType.FERIE, closingYear, atRisk,
                                 atRisk + " feriedage fra ferieår " + label(closingYear)
                                         + " bortfalder 31. december, hvis de ikke afholdes"));
                     }
                 }
                 double transferable = pool.transferableNow();
                 if (transferable > EPS) {
-                    warnings.add(new Warning(WarningType.TRANSFER_WINDOW, closingYear, transferable,
+                    warnings.add(new Warning(WarningType.TRANSFER_WINDOW, pool.pool, closingYear, transferable,
                             transferable + (pool.pool == VacationPoolType.FERIE
                                     ? " feriedage (5. ferieuge) kan overføres — aftalen skal indgås senest 31. december"
                                     : " feriefridage kan overføres efter aftale inden 31. december")));
@@ -425,12 +433,12 @@ public final class VacationBalanceEngine {
                 if (pool.pool == VacationPoolType.FERIE) {
                     double payoutDue = round2(Math.max(0, leftover - Math.max(0, STATUTORY_PROTECTED_DAYS - pool.usedTotal())));
                     if (payoutDue > EPS) {
-                        warnings.add(new Warning(WarningType.FIFTH_WEEK_PAYOUT_DUE, settledYear, payoutDue,
+                        warnings.add(new Warning(WarningType.FIFTH_WEEK_PAYOUT_DUE, VacationPoolType.FERIE, settledYear, payoutDue,
                                 payoutDue + " feriedage ud over 4 uger fra ferieår " + label(settledYear)
                                         + " skal udbetales senest med marts-lønnen"));
                     }
                 } else {
-                    warnings.add(new Warning(WarningType.FERIEFRIDAGE_UNRESOLVED, settledYear, round2(leftover),
+                    warnings.add(new Warning(WarningType.FERIEFRIDAGE_UNRESOLVED, VacationPoolType.FERIEFRIDAGE, settledYear, round2(leftover),
                             round2(leftover) + " feriefridage fra ferieår " + label(settledYear)
                                     + " mangler en overførselsaftale eller afregning"));
                 }
