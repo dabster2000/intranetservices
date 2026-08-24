@@ -102,6 +102,17 @@ public enum RecruitmentEventType {
     SCORECARD_SUBMITTED,
     SCORECARD_NUDGED,
     /**
+     * The prompt sweep DMed an assigned interviewer shortly after their
+     * round actually ended (start + booked duration), while the impression
+     * is still fresh. One event per (interviewer, interview) — the sweep's
+     * idempotency key. Distinct from {@link #SCORECARD_NUDGED} only in
+     * timing and tone: it is the FIRST ask, not a chase, and it is the
+     * reason the 24 h chase usually never has to fire. It counts toward the
+     * same {@code recruitment.sla.max-scorecard-nudges} cap, so adding it
+     * cannot raise the total pressure on one interviewer for one interview.
+     */
+    SCORECARD_PROMPTED,
+    /**
      * The owner recorded a pending go/no-go for one interview round
      * (pipeline sub-status feature, V519) — the state the board renders
      * as "Inform candidate" until the stage move or terminal that
@@ -144,6 +155,16 @@ public enum RecruitmentEventType {
      * reactor side effect (findings §P23).
      */
     MORNING_BRIEF_SENT,
+    /**
+     * The eve brief batchlet DMed an interviewer their preparation pack the
+     * afternoon before the interview — the same facts as
+     * {@link #MORNING_BRIEF_SENT} but sent while there is still a working
+     * day left to read the CV, skim the answers and move something. One
+     * event per (interviewer, interview, interview date); the two briefs
+     * key independently, so an interviewer briefed on the eve still gets
+     * the short day-of logistics line.
+     */
+    EVE_BRIEF_SENT,
     /**
      * The digest batchlet DMed a DPO-role holder the weekly exception
      * digest (Slack spec §5.10). One event per (recipient, ISO week) —

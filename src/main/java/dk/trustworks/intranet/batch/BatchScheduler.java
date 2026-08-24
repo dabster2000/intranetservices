@@ -105,6 +105,26 @@ public class BatchScheduler {
     boolean recruitmentMorningBriefEnabled;
 
     /**
+     * Kill switch for the eve interviewer brief (V531) — the prep pack sent
+     * the working day before. Independent of its day-of sibling above, so
+     * either half can be silenced without losing the other. The job is also
+     * a no-op while {@code recruitment.pipeline.enabled} or
+     * {@code recruitment.slack.eve-brief.enabled} is off.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.eve-brief.enabled", defaultValue = "true")
+    boolean recruitmentEveBriefEnabled;
+
+    /**
+     * Kill switch for the end-of-meeting scorecard prompt (V531). Off = the
+     * daily SLA sweep's 24 h overdue nudge is once again the first ask, which
+     * is where this started. The job is also a no-op while
+     * {@code recruitment.interviews.enabled} is off.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.scorecard-prompt.enabled",
+            defaultValue = "true")
+    boolean recruitmentScorecardPromptEnabled;
+
+    /**
      * Kill switch for the recruitment digests (ATS expansion P24): the
      * weekly AI funnel narrative, the quarterly AI rejection-pattern
      * narrative and the weekly DPO exception digest. Off = none of the
@@ -589,6 +609,80 @@ public class BatchScheduler {
             jobOperator.start("recruitment-morning-brief", new Properties());
         } catch (Exception e) {
             log.debug("Could not schedule recruitment-morning-brief: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The eve interviewer briefs (V531): one DM per interviewer the working
+     * day before their interviews — the preparation pack, sent while there is
+     * still a working day left to act on it. The 06:00 sibling above keeps
+     * the day-of line and shortens itself for any pair this run covered.
+     * Idempotent by event-derived bookkeeping (every briefed pair appends an
+     * {@code EVE_BRIEF_SENT} event carrying the date it covers), so a run on
+     * a draining ECS task is harmless. No-op while
+     * {@code recruitment.pipeline.enabled} or
+     * {@code recruitment.slack.eve-brief.enabled} is off.
+     * <p>
+     * Schedule: daily at 13:00 UTC — 15:00 Copenhagen in summer, 14:00 in
+     * winter. Mid-afternoon on purpose: late enough that the day's own
+     * interviews are done, early enough that "prepare for tomorrow" is still
+     * something you can act on today. A weekend run sends nothing, because no
+     * interview date has a weekend day as its working-day-before.
+     */
+    @Scheduled(cron = "0 0 13 * * ?")
+    void scheduleRecruitmentEveBrief() {
+        if (!recruitmentEveBriefEnabled) {
+            log.debug("recruitment-eve-brief skipped: dk.trustworks.recruitment.eve-brief.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-eve-brief")) {
+                if (!jobOperator.getRunningExecutions("recruitment-eve-brief").isEmpty()) {
+                    log.debug("recruitment-eve-brief already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-eve-brief batch job");
+            jobOperator.start("recruitment-eve-brief", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-eve-brief: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The end-of-meeting scorecard prompt (V531): asks each interviewer for
+     * their scorecard shortly after the round actually ended, while the
+     * impression is still intact. Idempotent by event-derived bookkeeping
+     * (every prompt appends a {@code SCORECARD_PROMPTED} event that both this
+     * job and the daily sweep respect), so a run on a draining ECS task is
+     * harmless. No-op while {@code recruitment.interviews.enabled} is off.
+     * <p>
+     * Schedule: every 15 minutes — a prompt meaning "you just finished"
+     * cannot ride a daily job. Most runs do nothing: the service returns
+     * immediately outside 07:00–20:00 Copenhagen and whenever no interview
+     * ended inside the window. Deliberately NOT in the 02:10–05:45 nightly
+     * cluster, and it shares the daily sweep's nudge cap, so the total number
+     * of scorecard DMs one interviewer can get for one interview is
+     * unchanged.
+     */
+    @Scheduled(every = "15m")
+    void scheduleRecruitmentScorecardPrompt() {
+        if (!recruitmentScorecardPromptEnabled) {
+            log.debug("recruitment-scorecard-prompt skipped: "
+                    + "dk.trustworks.recruitment.scorecard-prompt.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-scorecard-prompt")) {
+                if (!jobOperator.getRunningExecutions("recruitment-scorecard-prompt").isEmpty()) {
+                    log.debug("recruitment-scorecard-prompt already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-scorecard-prompt batch job");
+            jobOperator.start("recruitment-scorecard-prompt", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-scorecard-prompt: " + e.getMessage());
         }
     }
 

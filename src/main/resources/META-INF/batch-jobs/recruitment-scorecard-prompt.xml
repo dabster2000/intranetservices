@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-scorecard-prompt" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Scorecard Prompt Job (V531)
+
+    Purpose:
+    Ask each assigned interviewer for their scorecard shortly after the
+    round actually ENDED (scheduled_at + duration_minutes), while the
+    impression is still intact. The FIRST ask, not a chase.
+
+    Why it exists:
+    Until V531 the only ask was the daily SLA sweep's overdue nudge,
+    which fires 24 h after the interview STARTED and is swept once a day
+    at 07:00 UTC - so in practice the first ask landed 24-48 h after the
+    meeting. Measured on production 2026-08-24 across all 19
+    SCORECARD_SUBMITTED events: mean 24.9 h after the meeting ended, 7 of
+    19 over 24 h, and ZERO submitted before the meeting ended (so nobody
+    scores live, and prompting afterwards takes nothing away).
+
+    Not extra pressure:
+    Every prompt appends SCORECARD_PROMPTED, which counts toward the same
+    recruitment.sla.max-scorecard-nudges budget as SCORECARD_NUDGED. This
+    job moves the first ask earlier; it does not add one. The daily sweep
+    remains the late safety net for anyone who ignores it.
+
+    Window:
+    Interviews whose end is between recruitment.sla.scorecard-overdue-hours
+    ago and recruitment.sla.scorecard-prompt-minutes ago. The upper bound
+    is measured from the END so a round that runs over does not get its
+    interviewer pinged in front of the candidate. The lower bound hands
+    older interviews back to the daily chase - and stops the first run
+    after deploy DMing every interviewer about every un-scorecarded
+    interview in the history of the table.
+
+    Quiet hours:
+    Nothing goes out before 07:00 or after 20:00 Copenhagen. A 19:00
+    interview would otherwise be prompted at 20:20. Suppressing costs
+    nothing: the sweep re-derives from source, so the 07:00 run picks the
+    pair up, still inside the 24 h window.
+
+    Skipped by construction: cancelled interviews, decided applications,
+    interviewers who have already submitted, and any pair already
+    prompted or nudged. All side effects are gated by
+    recruitment.interviews.enabled (off = no-op).
+
+    Schedule:
+    Every 15 minutes via BatchScheduler - a prompt that means "you just
+    finished" cannot ride a daily job - gated by
+    dk.trustworks.recruitment.scorecard-prompt.enabled (default true).
+    Most runs do nothing.
+
+    Similar to:
+    recruitment-sla-sweep.xml (the P17 daily sweep, same service, same
+    delivery discipline and the shared nudge cap)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="send-recruitment-scorecard-prompts">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentScorecardPromptBatchlet"/>
+    </step>
+</job>

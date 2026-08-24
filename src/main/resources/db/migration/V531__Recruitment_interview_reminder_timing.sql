@@ -1,0 +1,93 @@
+-- ===================================================================
+-- Recruitment: interview reminder timing
+--
+-- Purpose:
+--   Split the three jobs the interview-created Slack DM was doing on its
+--   own across the moments where each is actionable.
+--
+--   Before: one DM at booking carried the assignment, the whole prep pack
+--   and the scorecard button, and the only follow-up was a chase that
+--   fires 24 h after the interview STARTED -- swept once daily at 07:00
+--   UTC, so in practice the first ask landed 24-48 h after the meeting.
+--   Measured on production 2026-08-24 across all 19 SCORECARD_SUBMITTED
+--   events: mean 24.9 h after the meeting ended, 7 of 19 over 24 h, and
+--   ZERO submitted before the meeting ended (so nobody scores live, and a
+--   post-meeting prompt takes nothing away).
+--
+--   After: the booking DM stays (being assigned is news you act on now),
+--   a prep brief goes out the working day before, the existing 06:00
+--   brief stays as the short day-of line, and a first scorecard ask lands
+--   shortly after the meeting actually ends.
+--
+-- Settings seeded here (all read fresh from app_settings on every sweep,
+-- the RecruitmentFeatureFlag no-cache contract -- an admin edit applies on
+-- the next run with no redeploy):
+--
+--   recruitment.brief.lead-days               How many days BEFORE the
+--                                             interview the prep brief
+--                                             goes out. 1 = the working
+--                                             day before. The sweep walks
+--                                             back over weekends, so a
+--                                             Monday interview briefs on
+--                                             Friday, never on Sunday.
+--
+--   recruitment.sla.scorecard-prompt-minutes  Minutes after the meeting
+--                                             ENDS (start + booked
+--                                             duration) before the first
+--                                             scorecard ask. 20 clears a
+--                                             meeting that runs a little
+--                                             over without pinging
+--                                             someone still in the room.
+--
+--   recruitment.slack.eve-brief.enabled       On/off for the new eve
+--                                             brief, matching the
+--                                             recruitment.slack.* flag
+--                                             convention. Seeded TRUE:
+--                                             this migration exists to
+--                                             turn the behaviour on.
+--                                             Its day-of sibling
+--                                             recruitment.slack.morning-
+--                                             brief.enabled is unchanged.
+--
+-- Note on the seeded value: recruitment.slack.eve-brief.enabled is the
+--   one recruitment.slack.* flag seeded 'true' rather than 'false'. The
+--   false-by-default convention exists so a deploy never silently starts
+--   DMing people about a feature nobody asked for; here the DM IS the
+--   requested change, and the enclosing gates
+--   (recruitment.pipeline.enabled and the ECS-level
+--   dk.trustworks.recruitment.eve-brief.enabled) both still apply.
+--
+-- Idempotency: INSERT IGNORE only; raw re-run safe. Admin-tuned values
+--   survive re-runs. Note the staging nightly refresh reverts app_settings
+--   seeds -- re-check these three keys after a staging reset.
+--
+-- Author: Claude Code
+-- Date:   2026-08-24
+-- Rollback: inert without the matching backend image (the keys are read
+--   by RecruitmentSlaThresholds / RecruitmentSlackFeatureFlag only).
+--   To stop the eve briefs without a redeploy:
+--     UPDATE app_settings SET setting_value = 'false'
+--      WHERE setting_key = 'recruitment.slack.eve-brief.enabled';
+--   The end-of-meeting scorecard prompt has NO dedicated DB flag -- its kill
+--   switch is the ECS-level dk.trustworks.recruitment.scorecard-prompt.enabled,
+--   which needs a redeploy. To stop it from the database alone, push the
+--   prompt delay past the overdue threshold so the sweep hits its
+--   empty-window guard and returns without sending:
+--     UPDATE app_settings SET setting_value = '1500'
+--      WHERE setting_key = 'recruitment.sla.scorecard-prompt-minutes';
+--   (1500 minutes = 25 h, i.e. beyond the 24 h scorecard-overdue-hours.)
+--   The daily 24 h chase is unaffected and remains the safety net.
+--   Killing recruitment.interviews.enabled would also stop it, but that
+--   silences the whole SLA sweep -- far too broad for this purpose.
+--   Full removal:
+--     DELETE FROM app_settings
+--      WHERE setting_key IN ('recruitment.brief.lead-days',
+--                            'recruitment.sla.scorecard-prompt-minutes',
+--                            'recruitment.slack.eve-brief.enabled');
+-- ===================================================================
+
+INSERT IGNORE INTO app_settings (setting_key, setting_value, category)
+VALUES
+    ('recruitment.brief.lead-days',              '1',    'recruitment'),
+    ('recruitment.sla.scorecard-prompt-minutes', '20',   'recruitment'),
+    ('recruitment.slack.eve-brief.enabled',      'true', 'recruitment');

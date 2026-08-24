@@ -18,6 +18,7 @@ public record RecruitmentSlackFlagsResponse(
         boolean scorecard,
         boolean appHome,
         boolean morningBrief,
+        boolean eveBrief,
         boolean dpoDigest,
         boolean assistant
 ) {

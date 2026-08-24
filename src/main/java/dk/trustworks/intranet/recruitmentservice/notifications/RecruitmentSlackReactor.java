@@ -585,18 +585,26 @@ public class RecruitmentSlackReactor extends RecruitmentReactor {
                     .append('.');
         }
         // The brief is the candidate-specific kit (CV, cover letter, what
-        // they wrote, focus areas, scorecard) and the interview assignment
-        // this DM announces is exactly what authorizes it. Falls back to the
-        // list page when the candidate leg is missing — a link that 404s is
-        // worse than a link one click further away.
+        // they wrote, focus areas) and the interview assignment this DM
+        // announces is exactly what authorizes it. Falls back to the list
+        // page when the candidate leg is missing — a link that 404s is worse
+        // than a link one click further away.
+        //
+        // The label deliberately no longer ends in "scorecard". It used to,
+        // meaning only "the scorecard is reachable from this page", but a
+        // URL followed by a list ending in that word reads as a link to the
+        // scorecard — and no such URL exists anywhere in the product (the
+        // form is a modal, and neither page it opens from takes a query
+        // param). It was read that way in practice, which is how this whole
+        // change started. The button below is the real scorecard affordance.
         if (facts.candidateUuid() != null) {
-            sb.append("\nYour kit (CV, answers, focus areas, scorecard): ")
+            sb.append("\nYour prep (CV, what they wrote, focus areas): ")
                     .append(baseUrl).append("/recruitment/brief/")
                     .append(facts.candidateUuid());
             sb.append("\nAll your interviews: ")
                     .append(baseUrl).append("/recruitment/interviews");
         } else {
-            sb.append("\nYour kit (CV, focus areas, scorecard): ")
+            sb.append("\nYour prep (CV, focus areas): ")
                     .append(baseUrl).append("/recruitment/interviews");
         }
         return sb.toString();
