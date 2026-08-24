@@ -46,6 +46,15 @@ public class VacationImportRow extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     private VacationImportRowStatus matchStatus;
 
+    /**
+     * The company the matched employee's userstatus timeline put them at on
+     * the batch's as-of date. Recorded as a fact, not as a verdict: HR can
+     * override {@code matchStatus} to MANUAL, and this still says what the
+     * timeline actually claimed — which is the audit trail for that override.
+     */
+    @Column(name = "company_at_asof")
+    private String companyAtAsOf;
+
     public static List<VacationImportRow> findByBatch(String batchUuid) {
         return list("batchUuid = ?1 ORDER BY lineNo", batchUuid);
     }
