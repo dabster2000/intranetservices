@@ -94,6 +94,40 @@ import java.util.stream.Collectors;
  * is a no-op; nothing is backfilled on later enable beyond what still
  * matches a trigger condition at that time.
  *
+ * <h3>TWO CLOCKS — read this before touching any {@code now}</h3>
+ * This module stores timestamps in two different domains, and every
+ * comparison here must use the clock matching the column it reads:
+ * <ul>
+ *   <li><b>Copenhagen wall-clock</b> — {@code RecruitmentInterview.scheduledAt}
+ *       and everything derived from it ({@link RecruitmentIdleFacts#endOf},
+ *       {@link RecruitmentIdleFacts#booked}). Naive local time as the
+ *       scheduler typed it.</li>
+ *   <li><b>UTC</b> — every audit timestamp: {@code RecruitmentEvent.occurredAt}
+ *       ({@code RecruitmentEventRecorder}), {@code RecruitmentScorecard.submittedAt},
+ *       {@code RecruitmentApplication.stageEnteredAt}, and the
+ *       {@code lastProgressAt} the idle rule derives from them.</li>
+ * </ul>
+ * Until 2026-08-24 all three sweeps read one UTC clock, which was right for
+ * the audit columns and 1–2 hours wrong against {@code scheduledAt} — so a
+ * "24 hours after the interview" nudge actually fired 22 or 23 hours after
+ * it in summer. Swinging every read to Copenhagen instead would merely move
+ * the error onto the audit columns. Neither single clock is correct, because
+ * {@link #sweepOverdueScorecards} and {@link #sweepIdleCandidates} each
+ * compare against BOTH domains — the latter feeds a Copenhagen clock to
+ * {@link RecruitmentIdleFacts#load} and a UTC one to the idle cutoff in the
+ * same pass. {@link #sweepStalledDebriefs} touches only audit columns and is
+ * therefore pure UTC.
+ *
+ * <p>{@code RecruitmentLandingService} carries the same split and MUST feed
+ * the shared idle loader the same clock this sweep does: that loader exists
+ * so the "My tasks" row and the Slack nudge can never disagree about one
+ * candidate, and a one-hour skew between them reintroduces exactly that.
+ *
+ * <p>The tolerance for getting this wrong is set by the tightest window in
+ * the module: {@link #sweepScorecardPrompts()} fires 20 minutes after an
+ * interview ends. A one-hour skew there does not shift a reminder, it DMs an
+ * interviewer while they are still in the room with the candidate.
+ *
  * <h3>Recipient resolution (owner ladder)</h3>
  * For the two owner pings: the position's {@code hiring_owner_uuid} when
  * set; else on partner track the circle {@code OWNER} members; else the
@@ -176,11 +210,181 @@ public class RecruitmentSlaService {
                 counters.idle, counters.failures);
     }
 
+    /**
+     * Copenhagen hours outside which the end-of-meeting prompt stays quiet.
+     * The daily 07:00 UTC sweep never needed this because it only ran once,
+     * in the morning; a 15-minute sweep would happily DM at 21:30.
+     */
+    /**
+     * Every event type that counts as "we already asked this interviewer for
+     * this scorecard". Both the end-of-meeting prompt and the overdue chase
+     * append one, and they share the
+     * {@code recruitment.sla.max-scorecard-nudges} budget — the whole reason
+     * V531 could add a DM moment without raising the number of DMs anyone
+     * receives.
+     *
+     * <p>This is a constant rather than two literals because the failure mode
+     * of them drifting apart is nasty and silent: {@link #priorScorecardNudges}
+     * reads from {@code Context.nudgeEvents}, so if a type is listed here but
+     * NOT loaded by {@link Context#finish}, the lookup returns empty, the cap
+     * never trips, and — because {@link #sweepScorecardPrompts()} suppresses
+     * on {@code priorAsks.isEmpty()} — the prompt re-sends every 15 minutes
+     * for a full day. {@code RecruitmentSlaScorecardAskTypesTest} pins the
+     * two lists together.
+     */
+    static final List<RecruitmentEventType> SCORECARD_ASK_TYPES = List.of(
+            RecruitmentEventType.SCORECARD_NUDGED,
+            RecruitmentEventType.SCORECARD_PROMPTED);
+
+    /** Every event type {@link Context} loads for nudge bookkeeping. */
+    static final List<RecruitmentEventType> NUDGE_EVENT_TYPES = List.of(
+            RecruitmentEventType.SCORECARD_NUDGED,
+            RecruitmentEventType.SCORECARD_PROMPTED,
+            RecruitmentEventType.DEBRIEF_STALLED_NUDGED,
+            RecruitmentEventType.CANDIDATE_IDLE_NUDGED);
+
+    private static final int QUIET_HOURS_END = 7;
+    private static final int QUIET_HOURS_START = 20;
+
     private static final class Counters {
         int scorecards;
         int debriefs;
         int idle;
         int failures;
+    }
+
+    /** Result of one prompt pass, for logs and the batchlet exit status. */
+    public record PromptSummary(boolean enabled, int prompts, int failures) {
+
+        @Override
+        public String toString() {
+            if (!enabled) {
+                return "scorecard-prompt[disabled]";
+            }
+            return "scorecard-prompt[prompts=%d%s]"
+                    .formatted(prompts, failures > 0 ? ", failures=" + failures : "");
+        }
+    }
+
+    /**
+     * Ask for the scorecard shortly after the meeting actually ended, while
+     * the impression is still intact — the first ask, not a chase.
+     *
+     * <p>Run on its own short cadence rather than inside {@link #sweep()},
+     * which fires once a day at 07:00 UTC: a prompt that means "you just
+     * finished" cannot ride a daily job. It shares that sweep's context
+     * loader, delivery discipline and — critically — its nudge cap, so this
+     * does not add pressure, it moves the first ask earlier
+     * ({@link #priorScorecardNudges}).
+     *
+     * <h3>Why the window has two ends</h3>
+     * The upper end is {@code recruitment.sla.scorecard-prompt-minutes} after
+     * {@link RecruitmentIdleFacts#endOf} — end of meeting, never start, so a
+     * round that runs over does not get its interviewer pinged in front of
+     * the candidate. The lower end is the overdue threshold: past that the
+     * daily chase owns the pair, and — the reason it exists at all — without
+     * a lower bound the very first run after deploy would DM every
+     * interviewer about every un-scorecarded interview in the history of the
+     * table.
+     *
+     * <h3>Quiet hours</h3>
+     * Nothing goes out before 07:00 or after 20:00 Copenhagen. A 19:00
+     * interview would otherwise be prompted at 20:20; suppressing costs
+     * nothing because the sweep re-derives from source and the pair is still
+     * un-prompted when the 07:00 run comes round, comfortably inside the
+     * 24 h window.
+     */
+    public PromptSummary sweepScorecardPrompts() {
+        if (!inTx(featureFlag::isInterviewsEnabled)) {
+            log.debug("recruitment-scorecard-prompt skipped: recruitment.interviews.enabled=false");
+            return new PromptSummary(false, 0, 0);
+        }
+        LocalDateTime now = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
+        int hour = now.getHour();
+        if (hour < QUIET_HOURS_END || hour >= QUIET_HOURS_START) {
+            log.debugf("recruitment-scorecard-prompt skipped: %02d:00 is outside 07:00-20:00 "
+                    + "Copenhagen (the next in-hours run picks these up)", hour);
+            return new PromptSummary(true, 0, 0);
+        }
+        int promptMinutes = inTx(thresholds::scorecardPromptMinutes);
+        int overdueHours = inTx(thresholds::scorecardOverdueHours);
+        LocalDateTime endedBefore = now.minusMinutes(promptMinutes);
+        LocalDateTime endedAfter = now.minusHours(overdueHours);
+        if (!endedAfter.isBefore(endedBefore)) {
+            // Misconfiguration (prompt delay >= overdue threshold) would leave
+            // an empty window; the daily chase still covers the pair.
+            log.warnf("recruitment-scorecard-prompt: empty window — prompt-minutes=%d is not "
+                    + "inside overdue-hours=%d; nothing to do", promptMinutes, overdueHours);
+            return new PromptSummary(true, 0, 0);
+        }
+        // endOf = scheduledAt + durationMinutes, so an interview whose END is
+        // in [endedAfter, endedBefore] must have STARTED no earlier than one
+        // booked day before that — a superset the exact filter then narrows.
+        LocalDateTime windowStart = endedAfter.minusDays(1);
+        List<RecruitmentInterview> candidates = inTx(() -> RecruitmentInterview.list(
+                "kind = ?1 and status <> ?2 and scheduledAt is not null "
+                        + "and scheduledAt >= ?3 and scheduledAt <= ?4",
+                RecruitmentInterviewKind.ROUND, RecruitmentInterviewStatus.CANCELLED,
+                windowStart, endedBefore));
+        List<RecruitmentInterview> justEnded = candidates.stream()
+                .filter(i -> {
+                    LocalDateTime end = RecruitmentIdleFacts.endOf(i);
+                    return !end.isBefore(endedAfter) && !end.isAfter(endedBefore);
+                })
+                .toList();
+        if (justEnded.isEmpty()) {
+            return new PromptSummary(true, 0, 0);
+        }
+        Context ctx = inTx(() -> Context.load(justEnded));
+        boolean scorecardButtons = inTx(slackFlags::isScorecardEnabled);
+        Counters counters = new Counters();
+
+        for (RecruitmentInterview interview : justEnded) {
+            RecruitmentApplication application = ctx.applications.get(interview.getApplicationUuid());
+            if (application == null || !applicationInPlay(application)) {
+                continue; // decision made — the scorecard no longer changes anything
+            }
+            RecruitmentPosition position = ctx.positions.get(application.getPositionUuid());
+            RecruitmentCandidate candidate = ctx.candidates.get(application.getCandidateUuid());
+            Set<String> submitted = ctx.scorecards
+                    .getOrDefault(interview.getUuid(), List.of()).stream()
+                    .map(RecruitmentScorecard::getInterviewerUuid)
+                    .collect(Collectors.toSet());
+
+            for (String interviewerUuid : interview.getInterviewerUuids()) {
+                if (submitted.contains(interviewerUuid)) {
+                    continue; // already in — never ask twice
+                }
+                List<LocalDateTime> priorAsks = priorScorecardNudges(
+                        ctx, interview.getUuid(), interviewerUuid);
+                if (!priorAsks.isEmpty()) {
+                    continue; // prompted (or chased) already — this is the FIRST ask only
+                }
+                String message = scorecardPromptText(candidate, position, interview.getRound());
+                List<com.slack.api.model.block.LayoutBlock> blocks = scorecardButtons
+                        ? scorecardNudgeBlocks(message, interview.getUuid())
+                        : null;
+                boolean sent = nudge(counters, interviewerUuid, message, blocks, () ->
+                        eventRecorder.record(RecruitmentEventBuilder
+                                .event(RecruitmentEventType.SCORECARD_PROMPTED)
+                                .candidate(application.getCandidateUuid())
+                                .application(application.getUuid())
+                                .position(application.getPositionUuid())
+                                .actorScheduler()
+                                .visibility(visibilityFor(position))
+                                .payload("interview_uuid", interview.getUuid())
+                                .payload("round", interview.getRound())
+                                .payload("nudged_user_uuid", interviewerUuid)
+                                .payload("nudge_number", 1)
+                                .payload("prompt_minutes", promptMinutes)
+                                .payload("ended_at", String.valueOf(
+                                        RecruitmentIdleFacts.endOf(interview)))));
+                if (sent) {
+                    counters.scorecards++;
+                }
+            }
+        }
+        return new PromptSummary(true, counters.scorecards, counters.failures);
     }
 
     // ------------------------------------------------------------------
@@ -189,8 +393,12 @@ public class RecruitmentSlaService {
 
     private void sweepOverdueScorecards(Counters counters) {
         int thresholdHours = inTx(thresholds::scorecardOverdueHours);
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        LocalDateTime cutoff = now.minusHours(thresholdHours);
+        // Two clocks, because this method compares against columns from two
+        // different domains — see the class note on TWO CLOCKS. scheduledAt
+        // is Copenhagen wall-clock; a nudge event's occurredAt is UTC.
+        LocalDateTime nowCph = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
+        LocalDateTime nowUtc = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime cutoff = nowCph.minusHours(thresholdHours);
 
         List<RecruitmentInterview> overdue = inTx(() -> RecruitmentInterview.list(
                 "kind = ?1 and status <> ?2 and scheduledAt is not null and scheduledAt <= ?3",
@@ -211,7 +419,7 @@ public class RecruitmentSlaService {
                     .getOrDefault(interview.getUuid(), List.of()).stream()
                     .map(RecruitmentScorecard::getInterviewerUuid)
                     .collect(Collectors.toSet());
-            long overdueHours = ChronoUnit.HOURS.between(interview.getScheduledAt(), now);
+            long overdueHours = ChronoUnit.HOURS.between(interview.getScheduledAt(), nowCph);
 
             for (String interviewerUuid : interview.getInterviewerUuids()) {
                 if (submitted.contains(interviewerUuid)) {
@@ -223,8 +431,8 @@ public class RecruitmentSlaService {
                     continue; // hard cap
                 }
                 if (!priorNudges.isEmpty()
-                        && newest(priorNudges).isAfter(now.minusHours(thresholdHours))) {
-                    continue; // one nudge per threshold period
+                        && newest(priorNudges).isAfter(nowUtc.minusHours(thresholdHours))) {
+                    continue; // one nudge per threshold period (occurredAt is UTC)
                 }
                 int nudgeNumber = priorNudges.size() + 1;
                 String message = scorecardNudgeText(candidate, position,
@@ -263,6 +471,8 @@ public class RecruitmentSlaService {
 
     private void sweepStalledDebriefs(Counters counters) {
         int thresholdHours = inTx(thresholds::debriefStalledHours);
+        // UTC throughout: this method reads only submittedAt and occurredAt,
+        // never scheduledAt or endOf. See the class note on TWO CLOCKS.
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
         List<RecruitmentInterview> rounds = inTx(() -> RecruitmentInterview.list(
@@ -342,8 +552,14 @@ public class RecruitmentSlaService {
 
     private void sweepIdleCandidates(Counters counters) {
         int thresholdDays = inTx(thresholds::candidateIdleDays);
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        LocalDateTime cutoff = now.minusDays(thresholdDays);
+        // Two clocks, and this method is the reason the distinction matters
+        // most — see the class note on TWO CLOCKS. The idle CUTOFF measures
+        // stageEnteredAt and lastProgressAt, both UTC. The facts LOADER
+        // measures scheduledAt and endOf, both Copenhagen. One clock for
+        // both is wrong whichever one you pick.
+        LocalDateTime nowCph = LocalDateTime.now(RecruitmentIdleFacts.COPENHAGEN);
+        LocalDateTime nowUtc = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime cutoff = nowUtc.minusDays(thresholdDays);
 
         // Candidates for the trigger: the stage clock is only a cheap
         // pre-filter here. stage_entered_at can never be NEWER than the idle
@@ -366,7 +582,7 @@ public class RecruitmentSlaService {
         // Slack and the page disagreed about the same candidate on the same
         // morning, which is how a nudge channel becomes background noise.
         Map<String, RecruitmentIdleRule.Facts> facts =
-                inTx(() -> idleFacts.load(idle, ctx.positions, now));
+                inTx(() -> idleFacts.load(idle, ctx.positions, nowCph));
 
         for (RecruitmentApplication application : idle) {
             RecruitmentIdleRule.Facts applicationFacts = facts.get(application.getUuid());
@@ -380,12 +596,12 @@ public class RecruitmentSlaService {
             }
             LocalDateTime lastNudge = newestNudgeFor(ctx, RecruitmentEventType.CANDIDATE_IDLE_NUDGED,
                     "application_uuid", application.getUuid());
-            if (lastNudge != null && lastNudge.isAfter(now.minusDays(thresholdDays))) {
+            if (lastNudge != null && lastNudge.isAfter(nowUtc.minusDays(thresholdDays))) {
                 continue; // re-ping at most once per threshold period
             }
             RecruitmentPosition position = ctx.positions.get(application.getPositionUuid());
             RecruitmentCandidate candidate = ctx.candidates.get(application.getCandidateUuid());
-            long daysIdle = ChronoUnit.DAYS.between(applicationFacts.lastProgressAt(), now);
+            long daysIdle = ChronoUnit.DAYS.between(applicationFacts.lastProgressAt(), nowUtc);
 
             List<String> owners = resolveOwners(position);
             if (owners.isEmpty()) {
@@ -564,6 +780,28 @@ public class RecruitmentSlaService {
     // Message builders — structural facts + mrkdwn-escaped names only
     // ------------------------------------------------------------------
 
+    /**
+     * The end-of-meeting ask. Deliberately not the overdue wording: nothing
+     * is late yet, so ":hourglass_flowing_sand: Scorecard overdue" would be
+     * both wrong and the kind of small untruth that teaches people to skim
+     * these DMs. Present tense, one job, and the 90-second promise the
+     * overdue nudge already makes — the point is that it is cheap NOW.
+     */
+    String scorecardPromptText(RecruitmentCandidate candidate, RecruitmentPosition position,
+                               Integer round) {
+        StringBuilder sb = new StringBuilder(256)
+                .append(":memo: *Scorecard* — your ");
+        sb.append(round == null ? "interview" : "round " + round);
+        sb.append(" with *").append(displayName(candidate)).append('*');
+        if (position != null && position.getTitle() != null) {
+            sb.append(" for *").append(SlackCandidateFacts.mrkdwnSafe(position.getTitle()))
+                    .append('*');
+        }
+        sb.append(" just wrapped. About 90 seconds while it is fresh:\n")
+                .append(baseUrl).append("/recruitment/interviews");
+        return sb.toString();
+    }
+
     String scorecardNudgeText(RecruitmentCandidate candidate, RecruitmentPosition position,
                               Integer round, int nudgeNumber) {
         StringBuilder sb = new StringBuilder(256)
@@ -650,10 +888,22 @@ public class RecruitmentSlaService {
     // Event-derived nudge bookkeeping
     // ------------------------------------------------------------------
 
-    /** Timestamps of prior scorecard nudges to this interviewer for this interview. */
+    /**
+     * Timestamps of every prior scorecard ask to this interviewer for this
+     * interview — the end-of-meeting {@code SCORECARD_PROMPTED} and the
+     * overdue {@code SCORECARD_NUDGED} counted together, deliberately.
+     *
+     * <p>They share one budget because
+     * {@code recruitment.sla.max-scorecard-nudges} is a promise about how
+     * often we may ask one person about one interview, not about which code
+     * path did the asking. Counting them separately would have quietly
+     * doubled that budget the day the prompt sweep shipped — trading a late
+     * reminder for a nagging one, which is the opposite of the point.
+     */
     private List<LocalDateTime> priorScorecardNudges(Context ctx, String interviewUuid,
                                                      String interviewerUuid) {
-        return ctx.nudgeEvents.getOrDefault(RecruitmentEventType.SCORECARD_NUDGED, List.of()).stream()
+        return SCORECARD_ASK_TYPES.stream()
+                .flatMap(type -> ctx.nudgeEvents.getOrDefault(type, List.of()).stream())
                 .filter(e -> {
                     Map<String, Object> payload = parse(e.getPayload());
                     return interviewUuid.equals(payload.get("interview_uuid"))
@@ -748,9 +998,7 @@ public class RecruitmentSlaService {
                                             "applicationUuid in ?1 and eventType in ?2",
                                             applications.stream()
                                                     .map(RecruitmentApplication::getUuid).toList(),
-                                            List.of(RecruitmentEventType.SCORECARD_NUDGED,
-                                                    RecruitmentEventType.DEBRIEF_STALLED_NUDGED,
-                                                    RecruitmentEventType.CANDIDATE_IDLE_NUDGED))
+                                            NUDGE_EVENT_TYPES)
                                     .stream()
                                     .collect(Collectors.groupingBy(RecruitmentEvent::getEventType));
             return new Context(byUuid, positions, candidates, scorecards, nudgeEvents);

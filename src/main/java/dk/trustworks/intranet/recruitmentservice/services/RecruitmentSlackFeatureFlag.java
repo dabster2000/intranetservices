@@ -66,6 +66,7 @@ public class RecruitmentSlackFeatureFlag {
     static final String SCORECARD_KEY = "recruitment.slack.scorecard.enabled";
     static final String APP_HOME_KEY = "recruitment.slack.app-home.enabled";
     static final String MORNING_BRIEF_KEY = "recruitment.slack.morning-brief.enabled";
+    static final String EVE_BRIEF_KEY = "recruitment.slack.eve-brief.enabled";
     static final String DPO_DIGEST_KEY = "recruitment.slack.dpo-digest.enabled";
     static final String ASSISTANT_KEY = "recruitment.slack.assistant.enabled";
 
@@ -120,6 +121,17 @@ public class RecruitmentSlackFeatureFlag {
     /** Morning interviewer briefs — toggle exists, feature ships in P23. */
     public boolean isMorningBriefEnabled() {
         return readFlag(MORNING_BRIEF_KEY);
+    }
+
+    /**
+     * The eve interviewer brief — the prep pack sent the working day
+     * before, sibling to {@link #isMorningBriefEnabled()} which keeps the
+     * short day-of line. Seeded true by V531 (the migration exists to turn
+     * this on); the two brief flags are independent on purpose, so either
+     * half can be silenced without losing the other.
+     */
+    public boolean isEveBriefEnabled() {
+        return readFlag(EVE_BRIEF_KEY);
     }
 
     /** DPO exception digest — toggle exists, feature ships in P24. */

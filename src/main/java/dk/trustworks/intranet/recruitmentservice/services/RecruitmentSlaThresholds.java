@@ -32,11 +32,15 @@ public class RecruitmentSlaThresholds {
     static final String CANDIDATE_IDLE_DAYS_KEY = "recruitment.sla.candidate-idle-days";
     static final String DEBRIEF_STALLED_HOURS_KEY = "recruitment.sla.debrief-stalled-hours";
     static final String MAX_SCORECARD_NUDGES_KEY = "recruitment.sla.max-scorecard-nudges";
+    static final String SCORECARD_PROMPT_MINUTES_KEY = "recruitment.sla.scorecard-prompt-minutes";
+    static final String BRIEF_LEAD_DAYS_KEY = "recruitment.brief.lead-days";
 
     static final int DEFAULT_SCORECARD_OVERDUE_HOURS = 24;
     static final int DEFAULT_CANDIDATE_IDLE_DAYS = 7;
     static final int DEFAULT_DEBRIEF_STALLED_HOURS = 48;
     static final int DEFAULT_MAX_SCORECARD_NUDGES = 2;
+    static final int DEFAULT_SCORECARD_PROMPT_MINUTES = 20;
+    static final int DEFAULT_BRIEF_LEAD_DAYS = 1;
 
     @Inject
     AppSettingService appSettingService;
@@ -68,6 +72,34 @@ public class RecruitmentSlaThresholds {
      */
     public int maxScorecardNudges() {
         return readPositiveInt(MAX_SCORECARD_NUDGES_KEY, DEFAULT_MAX_SCORECARD_NUDGES);
+    }
+
+    /**
+     * Minutes after a round interview actually ENDS (start plus its booked
+     * duration) before the first scorecard ask. Deliberately short: measured
+     * on production 2026-08-24, not one of 19 scorecards was submitted before
+     * the meeting ended and the mean submission was 24.9 h after it, so the
+     * first ask was always arriving long after the impression had faded.
+     *
+     * <p>It must never be zero-ish: the floor exists so a meeting that runs a
+     * few minutes over does not get its interviewer pinged while they are
+     * still in the room with the candidate — the same mistake the landing
+     * page made before it started measuring from {@code endOf} rather than
+     * from the start time.
+     */
+    public int scorecardPromptMinutes() {
+        return readPositiveInt(SCORECARD_PROMPT_MINUTES_KEY, DEFAULT_SCORECARD_PROMPT_MINUTES);
+    }
+
+    /**
+     * How many days before an interview the prep brief goes out — 1 means
+     * the working day before. "Working day" is the point: the eve sweep
+     * walks back over Saturdays and Sundays so a Monday interview briefs on
+     * Friday. A brief delivered on a Sunday is a brief nobody reads, which
+     * is the failure this whole change exists to fix.
+     */
+    public int briefLeadDays() {
+        return readPositiveInt(BRIEF_LEAD_DAYS_KEY, DEFAULT_BRIEF_LEAD_DAYS);
     }
 
     private int readPositiveInt(String key, int defaultValue) {

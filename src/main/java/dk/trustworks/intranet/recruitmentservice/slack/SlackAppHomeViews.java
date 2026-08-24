@@ -200,7 +200,7 @@ public final class SlackAppHomeViews {
         }
         overflow(blocks, upcoming.size(), baseUrl + "/recruitment/interviews", rowsPerSection);
         blocks.add(context(asContextElements(markdownText(
-                "Your kit (CV, focus areas, scorecard) for each interview: <"
+                "Your prep (CV, focus areas) for each interview: <"
                         + baseUrl + "/recruitment/interviews|open the interviews page>"))));
         return true;
     }

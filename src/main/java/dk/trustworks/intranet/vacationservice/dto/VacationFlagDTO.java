@@ -5,6 +5,7 @@ public record VacationFlagDTO(
         String useruuid,
         String fullname,
         String type,
+        String pool,
         int ferieaar,
         String label,
         double days,

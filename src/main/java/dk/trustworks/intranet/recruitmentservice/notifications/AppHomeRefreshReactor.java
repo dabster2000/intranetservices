@@ -56,6 +56,7 @@ public class AppHomeRefreshReactor extends RecruitmentReactor {
     static final Set<RecruitmentEventType> REFRESH_TYPES = EnumSet.of(
             RecruitmentEventType.SCORECARD_SUBMITTED,
             RecruitmentEventType.SCORECARD_NUDGED,
+            RecruitmentEventType.SCORECARD_PROMPTED,
             RecruitmentEventType.DEBRIEF_STALLED_NUDGED,
             RecruitmentEventType.CANDIDATE_IDLE_NUDGED,
             RecruitmentEventType.INTERVIEW_SCHEDULED,
@@ -135,7 +136,12 @@ public class AppHomeRefreshReactor extends RecruitmentReactor {
             }
             // The SLA sweep just told these users about a task — their Home
             // should show the same thing the DM does.
-            case SCORECARD_NUDGED -> addString(users, payload.get("nudged_user_uuid"));
+            // Both scorecard asks carry the same nudged_user_uuid shape; the
+            // prompt (V531) is the earlier of the two, so leaving it out would
+            // mean the one an interviewer is most likely to act on is the one
+            // that does not refresh their Home.
+            case SCORECARD_NUDGED, SCORECARD_PROMPTED ->
+                    addString(users, payload.get("nudged_user_uuid"));
             case DEBRIEF_STALLED_NUDGED, CANDIDATE_IDLE_NUDGED ->
                     addStrings(users, payload.get("nudged_user_uuids"));
             // Interview lifecycle: the assigned interviewers' upcoming list

@@ -31,7 +31,7 @@ public class RecruitmentSlackResource {
     @Inject
     RecruitmentSlackFeatureFlag slackFlags;
 
-    /** The twelve recruitment.slack.* toggles, literally. */
+    /** The thirteen recruitment.slack.* toggles, literally. */
     @GET
     @Path("/flags")
     public RecruitmentSlackFlagsResponse flags() {
@@ -46,6 +46,7 @@ public class RecruitmentSlackResource {
                 slackFlags.isScorecardEnabled(),
                 slackFlags.isAppHomeEnabled(),
                 slackFlags.isMorningBriefEnabled(),
+                slackFlags.isEveBriefEnabled(),
                 slackFlags.isDpoDigestEnabled(),
                 slackFlags.isAssistantEnabled());
     }

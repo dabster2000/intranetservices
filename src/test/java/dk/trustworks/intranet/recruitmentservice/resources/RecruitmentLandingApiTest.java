@@ -313,7 +313,11 @@ class RecruitmentLandingApiTest {
         assertTrue(hasTask(tasks, "IDLE_CANDIDATE", "applicationUuid", idleApplicationUuid),
                 "team lead owns the decision on their team's position — the"
                         + " led-TEAM route survives the 2026-08-23 redesign"
-                        + " (only the practice hop is gone, decision 11)");
+                        + " (only the practice hop is gone from RIGHTS,"
+                        + " decision 11) and is one of the two routes that"
+                        + " keep the row on the card after taskInScope"
+                        + " narrows it; the fixture team's practice is the"
+                        + " position's practice, so both fire here");
         assertFalse(hasTask(tasks, "PENDING_DECISION", "interviewUuid", interviewUuid),
                 "no decision task before the debrief is ready (scorecard still missing)");
         assertFalse(hasTask(tasks, "REFERRAL_TO_TRIAGE", null, null),
@@ -390,6 +394,10 @@ class RecruitmentLandingApiTest {
         assertEquals("INVOLVED", response.jsonPath().getString("viewerShape"));
         assertTrue(pipelines(response).isEmpty(),
                 "owns nothing, leads nothing, invited to nothing");
+        assertTrue(tasks(response).isEmpty(),
+                "and therefore has nothing to worry about either — a TEAMLEAD"
+                        + " who leads no team no longer inherits the company's"
+                        + " whole decision + idle backlog (taskInScope)");
         assertEquals("OWN", response.jsonPath().getString("pipelineScope"));
         assertTrue(response.jsonPath().getBoolean("pipelineScopeSelectable"),
                 "and is offered the way out");
@@ -406,6 +414,11 @@ class RecruitmentLandingApiTest {
         assertTrue(pipelines(response).isEmpty());
         assertTrue(response.jsonPath().getInt("kpis.openPositions") >= 1,
                 "the KPI still counts the position they can read");
+        // openTasks is the one KPI derived from the card rather than from the
+        // readable slice, so it follows the narrowing — otherwise the page
+        // would advertise a task count the list below can never explain.
+        assertEquals(0, response.jsonPath().getInt("kpis.openTasks"),
+                "…while the task count follows the card, because it IS the card");
     }
 
     @Test

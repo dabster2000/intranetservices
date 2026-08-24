@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-eve-brief" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Eve Brief Job (V531)
+
+    Purpose:
+    One Slack DM per interviewer the WORKING DAY BEFORE their interviews:
+    candidate, position, round (or informal chat), day, time and place,
+    the template's focus areas, the kit deep link and - when
+    recruitment.slack.scorecard.enabled is on - a "Fill in scorecard"
+    button per round. No interviews in the window means no message.
+
+    Why it exists:
+    The 06:00 day-of brief (recruitment-morning-brief.xml) cannot do this
+    job. For a 09:00 interview it lands three hours before the room, which
+    is too late to read a CV or move anything. This brief goes out
+    mid-afternoon the working day before, while there is still a day left
+    to act on it. The day-of brief is kept and degrades to a short
+    schedule line for any pair this one already covered.
+
+    Working-day-before:
+    recruitment.brief.lead-days days back from the interview date, then
+    backwards off Saturday and Sunday. A Monday interview therefore
+    briefs on Friday, and Friday's run covers Saturday, Sunday and Monday
+    in a single DM. A run on a weekend sends nothing.
+
+    Every briefed (interviewer, interview) pair appends its own
+    EVE_BRIEF_SENT event carrying brief_date - the date the brief COVERS,
+    not the date it was sent - so the run only briefs pairs with no event
+    for that interview's date, and re-runs and concurrent instances (ECS
+    cutover) never double-DM. A reschedule onto a different date re-arms
+    the brief by construction, because the stored brief_date no longer
+    matches. Only interviews in SCHEDULED state at run time brief. All
+    side effects are gated by recruitment.pipeline.enabled AND
+    recruitment.slack.eve-brief.enabled (off = no-op).
+
+    Schedule:
+    Daily at 13:00 UTC via BatchScheduler (15:00 Copenhagen in summer,
+    14:00 in winter), gated by
+    dk.trustworks.recruitment.eve-brief.enabled (default true).
+
+    Similar to:
+    recruitment-morning-brief.xml (the P23 day-of sibling, same service)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="send-recruitment-eve-briefs">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentEveBriefBatchlet"/>
+    </step>
+</job>

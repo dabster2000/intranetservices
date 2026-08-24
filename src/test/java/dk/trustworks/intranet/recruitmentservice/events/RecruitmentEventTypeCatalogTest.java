@@ -37,6 +37,13 @@ class RecruitmentEventTypeCatalogTest {
         // batchlet's DMs are scheduled side effects and the sweep's
         // idempotency key ("reactors' own side effects are recorded as
         // events", spec §3.4). Recorded in findings §P23.
+        // SCORECARD_PROMPTED and EVE_BRIEF_SENT are the V531 additions: the
+        // end-of-meeting scorecard ask and the working-day-before prep brief
+        // are scheduled side effects and their sweeps' idempotency keys, the
+        // same rule that added SCORECARD_NUDGED and MORNING_BRIEF_SENT.
+        // SCORECARD_PROMPTED deliberately shares the SCORECARD_NUDGED budget
+        // (recruitment.sla.max-scorecard-nudges) so the pair count per
+        // interviewer per interview did not double when it shipped.
         // DPO_DIGEST_SENT is the matching P24 addition: the DPO exception
         // digest's DMs are scheduled side effects and the run's per-
         // (recipient, week) idempotency key. Recorded in findings §P24.
@@ -102,8 +109,9 @@ class RecruitmentEventTypeCatalogTest {
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
-                "SCORECARD_SUBMITTED", "SCORECARD_NUDGED",
+                "SCORECARD_SUBMITTED", "SCORECARD_NUDGED", "SCORECARD_PROMPTED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
+                "EVE_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
                 "OFFER_OPENED", "DOSSIER_CREATED", "SIGNING_COMPLETED", "CANDIDATE_HIRED",
@@ -132,12 +140,13 @@ class RecruitmentEventTypeCatalogTest {
                 "event catalog must match spec §3.4 + the P4 APPLICATION_UPDATED, "
                         + "P6 REFERRAL_TRIAGED, P17 *_NUDGED, P19 CONSENT_EXPIRED, "
                         + "P23 MORNING_BRIEF_SENT, P24 DPO_DIGEST_SENT, "
+                        + "V531 SCORECARD_PROMPTED/EVE_BRIEF_SENT, "
                         + "P25 AI_ASSISTANT_EXCHANGE, DOCUMENT_KIND_CHANGED, "
                         + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
                         + "and the V519 INTERVIEW_DECISION_* pair exactly");
-        assertEquals(81, RecruitmentEventType.values().length);
+        assertEquals(83, RecruitmentEventType.values().length);
     }
 
     @Test

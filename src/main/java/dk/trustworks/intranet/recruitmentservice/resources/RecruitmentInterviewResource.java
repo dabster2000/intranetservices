@@ -114,6 +114,11 @@ public class RecruitmentInterviewResource {
      * Graph {@code getSchedule} batch — no dialog picks more people. */
     private static final int MAX_GRID_INTERVIEWERS = 20;
 
+    /** How far ahead the suggestion anchor may point — half a year is
+     * already far past any real interview lead time (the longest booked
+     * in production is under three weeks out). */
+    private static final int MAX_SUGGESTION_LEAD_DAYS = 180;
+
     private static final DateTimeFormatter HH_MM = DateTimeFormatter.ofPattern("HH:mm");
 
     @Inject
@@ -615,15 +620,19 @@ public class RecruitmentInterviewResource {
      * suggestion chips. Every suggested slot has all chosen interviewers
      * free, lies inside their working-hours intersection, on a weekday;
      * it carries the smallest free room seating everyone when one exists.
-     * Empty (never an error) when the Graph calendar toggle is off or
-     * availability could not be read — the chips row is simply absent,
-     * same degrade posture as the room picker. Write-tier: only
-     * schedulers need it.
+     * Empty (never an error) <em>once the parameters validate</em>, when the
+     * Graph calendar toggle is off or availability could not be read — the
+     * chips row is simply absent, same degrade posture as the room picker.
+     * The silent degrade covers Graph, not the request: a malformed or
+     * out-of-range {@code from} still answers 400 (see below). Write-tier:
+     * only schedulers need it.
      * <p>
      * {@code interviewerUuids} (comma-separated user UUIDs, at most
      * {@value #MAX_GRID_INTERVIEWERS}) is required; optional
      * {@code durationMinutes} (15..480, default 60) and {@code from}
-     * (ISO date, default today). Invalid values → 400.
+     * (ISO date, default today — a past day is clamped to today, beyond
+     * {@value #MAX_SUGGESTION_LEAD_DAYS} days out → 400). Invalid values
+     * → 400.
      */
     @GET
     @Path("/interviews/suggested-slots")
@@ -635,13 +644,12 @@ public class RecruitmentInterviewResource {
         enforceFlag();
         List<String> uuids = parseInterviewerUuids(interviewerUuids, true);
         int duration = requireDurationValid(durationMinutes);
-        LocalDate fromDay = parseOptionalDate(from);
+        // Parse and bound before the toggle short-circuit, so a malformed
+        // anchor answers 400 whether or not the calendar is enabled.
+        LocalDateTime now = LocalDateTime.now(ZoneId.of("Europe/Copenhagen"));
+        LocalDate fromDay = resolveSuggestionFrom(from, now.toLocalDate());
         if (!calendarService.isEnabled()) {
             return new SuggestedSlotsResponse(List.of(), true);
-        }
-        LocalDateTime now = LocalDateTime.now(ZoneId.of("Europe/Copenhagen"));
-        if (fromDay == null) {
-            fromDay = now.toLocalDate();
         }
         List<String> emails = uuids.stream()
                 .map(uuid -> (User) User.findById(uuid))
@@ -826,6 +834,30 @@ public class RecruitmentInterviewResource {
         } catch (DateTimeParseException e) {
             throw badRequest("date must be an ISO date (yyyy-MM-dd)");
         }
+    }
+
+    /**
+     * The suggestion anchor for {@code /interviews/suggested-slots}:
+     * absent or blank → {@code today}; a day already elapsed → clamped to
+     * {@code today}, because a past anchor spends a Graph probe on days
+     * nobody can book any more; further than
+     * {@value #MAX_SUGGESTION_LEAD_DAYS} days out → 400, since a
+     * 10-business-day scan there is never what the dialog meant to ask.
+     * Malformed input keeps {@link #parseOptionalDate}'s 400.
+     * <p>
+     * Package-private and pure so the DB-free tier that gates deploys can
+     * pin the bounds.
+     */
+    static LocalDate resolveSuggestionFrom(String from, LocalDate today) {
+        LocalDate parsed = parseOptionalDate(from);
+        if (parsed == null || parsed.isBefore(today)) {
+            return today;
+        }
+        if (parsed.isAfter(today.plusDays(MAX_SUGGESTION_LEAD_DAYS))) {
+            throw badRequest("from must be at most " + MAX_SUGGESTION_LEAD_DAYS
+                    + " days from today");
+        }
+        return parsed;
     }
 
     private static LocalDate parseRequiredDate(String date) {

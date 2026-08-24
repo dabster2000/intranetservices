@@ -54,6 +54,9 @@ public class VacationBalanceService {
 
     static final ZoneId COPENHAGEN = ZoneId.of("Europe/Copenhagen");
 
+    /** Months of planning horizon the projection covers when no {@code until} is given. */
+    static final int PROJECTION_MONTHS = 17;
+
     @Inject
     VacationPolicyService policyService;
 
@@ -71,10 +74,20 @@ public class VacationBalanceService {
                 result.warnings().stream().map(VacationBalanceService::toWarningDTO).toList());
     }
 
+    /**
+     * Month-end projection series for the planning chart. Without an explicit
+     * {@code until} the horizon is capped at {@link #PROJECTION_MONTHS} months
+     * ahead: the engine models the next ferieår unconditionally, and its usage
+     * window can sit up to 28 months out, which would stretch the chart to
+     * twice its useful length for most of the year.
+     */
     public List<VacationProjectionPointDTO> projection(String useruuid, LocalDate until) {
         Result result = computeForUser(useruuid);
         LocalDate today = LocalDate.now(COPENHAGEN);
-        return VacationBalanceEngine.projection(result, today, until).stream()
+        LocalDate horizon = until != null
+                ? until
+                : YearMonth.from(today).plusMonths(PROJECTION_MONTHS).atEndOfMonth();
+        return VacationBalanceEngine.projection(result, today, horizon).stream()
                 .map(p -> new VacationProjectionPointDTO(p.date(), p.ferieRemaining(), p.feriefridageRemaining(),
                         VacationRules.round2(p.ferieRemaining() + p.feriefridageRemaining())))
                 .toList();
@@ -154,7 +167,8 @@ public class VacationBalanceService {
         List<VacationFlagDTO> flags = new ArrayList<>();
         results.forEach((useruuid, result) -> result.warnings().forEach(w ->
                 flags.add(new VacationFlagDTO(useruuid, names.getOrDefault(useruuid, useruuid),
-                        w.type().name(), w.ferieaar(), label(w.ferieaar()), w.days(), w.message()))));
+                        w.type().name(), w.pool().name(), w.ferieaar(), label(w.ferieaar()),
+                        w.days(), w.message()))));
         return flags;
     }
 
@@ -189,7 +203,7 @@ public class VacationBalanceService {
     }
 
     static VacationWarningDTO toWarningDTO(VacationBalanceEngine.Warning warning) {
-        return new VacationWarningDTO(warning.type().name(), warning.ferieaar(),
+        return new VacationWarningDTO(warning.type().name(), warning.pool().name(), warning.ferieaar(),
                 label(warning.ferieaar()), warning.days(), warning.message());
     }
 }
