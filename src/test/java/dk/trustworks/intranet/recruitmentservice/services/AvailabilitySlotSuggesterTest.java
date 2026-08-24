@@ -21,9 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Slot suggestion rules (interview scheduling plan Phase 1): interviewer
- * intersection, working-hours clipping, weekend skip, room-capacity fit
- * and the empty cases. Pure unit test — the suggester is CDI-free by
- * design so this runs in the DB-free tier that gates deploys.
+ * intersection, working-hours clipping, weekend skip, room-capacity fit,
+ * the intra-day spread and the empty cases. Pure unit test — the
+ * suggester is CDI-free by design so this runs in the DB-free tier that
+ * gates deploys.
  */
 class AvailabilitySlotSuggesterTest {
 
@@ -35,9 +36,9 @@ class AvailabilitySlotSuggesterTest {
 
     @Test
     void suggestions_requireEveryInterviewerFree() {
-        // A busy 10–11, B busy 13–14. From 09:30 the earliest slots where
-        // BOTH are free for a full hour: 11:00, 11:30, 12:00, then the gap
-        // around B's meeting pushes to 14:00, 14:30.
+        // A busy 10–11, B busy 13–14, nothing before 09:30. Neither
+        // meeting may be overlapped, and the five offered starts spread
+        // over what is left of the day.
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule(busyBetween("10:00", "11:00")),
                 "b@trustworks.dk", schedule(busyBetween("13:00", "14:00")));
@@ -51,8 +52,12 @@ class AvailabilitySlotSuggesterTest {
                 .filter(start -> start.toLocalDate().equals(MONDAY))
                 .toList();
         assertEquals(List.of(
-                MONDAY.atTime(11, 0), MONDAY.atTime(11, 30), MONDAY.atTime(12, 0),
-                MONDAY.atTime(14, 0), MONDAY.atTime(14, 30)), mondaySlots);
+                MONDAY.atTime(12, 0), MONDAY.atTime(14, 0), MONDAY.atTime(14, 30),
+                MONDAY.atTime(15, 30), MONDAY.atTime(16, 30)), mondaySlots);
+        assertTrue(mondaySlots.stream().noneMatch(start ->
+                        overlaps(start, 60, "10:00", "11:00")
+                                || overlaps(start, 60, "13:00", "14:00")),
+                "no suggestion may overlap either interviewer's meeting");
     }
 
     @Test
@@ -134,15 +139,20 @@ class AvailabilitySlotSuggesterTest {
                 saturday, schedules, List.of("a@trustworks.dk"),
                 List.of(), 60, 2, saturday.atTime(7, 0));
 
-        assertEquals(MONDAY.atTime(7, 0), slots.get(0).start(),
-                "Saturday start → first suggestion Monday 07:00");
+        assertEquals(MONDAY.atTime(9, 0), slots.get(0).start(),
+                "Saturday start → the first suggestion is Monday's earliest offered start");
         assertTrue(slots.stream().noneMatch(slot ->
                 slot.start().getDayOfWeek() == DayOfWeek.SATURDAY
                         || slot.start().getDayOfWeek() == DayOfWeek.SUNDAY));
     }
 
+    // ---- Intra-day spread --------------------------------------------------------
+
     @Test
-    void earliestFirst_cappedAtFivePerDay_overTenBusinessDays() {
+    void freeDay_spreadsAcrossTheDay_insteadOfFiveEarlyMorningStarts() {
+        // The defect this replaced: on a free day the five suggestions
+        // were 07:00–09:00, and production books nothing before 09:00
+        // (34 of 39 interviews start at 10:00 or later).
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
 
@@ -151,13 +161,75 @@ class AvailabilitySlotSuggesterTest {
                 List.of(), 60, 2, WINDOW_OPEN);
 
         assertEquals(50, slots.size(), "5 per day × 10 business days");
-        assertEquals(MONDAY.atTime(7, 0), slots.get(0).start());
-        assertEquals(MONDAY.atTime(9, 0), slots.get(4).start(),
-                "the day cap keeps the five earliest starts");
-        assertEquals(MONDAY.plusDays(1).atTime(7, 0), slots.get(5).start(),
-                "then the next business day");
+        assertEquals(List.of(
+                        MONDAY.atTime(9, 0), MONDAY.atTime(10, 30), MONDAY.atTime(12, 0),
+                        MONDAY.atTime(14, 0), MONDAY.atTime(15, 30)),
+                startsOn(slots, MONDAY),
+                "morning, late morning, midday and two afternoon options");
+        assertEquals(MONDAY.plusDays(1).atTime(9, 0), slots.get(5).start(),
+                "then the next business day, again earliest-first");
         assertTrue(slots.stream().allMatch(slot ->
                 slot.start().getMinute() % 30 == 0), "starts step on 30-minute boundaries");
+        assertTrue(slots.stream().noneMatch(slot ->
+                        slot.start().toLocalTime().isBefore(LocalTime.of(9, 0))),
+                "a wholly free day must not be spent on hours nobody books");
+    }
+
+    @Test
+    void spreadIsDeterministic_andAlwaysEarliestFirstWithinTheDay() {
+        Map<String, MailboxWindowSchedule> schedules = Map.of(
+                "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
+
+        List<Slot> first = AvailabilitySlotSuggester.suggest(MONDAY, schedules,
+                List.of("a@trustworks.dk"), List.of(), 60, 2, WINDOW_OPEN);
+        List<Slot> second = AvailabilitySlotSuggester.suggest(MONDAY, schedules,
+                List.of("a@trustworks.dk"), List.of(), 60, 2, WINDOW_OPEN);
+
+        assertEquals(first.stream().map(Slot::start).toList(),
+                second.stream().map(Slot::start).toList(),
+                "same input, same output — the UI pages over this order");
+        for (int i = 1; i < first.size(); i++) {
+            assertTrue(!first.get(i).start().isBefore(first.get(i - 1).start()),
+                    "suggestions stay in ascending start order");
+        }
+    }
+
+    @Test
+    void narrowFreeWindow_stillFillsTheDayCap_neverFewerThanBefore() {
+        // Only 09:00–12:00 is free, so the five slots cannot spread: the
+        // spread must degrade to "as many as fit", never thin out. The
+        // earliest-win scan would have offered five here too.
+        Map<String, MailboxWindowSchedule> schedules = Map.of(
+                "a@trustworks.dk", new MailboxWindowSchedule("0".repeat(FULL_SCAN_CELLS),
+                        new WorkingHours(weekdays(), LocalTime.of(9, 0), LocalTime.of(12, 0),
+                                "Romance Standard Time")));
+
+        List<Slot> slots = AvailabilitySlotSuggester.suggest(
+                MONDAY, schedules, List.of("a@trustworks.dk"),
+                List.of(), 60, 2, WINDOW_OPEN);
+
+        assertEquals(List.of(
+                        MONDAY.atTime(9, 0), MONDAY.atTime(9, 30), MONDAY.atTime(10, 0),
+                        MONDAY.atTime(10, 30), MONDAY.atTime(11, 0)),
+                startsOn(slots, MONDAY),
+                "5 qualifying starts, 5 offered — the whole window");
+    }
+
+    @Test
+    void singleQualifyingStart_isStillOffered() {
+        // The degenerate day: one free hour. It must survive, however
+        // unattractive its hour is.
+        Map<String, MailboxWindowSchedule> schedules = Map.of(
+                "a@trustworks.dk", new MailboxWindowSchedule("0".repeat(FULL_SCAN_CELLS),
+                        new WorkingHours(Set.of(DayOfWeek.MONDAY), LocalTime.of(7, 0),
+                                LocalTime.of(8, 0), null)));
+
+        List<Slot> slots = AvailabilitySlotSuggester.suggest(
+                MONDAY, schedules, List.of("a@trustworks.dk"),
+                List.of(), 60, 2, WINDOW_OPEN);
+
+        assertEquals(List.of(MONDAY.atTime(7, 0)), startsOn(slots, MONDAY),
+                "an hour production never books is unattractive, not ineligible");
     }
 
     @Test
@@ -171,6 +243,11 @@ class AvailabilitySlotSuggesterTest {
 
         assertEquals(MONDAY.atTime(12, 0), slots.get(0).start(),
                 "a slot starting exactly now is still offered");
+        assertTrue(startsOn(slots, MONDAY).stream().noneMatch(start ->
+                        start.isBefore(MONDAY.atTime(12, 0))),
+                "the elapsed part of the day is trimmed before the spread runs");
+        assertEquals(5, startsOn(slots, MONDAY).size(),
+                "half a day still fills the day cap");
     }
 
     // ---- Rooms -----------------------------------------------------------------
@@ -225,7 +302,7 @@ class AvailabilitySlotSuggesterTest {
     void busyRoom_fallsBackToTheNextPreference_andSaysSo() {
         Map<String, MailboxWindowSchedule> schedules = Map.of(
                 "a@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)),
-                "medium@trustworks.dk", schedule(busyBetween("07:00", "08:00")),
+                "medium@trustworks.dk", schedule(busyBetween("09:00", "10:00")),
                 "large@trustworks.dk", schedule("0".repeat(FULL_SCAN_CELLS)));
         List<RoomOption> rooms = List.of(
                 new RoomOption("medium@trustworks.dk", "Medium", 6),
@@ -234,14 +311,16 @@ class AvailabilitySlotSuggesterTest {
         List<Slot> slots = AvailabilitySlotSuggester.suggest(
                 MONDAY, schedules, List.of("a@trustworks.dk"), rooms, 60, 4, WINDOW_OPEN);
 
+        assertEquals(MONDAY.atTime(9, 0), slots.get(0).start());
         assertEquals("large@trustworks.dk", slots.get(0).roomEmail(),
-                "07:00: the first preference is busy, the second takes the slot");
+                "09:00: the first preference is busy, the second takes the slot");
         assertEquals("preference 2 — 1 preferred room was unavailable",
                 slots.get(0).roomReason(),
                 "the fallback is explained rather than looking arbitrary");
-        assertEquals("medium@trustworks.dk", slots.get(2).roomEmail(),
-                "08:00: the first preference is free again and takes it back");
-        assertNull(slots.get(2).roomReason());
+        assertEquals(MONDAY.atTime(10, 30), slots.get(1).start());
+        assertEquals("medium@trustworks.dk", slots.get(1).roomEmail(),
+                "10:30: the first preference is free again and takes it back");
+        assertNull(slots.get(1).roomReason());
     }
 
     @Test
@@ -289,6 +368,22 @@ class AvailabilitySlotSuggesterTest {
 
     /** Cells enough to cover the whole 10-business-day scan window. */
     private static final int FULL_SCAN_CELLS = 15 * 24 * 4;
+
+    /** The starts suggested for one day, in the order they are returned. */
+    private static List<LocalDateTime> startsOn(List<Slot> slots, LocalDate day) {
+        return slots.stream()
+                .map(Slot::start)
+                .filter(start -> start.toLocalDate().equals(day))
+                .toList();
+    }
+
+    /** Does {@code [start, start+duration)} touch {@code [from, to)}? */
+    private static boolean overlaps(LocalDateTime start, int durationMinutes,
+                                    String from, String to) {
+        LocalDateTime busyFrom = start.toLocalDate().atTime(LocalTime.parse(from));
+        LocalDateTime busyTo = start.toLocalDate().atTime(LocalTime.parse(to));
+        return start.isBefore(busyTo) && start.plusMinutes(durationMinutes).isAfter(busyFrom);
+    }
 
     private static MailboxWindowSchedule schedule(String availabilityView) {
         return new MailboxWindowSchedule(availabilityView, null);
