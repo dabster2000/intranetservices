@@ -86,10 +86,13 @@ public class RecruitmentBoardService {
      * word, one number now.
      *
      * <p>The board's chip stays deliberately simpler than the task list:
-     * {@code daysInStage > threshold}, with none of {@link RecruitmentIdleRule}'s
-     * suppressions. A board card is a fact about how long someone has waited
-     * — true even when the next interview is already booked — while a task
-     * row is a claim that somebody must act. Only the number is shared.
+     * {@code daysInStage > threshold}, with one exception shared with
+     * {@link RecruitmentIdleRule}: a signed contract
+     * ({@code Suppression.CONTRACT_SIGNED}) clears the chip, because "Signed
+     * — ready to hire" plus an amber "Idle" reads as a contradiction. The
+     * other suppressions stay task-list-only: a board card is a fact about
+     * how long someone has waited — true even when the next interview is
+     * already booked — while a task row is a claim that somebody must act.
      */
     @Inject
     RecruitmentSlaThresholds thresholds;
@@ -139,8 +142,7 @@ public class RecruitmentBoardService {
                 .toList();
         Set<String> dossierReadableCandidates =
                 visibility.dossierReadableCandidateUuids(viewerUuid, offerCandidates);
-        SubStatusInputs subStatusInputs = loadSubStatusInputs(
-                applications, dossierReadableCandidates);
+        SubStatusInputs subStatusInputs = loadSubStatusInputs(applications);
         // Read once per board, never per card — app_settings is a tiny table
         // but a lookup per card is still an N+1 by any other name.
         int idleThresholdDays = thresholds.candidateIdleDays();
@@ -194,7 +196,9 @@ public class RecruitmentBoardService {
                                                 viewerCanDecideFinalOutcome,
                                                 dossierReadableCandidates.contains(
                                                         application.getCandidateUuid())),
-                                        idleThresholdDays))
+                                        idleThresholdDays,
+                                        subStatusInputs.contractSigned().contains(
+                                                application.getCandidateUuid())))
                                 .toList()))
                 .toList();
     }
@@ -204,7 +208,8 @@ public class RecruitmentBoardService {
                              Map<String, String> referrerNames,
                              LocalDateTime now,
                              BoardCardSubStatus subStatus,
-                             int idleThresholdDays) {
+                             int idleThresholdDays,
+                             boolean contractSigned) {
         long daysInStage = Math.max(0,
                 ChronoUnit.DAYS.between(application.getStageEnteredAt(), now));
         CandidateSource source = candidate == null ? null : candidate.getSource();
@@ -221,7 +226,11 @@ public class RecruitmentBoardService {
                 referredByName,
                 application.getStageEnteredAt(),
                 daysInStage,
-                daysInStage > idleThresholdDays,
+                // A signed candidate is never "idle": what remains is the
+                // Convert step, which the SIGNED chip and the offer-phase
+                // Slack notifications already carry (the amber chip and the
+                // idle task list suppress together — CONTRACT_SIGNED rule).
+                daysInStage > idleThresholdDays && !contractSigned,
                 application.getExpectedStartDate(),
                 application.getAssignedTeamUuid(),
                 subStatus);
@@ -266,12 +275,14 @@ public class RecruitmentBoardService {
 
     /**
      * Three batched queries plus one native dossier query. The dossier query
-     * is omitted entirely when the viewer has no candidate-scoped dossier
-     * capability on this board.
+     * runs for EVERY open OFFER candidate, not only the dossier-readable
+     * ones: {@link #deriveSubStatus} still gates what a viewer's chip may
+     * say, but the idle chip needs the signed fact viewer-independently —
+     * a signed candidate must stop reading "Idle Nd" on every viewer's
+     * board, exactly as they leave every viewer's task list
+     * ({@link RecruitmentIdleRule.Suppression#CONTRACT_SIGNED}).
      */
-    private SubStatusInputs loadSubStatusInputs(
-            List<RecruitmentApplication> applications,
-            Set<String> dossierReadableCandidates) {
+    SubStatusInputs loadSubStatusInputs(List<RecruitmentApplication> applications) {
         Map<String, Integer> roundByApplication = new HashMap<>();
         Set<String> offerCandidateSet = new HashSet<>();
         for (RecruitmentApplication application : applications) {
@@ -281,8 +292,7 @@ public class RecruitmentBoardService {
             Integer round = roundOf(application.getStage());
             if (round != null) {
                 roundByApplication.put(application.getUuid(), round);
-            } else if (application.getStage() == RecruitmentStage.OFFER
-                    && dossierReadableCandidates.contains(application.getCandidateUuid())) {
+            } else if (application.getStage() == RecruitmentStage.OFFER) {
                 offerCandidateSet.add(application.getCandidateUuid());
             }
         }

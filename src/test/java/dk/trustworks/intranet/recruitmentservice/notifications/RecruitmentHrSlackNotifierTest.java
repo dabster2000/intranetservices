@@ -22,6 +22,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link RecruitmentHrSlackNotifier}.
@@ -35,13 +36,21 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class RecruitmentHrSlackNotifierTest {
 
     private SlackService slackService;
+    private RecruitmentSlackChannelRouter router;
     private RecruitmentHrSlackNotifier notifier;
 
     @BeforeEach
     void setUp() throws Exception {
         slackService = mock(SlackService.class);
+        // Offer split off by default: both settings-driven channels blank, so
+        // resolution falls through to the config channelId — the pre-split
+        // behavior every existing assertion was written against.
+        router = mock(RecruitmentSlackChannelRouter.class);
+        when(router.offerChannel()).thenReturn(java.util.Optional.empty());
+        when(router.defaultChannel()).thenReturn(java.util.Optional.empty());
         notifier = new RecruitmentHrSlackNotifier();
         injectField(notifier, "slackService", slackService);
+        injectField(notifier, "router", router);
         injectField(notifier, "channelId", "C0B1XUB3AEB");
         injectField(notifier, "botTokenKey", "mother");
         injectField(notifier, "dossierBaseUrl", "https://intra.trustworks.dk/recruitment/candidates");
@@ -255,5 +264,83 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyHireWithoutSignedContract(null, null);
         notifier.notifyHireWithoutSignedContract(new RecruitmentCandidate(), null);
         verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
+    }
+
+    // ── Offer-channel routing (offer split, 2026-08-25) ────────────────────
+
+    /** Offer channel configured ⇒ hire messages move there. */
+    @Test
+    void notifyHire_prefersTheOfferChannel() {
+        when(router.offerChannel()).thenReturn(java.util.Optional.of("C-OFFER"));
+
+        notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
+
+        ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        assertEquals("C-OFFER", channel.getValue());
+    }
+
+    /** Offer blank, default set ⇒ the default channel carries the message. */
+    @Test
+    void notifyHire_fallsBackToTheDefaultChannel() {
+        when(router.defaultChannel()).thenReturn(java.util.Optional.of("C-DEFAULT"));
+
+        notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
+
+        ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        assertEquals("C-DEFAULT", channel.getValue());
+    }
+
+    /** Both settings blank ⇒ the config channelId — byte-identical pre-split behavior. */
+    @Test
+    void notifyHire_bothChannelsBlank_usesTheConfigFallback() {
+        notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
+
+        ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
+        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        assertEquals("C0B1XUB3AEB", channel.getValue());
+    }
+
+    // ── Contract sent (a moment that exists only on the offer channel) ─────
+
+    @Test
+    void notifyContractSent_postsOnlyWhenTheOfferChannelIsConfigured() {
+        // Blank offer channel: this NEW ping must not leak into the default
+        // channel — blank means "everything behaves as before the split".
+        notifier.notifyContractSent(candidate(), 2, 1);
+        verifyNoInteractions(slackService);
+
+        when(router.offerChannel()).thenReturn(java.util.Optional.of("C-OFFER"));
+        notifier.notifyContractSent(candidate(), 2, 1);
+
+        ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
+        verify(slackService, times(1)).sendMessage(channel.capture(), anyString(), anyString());
+        assertEquals("C-OFFER", channel.getValue());
+    }
+
+    @Test
+    void notifyContractSent_isNotDeduped_aResendIsNews() {
+        when(router.offerChannel()).thenReturn(java.util.Optional.of("C-OFFER"));
+        RecruitmentCandidate c = candidate();
+
+        notifier.notifyContractSent(c, 2, 1);
+        notifier.notifyContractSent(c, 2, 1);
+
+        verify(slackService, times(2)).sendMessage(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void formatContractSentMessage_carriesCountsAndLink_neverPii() {
+        RecruitmentCandidate c = candidate();
+        c.setEmail("PII-EMAIL@example.com");
+
+        String body = notifier.formatContractSentMessage(c, 3, 2);
+
+        assertFalse(body.contains("PII-EMAIL@example.com"),
+                "candidate email must not appear in Slack message");
+        assertTrue(body.contains("3 documents"), "document count should be present");
+        assertTrue(body.contains("2 signers"), "signer count should be present");
+        assertTrue(body.contains(c.getUuid()), "dossier link must include candidate UUID");
     }
 }

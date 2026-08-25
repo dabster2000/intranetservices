@@ -44,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -272,7 +273,7 @@ class PhotoServiceTest {
     void undecodableFormatFallsBackToTheOriginalBytesWithoutAnError() {
         byte[] webp = webpBytes();
 
-        byte[] result = service.resizeImage(webp, 64, RESIZE_KEY);
+        byte[] result = service.resizeImage(webp, 64, 0, RESIZE_KEY);
 
         assertArrayEquals(webp, result, "the caller serves this, so the original must come back intact");
         assertEquals(List.of(), errorMessages(),
@@ -281,7 +282,7 @@ class PhotoServiceTest {
 
     @Test
     void undecodableFormatIsReportedAtWarnWithEnoughContextToFindThePhoto() {
-        service.resizeImage(webpBytes(), 64, RESIZE_KEY);
+        service.resizeImage(webpBytes(), 64, 0, RESIZE_KEY);
 
         List<String> warnings = messagesAt(Level.WARNING);
         assertEquals(1, warnings.size(), "expected exactly one WARN, got: " + allMessages());
@@ -297,7 +298,7 @@ class PhotoServiceTest {
         // loadFromS3 answers byte[0] for an absent object, and an empty array raises the very same
         // UnsupportedFormatException as an exotic format. Decoding it would flood the WARN stream
         // with every user who has no photo — the exact regression that moved the S3 miss to DEBUG.
-        byte[] result = service.resizeImage(new byte[0], 64, RESIZE_KEY);
+        byte[] result = service.resizeImage(new byte[0], 64, 0, RESIZE_KEY);
 
         assertEquals(0, result.length);
         assertEquals(List.of(), errorMessages());
@@ -309,7 +310,7 @@ class PhotoServiceTest {
     void aGenuineResizeFailureIsStillLoggedAsError() throws Exception {
         // A decodable JPEG with a rejected width: Thumbnailator raises IllegalArgumentException,
         // which is a real fault and must not be swept into the new WARN branch.
-        byte[] result = service.resizeImage(realJpegBytes(), 0, RESIZE_KEY);
+        byte[] result = service.resizeImage(realJpegBytes(), 0, 0, RESIZE_KEY);
 
         assertNotNull(result, "the fallback still applies");
         assertEquals(1, errorMessages().size(),
@@ -321,12 +322,164 @@ class PhotoServiceTest {
 
     @Test
     void aDecodableImageIsActuallyResizedAndLogsNothing() throws Exception {
-        byte[] result = service.resizeImage(realJpegBytes(), 4, RESIZE_KEY);
+        byte[] result = service.resizeImage(realJpegBytes(), 4, 0, RESIZE_KEY);
 
         assertNotNull(result);
         assertTrue(result.length > 0);
         assertEquals(List.of(), errorMessages());
         assertEquals(List.of(), messagesAt(Level.WARNING), "the happy path must stay silent");
+    }
+
+    // --- square (cover-cropped) thumbnails ------------------------------------------------------
+    // size(w, w) preserves aspect ratio and so bounds the LONG side. Every avatar frame in the app
+    // is square/circular with object-cover and portraits are stored 2:1, so ?width=96 answered
+    // 96x48 and the browser magnified it ~2x (the sidebar, at ?width=48 into a 48px box on a 2x
+    // display, magnified 4x). That is the "some portraits are blurry, others are sharp" report:
+    // sharp meant the stored photo happened to be square. These pin both shapes, because the same
+    // endpoint serves client and team logos, which are legitimately wide and must NOT be cropped.
+
+    /** A 2:1 portrait — the shape the upload cropper produces and the one that rendered blurry. */
+    private static byte[] wideJpeg(int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int x = 0; x < width; x++) {
+            for (int y = 0; y < height; y++) {
+                // Non-uniform: a flat image would survive any resize and prove nothing.
+                image.setRGB(x, y, ((x * 7) % 256) << 16 | ((y * 11) % 256) << 8 | ((x + y) % 256));
+            }
+        }
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        assertTrue(ImageIO.write(image, "jpg", baos), "test fixture must be a real JPEG");
+        return baos.toByteArray();
+    }
+
+    private static int[] dimensionsOf(byte[] jpeg) throws Exception {
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(jpeg));
+        assertNotNull(image, "resizeImage must answer something decodable");
+        return new int[]{image.getWidth(), image.getHeight()};
+    }
+
+    @Test
+    void aSquareRequestFillsTheFrameRatherThanBoundingTheLongSide() throws Exception {
+        byte[] result = service.resizeImage(wideJpeg(1600, 800), 96, 96, RESIZE_KEY);
+
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result),
+                "a 2:1 portrait must still deliver 96 rows of pixels to a 96px circular frame");
+    }
+
+    @Test
+    void theWidthOnlyShapeStillFitsInsideSoWideLogosAreNeverCropped() throws Exception {
+        // The regression guard for the fix itself: cover-cropping every request would centre-crop
+        // client and team logos into squares, destroying them in the wide frames that render them.
+        byte[] result = service.resizeImage(wideJpeg(1600, 800), 96, 0, RESIZE_KEY);
+
+        assertArrayEquals(new int[]{96, 48}, dimensionsOf(result),
+                "width alone must keep the legacy fit-inside behaviour");
+    }
+
+    @Test
+    void aTallPortraitIsCoveredToo() throws Exception {
+        byte[] result = service.resizeImage(wideJpeg(400, 1200), 96, 96, RESIZE_KEY);
+
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result),
+                "cover must scale by the short side whichever side that is");
+    }
+
+    @Test
+    void aSourceSmallerThanTheRequestIsNotEnlarged() throws Exception {
+        // Thumbnailator's size() scales UP, which minted thumbnails claiming a resolution the
+        // pixels do not carry: a 60x60 legacy avatar came back as a soft "256x256" that nothing
+        // downstream could distinguish from a real one.
+        byte[] square = service.resizeImage(wideJpeg(60, 60), 256, 256, RESIZE_KEY);
+        assertArrayEquals(new int[]{60, 60}, dimensionsOf(square),
+                "a small photo must answer small rather than being blown up server-side");
+
+        byte[] fitted = service.resizeImage(wideJpeg(60, 60), 256, 0, RESIZE_KEY);
+        assertArrayEquals(new int[]{60, 60}, dimensionsOf(fitted),
+                "the width-only shape must not enlarge either");
+    }
+
+    @Test
+    void aSourceLargerInOneDimensionOnlyIsStillCoveredExactly() throws Exception {
+        // 200 wide is above the 96 request but 80 tall is below it. Cover scales by the larger
+        // ratio, so the clamp must key off the SHORT side or this silently upscales.
+        byte[] result = service.resizeImage(wideJpeg(200, 80), 96, 96, RESIZE_KEY);
+
+        int[] size = dimensionsOf(result);
+        assertEquals(size[0], size[1], "must stay square");
+        assertTrue(size[0] <= 80, "must not exceed the 80px short side, got " + size[0] + "px");
+    }
+
+    @Test
+    void anUndecodableFormatStillFallsBackWhenASquareIsRequested() {
+        // naturalSize() answers null for webp; the request must then pass through untouched to the
+        // same UnsupportedFormatException fallback rather than failing on a null dereference.
+        byte[] webp = webpBytes();
+
+        byte[] result = service.resizeImage(webp, 96, 96, RESIZE_KEY);
+
+        assertArrayEquals(webp, result, "the caller serves this, so the original must come back");
+        assertEquals(List.of(), errorMessages(), "an unreadable format is still not a system fault");
+    }
+
+    @Test
+    void naturalSizeReadsTheHeaderAndAdmitsWhenItCannot() throws Exception {
+        assertArrayEquals(new int[]{1600, 800}, PhotoService.naturalSize(wideJpeg(1600, 800)));
+        assertNull(PhotoService.naturalSize(webpBytes()), "unknown must be null, never a zero size");
+        assertNull(PhotoService.naturalSize(new byte[0]));
+    }
+
+    // --- the upload master ----------------------------------------------------------------------
+    // resizeToUploadDimensions called size() unconditionally, which ENLARGES: the cropper hands
+    // over an 800x400 canvas, so every portrait was stored as a 1600x800 upscale re-encoded at
+    // q0.90 — no new detail, just doubled JPEG artefacts on the master every thumbnail derives from.
+
+    @Test
+    void anUploadSmallerThanTheBoundIsStoredAtItsOwnSizeNotEnlarged() throws Exception {
+        byte[] stored = service.resizeToUploadDimensions(wideJpeg(800, 400), 1600, 800);
+
+        assertArrayEquals(new int[]{800, 400}, dimensionsOf(stored),
+                "upscaling the master adds no detail and only degrades every thumbnail below it");
+    }
+
+    @Test
+    void anUploadLargerThanTheBoundIsStillShrunk() throws Exception {
+        byte[] stored = service.resizeToUploadDimensions(wideJpeg(3000, 3000), 1024, 1024);
+
+        assertArrayEquals(new int[]{1024, 1024}, dimensionsOf(stored), "the bound must still bite");
+    }
+
+    @Test
+    void anUploadThatIsNotScaledIsStillReEncodedAsJpeg() throws Exception {
+        // Load-bearing, not incidental: requireStorableImage runs on these bytes, and normalising
+        // to JPEG is what collapses a polyglot upload into a plain raster image. Skipping the
+        // encode for in-bounds images would reopen that hole.
+        byte[] png = png();
+        byte[] stored = service.resizeToUploadDimensions(png, 1600, 800);
+
+        assertEquals("image/jpeg", service.detectMimeType(stored),
+                "an in-bounds upload must still be normalised, not passed through verbatim");
+    }
+
+    // --- thumbnail keys -------------------------------------------------------------------------
+
+    @Test
+    void squareAndWidthOnlyThumbnailsDoNotShareAnS3Key() {
+        // They hold different images at the same width. Sharing a key would make whichever was
+        // generated first serve both the avatar frames and the logo frames.
+        assertNotEquals(PhotoService.resizedKey(RELATED_UUID, 96, 96),
+                PhotoService.resizedKey(RELATED_UUID, 96, 0));
+        assertEquals("resized/96/" + RELATED_UUID, PhotoService.resizedKey(RELATED_UUID, 96, 0),
+                "the width-only shape must keep its existing key, so no purge is needed to deploy");
+        assertEquals("resized/96x96/" + RELATED_UUID, PhotoService.resizedKey(RELATED_UUID, 96, 96));
+    }
+
+    @Test
+    void anUploadInvalidatesTheSquareThumbnailsToo() {
+        // getResizedPhoto short-circuits on s3ObjectExists, so a square thumbnail left behind by an
+        // upload serves the PREVIOUS photo forever — in the one shape the UI actually renders.
+        assertTrue(PhotoService.isResizedKeyFor("resized/96x96/" + RELATED_UUID, RELATED_UUID));
+        assertTrue(PhotoService.isResizedKeyFor("resized/128x128/" + RELATED_UUID, RELATED_UUID));
+        assertFalse(PhotoService.isResizedKeyFor("resized/96x96/" + OTHER_UUID, RELATED_UUID));
     }
 
     private List<String> messagesAt(Level level) {
@@ -625,7 +778,7 @@ class PhotoServiceTest {
     void aMissAtAWidthPublishesNothingAndCachesNothing() throws Exception {
         noThumbnailInS3();
 
-        byte[] resized = serviceWithStoredPhoto(Optional.empty()).getResizedPhoto(RELATED_UUID, 64);
+        byte[] resized = serviceWithStoredPhoto(Optional.empty()).getResizedPhoto(RELATED_UUID, 64, 0);
 
         assertEquals(0, resized.length, "UserAvatar requests ?width= — this is the path it hits");
         // Publishing here would trade the placeholder ROWS this change removes for one S3 object
@@ -639,7 +792,7 @@ class PhotoServiceTest {
         s3Contains(Map.of(UUID, png()));
         noThumbnailInS3();
 
-        byte[] resized = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 64);
+        byte[] resized = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 64, 0);
 
         assertNotEquals(0, resized.length, "a real photo must still resize");
     }

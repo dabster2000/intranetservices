@@ -80,6 +80,9 @@ class RecruitmentApplicationResponseCapabilityTest {
 
         RecruitmentApplicationService service = new RecruitmentApplicationService();
         service.visibility = new StubVisibility(dossierReadable);
+        // A bare board service suffices: a SCREENING-only list takes the
+        // loader's empty early-return, so no EntityManager is ever touched.
+        service.boardService = new RecruitmentBoardService();
         return service.toResponse(application, position, "viewer");
     }
 

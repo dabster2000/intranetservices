@@ -21,12 +21,18 @@ import java.util.Optional;
  *   <li>{@code recruitment.slack.channel.<practice_uuid>} — optional
  *       per-practice override, keyed by practice uuid exactly like the
  *       specialization catalogs (never by practice code).</li>
+ *   <li>{@code recruitment.slack.channel.offer} — the HR-facing offer-phase
+ *       channel (seeded blank by V532). When set, offer-phase moments (OFFER
+ *       entry, contract sent/signed, conversion, onboarding uploads) post
+ *       here INSTEAD of the practice/default channels; blank keeps every
+ *       routing exactly as before the channel existed.</li>
  * </ul>
  */
 @ApplicationScoped
 public class RecruitmentSlackChannelRouter {
 
     public static final String DEFAULT_CHANNEL_KEY = "recruitment.slack.channel.default";
+    public static final String OFFER_CHANNEL_KEY = "recruitment.slack.channel.offer";
     public static final String PRACTICE_CHANNEL_KEY_PREFIX = "recruitment.slack.channel.";
 
     @Inject
@@ -50,9 +56,10 @@ public class RecruitmentSlackChannelRouter {
      */
     public Optional<String> practiceChannel(String practiceUuid) {
         if (practiceUuid == null || practiceUuid.isBlank()
-                // Practice keys are uuids; refuse the two reserved suffixes so
+                // Practice keys are uuids; refuse the reserved suffixes so
                 // a malformed caller can never read the shared channels here.
-                || "default".equals(practiceUuid) || "discussion".equals(practiceUuid)) {
+                || "default".equals(practiceUuid) || "discussion".equals(practiceUuid)
+                || "offer".equals(practiceUuid)) {
             return Optional.empty();
         }
         return read(PRACTICE_CHANNEL_KEY_PREFIX + practiceUuid);
@@ -61,6 +68,18 @@ public class RecruitmentSlackChannelRouter {
     /** The shared fallback channel; empty ⇒ notifications are off. */
     public Optional<String> defaultChannel() {
         return read(DEFAULT_CHANNEL_KEY);
+    }
+
+    /**
+     * The HR-facing offer-phase channel. Empty ⇒ the offer split is OFF:
+     * offer-phase notifications keep flowing wherever they flowed before
+     * this channel existed (practice/default channels, the hard-coded HR
+     * fallback), and none of the offer-phase suppressions apply. Callers
+     * therefore treat "present" as the master switch for the whole
+     * offer-routing behavior — never just as an address.
+     */
+    public Optional<String> offerChannel() {
+        return read(OFFER_CHANNEL_KEY);
     }
 
     private Optional<String> read(String key) {

@@ -38,26 +38,39 @@ public class FileResource {
     @Inject
     UserSharePointDocumentResource sharePointDocumentAPI;
 
+    /**
+     * {@code height} is optional and opts the thumbnail into cover-cropping: the image is scaled to
+     * fill {@code width × height} and the overflow is trimmed from the centre. Callers drawing into
+     * a square or circular frame must pass it — {@code width} alone bounds only the LONG side, so a
+     * 2:1 portrait comes back at half the height the frame needs and the browser magnifies it.
+     * Logo callers, whose frames are genuinely wide, keep passing {@code width} alone.
+     *
+     * @see PhotoService#resizeImage
+     */
     @GET
     @Path("/photos/{relateduuid}")
     public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid,
-                                       @QueryParam("width") Integer width) {
-        log.debug("Finding photo " + relateduuid + (width != null ? " width=" + width : ""));
+                                       @QueryParam("width") Integer width,
+                                       @QueryParam("height") Integer height) {
+        log.debug("Finding photo " + relateduuid + describeSize(width, height));
         File photo = photoService.findPhotoByRelatedUUID(relateduuid);
         if (width != null) {
-            photo.setFile(photoService.getResizedPhoto(relateduuid, width));
+            photo.setFile(photoService.getResizedPhoto(relateduuid, width, height == null ? 0 : height));
         }
         return photo;
     }
 
+    /** @see #findPhotoByRelatedUUID(String, Integer, Integer) for the {@code height} semantics. */
     @GET
     @Path("/photos/{relateduuid}/jpg")
     @Produces({"image/*", MediaType.APPLICATION_OCTET_STREAM})
-    public Response getImage(@PathParam("relateduuid") String relateduuid, @QueryParam("width") Integer width) {
-        log.debug("Fetching photo " + relateduuid + (width != null ? " width=" + width : ""));
+    public Response getImage(@PathParam("relateduuid") String relateduuid,
+                             @QueryParam("width") Integer width,
+                             @QueryParam("height") Integer height) {
+        log.debug("Fetching photo " + relateduuid + describeSize(width, height));
         byte[] imageBytes;
         if (width != null) {
-            imageBytes = photoService.getResizedPhoto(relateduuid, width);
+            imageBytes = photoService.getResizedPhoto(relateduuid, width, height == null ? 0 : height);
         } else {
             imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile();
         }
@@ -94,6 +107,13 @@ public class FileResource {
         return response.type(MediaType.APPLICATION_OCTET_STREAM)
                 .header("Content-Disposition", "attachment")
                 .build();
+    }
+
+    private static String describeSize(Integer width, Integer height) {
+        if (width == null) {
+            return "";
+        }
+        return height == null ? " width=" + width : " width=" + width + " height=" + height;
     }
 
     @GET

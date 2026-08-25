@@ -22,6 +22,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * JVM lifetime via an in-memory candidate-UUID dedup set, so the
  * SharePoint retry batchlet cannot trigger a second notification.
  *
+ * <h3>Channel resolution (offer split, 2026-08-25)</h3>
+ * Every message resolves its channel per send:
+ * {@code recruitment.slack.channel.offer} when configured (the HR-facing
+ * offer-phase channel — settings-driven, effective without redeploy),
+ * otherwise {@code recruitment.slack.channel.default}, otherwise the
+ * {@code recruitment.hr.slack.channel-id} config property — which is
+ * byte-identical to the pre-split behavior, so an unconfigured offer
+ * channel changes nothing. {@link #notifyContractSent} is the exception:
+ * it is a NEW moment that exists only for the offer channel, so it posts
+ * nowhere when that channel is blank.
+ *
  * <h3>PII boundary</h3>
  * The message body is restricted to non-sensitive data: candidate first/last
  * name, target company display name, recruiter username, dossier link
@@ -57,8 +68,19 @@ public class RecruitmentHrSlackNotifier {
     @Inject
     SlackService slackService;
 
+    @Inject
+    RecruitmentSlackChannelRouter router;
+
+    /** Last-resort fallback when neither the offer nor the default channel is set. */
     @ConfigProperty(name = "recruitment.hr.slack.channel-id", defaultValue = "C0B1XUB3AEB")
     String channelId;
+
+    /** The channel HR messages post to — see the class javadoc's resolution order. */
+    private String hrChannel() {
+        return router.offerChannel()
+                .or(() -> router.defaultChannel())
+                .orElse(channelId);
+    }
 
     @ConfigProperty(name = "recruitment.hr.slack.bot-token-key", defaultValue = "mother")
     String botTokenKey;
@@ -92,11 +114,12 @@ public class RecruitmentHrSlackNotifier {
         }
 
         try {
+            String channel = hrChannel();
             String message = formatMessage(candidate, recruiterUuid,
                     signedFilenames == null ? List.of() : signedFilenames);
-            slackService.sendMessage(channelId, message, botTokenKey);
+            slackService.sendMessage(channel, message, botTokenKey);
             log.infof("HR Slack notification posted for candidate=%s channel=%s",
-                    candidate.getUuid(), channelId);
+                    candidate.getUuid(), channel);
         } catch (Exception e) {
             // Never propagate — Slack failure must not affect Convert.
             log.errorf(e, "HR Slack notification failed for candidate=%s: %s",
@@ -130,15 +153,68 @@ public class RecruitmentHrSlackNotifier {
         }
 
         try {
-            slackService.sendMessage(channelId, formatNoBindingDocumentsMessage(candidate, recruiterUuid),
+            String channel = hrChannel();
+            slackService.sendMessage(channel, formatNoBindingDocumentsMessage(candidate, recruiterUuid),
                     botTokenKey);
             log.infof("HR Slack no-signed-contract notification posted for candidate=%s channel=%s",
-                    candidate.getUuid(), channelId);
+                    candidate.getUuid(), channel);
         } catch (Exception e) {
             // Never propagate — Slack failure must not affect Convert.
             log.errorf(e, "HR Slack no-signed-contract notification failed for candidate=%s: %s",
                     candidate.getUuid(), e.getMessage());
         }
+    }
+
+    /**
+     * Notify HR that {@code candidate}'s contract documents just went out
+     * for signature (the send-signature flow, which appends no stream event
+     * — hence a direct call rather than a reactor). A NEW moment created for
+     * the offer channel: it posts ONLY when
+     * {@code recruitment.slack.channel.offer} is configured, so a blank
+     * channel changes nothing anywhere. Partner-track candidates are
+     * suppressed by the caller (confidential track — never a shared
+     * channel). Not deduped: every send is a real, distinct act (a re-send
+     * after a decline is news, not noise).
+     *
+     * @param candidate     the candidate whose dossier documents were sent
+     * @param documentCount how many documents the signing case carries
+     * @param signerCount   how many signers the case waits on
+     */
+    public void notifyContractSent(RecruitmentCandidate candidate,
+                                   int documentCount,
+                                   int signerCount) {
+        if (candidate == null || candidate.getUuid() == null) {
+            log.warn("notifyContractSent: candidate or candidate UUID is null, skipping");
+            return;
+        }
+        String channel = router.offerChannel().orElse(null);
+        if (channel == null) {
+            return; // offer split off — this moment only exists on the offer channel
+        }
+        try {
+            slackService.sendMessage(channel,
+                    formatContractSentMessage(candidate, documentCount, signerCount), botTokenKey);
+            log.infof("HR Slack contract-sent notification posted for candidate=%s channel=%s",
+                    candidate.getUuid(), channel);
+        } catch (Exception e) {
+            // Never propagate — Slack failure must not affect send-signature.
+            log.errorf(e, "HR Slack contract-sent notification failed for candidate=%s: %s",
+                    candidate.getUuid(), e.getMessage());
+        }
+    }
+
+    /** Visible for tests — the PII boundary applies (no case key, no signer emails). */
+    String formatContractSentMessage(RecruitmentCandidate candidate,
+                                     int documentCount,
+                                     int signerCount) {
+        String candidateName = (nullSafe(candidate.getFirstName()) + " "
+                + nullSafe(candidate.getLastName())).trim();
+        String dossierUrl = stripTrailingSlash(dossierBaseUrl) + "/" + candidate.getUuid();
+        return ":outbox_tray: *Contract sent for signature* — " + candidateName
+                + " (" + documentCount + " document" + (documentCount == 1 ? "" : "s")
+                + ", " + signerCount + " signer" + (signerCount == 1 ? "" : "s") + ")\n"
+                + "Waiting on the candidate's signature — signing status is on the "
+                + "Offer & Contract tab.\n" + dossierUrl;
     }
 
     /**
@@ -283,14 +359,15 @@ public class RecruitmentHrSlackNotifier {
         }
 
         try {
+            String channel = hrChannel();
             String message = formatOnboardingCompleteMessage(
                     token,
                     submissions == null ? List.of() : submissions,
                     displayName == null ? "unknown" : displayName,
                     linkUrl == null ? "" : linkUrl);
-            slackService.sendMessage(channelId, message, botTokenKey);
+            slackService.sendMessage(channel, message, botTokenKey);
             log.infof("HR Slack onboarding-complete notification posted for token=%s channel=%s",
-                    token.getUuid(), channelId);
+                    token.getUuid(), channel);
         } catch (Exception e) {
             log.errorf(e, "HR Slack onboarding-complete notification failed for token=%s: %s",
                     token.getUuid(), e.getMessage());

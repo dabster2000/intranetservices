@@ -176,6 +176,9 @@ public class RecruitmentResource {
     dk.trustworks.intranet.recruitmentservice.notifications.CandidateDiscussionSlackNotifier discussionSlackNotifier;
 
     @Inject
+    dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier hrSlackNotifier;
+
+    @Inject
     CandidateDedupeService dedupeService;
 
     @Inject
@@ -1561,6 +1564,20 @@ public class RecruitmentResource {
             });
             revisionResponse = degradedRevisionResponse(
                     dossier, placeholders, signers, appendices, recipient, actor);
+        }
+
+        // Offer-channel ping (2026-08-25): the send-signature flow appends no
+        // stream event, so the "contract sent" moment is a direct call. The
+        // notifier posts only when recruitment.slack.channel.offer is set and
+        // swallows every failure; partner-track candidates never reach the
+        // shared channel (fail-closed, the SIGNING_COMPLETED CIRCLE rule).
+        try {
+            if (!offerBridge.hasPartnerTrackHistory(candidate.getUuid())) {
+                hrSlackNotifier.notifyContractSent(candidate, documents.size(), signerInfos.size());
+            }
+        } catch (RuntimeException e) {
+            log.errorf(e, "Contract-sent Slack ping failed for candidate=%s: %s",
+                    candidate.getUuid(), e.getMessage());
         }
 
         SendSignatureResponse envelope = new SendSignatureResponse(revisionResponse, localPersistenceFailed);

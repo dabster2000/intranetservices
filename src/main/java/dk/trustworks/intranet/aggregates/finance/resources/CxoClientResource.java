@@ -15,8 +15,10 @@ import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.IndustryRevenueTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
+import dk.trustworks.intranet.aggregates.finance.services.IndustryRevenueTrendService;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -50,6 +52,9 @@ public class CxoClientResource {
 
     @Inject
     CxoClientService cxoClientService;
+
+    @Inject
+    IndustryRevenueTrendService industryRevenueTrendService;
 
     @Inject
     ClientProfitabilityProvider clientProfitabilityProvider;
@@ -720,5 +725,30 @@ public class CxoClientResource {
                 fromDate, toDate, companyIds);
 
         return cxoClientService.creditNoteRate(fromDate, toDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Gets the quarterly Industry Revenue Trend for the Client &amp; Portfolio tab.
+     *
+     * <p>Per industry segment (PUBLIC, ENERGY, HEALTH, FINANCIAL, EDUCATION, OTHER):
+     * invoiced net revenue for the trailing 12 full calendar quarters, budget-based
+     * forecast for the current quarter + the following 6 months, budget "ghost"
+     * values for past quarters, a weighted unwon-pipeline overlay for forecast
+     * quarters, and the segment's client breakdown for the drill-down panel.
+     * The internal Trustworks client is excluded throughout.</p>
+     *
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param asOfDate   Reference date for the quarter window (optional, defaults to today; used in tests)
+     * @return IndustryRevenueTrendDTO with quarter metadata and per-segment series
+     */
+    @GET
+    @Path("/industry-revenue-trend")
+    public IndustryRevenueTrendDTO getIndustryRevenueTrend(
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("asOfDate") LocalDate asOfDate) {
+
+        log.debugf("GET /clients/cxo/industry-revenue-trend: companyIds=%s, asOfDate=%s", companyIds, asOfDate);
+
+        return industryRevenueTrendService.getIndustryRevenueTrend(asOfDate, parseCommaSeparated(companyIds));
     }
 }

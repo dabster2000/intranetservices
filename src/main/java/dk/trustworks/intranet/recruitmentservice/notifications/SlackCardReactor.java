@@ -640,12 +640,28 @@ public class SlackCardReactor extends RecruitmentReactor {
     /**
      * The short in-thread reply for one event — structural facts only.
      * Null when the event needs no reply (its card update says it all).
+     * <p>
+     * Offer split (2026-08-25): with {@code recruitment.slack.channel.offer}
+     * configured, the offer-phase moments — a stage move INTO OFFER or
+     * HIRED, and the hired celebration — move to the offer channel
+     * ({@link OfferSlackReactor} / {@link RecruitmentHrSlackNotifier}) and
+     * are NOT echoed into the practice-channel thread. The card itself
+     * still {@code chat.update}s to the true stage either way: it is a
+     * state mirror, not a notification. Blank offer channel ⇒ everything
+     * replies here exactly as before.
      */
     private String replyText(RecruitmentEvent event, CardState state) {
         Map<String, Object> payload = parse(event.getPayload());
+        boolean offerSplitActive = router.offerChannel().isPresent();
         return switch (event.getEventType()) {
             case APPLICATION_CREATED -> null; // the root card is the announcement
-            case APPLICATION_STAGE_CHANGED -> stageChangeReply(payload);
+            case APPLICATION_STAGE_CHANGED -> {
+                String to = str(payload, "to");
+                if (offerSplitActive && ("OFFER".equals(to) || "HIRED".equals(to))) {
+                    yield null; // the offer channel carries this moment
+                }
+                yield stageChangeReply(payload);
+            }
             case APPLICATION_POSITION_CHANGED -> positionChangeReply(payload);
             case APPLICATION_REJECTED -> {
                 String reason = str(payload, "reason_code");
@@ -653,7 +669,7 @@ public class SlackCardReactor extends RecruitmentReactor {
                         : " — reason: " + SlackCandidateFacts.humanizeCode(reason));
             }
             case APPLICATION_WITHDRAWN -> ":wave: *Withdrawn* — the candidate backed out.";
-            case CANDIDATE_HIRED -> ":tada: *Hired!*";
+            case CANDIDATE_HIRED -> offerSplitActive ? null : ":tada: *Hired!*";
             case INTERVIEW_SCHEDULED, INTERVIEW_RESCHEDULED, INTERVIEW_CANCELLED ->
                     interviewReply(event, payload);
             case SCORECARD_SUBMITTED -> scorecardReply(event, payload, state);
