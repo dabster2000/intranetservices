@@ -49,8 +49,12 @@ schedule interviews, record interview decisions, run AI scheduling, work the
 Inbox, triage referrals, pool and unpool, bulk-tag, and edit a candidate's
 profile fields. Partner track remains circle-only.
 
-*Not:* candidate email, approving queued email, regenerating the AI brief,
-converting a hire, hard delete, reports, or any configuration surface.
+Since **2026-08-25** also: **write to the candidate** — compose, AI-draft and
+send a candidate email, using the shared template library read-only.
+
+*Not:* approving a queued email, editing the email templates or the sender
+identity, regenerating the AI brief, converting a hire, hard delete, reports,
+or any configuration surface.
 
 **ASSISTANT_TEAMLEAD** (new) — the same capability set, scoped to the practice
 they are a member of, minus:
@@ -137,7 +141,8 @@ role, are listed — every unlisted row keeps its current value.
 | **Pool / unpool** | ● | ● | ● | ◐ practice | **●** | ○ |
 | **Bulk-tag** | ● | ● | ● | ◐ practice | **●** | ○ |
 | **Triage a colleague referral** | ● | ● | ● | ○ | **●** | ○ |
-| Send candidate email · approve queued email | ● | ● | ● | ○ | ○ | ○ |
+| **Send candidate email** (compose · AI draft · read templates) | ● | ● | ● | **◐ practice** | **●** | ○ |
+| Approve queued email · edit templates · sender identity | ● | ● | ● | ○ | ○ | ○ |
 | Regenerate the AI brief | ● | ● | ● | ○ | ○ | ○ |
 | Convert a hire to an employee | ● | ● | ○ | ○ | ○ | ○ |
 | Hard delete (`recruitment:admin`) | ● | ○ | ○ | ○ | ○ | ○ |

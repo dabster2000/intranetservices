@@ -352,14 +352,25 @@ class RecruitmentEmailDraftApiTest {
                 .then().statusCode(200);
     }
 
+    /**
+     * 2026-08-25: composing to a candidate is the hiring tier, not the
+     * recruiter tier — a team lead running the hire drafts and sends. The
+     * candidate reach is unchanged (this one is non-partner, so a team lead
+     * reads it); what a team lead still cannot do is edit the shared
+     * templates or work the pending queue, pinned in
+     * {@code RecruitmentEmailResourceApiTest}.
+     */
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
-    void draft_teamlead_belowRecruiterTier_answers404() {
+    void draft_teamlead_isHiringTier_drafts() {
+        stubDraft("Kære Søren, teamleadudkast.");
         given().header("X-Requested-By", teamleadUser)
                 .contentType(ContentType.JSON)
                 .body(Map.of("templateUuid", templateUuid))
                 .when().post("/recruitment/candidates/{uuid}/emails/draft", candidateUuid)
-                .then().statusCode(404);
+                .then().statusCode(200);
+
+        assertEquals(0, mailCount(), "a draft is still not a send");
     }
 
     @Test

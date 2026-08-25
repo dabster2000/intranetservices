@@ -450,6 +450,24 @@ class RecruitmentVisibilityAccessModelTest {
         assertFalse(visibility.canBulkTag("plain"));
     }
 
+    // ---- 2026-08-25: writing to the candidate --------------------------------------
+
+    @Test
+    void candidateEmail_opensToTeamleadsAndAssistants_configurationDoesNot() {
+        StubVisibility visibility = stub();
+        assertTrue(visibility.canEmailCandidates("admin"));
+        assertTrue(visibility.canEmailCandidates("hr"));
+        assertTrue(visibility.canEmailCandidates("teamlead"));
+        assertTrue(visibility.canEmailCandidates("assistant"));
+        assertFalse(visibility.canEmailCandidates("plain"));
+
+        // The split that makes the widening safe: composing and sending moved,
+        // configuring what gets sent (templates, sender, pending queue) did not.
+        assertFalse(visibility.isRecruiterTier("teamlead"),
+                "a team lead writes to candidates but never edits the shared templates");
+        assertFalse(visibility.isRecruiterTier("assistant"));
+    }
+
     // ---- The §8 gap: position creation ------------------------------------------
 
     @Test

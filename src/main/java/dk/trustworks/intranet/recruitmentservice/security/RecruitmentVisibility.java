@@ -83,11 +83,15 @@ public class RecruitmentVisibility {
      */
     static final String ROLE_ASSISTANT_TEAMLEAD = "ASSISTANT_TEAMLEAD";
     /**
-     * Recruiter-tier roles: candidate e-mail, the AI brief, configuration
-     * surfaces, dossier-adjacent work. {@code TEAMLEAD} is deliberately NOT
-     * here — since decision 1 a teamlead decides on every non-partner
-     * pipeline (see {@link #canDecideOnApplication}), but the recruiter
-     * tier proper stays ADMIN/HR/RECRUITMENT.
+     * Recruiter-tier roles: the AI brief, configuration surfaces, the
+     * review-before-send email queue, dossier-adjacent work. {@code TEAMLEAD}
+     * is deliberately NOT here — since decision 1 a teamlead decides on every
+     * non-partner pipeline (see {@link #canDecideOnApplication}), but the
+     * recruiter tier proper stays ADMIN/HR/RECRUITMENT.
+     * <p>
+     * Composing and sending a candidate e-mail left this tier on 2026-08-25 —
+     * see {@link #canEmailCandidates}. Configuring what is sent (templates,
+     * sender identity) and clearing the pending queue did not.
      */
     static final Set<String> RECRUITER_TIER_ROLES = Set.of("HR", "RECRUITMENT");
     /**
@@ -375,6 +379,37 @@ public class RecruitmentVisibility {
      * answer 404 like any other invisible row).
      */
     public boolean canBulkTag(String userUuid) {
+        Set<String> roles = rolesOf(userUuid);
+        return roles.contains(ROLE_ADMIN)
+                || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)
+                || roles.contains(ROLE_TEAMLEAD)
+                || roles.contains(ROLE_ASSISTANT_TEAMLEAD);
+    }
+
+    /**
+     * Whether the viewer may write to a candidate — the compose dialog's
+     * template list, render, AI draft, copy-options and the send itself
+     * (2026-08-25). The recruiter tier, every {@code TEAMLEAD} (● —
+     * company-wide, same reach as their candidate read) and the
+     * {@code ASSISTANT_TEAMLEAD} (◐ — practice-scoped).
+     * <p>
+     * This <b>reverses</b> the 2026-08-25 line of the access-model target's
+     * "deliberately left closed to TEAMLEAD" list: the person actually
+     * running a hire is the one who needs to write to the candidate, and
+     * routing every message through a three-person recruiter tier was the
+     * bottleneck the pipeline widening was meant to remove. What did NOT
+     * move: the review-before-send queue (approve/dismiss), the template
+     * library's write side and the sender configuration — those stay
+     * {@link #isRecruiterTier}, so a team lead composes and sends but never
+     * edits the shared copy or the outbound identity.
+     * <p>
+     * Record-level scoping is unchanged and still authoritative: every
+     * endpoint funnels the candidate through {@code canReadCandidateProfile}
+     * and the application through {@code canReadPosition}, so a team lead
+     * reaches their non-partner population and an assistant their practice —
+     * exactly the candidates they already read.
+     */
+    public boolean canEmailCandidates(String userUuid) {
         Set<String> roles = rolesOf(userUuid);
         return roles.contains(ROLE_ADMIN)
                 || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)
