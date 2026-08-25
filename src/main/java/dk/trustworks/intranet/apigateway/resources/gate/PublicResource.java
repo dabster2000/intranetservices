@@ -141,14 +141,16 @@ public class PublicResource {
         return photo;
     }
 
+    /** {@code height} opts into a centre-cropped square thumbnail — see {@code FileResource}. */
     @GET
     @Path("/users/{useruuid}/photo")
     public File findPhotoByUserUUID(@PathParam("useruuid") String useruuid,
-                                    @QueryParam("width") Integer width) {
+                                    @QueryParam("width") Integer width,
+                                    @QueryParam("height") Integer height) {
         log.debug("Public user photo request " + useruuid + (width != null ? " width=" + width : ""));
         File photo = photoAPI.findPhotoByRelatedUUID(useruuid);
         if (width != null) {
-            photo.setFile(photoAPI.getResizedPhoto(useruuid, width));
+            photo.setFile(photoAPI.getResizedPhoto(useruuid, width, height == null ? 0 : height));
         }
         return photo;
     }

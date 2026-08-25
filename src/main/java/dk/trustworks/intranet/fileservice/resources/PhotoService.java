@@ -12,6 +12,7 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import net.coobird.thumbnailator.Thumbnails;
+import net.coobird.thumbnailator.geometry.Positions;
 import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -32,6 +33,10 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.MemoryCacheImageInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.CompletableFuture;
@@ -341,7 +346,28 @@ public class PhotoService {
     }
 
     /**
-     * Scales {@code data} down to {@code width}, falling back to the untouched bytes when it cannot.
+     * Scales {@code data} down to fit {@code width}, or — when {@code height} is positive — to
+     * <em>cover</em> {@code width × height}, cropping the overflow from the centre. Falls back to
+     * the untouched bytes when it cannot.
+     * <p>
+     * <b>Why the cover mode exists.</b> {@code Thumbnails.size(w, w)} preserves aspect ratio and
+     * fits inside the box, so it bounds the LONG side. Every avatar in the app renders in a square
+     * or circular frame with {@code object-cover}, and profile photos are stored 2:1 (the upload
+     * cropper's aspect), so {@code ?width=96} answered 96×48 — half the height the frame needs, and
+     * the browser then upscaled it ~2× to fill. That is the whole of the "some portraits are
+     * blurry" report: users whose stored photo happens to be square got an exact fit and looked
+     * sharp, everyone else got a 2× (sidebar: 4×) magnification of a starved thumbnail.
+     * <p>
+     * Cover mode is opt-in rather than the default because this endpoint also serves client and
+     * team logos, which are legitimately wide and render in wide frames — centre-cropping those to
+     * a square would destroy them. Callers that draw into a square pass {@code height}; logo
+     * callers keep passing width alone and keep the old semantics.
+     * <p>
+     * <b>Neither mode enlarges.</b> Thumbnailator's {@code size()} scales UP when the source is
+     * smaller than the box, which minted thumbnails that claim a resolution the pixels do not
+     * carry — a 120×120 legacy avatar came back as a soft "256×256" that nothing downstream could
+     * tell from a real one. The target is clamped to what the source can actually fill, so a small
+     * photo now answers small and the browser's own scaling is the only magnification in play.
      * <p>
      * The fallback is deliberate and load-bearing: callers serve whatever comes back, so an image
      * this JVM cannot decode is still delivered to the browser rather than turning into an error.
@@ -359,11 +385,13 @@ public class PhotoService {
      * and the detected type is what keeps a genuine corrupt-blob case distinguishable from a webp
      * avatar now that the two no longer share a log level.
      *
+     * @param height when positive, the thumbnail covers {@code width × height} and is centre-cropped;
+     *               when zero or negative, the legacy fit-inside-{@code width} behaviour applies.
      * @param key S3 key being resized, for diagnostics — the previous message named neither the
      *            photo nor the width, which left the one production occurrence untraceable.
      */
-    byte[] resizeImage(byte[] data, int width, String key) {
-        log.debug("Resizing image locally to width=" + width);
+    byte[] resizeImage(byte[] data, int width, int height, String key) {
+        log.debugf("Resizing image locally to width=%d height=%d", width, height);
         // An absent S3 object arrives here as an empty array (loadFromS3 returns byte[0] for both a
         // missing key and a hard S3 failure). Decoding that is guaranteed to raise the same
         // UnsupportedFormatException as a genuinely exotic format, so short-circuit it instead:
@@ -375,9 +403,19 @@ public class PhotoService {
         try {
             ByteArrayInputStream bais = new ByteArrayInputStream(data);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            Thumbnails.of(bais)
-                    .size(width, width)
-                    .outputFormat("jpg")
+            // Absent when no ImageReader recognises the leading bytes; the Thumbnails call below
+            // then raises UnsupportedFormatException exactly as it always did, so the fallback and
+            // its WARN are reached by the same route.
+            int[] natural = naturalSize(data);
+            Thumbnails.Builder<? extends java.io.InputStream> builder = Thumbnails.of(bais);
+            if (height > 0) {
+                int[] box = coverBox(natural, width, height);
+                builder.size(box[0], box[1]).crop(Positions.CENTER);
+            } else {
+                int box = fitBox(natural, width);
+                builder.size(box, box);
+            }
+            builder.outputFormat("jpg")
                     .outputQuality(0.85)
                     .toOutputStream(baos);
             byte[] resized = baos.toByteArray();
@@ -390,18 +428,98 @@ public class PhotoService {
         } catch (Exception e) {
             // Anything else — a decode error on a recognised format, an I/O fault, a rejected
             // width — is a real failure and keeps its stack trace.
-            log.error("Local resize failed for " + key + " width=" + width, e);
+            log.error("Local resize failed for " + key + " width=" + width + " height=" + height, e);
             return data;
         }
     }
 
-    private byte[] resizeToUploadDimensions(byte[] data, int maxWidth, int maxHeight) {
+    /**
+     * The pixel dimensions of {@code data} without decoding it, or {@code null} when no
+     * {@link ImageReader} recognises the format.
+     * <p>
+     * Header-only on purpose: this runs on the read path for every thumbnail miss, and the callers
+     * need the dimensions solely to decide whether the requested box would enlarge the image. A
+     * full {@code ImageIO.read} would decode the pixels twice, since Thumbnailator decodes again.
+     * <p>
+     * {@code null} deliberately means "unknown", not "zero" — the callers then leave the requested
+     * box untouched, which is the pre-existing behaviour for formats this JVM cannot read.
+     */
+    static int[] naturalSize(byte[] data) {
+        // MemoryCacheImageInputStream rather than ImageIO.createImageInputStream: the latter honours
+        // ImageIO.getUseCache(), which defaults to true and spills a FileCacheImageInputStream to a
+        // temp file for any non-file source. The bytes are already in memory, and this runs on a
+        // path whose volume scales with page views.
+        try (ImageInputStream in = new MemoryCacheImageInputStream(new ByteArrayInputStream(data))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(in);
+            if (!readers.hasNext()) {
+                return null;
+            }
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(in);
+                return new int[]{reader.getWidth(0), reader.getHeight(0)};
+            } finally {
+                reader.dispose();
+            }
+        } catch (Exception e) {
+            // Truncated or corrupt data. Not this method's problem to report: the resize attempt
+            // that follows raises on the same bytes and logs with the key and width attached.
+            return null;
+        }
+    }
+
+    /**
+     * The largest {@code w × h} box, in the requested aspect, that {@code natural} can fill without
+     * being enlarged. Returns the request verbatim when the source is big enough or unknown.
+     */
+    static int[] coverBox(int[] natural, int width, int height) {
+        if (natural == null || width <= 0 || height <= 0) {
+            return new int[]{width, height};
+        }
+        // Cover scales by the LARGER ratio — the short side is what has to reach the box.
+        double scale = Math.max(width / (double) natural[0], height / (double) natural[1]);
+        if (scale <= 1.0) {
+            return new int[]{width, height};
+        }
+        // At least 1px per side: a source smaller than the rounding would otherwise ask
+        // Thumbnailator for a zero-sized thumbnail, which it rejects as a hard failure.
+        return new int[]{Math.max(1, (int) Math.round(width / scale)),
+                Math.max(1, (int) Math.round(height / scale))};
+    }
+
+    /** The fit-inside counterpart of {@link #coverBox}: bounds the long side without enlarging. */
+    static int fitBox(int[] natural, int width) {
+        if (natural == null || width <= 0) {
+            return width;
+        }
+        int longSide = Math.max(natural[0], natural[1]);
+        return Math.min(width, longSide);
+    }
+
+    /**
+     * Bounds an upload to {@code maxWidth × maxHeight} before it is stored.
+     * <p>
+     * Shrink-only. This used to call {@code size()} unconditionally, which ENLARGES a smaller
+     * source: the upload cropper hands over an 800×400 canvas, so every portrait was inflated to
+     * 1600×800 and re-encoded at q0.90 — no new detail, just doubled JPEG artefacts on the master
+     * every thumbnail is then derived from.
+     * <p>
+     * The re-encode itself is kept even when nothing is scaled, and that is load-bearing rather
+     * than incidental: {@link #requireStorableImage} runs on these bytes, and normalising to JPEG
+     * is what collapses a polyglot upload into a plain raster image.
+     */
+    byte[] resizeToUploadDimensions(byte[] data, int maxWidth, int maxHeight) {
         try {
             ByteArrayInputStream bais = new ByteArrayInputStream(data);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            Thumbnails.of(bais)
-                    .size(maxWidth, maxHeight)
-                    .outputFormat("jpg")
+            int[] natural = naturalSize(data);
+            Thumbnails.Builder<? extends java.io.InputStream> builder = Thumbnails.of(bais);
+            if (natural != null && natural[0] <= maxWidth && natural[1] <= maxHeight) {
+                builder.scale(1.0);
+            } else {
+                builder.size(maxWidth, maxHeight);
+            }
+            builder.outputFormat("jpg")
                     .outputQuality(0.90)
                     .toOutputStream(baos);
             byte[] result = baos.toByteArray();
@@ -430,8 +548,19 @@ public class PhotoService {
         }
     }
 
-    private String resizedKey(String uuid, int width) {
-        return RESIZED_KEY_PREFIX + width + "/" + uuid;
+    /**
+     * The S3 key a thumbnail is cached under.
+     * <p>
+     * Square (cover-cropped) variants get their own {@code {width}x{height}} segment rather than
+     * reusing {@code {width}}, so they cannot collide with the fit-inside thumbnails the logo
+     * callers still request at the same width — and, usefully for the rollout, so introducing the
+     * square variant needs no purge of the existing {@code resized/} objects. Both shapes end in
+     * the relateduuid, which is all {@link #isResizedKeyFor} matches on, so invalidation covers
+     * them without change.
+     */
+    static String resizedKey(String uuid, int width, int height) {
+        String size = height > 0 ? width + "x" + height : String.valueOf(width);
+        return RESIZED_KEY_PREFIX + size + "/" + uuid;
     }
 
     /**
@@ -487,7 +616,11 @@ public class PhotoService {
     private Set<String> staleThumbnailKeys(String relateduuid) {
         Set<String> keys = new LinkedHashSet<>();
         for (int width : COMMON_THUMBNAIL_WIDTHS) {
-            keys.add(resizedKey(relateduuid, width));
+            keys.add(resizedKey(relateduuid, width, 0));
+            // The square variant every avatar frame asks for. Without this the fallback path (no
+            // s3:ListBucket) would leave the shape that actually renders in the UI behind, which is
+            // the one shape whose staleness is immediately visible.
+            keys.add(resizedKey(relateduuid, width, width));
         }
         try {
             ListObjectsV2Request.Builder request = ListObjectsV2Request.builder()
@@ -567,9 +700,14 @@ public class PhotoService {
         });
     }
 
+    /**
+     * @param height positive to get a centre-cropped {@code width × height} thumbnail (what every
+     *               square/circular avatar frame needs); {@code 0} for the fit-inside-{@code width}
+     *               shape the logo callers want. See {@link #resizeImage}.
+     */
     @CacheResult(cacheName = PHOTO_RESIZE_CACHE)
-    public byte[] getResizedPhoto(@CacheKey String relateduuid, @CacheKey int width) {
-        String key = resizedKey(relateduuid, width);
+    public byte[] getResizedPhoto(@CacheKey String relateduuid, @CacheKey int width, @CacheKey int height) {
+        String key = resizedKey(relateduuid, width, height);
         log.debug("Retrieving resized photo " + key);
 
         if (s3ObjectExists(key)) {
@@ -589,7 +727,7 @@ public class PhotoService {
         File photo = stored.get();
         photo.setFile(loadFromS3(photo.getUuid()));
         try {
-            byte[] resized = resizeImage(photo.getFile(), width, key);
+            byte[] resized = resizeImage(photo.getFile(), width, height, key);
             // Never publish an empty thumbnail. resizeImage hands back what it was given when it
             // cannot scale, so a photo whose S3 object is missing would otherwise persist a 0-byte
             // object under this key — and s3ObjectExists would then serve those 0 bytes for this
@@ -678,9 +816,18 @@ public class PhotoService {
         update(photo);
     }
 
+    /**
+     * The employee-portrait path ({@code PUT /files/photos/portrait}).
+     * <p>
+     * Bounded square, unlike {@link #updatePhoto} and {@link #updateLogo}: every frame that renders
+     * a portrait in this app is square or circular, so a wide master would only ever be
+     * centre-cropped for display, and the 2:1 bound this used to share with the logo paths capped
+     * the useful (vertical) resolution at 800px while charging for 1600 across. 1024² matches what
+     * the upload cropper now produces, so in practice nothing is scaled here at all.
+     */
     @Transactional
     public void updatePortrait(File photo) {
-        photo.setFile(resizeToUploadDimensions(photo.getFile(), 1600, 800));
+        photo.setFile(resizeToUploadDimensions(photo.getFile(), 1024, 1024));
         update(photo);
         log.info("Photo updated");
     }
