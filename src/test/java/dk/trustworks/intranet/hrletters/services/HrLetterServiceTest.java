@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.hrletters.services;
 
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.hrletters.model.enums.HrLetterType;
 import jakarta.ws.rs.BadRequestException;
 import org.junit.jupiter.api.Test;
@@ -8,12 +9,13 @@ import java.time.LocalDate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Plain unit test (no DB / no @QuarkusTest) for the pure helpers behind the
- * HR letters flows: vacation-year derivation, day validation and the
- * generated document filenames.
+ * HR letters flows: vacation-year derivation, day validation, the generated
+ * document filenames and the display name the console shows.
  */
 class HrLetterServiceTest {
 
@@ -87,5 +89,35 @@ class HrLetterServiceTest {
                 HrLetterService.letterFilename(HrLetterType.SALARY_REGULATION, null, date));
         assertEquals("2026-03-01_VACATION_vacation.pdf",
                 HrLetterService.letterFilename(HrLetterType.VACATION_TRANSFER, "  ", date));
+    }
+
+    // ── Display name ───────────────────────────────────────────────────────
+
+    @Test
+    void displayName_joinsFirstAndLast() {
+        assertEquals("Alma Bech", HrLetterService.displayName(user("Alma", "Bech", "alma.bech")));
+    }
+
+    @Test
+    void displayName_neverPrintsTheWordNull() {
+        // User.getFullname() concatenates unconditionally — "Alma null".
+        assertEquals("Alma", HrLetterService.displayName(user("Alma", null, "alma.bech")));
+        assertEquals("Bech", HrLetterService.displayName(user(null, "Bech", "alma.bech")));
+    }
+
+    @Test
+    void displayName_fallsBackToUsername_thenToNull() {
+        assertEquals("alma.bech", HrLetterService.displayName(user("  ", "", "alma.bech")));
+        assertNull(HrLetterService.displayName(user(null, null, null)));
+        assertNull(HrLetterService.displayName(user("", "", "   ")));
+        assertNull(HrLetterService.displayName(null));
+    }
+
+    private static User user(String firstname, String lastname, String username) {
+        User user = new User();
+        user.setFirstname(firstname);
+        user.setLastname(lastname);
+        user.setUsername(username);
+        return user;
     }
 }
