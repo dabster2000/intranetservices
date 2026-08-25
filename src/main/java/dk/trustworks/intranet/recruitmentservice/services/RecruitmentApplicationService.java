@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationRejectRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.BoardCardSubStatus;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateApplicationInfo;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
@@ -102,6 +103,10 @@ public class RecruitmentApplicationService {
 
     @Inject
     RecruitmentVisibility visibility;
+
+    /** The sub-status ladder's single owner — the profile reuses its derivation. */
+    @Inject
+    RecruitmentBoardService boardService;
 
     @Inject
     RecruitmentOfferBridge offerBridge;
@@ -616,12 +621,18 @@ public class RecruitmentApplicationService {
         List<RecruitmentApplication> applications =
                 visibility.filterApplications(viewerUuid, candidateUuid);
         Map<String, RecruitmentPosition> positions = positionsOf(applications);
+        // One batched sub-status load for the whole list (the board's own
+        // loader — no N+1), so the profile's next-step bar shows the same
+        // ladder as the board card.
+        RecruitmentBoardService.SubStatusInputs subStatusInputs =
+                boardService.loadSubStatusInputs(applications);
         return applications.stream()
                 .map(a -> toResponse(
                         a,
                         positions.get(a.getPositionUuid()),
                         viewerUuid,
-                        viewerCanReadDossier))
+                        viewerCanReadDossier,
+                        subStatusInputs))
                 .toList();
     }
 
@@ -665,13 +676,26 @@ public class RecruitmentApplicationService {
                 application,
                 position,
                 viewerUuid,
-                visibility.canReadDossier(viewerUuid, application.getCandidateUuid()));
+                visibility.canReadDossier(viewerUuid, application.getCandidateUuid()),
+                boardService.loadSubStatusInputs(List.of(application)));
     }
 
     private ApplicationResponse toResponse(RecruitmentApplication application,
                                            RecruitmentPosition position,
                                            String viewerUuid,
-                                           boolean viewerCanReadDossier) {
+                                           boolean viewerCanReadDossier,
+                                           RecruitmentBoardService.SubStatusInputs subStatusInputs) {
+        boolean viewerCanDecide =
+                position != null && visibility.canDecideOnApplication(viewerUuid, position);
+        boolean viewerCanDecideFinal =
+                position != null && visibility.canDecideFinalOutcome(viewerUuid, position);
+        // Terminal applications carry no ladder; open ones derive the same
+        // rung the board shows (Copenhagen pivot for the held/upcoming split).
+        BoardCardSubStatus subStatus = application.isTerminal() || position == null
+                ? null
+                : RecruitmentBoardService.deriveSubStatus(application, position,
+                        subStatusInputs, LocalDateTime.now(RecruitmentBoardService.COPENHAGEN),
+                        viewerCanDecide, viewerCanDecideFinal, viewerCanReadDossier);
         return new ApplicationResponse(
                 application.getUuid(),
                 application.getCandidateUuid(),
@@ -687,12 +711,13 @@ public class RecruitmentApplicationService {
                 application.getExpectedStartDate(),
                 application.getStageEnteredAt(),
                 application.getCreatedAt(),
-                position != null && visibility.canDecideOnApplication(viewerUuid, position),
-                position != null && visibility.canDecideFinalOutcome(viewerUuid, position),
+                viewerCanDecide,
+                viewerCanDecideFinal,
                 viewerCanReadDossier,
                 position != null
                         && visibility.isHiringOwnerForCandidate(viewerUuid,
-                                application.getCandidateUuid()));
+                                application.getCandidateUuid()),
+                subStatus);
     }
 
     // ---- Helpers ---------------------------------------------------------------

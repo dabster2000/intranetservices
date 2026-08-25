@@ -87,6 +87,17 @@ public record ApplicationResponse(
          * false. The 2026-08-19 self-attach clause still applies here: an
          * application the viewer filed themselves does not count.
          */
-        boolean viewerRunsHire
+        boolean viewerRunsHire,
+        /**
+         * The server-derived position inside the current stage — the SAME
+         * ladder the pipeline board computes ({@link BoardCardSubStatus}),
+         * so the profile's guided next-step bar and the board chip can never
+         * tell different stories. {@code null} on terminal applications, on
+         * stages with no ladder (SCREENING, HIRED), and for viewers whose
+         * capabilities hide the rung (the OFFER rungs beyond TEAM_MISSING
+         * follow {@link #viewerCanReadDossier}). Old clients ignore the
+         * field.
+         */
+        BoardCardSubStatus subStatus
 ) {
 }

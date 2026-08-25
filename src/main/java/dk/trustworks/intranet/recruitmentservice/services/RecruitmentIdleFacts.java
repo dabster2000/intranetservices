@@ -10,6 +10,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentIntervie
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingRequestStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -99,6 +100,7 @@ public class RecruitmentIdleFacts {
         Set<String> debriefReady = roundsWhere(interviews, scorecards, byUuid, now, true);
         Set<String> scheduling = schedulingInFlight(applicationUuids);
         Set<String> queuedEmails = pendingEmails(applicationUuids);
+        Set<String> signedCandidates = signedCandidates(applications);
         Map<String, LocalDateTime> progress = lastProgress(applicationUuids);
 
         Map<String, RecruitmentIdleRule.Facts> result = new HashMap<>(applications.size());
@@ -107,6 +109,8 @@ public class RecruitmentIdleFacts {
                     : positions.get(a.getPositionUuid());
             result.put(a.getUuid(), new RecruitmentIdleRule.Facts(
                     position != null && position.getStatus() == RecruitmentPositionStatus.OPEN,
+                    a.getStage() == RecruitmentStage.OFFER
+                            && signedCandidates.contains(a.getCandidateUuid()),
                     booked.contains(a.getUuid()),
                     scheduling.contains(a.getUuid()),
                     awaitingCards.contains(a.getUuid()),
@@ -175,6 +179,39 @@ public class RecruitmentIdleFacts {
                 .stream()
                 .map(RecruitmentSchedulingRequest::getApplicationUuid)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * Candidates whose open dossier has a SIGNATURE revision on a COMPLETED
+     * signing case — the board's {@code SIGNED} ("ready to hire") join,
+     * reused verbatim so the task list and the board chip can never disagree
+     * about who has signed. Queried only for OFFER-stage applications; the
+     * suppression is likewise applied only in OFFER, matching the ladder.
+     */
+    private Set<String> signedCandidates(List<RecruitmentApplication> applications) {
+        List<String> offerCandidates = applications.stream()
+                .filter(a -> a.getStage() == RecruitmentStage.OFFER)
+                .map(RecruitmentApplication::getCandidateUuid)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (offerCandidates.isEmpty()) {
+            return Set.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<String> rows = em.createNativeQuery("""
+                        SELECT DISTINCT cd.candidate_uuid
+                        FROM candidate_dossiers cd
+                        JOIN candidate_dossier_revisions cdr ON cdr.dossier_uuid = cd.uuid
+                        JOIN signing_cases sc ON sc.case_key = cdr.signing_case_key
+                        WHERE cd.status = 'OPEN'
+                          AND cdr.kind = 'SIGNATURE'
+                          AND sc.status = 'COMPLETED'
+                          AND cd.candidate_uuid IN (:uuids)
+                        """)
+                .setParameter("uuids", offerCandidates)
+                .getResultList();
+        return Set.copyOf(rows);
     }
 
     /** Applications whose next contact is already drafted in the P15 review queue. */

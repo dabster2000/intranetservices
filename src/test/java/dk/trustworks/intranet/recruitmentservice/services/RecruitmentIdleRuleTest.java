@@ -113,6 +113,17 @@ class RecruitmentIdleRuleTest {
     }
 
     @Test
+    void signedContract_isNotATask() {
+        RecruitmentIdleRule.Facts signed = facts(b -> b.contractSigned = true);
+
+        assertEquals(RecruitmentIdleRule.Suppression.CONTRACT_SIGNED,
+                RecruitmentIdleRule.suppressedBecause(signed, CUTOFF),
+                "Thomas Anthony: 'Signed — ready to hire' for 12 days — what remains "
+                        + "is the Convert step, which has its own chip and its own Slack "
+                        + "notification; 'move them along or close' asks for neither");
+    }
+
+    @Test
     void pausedOrClosedRequisition_isNotACandidateTask() {
         RecruitmentIdleRule.Facts onHold = facts(b -> b.positionOpen = false);
 
@@ -134,6 +145,19 @@ class RecruitmentIdleRuleTest {
         assertEquals(RecruitmentIdleRule.Suppression.STILL_MOVING,
                 RecruitmentIdleRule.suppressedBecause(recentAndBooked, CUTOFF),
                 "the clock is checked first: a moving candidate is never 'suppressed'");
+    }
+
+    @Test
+    void aSignedContractOutranksABookedMeeting() {
+        RecruitmentIdleRule.Facts signedAndBooked = facts(b -> {
+            b.contractSigned = true;
+            b.futureInterviewBooked = true;
+        });
+
+        assertEquals(RecruitmentIdleRule.Suppression.CONTRACT_SIGNED,
+                RecruitmentIdleRule.suppressedBecause(signedAndBooked, CUTOFF),
+                "with the contract signed, a lingering calendar entry (the offer "
+                        + "meeting) is history — 'signed' is the sentence worth saying");
     }
 
     @Test
@@ -270,13 +294,14 @@ class RecruitmentIdleRuleTest {
     private static RecruitmentIdleRule.Facts facts(java.util.function.Consumer<Builder> tweak) {
         Builder b = new Builder();
         tweak.accept(b);
-        return new RecruitmentIdleRule.Facts(b.positionOpen, b.futureInterviewBooked,
-                b.schedulingInFlight, b.awaitingScorecards, b.debriefReady,
-                b.emailAwaitingReview, b.lastProgressAt);
+        return new RecruitmentIdleRule.Facts(b.positionOpen, b.contractSigned,
+                b.futureInterviewBooked, b.schedulingInFlight, b.awaitingScorecards,
+                b.debriefReady, b.emailAwaitingReview, b.lastProgressAt);
     }
 
     private static final class Builder {
         boolean positionOpen = true;
+        boolean contractSigned;
         boolean futureInterviewBooked;
         boolean schedulingInFlight;
         boolean awaitingScorecards;

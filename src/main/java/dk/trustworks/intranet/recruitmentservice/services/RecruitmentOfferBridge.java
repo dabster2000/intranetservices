@@ -237,6 +237,24 @@ public class RecruitmentOfferBridge {
         // Fail-closed CIRCLE (MEDIUM-2): ANY application the candidate has
         // ever held on a PARTNER-track position — open or terminal — makes
         // the completion circle-scoped.
+        if (hasPartnerTrackHistory(candidateUuid)) {
+            event.visibility(RecruitmentEventVisibility.CIRCLE);
+        }
+
+        eventRecorder.record(event);
+        log.infof("SIGNING_COMPLETED appended for case=%s candidate=%s dossier=%s",
+                caseKey, candidateUuid, dossierUuid);
+        return true;
+    }
+
+    /**
+     * Whether the candidate has EVER held an application on a PARTNER-track
+     * position — open or terminal. The fail-closed confidentiality pivot
+     * (MEDIUM-2): signing completions stamp {@code visibility=CIRCLE} on it,
+     * and the offer-channel notifications suppress on it (a shared HR channel
+     * must never see partner-track recruitment).
+     */
+    public boolean hasPartnerTrackHistory(String candidateUuid) {
         Long partnerApplications = em.createQuery(
                         "select count(a) from RecruitmentApplication a, RecruitmentPosition p "
                                 + "where p.uuid = a.positionUuid "
@@ -245,14 +263,7 @@ public class RecruitmentOfferBridge {
                 .setParameter("candidate", candidateUuid)
                 .setParameter("track", RecruitmentHiringTrack.PARTNER)
                 .getSingleResult();
-        if (partnerApplications > 0) {
-            event.visibility(RecruitmentEventVisibility.CIRCLE);
-        }
-
-        eventRecorder.record(event);
-        log.infof("SIGNING_COMPLETED appended for case=%s candidate=%s dossier=%s",
-                caseKey, candidateUuid, dossierUuid);
-        return true;
+        return partnerApplications > 0;
     }
 
     // ---- B1d: conversion → application HIRED + CANDIDATE_HIRED -----------------

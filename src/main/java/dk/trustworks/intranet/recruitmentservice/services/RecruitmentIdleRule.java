@@ -51,17 +51,18 @@ import java.util.Set;
  * is also self-clearing: the day the interview is held, the scorecard lands
  * or the requisition reopens, the row comes back with a truthful age.
  *
- * <h3>Known gap: the offer phase</h3>
- * "The contract is out for signature, we are waiting on the candidate's pen"
- * is a textbook ball-elsewhere state, and it is <em>not</em> implemented —
- * because it cannot be, yet. {@code signing_cases} keys on {@code user_uuid}
- * with no candidate linkage, and {@code recruitment_signing_completed_cases}
- * maps case → candidate only <em>after</em> completion; measured 2026-08-22,
- * all 9 in-flight cases (1 {@code in_progress}, 8 {@code pending}) were
- * unlinkable. {@code candidate_dossiers.status} is only OPEN/CLOSED, so it
- * cannot stand in. A candidate in OFFER whose contract is out therefore still
- * appears as idle. Closing this needs a candidate reference on the signing
- * case (or a "signature sent" event on the stream) — not a guess here.
+ * <h3>The offer phase</h3>
+ * A signed contract ({@link Suppression#CONTRACT_SIGNED}) suppresses the row:
+ * "signed — ready to hire" waits only on the Convert step, which has its own
+ * chip on the board and its own Slack notification, so the generic "move them
+ * along or close the application" row is pure noise there. The linkage is the
+ * dossier's SIGNATURE revision reaching a COMPLETED signing case — the exact
+ * join the board's {@code SIGNED} sub-status runs.
+ *
+ * <p>The earlier rung — "the contract is out for signature, we are waiting on
+ * the candidate's pen" — deliberately does <em>not</em> suppress (decided
+ * 2026-08-25): an unsigned contract going stale is exactly the moment someone
+ * should chase the candidate, so the row stays.
  *
  * <p>Deliberately free of CDI, entities and I/O: callers gather the facts in
  * their own batched queries ({@link RecruitmentIdleFacts}) and hand over a
@@ -141,6 +142,16 @@ public final class RecruitmentIdleRule {
         POSITION_NOT_OPEN,
 
         /**
+         * The offer dossier's contract is signed ("Signed — ready to hire").
+         * What remains is the Convert step, carried by the board's own
+         * {@code SIGNED} chip and the offer-phase Slack notifications —
+         * "move them along or close the application" asks for neither.
+         * Deliberately NOT extended to contract-out-for-signature: an
+         * unsigned contract going stale is precisely when to chase.
+         */
+        CONTRACT_SIGNED,
+
+        /**
          * A non-cancelled interview of any kind (round, informal chat or the
          * offer meeting) sits in the future. The next step is on a calendar;
          * nobody has to invent it.
@@ -184,6 +195,8 @@ public final class RecruitmentIdleRule {
      * record answers the page, the pipelines badge and the nightly sweep.
      *
      * @param positionOpen          the requisition's status is {@code OPEN}
+     * @param contractSigned        an OFFER application whose open dossier has a SIGNATURE
+     *                              revision on a COMPLETED signing case ("Signed — ready to hire")
      * @param futureInterviewBooked a non-cancelled interview of any kind is scheduled after now
      * @param schedulingInFlight    a Method B request exists in a non-terminal status
      * @param awaitingScorecards    a held, still-live round has an assigned interviewer who has not submitted
@@ -193,6 +206,7 @@ public final class RecruitmentIdleRule {
      */
     public record Facts(
             boolean positionOpen,
+            boolean contractSigned,
             boolean futureInterviewBooked,
             boolean schedulingInFlight,
             boolean awaitingScorecards,
@@ -238,6 +252,9 @@ public final class RecruitmentIdleRule {
         }
         if (!facts.positionOpen()) {
             return Suppression.POSITION_NOT_OPEN;
+        }
+        if (facts.contractSigned()) {
+            return Suppression.CONTRACT_SIGNED;
         }
         if (facts.futureInterviewBooked()) {
             return Suppression.NEXT_STEP_BOOKED;

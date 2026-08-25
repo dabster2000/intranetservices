@@ -50,6 +50,7 @@ class SlackCardReactorTest {
     private static final String PIPELINE_FLAG = P8ProfileFixtures.PIPELINE_FLAG;
     private static final String CARDS_FLAG = "recruitment.slack.cards.enabled";
     private static final String DEFAULT_KEY = RecruitmentSlackChannelRouter.DEFAULT_CHANNEL_KEY;
+    private static final String OFFER_KEY = RecruitmentSlackChannelRouter.OFFER_CHANNEL_KEY;
     private static final String ROOT_TS = "1700000000.000100";
 
     @Inject
@@ -72,6 +73,7 @@ class SlackCardReactorTest {
     private String previousCards;
     private String previousDefault;
     private String previousOtherPractice;
+    private String previousOffer;
     private String otherPracticeUuid;
     private String otherPositionUuid;
 
@@ -106,6 +108,7 @@ class SlackCardReactorTest {
                     "PRACTICE_TEAM", otherPracticeUuid, null, null);
             previousDefault = P8ProfileFixtures.setFlag(em, DEFAULT_KEY, "");
             previousOtherPractice = P8ProfileFixtures.setFlag(em, otherPracticeChannelKey(), "");
+            previousOffer = P8ProfileFixtures.setFlag(em, OFFER_KEY, "");
         });
         // Drain any backlog with the flags OFF so each test's sweep only
         // reflects its own trigger events.
@@ -130,6 +133,7 @@ class SlackCardReactorTest {
             P8ProfileFixtures.restoreFlag(em, CARDS_FLAG, previousCards);
             P8ProfileFixtures.restoreFlag(em, DEFAULT_KEY, previousDefault);
             P8ProfileFixtures.restoreFlag(em, otherPracticeChannelKey(), previousOtherPractice);
+            P8ProfileFixtures.restoreFlag(em, OFFER_KEY, previousOffer);
         });
         // Advance past everything this test appended so the next test's
         // pre-sweep starts clean.
@@ -395,6 +399,59 @@ class SlackCardReactorTest {
         verify(slackService, times(1)).sendMessageReturningTs(eq("C-DEFAULT"), anyString(), any());
         verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
         assertEquals(ROOT_TS, threadRowTs(), "card born mid-stream must be recorded");
+    }
+
+    // ---- Offer split (recruitment.slack.channel.offer, 2026-08-25) ----------------
+
+    /**
+     * With the offer channel configured, a stage move INTO OFFER still
+     * {@code chat.update}s the living card (a state mirror never lies) but
+     * posts NO thread reply — that moment now belongs to the offer channel.
+     */
+    @Test
+    void offerSplitActive_stageMoveIntoOffer_updatesCardButMovesThePing() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, OFFER_KEY, "C-OFFER"));
+
+        insertStageChanged("INTERVIEW_2", "OFFER", "FORWARD");
+        reactor.catchUp();
+
+        verify(slackService, times(1)).updateMessageStrict(eq("C-DEFAULT"), eq(ROOT_TS),
+                anyString(), any());
+        verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
+    }
+
+    /** Blank offer channel ⇒ the split is off and the thread reply stays. */
+    @Test
+    void offerSplitInactive_stageMoveIntoOffer_stillRepliesInTheThread() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+
+        insertStageChanged("INTERVIEW_2", "OFFER", "FORWARD");
+        reactor.catchUp();
+
+        verify(slackService, times(1)).sendThreadReply(eq("C-DEFAULT"), eq(ROOT_TS), anyString());
+    }
+
+    /** The hired celebration also moves: card updates, no ":tada:" reply here. */
+    @Test
+    void offerSplitActive_hiredCelebration_leavesTheThreadSilent() throws Exception {
+        cardsOnWithChannel("C-DEFAULT");
+        insertThreadRow("C-DEFAULT", ROOT_TS);
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.setFlag(em, OFFER_KEY, "C-OFFER"));
+
+        QuarkusTransaction.requiringNew().run(() ->
+                P8ProfileFixtures.insertEvent(em, "CANDIDATE_HIRED", candidateUuid,
+                        applicationUuid, positionUuid, "USER", actorUser, "NORMAL",
+                        "{}", null));
+        reactor.catchUp();
+
+        verify(slackService, times(1)).updateMessageStrict(eq("C-DEFAULT"), eq(ROOT_TS),
+                anyString(), any());
+        verify(slackService, never()).sendThreadReply(anyString(), anyString(), anyString());
     }
 
     // ---- Idempotency -------------------------------------------------------------
