@@ -231,7 +231,12 @@ public class HrLetterService {
         query.append(" ORDER BY createdAt DESC");
         List<HrLetter> letters = HrLetter.find(query.toString(), params.toArray())
                 .page(0, 500).list();
-        return letters.stream().map(this::toDTO).toList();
+        // One directory query for the whole page, not one per row.
+        Map<String, String> names = resolveEmployeeNames(
+                letters.stream().map(HrLetter::getUseruuid).toList());
+        return letters.stream()
+                .map(letter -> toDTO(letter, names.get(letter.getUseruuid())))
+                .toList();
     }
 
     /**
@@ -240,11 +245,12 @@ public class HrLetterService {
      * through this surface.
      */
     public List<HrLetterDTO> listOwn(String actorUuid) {
+        String actorName = resolveEmployeeName(actorUuid);
         return HrLetter.findForUser(actorUuid).stream()
                 .filter(letter -> letter.getLetterType() == HrLetterType.VACATION_TRANSFER
                         || letter.getStatus() == HrLetterStatus.SENT
                         || letter.getStatus() == HrLetterStatus.ACKNOWLEDGED)
-                .map(this::toDTO)
+                .map(letter -> toDTO(letter, actorName))
                 .toList();
     }
 
@@ -412,16 +418,43 @@ public class HrLetterService {
     }
 
     private String consentStamp(String verb, String userUuid, ZonedDateTime at) {
-        String name = userUuid;
-        try {
-            User user = userService.findById(userUuid, true);
-            if (user != null && user.getFullname() != null && !user.getFullname().isBlank()) {
-                name = user.getFullname();
-            }
-        } catch (Exception e) {
-            log.warnf("hr-letters: could not resolve name for %s: %s", userUuid, e.getMessage());
-        }
+        String name = Optional.ofNullable(resolveEmployeeName(userUuid)).orElse(userUuid);
         return verb + " " + name + " den " + STAMP_FORMAT.format(at) + " via intranettet";
+    }
+
+    /**
+     * The display name behind one user uuid, or null when it resolves to
+     * nobody. Never throws — a name is presentation, and losing it must not
+     * fail an approval or empty the console.
+     */
+    private String resolveEmployeeName(String useruuid) {
+        if (useruuid == null || useruuid.isBlank()) return null;
+        try {
+            return displayName(userService.findById(useruuid, true));
+        } catch (Exception e) {
+            log.warnf("hr-letters: could not resolve name for %s: %s", useruuid, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Bulk form of {@link #resolveEmployeeName(String)} — one query for a whole list. */
+    private Map<String, String> resolveEmployeeNames(List<String> useruuids) {
+        List<String> distinct = useruuids.stream()
+                .filter(uuid -> uuid != null && !uuid.isBlank())
+                .distinct()
+                .toList();
+        if (distinct.isEmpty()) return Map.of();
+        try {
+            Map<String, String> names = new HashMap<>();
+            for (User user : userService.findByUuids(distinct, true)) {
+                String name = displayName(user);
+                if (name != null) names.put(user.getUuid(), name);
+            }
+            return names;
+        } catch (Exception e) {
+            log.warnf("hr-letters: could not resolve names for %d users: %s", distinct.size(), e.getMessage());
+            return Map.of();
+        }
     }
 
     /**
@@ -519,9 +552,14 @@ public class HrLetterService {
     }
 
     private HrLetterDTO toDTO(HrLetter letter) {
+        return toDTO(letter, resolveEmployeeName(letter.getUseruuid()));
+    }
+
+    private HrLetterDTO toDTO(HrLetter letter, String employeeName) {
         return new HrLetterDTO(
                 letter.getUuid(),
                 letter.getUseruuid(),
+                employeeName,
                 letter.getLetterType(),
                 letter.getStatus(),
                 readPayload(letter),
@@ -544,6 +582,25 @@ public class HrLetterService {
     }
 
     // ── Pure helpers (package-private for DB-free unit tests) ──────────────
+
+    /**
+     * The name to print for a user, or null when there is nothing usable.
+     *
+     * <p>Not {@link User#getFullname()}: that concatenates the two columns
+     * unconditionally, so a user missing a lastname renders as
+     * {@code "Alma null"} and a user missing both as {@code "null null"} —
+     * worse than the uuid it replaces. Username is the last resort because it
+     * is NOT NULL for every real login.</p>
+     */
+    static String displayName(User user) {
+        if (user == null) return null;
+        String first = user.getFirstname() == null ? "" : user.getFirstname().trim();
+        String last = user.getLastname() == null ? "" : user.getLastname().trim();
+        String composed = (first + " " + last).trim();
+        if (!composed.isEmpty()) return composed;
+        String username = user.getUsername();
+        return username == null || username.isBlank() ? null : username.trim();
+    }
 
     /**
      * The September start-year of the vacation year whose holding period
