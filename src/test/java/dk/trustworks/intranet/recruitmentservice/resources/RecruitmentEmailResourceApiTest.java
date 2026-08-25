@@ -30,8 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * P15 DoD (API, end-to-end through the resource with real {@code roles}
  * fixtures resolved via {@code X-Requested-By}):
  * <ul>
- *   <li>template CRUD with recruiter-tier gating (teamlead → 404) and
- *       explicit validation (§P4.9);</li>
+ *   <li>template CRUD with recruiter-tier gating on the WRITE side
+ *       (teamlead → 404; the read side opened to the hiring tier
+ *       2026-08-25) and explicit validation (§P4.9);</li>
  *   <li>compose render + manual send — mail row and {@code EMAIL_SENT}
  *       asserted against the DB in a fresh transaction (the §P11 flush
  *       lesson), recruiter as actor;</li>
@@ -254,15 +255,32 @@ class RecruitmentEmailResourceApiTest {
                 .then().statusCode(400);
     }
 
+    /**
+     * The 2026-08-25 split, both halves in one test. A team lead composes to
+     * a candidate — so the template LIST the picker feeds on is open to them
+     * — but configuring what gets sent, and clearing the review queue their
+     * own review-first rejections land in, stays recruiter-tier.
+     */
     @Test
     @TestSecurity(user = "bff-client", roles = {"recruitment:read", "recruitment:write"})
-    void recruiterTierGate_teamleadGets404() {
+    void tierSplit_teamleadReadsTemplates_butNeitherEditsThemNorWorksTheQueue() {
         given().header("X-Requested-By", teamleadUser)
                 .when().get("/recruitment/email-templates")
+                .then().statusCode(200);
+
+        given().header("X-Requested-By", teamleadUser)
+                .contentType(ContentType.JSON)
+                .body(Map.of("templateKey", "TL_" + customTemplateKey,
+                        "subject", "s", "body", "b"))
+                .when().post("/recruitment/email-templates")
                 .then().statusCode(404);
 
         given().header("X-Requested-By", teamleadUser)
                 .when().get("/recruitment/emails/pending")
+                .then().statusCode(404);
+
+        given().header("X-Requested-By", teamleadUser)
+                .when().get("/recruitment/email-settings")
                 .then().statusCode(404);
     }
 

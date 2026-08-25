@@ -67,11 +67,17 @@ import java.util.stream.Collectors;
  *
  * <h3>Security</h3>
  * <ul>
- *   <li>Every endpoint is recruiter-tier ({@code ADMIN}/{@code HR}/
- *       {@code RECRUITMENT} via {@link RecruitmentVisibility#isRecruiterTier}) —
- *       candidate communication is a recruiter surface (plan §P15;
- *       teamleads' review-first rejections land in this queue for a
- *       recruiter to approve).</li>
+ *   <li>Two tiers, split by what the endpoint changes (2026-08-25).
+ *       <b>Writing to a candidate</b> — the template list the picker
+ *       offers, render, AI draft, copy-options, send — is the hiring tier
+ *       ({@code ADMIN}/{@code HR}/{@code RECRUITMENT}/{@code TEAMLEAD}/
+ *       {@code ASSISTANT_TEAMLEAD} via
+ *       {@link RecruitmentVisibility#canEmailCandidates}): the person
+ *       running a hire is the one who needs to write to the candidate.
+ *       <b>Configuring what gets sent</b> — creating/editing templates, the
+ *       sender identity, and clearing the review-before-send queue that
+ *       teamleads' review-first rejections land in — stays recruiter-tier
+ *       ({@link RecruitmentVisibility#isRecruiterTier}).</li>
  *   <li>Per-candidate endpoints additionally funnel through
  *       {@code canReadCandidateProfile} — 404-not-403, so partner-track
  *       existence never leaks. The pending LIST filters rows the same
@@ -127,7 +133,10 @@ public class RecruitmentEmailResource {
     @Path("/email-templates")
     public EmailTemplatesResponse listTemplates() {
         enforceFlag();
-        requireRecruiterTier(currentActor());
+        // Read-only, and the compose dialog's template picker: the hiring
+        // tier needs it to write anything at all. Creating and editing
+        // templates stays recruiter-tier below.
+        requireCandidateEmailTier(currentActor());
         List<EmailTemplateResponse> templates = emailService.listTemplates().stream()
                 .map(EmailTemplateResponse::of)
                 .toList();
@@ -191,7 +200,7 @@ public class RecruitmentEmailResource {
                                         RenderEmailRequest request) {
         enforceFlag();
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireCandidateEmailTier(actor);
         Objects.requireNonNull(request, "request body must not be null");
         if (request.templateUuid() == null || request.templateUuid().isBlank()) {
             throw badRequest("templateUuid is required");
@@ -217,7 +226,7 @@ public class RecruitmentEmailResource {
     public Response send(@PathParam("uuid") UUID candidateUuid, SendEmailRequest request) {
         enforceFlag();
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireCandidateEmailTier(actor);
         Objects.requireNonNull(request, "request body must not be null");
         RecruitmentEmailBodyFormat sendFormat =
                 RecruitmentEmailBodyFormat.parse(request.bodyFormat());
@@ -247,7 +256,7 @@ public class RecruitmentEmailResource {
                                            @QueryParam("applicationUuid") String applicationUuid) {
         enforceFlag();
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireCandidateEmailTier(actor);
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, actor);
         String ownApplication = visibleApplicationOrNull(candidate, applicationUuid, actor);
         RecruitmentEmailTemplate template = blankToNull(templateUuid) == null ? null
@@ -336,7 +345,7 @@ public class RecruitmentEmailResource {
         enforceFlag();
         enforceComposerToggle();
         UUID actor = currentActor();
-        requireRecruiterTier(actor);
+        requireCandidateEmailTier(actor);
         Objects.requireNonNull(request, "request body must not be null");
         if (request.templateUuid() == null || request.templateUuid().isBlank()) {
             throw badRequest("templateUuid is required — the AI composer personalises an existing template");
@@ -557,9 +566,26 @@ public class RecruitmentEmailResource {
         }
     }
 
-    /** Candidate comms are a recruiter surface — 404-not-403 keeps existence hidden. */
+    /**
+     * Configuring candidate comms is a recruiter surface — the template
+     * library's write side, the sender identity and the review-before-send
+     * queue. 404-not-403 keeps existence hidden.
+     */
     private void requireRecruiterTier(UUID actor) {
         if (!visibility.isRecruiterTier(actor.toString())) {
+            throw new NotFoundException("Resource not found");
+        }
+    }
+
+    /**
+     * Writing TO a candidate is the wider hiring tier (2026-08-25): the
+     * recruiter tier plus {@code TEAMLEAD} and {@code ASSISTANT_TEAMLEAD}.
+     * Which candidates each of them reaches is still
+     * {@code canReadCandidateProfile}'s answer, applied right after this by
+     * {@link #requireVisibleCandidate}. Same 404-not-403 shape.
+     */
+    private void requireCandidateEmailTier(UUID actor) {
+        if (!visibility.canEmailCandidates(actor.toString())) {
             throw new NotFoundException("Resource not found");
         }
     }
