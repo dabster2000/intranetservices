@@ -439,5 +439,15 @@ public enum RecruitmentEventType {
      * carries intent, evidence uuid and prompt version — the spot-review
      * log mirroring AI_ASSISTANT_EXCHANGE.
      */
-    AI_SCHEDULING_EXCHANGE
+    AI_SCHEDULING_EXCHANGE,
+
+    /**
+     * The Interview Room's Tidy pass ran over an interviewer's draft
+     * (room spec 2026-08-26 §3.4/§9). STRUCTURAL ONLY: line counts in and
+     * out, model, latency — never the prose, which reaches the store only
+     * via {@code SCORECARD_SUBMITTED.pii} when the interviewer lands.
+     * Exists so the AI Act logging obligation is satisfied by the event
+     * store rather than by application logs.
+     */
+    AI_NOTES_TIDIED
 }

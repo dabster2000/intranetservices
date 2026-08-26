@@ -37,6 +37,8 @@ import java.util.Optional;
 public class RecruitmentFeatureFlag {
 
     static final String SETTING_KEY = "recruitment.dossier.enabled";
+    static final String FACTS_SETTING_KEY = "recruitment.facts.enabled";
+    static final String INTERVIEW_ROOM_SETTING_KEY = "recruitment.interview-room.enabled";
     static final String PIPELINE_SETTING_KEY = "recruitment.pipeline.enabled";
     static final String INTERVIEWS_SETTING_KEY = "recruitment.interviews.enabled";
     static final String GDPR_SETTING_KEY = "recruitment.gdpr.enabled";
@@ -82,6 +84,24 @@ public class RecruitmentFeatureFlag {
      */
     public boolean isGdprEnabled() {
         return readFlag(GDPR_SETTING_KEY);
+    }
+
+    /**
+     * @return true iff {@code recruitment.facts.enabled} parses to true —
+     *         the Interview Room slice-0 gate (fact vocabulary, ledger,
+     *         completeness rings). Seeded {@code false} by V534.
+     */
+    public boolean isFactsEnabled() {
+        return readFlag(FACTS_SETTING_KEY);
+    }
+
+    /**
+     * @return true iff {@code recruitment.interview-room.enabled} parses to
+     *         true — the Interview Room slice-1 gate (the room page and its
+     *         endpoints). Seeded {@code false} by V534.
+     */
+    public boolean isInterviewRoomEnabled() {
+        return readFlag(INTERVIEW_ROOM_SETTING_KEY);
     }
 
     private boolean readFlag(String key) {

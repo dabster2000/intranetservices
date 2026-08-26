@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-interview-note-sweep" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Interview Room draft sweep (room spec 2026-08-26 §4.1)
+
+    Purpose:
+    Delete abandoned Interview Room note drafts 30 days after their
+    interview's scheduled_at (or after the draft's own last touch, for
+    never-scheduled interviews). Landed interviews delete their draft in
+    the land transaction; anonymisation deletes drafts as target 5 —
+    this sweep is the backstop for everything that never landed.
+
+    Idempotent and safe to re-run: the DELETE is state-derived. NOT
+    gated by recruitment.gdpr.enabled — this is draft-cache hygiene,
+    live from the day the table exists.
+
+    Schedule:
+    Daily at 05:35 UTC via BatchScheduler (just before the 05:45 GDPR
+    sweep), gated by
+    dk.trustworks.recruitment.interview-note-sweep.enabled (default true).
+
+    Similar to:
+    recruitment-gdpr-sweep.xml (the candidate-side GDPR clock)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="sweep-recruitment-interview-notes">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentInterviewNoteSweepBatchlet"/>
+    </step>
+</job>

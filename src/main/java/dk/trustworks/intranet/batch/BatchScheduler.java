@@ -92,6 +92,15 @@ public class BatchScheduler {
      * this property, is the deliberate "automatic deletion starts now"
      * decision (plan §P19).
      */
+    /**
+     * Kill switch for the Interview Room draft sweep (room spec 2026-08-26
+     * §4.1): deletes abandoned note drafts 30 days after the interview.
+     * Retention hygiene, deliberately independent of the GDPR flag.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.interview-note-sweep.enabled",
+            defaultValue = "true")
+    boolean recruitmentInterviewNoteSweepEnabled;
+
     @ConfigProperty(name = "dk.trustworks.recruitment.gdpr-sweep.enabled", defaultValue = "true")
     boolean recruitmentGdprSweepEnabled;
 
@@ -730,6 +739,33 @@ public class BatchScheduler {
      * cluster, before the 07:00 SLA sweep (a freshly-anonymized candidate
      * can no longer be nudged about).
      */
+    /**
+     * Interview Room draft retention (room spec 2026-08-26 §4.1): abandoned
+     * drafts go 30 days after the interview. Runs just before the GDPR
+     * sweep so a candidate anonymized minutes later has nothing left to
+     * sweep either way.
+     */
+    @Scheduled(cron = "0 35 5 * * ?",
+            skipExecutionIf = dk.trustworks.intranet.scheduling.SchedulerShutdownGuard.class)
+    void scheduleRecruitmentInterviewNoteSweep() {
+        if (!recruitmentInterviewNoteSweepEnabled) {
+            log.debug("recruitment-interview-note-sweep skipped: dk.trustworks.recruitment.interview-note-sweep.enabled=false");
+            return;
+        }
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-interview-note-sweep")) {
+                if (!jobOperator.getRunningExecutions("recruitment-interview-note-sweep").isEmpty()) {
+                    log.debug("recruitment-interview-note-sweep already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-interview-note-sweep batch job");
+            jobOperator.start("recruitment-interview-note-sweep", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-interview-note-sweep: " + e.getMessage());
+        }
+    }
+
     @Scheduled(cron = "0 45 5 * * ?")
     void scheduleRecruitmentGdprSweep() {
         if (!recruitmentGdprSweepEnabled) {
