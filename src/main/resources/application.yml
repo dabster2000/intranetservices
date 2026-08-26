@@ -691,7 +691,8 @@ dk:
       env: ${PERF_ENV:production}
       digest:
         enabled: ${PERF_DIGEST_ENABLED:false}   # nightly analyzer off by default; enable per-env
-      log-group: ${PERF_LOG_GROUP:${CLOUDWATCH_LOG_GROUP_BACKEND:/ecs/tw-quarkus-unknown}}
+      # Prefix, not a full name — see bug-report.cloudwatch above.
+      log-group: ${PERF_LOG_GROUP:${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/ecs/default/tw-quarkus-staging}}
 finance:
   # F3 — internal-cost timing alignment for the Expected Accumulated EBITDA chart.
   # Internal (intercompany) revenue is bucketed on the issuer's invoicedate, but the
@@ -781,8 +782,11 @@ bug-report:
     model: ${BUGREPORT_AI_MODEL:gpt-5}
     vector-store-id: ${BUGREPORT_VECTOR_STORE_ID:vs_69b732518c0081918dcd98133a178742}
   cloudwatch:
-    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/tw-quarkus-staging}
-    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/tw-nextjs-staging}
+    # Log-group PREFIXES, never full names: ECS Express names each group
+    # /aws/ecs/default/<service>-<hash> and regenerates the hash whenever the service is
+    # recreated. CloudWatchLogGroupResolver expands a prefix to the live group.
+    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/ecs/default/tw-quarkus-staging}
+    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/ecs/default/tw-nextjs-staging}
 
 sharepoint:
   hostname: tenant.sharepoint.com

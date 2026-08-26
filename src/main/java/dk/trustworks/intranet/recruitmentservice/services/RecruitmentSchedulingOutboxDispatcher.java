@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentSchedulingOutbox;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxAction;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxStatus;
+import dk.trustworks.intranet.scheduling.SchedulerShutdownGuard;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
@@ -64,7 +65,8 @@ public class RecruitmentSchedulingOutboxDispatcher {
     }
 
     @Scheduled(every = "1m", identity = "recruitment-scheduling-outbox",
-            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
+            skipExecutionIf = SchedulerShutdownGuard.class)
     void dispatchTimer() {
         if (!methodBFlag.isMethodBEnabled()) {
             return;

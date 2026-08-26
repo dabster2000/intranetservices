@@ -2,6 +2,7 @@ package dk.trustworks.intranet.perf;
 
 import dk.trustworks.intranet.batch.monitoring.BatchJobExecutionTracking;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.utils.aws.CloudWatchLogGroupResolver;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -53,8 +54,15 @@ public class PerformanceDigestBatchlet {
     @ConfigProperty(name = "dk.trustworks.perf.digest.regression-factor", defaultValue = "1.5")
     double regressionFactor;
 
-    @ConfigProperty(name = "dk.trustworks.perf.log-group", defaultValue = "/ecs/tw-quarkus-production")
-    String logGroup;
+    /**
+     * A log-group <em>prefix</em>, not a full name — the live group carries a hash suffix that
+     * changes when the ECS service is recreated. Resolved via {@link CloudWatchLogGroupResolver}.
+     */
+    @ConfigProperty(name = "dk.trustworks.perf.log-group", defaultValue = "/aws/ecs/default/tw-quarkus-production")
+    String logGroupPrefix;
+
+    @Inject
+    CloudWatchLogGroupResolver logGroupResolver;
 
     private volatile CloudWatchLogsClient logsClient;
 
@@ -104,10 +112,23 @@ public class PerformanceDigestBatchlet {
             msg.append('\n').append(formatInsightsSection(
                     ":satellite_antenna: *External API p95 (ms)*", apiRows, "api", "p95", "ms"));
         } catch (Exception e) {
-            log.warnf("perf digest: external-API Logs Insights query failed: %s", e.getMessage());
+            // Swallowing this into a warning is how a permanently broken CloudWatch path produced
+            // a digest that looked healthy for months. Log at ERROR and say so in the digest.
+            log.errorf(e, "performance-digest: external-API Logs Insights query failed: %s", e.getMessage());
+            msg.append("\n:satellite_antenna: *External API p95 (ms)*\n")
+                    .append("• :warning: CloudWatch Logs Insights query failed — ")
+                    .append(e.getMessage()).append('\n');
         }
 
+        // This job used to log nothing whatsoever on a successful run, which made "is it still
+        // running?" unanswerable from CloudWatch. Log that the run completed — but do not claim
+        // delivery: sendMessage(channel, msg, token) is the best-effort overload, it swallows
+        // transport errors and !response.isOk() alike and returns void, so there is nothing here
+        // to branch on. A failed post is reported by SlackService under its own category.
         slackService.sendMessage(opsAlertChannel, msg.toString(), "mother");
+        log.infof("performance-digest completed: %d chars handed to Slack for channel %s " +
+                "(delivery best-effort — check SlackService logs if it did not arrive)",
+                msg.length(), opsAlertChannel);
     }
 
     String batchSection(LocalDateTime now) {
@@ -173,6 +194,13 @@ public class PerformanceDigestBatchlet {
 
     /** Runs a Logs Insights query and returns each result row as field->value. */
     List<Map<String, String>> runInsightsQuery(String query, LocalDateTime from, LocalDateTime to) {
+        String logGroup = logGroupResolver.resolve(logGroupPrefix);
+        if (logGroup == null) {
+            // The resolver has already logged why at ERROR. Throwing rather than returning empty
+            // keeps "no live log group" distinguishable from "the query found no rows".
+            throw new IllegalStateException(
+                    "no live CloudWatch log group under prefix " + logGroupPrefix);
+        }
         CloudWatchLogsClient c = logsClient();
         StartQueryResponse started = c.startQuery(StartQueryRequest.builder()
                 .logGroupName(logGroup)
@@ -193,9 +221,11 @@ public class PerformanceDigestBatchlet {
                 });
                 return out;
             }
-            if (res.status() == QueryStatus.FAILED || res.status() == QueryStatus.CANCELLED) break;
+            if (res.status() == QueryStatus.FAILED || res.status() == QueryStatus.CANCELLED) {
+                throw new IllegalStateException("Logs Insights query " + queryId + " ended " + res.status());
+            }
             try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
         }
-        return List.of();
+        throw new IllegalStateException("Logs Insights query " + queryId + " did not complete within 30s");
     }
 }

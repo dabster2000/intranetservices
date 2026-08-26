@@ -196,9 +196,10 @@ class SlackDigestRendererTest {
         assertTrue(headline.contains("**12 ansøgninger**"), headline);
         assertTrue(headline.contains("uge 30"), "the reported period is the week: " + headline);
 
-        assertEquals("https://intra.trustworks.dk/recruitment/reports",
-                firstOfType(blocks, "actions").path("elements").get(0).path("url").asText(),
-                "the deep link must land on the reports page");
+        assertTrue(blocks.toString()
+                        .contains("<https://intra.trustworks.dk/recruitment/reports|"),
+                "the deep link must land on the reports page — as a mrkdwn link, since a "
+                        + "link button would carry an action_id nothing handles");
         assertTrue(contextText(blocks).contains("uge 30"), contextText(blocks));
     }
 

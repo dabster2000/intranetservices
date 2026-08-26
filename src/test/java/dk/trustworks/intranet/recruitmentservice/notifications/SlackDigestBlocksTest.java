@@ -174,7 +174,7 @@ class SlackDigestBlocksTest {
     @DisplayName("a busy week renders the approved block sequence")
     void busyWeekBlockOrder() {
         assertEquals(List.of("header", "markdown", "table", "data_visualization",
-                        "container", "actions", "context", "context_actions"),
+                        "container", "section", "context"),
                 typesOf(blocksOf(busyWeek())));
     }
 
@@ -467,15 +467,34 @@ class SlackDigestBlocksTest {
         assertEquals(30, data.get(data.size() - 1).path("value").asInt());
     }
 
+    /**
+     * The deep links are {@code mrkdwn} links, not link buttons. A button
+     * carries an {@code action_id}, and Slack POSTs a {@code block_actions}
+     * payload for every one of those — the digest had three such ids and a
+     * handler for none of them (see
+     * {@code SlackDigestActionIdsHaveHandlersTest}).
+     */
     @Test
-    @DisplayName("the report link points at the configured base url")
-    void actionButtonsLinkToReports() {
+    @DisplayName("the report link points at the configured base url, as a link not a button")
+    void reportLinkPointsAtTheConfiguredBaseUrl() {
         ArrayNode blocks = blocksOf(busyWeek());
-        JsonNode actions = blocks.get(5);
-        assertEquals("actions", actions.path("type").asText());
-        assertEquals("https://intra.trustworks.dk/recruitment/reports",
-                actions.path("elements").get(0).path("url").asText());
-        assertEquals("primary", actions.path("elements").get(0).path("style").asText());
+        JsonNode links = blocks.get(5);
+        assertEquals("section", links.path("type").asText());
+        assertTrue(links.path("text").path("text").asText()
+                        .contains("<https://intra.trustworks.dk/recruitment/reports|Åbn rapporten>"),
+                links.toString());
+        assertFalse(links.toString().contains("action_id"),
+                "an action_id here is a control Slack will call: " + links);
+    }
+
+    @Test
+    @DisplayName("the scorecard link only appears when there are open nudges")
+    void scorecardLinkIsConditional() {
+        assertTrue(blocksOf(busyWeek()).get(5).path("text").path("text").asText()
+                        .contains("filter=scorecards_missing"),
+                "a week with open nudges links straight to them");
+        assertFalse(blocksOf(quietWeek()).toString().contains("filter=scorecards_missing"),
+                "a quiet week has nothing to chase");
     }
 
     @SuppressWarnings("unchecked")

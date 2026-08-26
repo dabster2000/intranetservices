@@ -99,6 +99,31 @@ public enum RecruitmentEventType {
     INTERVIEW_SCHEDULED,
     INTERVIEW_RESCHEDULED,
     INTERVIEW_CANCELLED,
+    /**
+     * The candidate's OWN Outlook invitation (the Phase 6 two-event
+     * split's candidate event) was actually created — or re-issued after
+     * a reschedule ({@code payload.invite_kind = CREATED | UPDATED}).
+     * Appended by the scheduling command when Graph answers inline, or by
+     * {@code RecruitmentCalendarRepairJob} when a transient Graph failure
+     * was retried to success. Until this type existed the timeline's only
+     * calendar fact was {@code INTERVIEW_SCHEDULED.payload.calendar_synced},
+     * which tracks the INTERNAL event — the 2026-08-24 Graph 504 left a
+     * candidate uninvited under a timeline that said "synced". Payload:
+     * {@code interview_uuid}, {@code invite_kind}, {@code scheduled_at};
+     * structural only (the candidate's address lives on their row).
+     */
+    INTERVIEW_CANDIDATE_INVITE_SENT,
+    /**
+     * The candidate's Outlook invitation could NOT be delivered and
+     * automation has given up: a permanent (non-retryable) Graph error, the
+     * retry cap, or the interview time passing with the invite still
+     * missing. Appended in the same moment HR is alerted on Slack — a
+     * terminal fact a recruiter must resolve by hand, never a WARN in a
+     * log nobody reads. Payload: {@code interview_uuid}, {@code reason},
+     * {@code attempts}, {@code graph_request_id} (Graph's correlation id,
+     * when one was returned); structural only.
+     */
+    INTERVIEW_CANDIDATE_INVITE_FAILED,
     SCORECARD_SUBMITTED,
     SCORECARD_NUDGED,
     /**

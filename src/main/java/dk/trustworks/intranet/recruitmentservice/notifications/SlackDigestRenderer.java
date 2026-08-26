@@ -25,13 +25,23 @@ import java.util.Optional;
  * P24 digest delivery (plan §P24): consumes {@code AI_DIGEST_GENERATED}
  * and posts the digest to the recruitment Slack channel as rich Block Kit.
  *
- * <h3>Layout (redesigned 2026-08-22)</h3>
+ * <h3>Layout (redesigned 2026-08-22, buttons dropped 2026-08-26)</h3>
  * The funnel digest renders as: {@code header} → {@code markdown} headline
  * → {@code table} of stage movement → {@code data_visualization} trend
  * chart → collapsed {@code container} holding the AI paragraph and the
- * secondary breakdowns → {@code actions} → {@code context} →
- * {@code context_actions} feedback buttons. Compact by default, complete
- * on demand.
+ * secondary breakdowns → {@code section} of deep links → {@code context}
+ * provenance. Compact by default, complete on demand.
+ *
+ * <h3>No interactive elements — by design</h3>
+ * The digest is a <b>read-only</b> message: it renders no
+ * {@code action_id} anywhere. Slack POSTs a {@code block_actions} payload
+ * for every element that carries one — including link buttons, which
+ * navigate <em>and</em> call the app — so an {@code action_id} without a
+ * registered {@code SlackInboundHandler} is a control that reports a
+ * click nobody answers. The deep links are therefore {@code mrkdwn}
+ * links, not buttons. {@code SlackDigestActionIdsHaveHandlersTest} holds
+ * the line: any {@code action_id} added here must have a handler on the
+ * dispatch allowlist or the build fails.
  * <p>
  * <b>Every number comes from the event payload</b>, computed once by
  * {@code AiDigestService}. The renderer does no arithmetic of its own and
@@ -217,9 +227,8 @@ public class SlackDigestRenderer extends RecruitmentReactor {
             blocks.add(chart);
         }
         blocks.add(detailsContainer(narrative, payload));
-        blocks.add(actionsBlock(kpis));
+        blocks.add(linksBlock(kpis));
         blocks.add(contextBlock(provenance(payload)));
-        blocks.add(feedbackBlock());
         return blocks;
     }
 
@@ -400,43 +409,39 @@ public class SlackDigestRenderer extends RecruitmentReactor {
         return table;
     }
 
-    private ObjectNode actionsBlock(Map<String, Object> kpis) {
-        ObjectNode block = objectMapper.createObjectNode().put("type", "actions");
-        ArrayNode elements = block.putArray("elements");
-        elements.add(linkButton("Åbn rapporten", baseUrl + "/recruitment/reports",
-                "digest_open_reports", true));
-        if (num(kpis.get("nudges")) > 0) {
-            elements.add(linkButton("Se ubesvarede scorecards",
-                    baseUrl + "/recruitment/reports?filter=scorecards_missing",
-                    "digest_open_scorecards", false));
-        }
-        return block;
-    }
-
-    private ObjectNode linkButton(String label, String url, String actionId, boolean primary) {
-        ObjectNode button = objectMapper.createObjectNode().put("type", "button");
-        button.putObject("text").put("type", "plain_text").put("text", label).put("emoji", true);
-        button.put("url", url).put("action_id", actionId);
-        if (primary) {
-            button.put("style", "primary");
-        }
-        return button;
-    }
-
     /**
-     * 👍/👎 on the AI paragraph. The cheapest available signal about
-     * whether the narrative earns its place at all.
+     * The digest's deep links, as {@code mrkdwn} links rather than
+     * buttons.
+     * <p>
+     * This used to be an {@code actions} block of two link buttons
+     * carrying {@code action_id}s ({@code digest_open_reports},
+     * {@code digest_open_scorecards}), plus a {@code context_actions}
+     * {@code feedback_buttons} element ({@code digest_feedback}). Slack
+     * treats any element with an {@code action_id} as interactive: a
+     * click POSTs a {@code block_actions} payload to the app on top of
+     * whatever the element does locally. None of those three ids was
+     * ever registered as a {@link
+     * dk.trustworks.intranet.recruitmentservice.slack.SlackInboundHandler},
+     * so every click was dropped at the allowlist step —
+     * {@code digest_feedback} silently discarded the reader's 👍/👎,
+     * and the two link buttons burned a dedupe row and an ERROR-worthy
+     * drop per navigation (two real clicks, prod 2026-08-24).
+     * <p>
+     * A {@code mrkdwn} link is pure navigation: no {@code action_id}, no
+     * inbound payload, nothing to register. <b>Invariant: the digest
+     * renders no {@code action_id} at all</b> — asserted by
+     * {@code SlackDigestActionIdsHaveHandlersTest}, which fails the build
+     * if a future control is added without a handler behind it.
      */
-    private ObjectNode feedbackBlock() {
-        ObjectNode block = objectMapper.createObjectNode().put("type", "context_actions");
-        ObjectNode buttons = block.putArray("elements").addObject()
-                .put("type", "feedback_buttons")
-                .put("action_id", "digest_feedback");
-        ObjectNode positive = buttons.putObject("positive_button").put("value", "digest_useful");
-        positive.putObject("text").put("type", "plain_text").put("text", "👍");
-        ObjectNode negative = buttons.putObject("negative_button").put("value", "digest_not_useful");
-        negative.putObject("text").put("type", "plain_text").put("text", "👎");
-        return block;
+    private ObjectNode linksBlock(Map<String, Object> kpis) {
+        StringBuilder sb = new StringBuilder(200);
+        sb.append("\u27a1\ufe0f <").append(baseUrl).append("/recruitment/reports|Åbn rapporten>");
+        if (num(kpis.get("nudges")) > 0) {
+            sb.append("  ·  <").append(baseUrl)
+                    .append("/recruitment/reports?filter=scorecards_missing")
+                    .append("|Se ubesvarede scorecards>");
+        }
+        return sectionMrkdwn(sb.toString());
     }
 
     // ------------------------------------------------------------------

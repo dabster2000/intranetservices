@@ -18,6 +18,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxAct
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingOutboxStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SchedulingRequestStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SlotApprovalStatus;
+import dk.trustworks.intranet.scheduling.SchedulerShutdownGuard;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -87,7 +88,8 @@ public class RecruitmentSchedulingOrchestrator {
     RecruitmentInterviewService interviewService;
 
     @Scheduled(every = "1m", identity = "recruitment-scheduling-advance",
-            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
+            skipExecutionIf = SchedulerShutdownGuard.class)
     void advanceTimer() {
         if (!methodBFlag.isMethodBEnabled()) {
             return;

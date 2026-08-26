@@ -248,6 +248,96 @@ public class RecruitmentCalendarService {
                                String candidateEventId) { }
 
     /**
+     * One Graph write failure, CLASSIFIED for the caller — the difference
+     * between "queue a retry" and "tell a human now". Retryable = Graph
+     * asked us to slow down (429), answered 5xx/408 (the 2026-08-24
+     * candidate-invite 504), or the call never completed (timeouts, broken
+     * connections). Everything else — a permanent 4xx, or a bug of our own
+     * — retries identically forever, so it must go to a person instead.
+     * {@code graphRequestId} is Graph's correlation id when one came back.
+     */
+    public record GraphWriteFailure(boolean retryable, String message, String graphRequestId) { }
+
+    /**
+     * What {@link #createEvent} actually did, failure classification
+     * included. {@code created} is null when no internal event exists —
+     * toggle off, no organizer, or the internal create failed (then
+     * {@code internalFailure} says how). {@code candidateFailure} is set
+     * when the internal event stands but the candidate's own event could
+     * not be created; a candidate without an email sets neither (no
+     * invitation was ever intended — the internal body says so).
+     */
+    public record CreateResult(CreatedEvent created,
+                               GraphWriteFailure internalFailure,
+                               GraphWriteFailure candidateFailure) {
+
+        static CreateResult skipped() {
+            return new CreateResult(null, null, null);
+        }
+    }
+
+    /** A candidate-event write on its own (create or PATCH): the new/kept
+     * event id on success, or the classified failure. */
+    public record CandidateEventOutcome(String candidateEventId, GraphWriteFailure failure) { }
+
+    /**
+     * What {@link #updateEvent} did. {@code candidateUpdated} is true only
+     * when a SPLIT row's candidate event was actually PATCHed — the signal
+     * the timeline needs to say the candidate's invitation was re-issued.
+     */
+    public record UpdateResult(String joinUrl,
+                               boolean candidateUpdated,
+                               GraphWriteFailure candidateFailure) {
+
+        public Optional<String> joinUrlIfPresent() {
+            return Optional.ofNullable(joinUrl);
+        }
+    }
+
+    /** What {@link #cancelEvent} did: the first classified failure among
+     * the deletes, or null when every event is gone (404 counts as gone). */
+    public record CancelResult(GraphWriteFailure failure) {
+
+        public boolean allDeleted() {
+            return failure == null;
+        }
+    }
+
+    /**
+     * Classify one Graph client exception (see {@link GraphWriteFailure}).
+     * Walks the cause chain for the wrapped-timeout shapes the REST client
+     * produces ({@code ProcessingException} around an {@code IOException}).
+     * Package-private and pure so the DB-free tier that gates deploys pins
+     * the 504-is-retryable rule directly.
+     */
+    static GraphWriteFailure classifyGraphFailure(Exception e) {
+        if (e instanceof dk.trustworks.intranet.sharepoint.client
+                .GraphResponseExceptionMapper.SharePointException graphError) {
+            boolean retryable = graphError.isThrottled()
+                    || graphError.isServerError()
+                    || graphError.getStatusCode() == 408;
+            return new GraphWriteFailure(retryable, graphError.getMessage(),
+                    graphError.getRequestId());
+        }
+        if (e instanceof WebApplicationException webError && webError.getResponse() != null) {
+            int status = webError.getResponse().getStatus();
+            boolean retryable = status >= 500 || status == 429 || status == 408;
+            return new GraphWriteFailure(retryable, e.getMessage(), null);
+        }
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.io.IOException
+                    || cause instanceof java.util.concurrent.TimeoutException
+                    || cause instanceof jakarta.ws.rs.ProcessingException) {
+                return new GraphWriteFailure(true, e.getMessage(), null);
+            }
+        }
+        // A surprise (our own bug included): retrying reruns the same code
+        // on the same data — hand it to a person instead.
+        return new GraphWriteFailure(false, e.getClass().getSimpleName()
+                + (e.getMessage() != null ? ": " + e.getMessage() : ""), null);
+    }
+
+    /**
      * The result of a free/busy sweep, with its own gaps admitted.
      * <p>
      * The distinction that matters — and the reason this is a record rather
@@ -331,60 +421,127 @@ public class RecruitmentCalendarService {
      * Phase 6 two-event split): the INTERNAL event for interviewers +
      * room, and — when the candidate has an email — the candidate's OWN
      * event with a candidate-facing HTML body, carrying only them.
+     * <p>
+     * Never throws — scheduling must not fail on calendar trouble — but
+     * failures come back CLASSIFIED so the caller can queue a retry or
+     * alert a person instead of silently accepting the degrade. Both
+     * creates carry a {@code transactionId} (the interview UUID, with a
+     * {@code -candidate} suffix on the split event), so a retry of a
+     * failure that actually succeeded behind a gateway (the 504 shape)
+     * never double-books or double-invites.
      *
-     * @return the created linkage to store on the interview, or empty
-     *         when the toggle is off, no organizer mailbox resolves, or
-     *         the internal create fails (logged, never thrown). A failed
-     *         CANDIDATE create degrades to internal-only.
+     * @return what happened; {@link CreateResult#created()} is null when
+     *         the toggle is off, no organizer mailbox resolves, or the
+     *         internal create failed
      */
-    public Optional<CreatedEvent> createEvent(RecruitmentInterview interview,
-                                              RecruitmentCandidate candidate,
-                                              RecruitmentPosition position) {
+    public CreateResult createEvent(RecruitmentInterview interview,
+                                    RecruitmentCandidate candidate,
+                                    RecruitmentPosition position) {
         if (!calendarEnabled) {
-            return Optional.empty();
+            return CreateResult.skipped();
+        }
+        String organizer = organizerMailbox(interview);
+        if (organizer == null) {
+            log.warnv("Graph calendar: no organizer mailbox resolvable for interview {0} — skipping",
+                    interview.getUuid());
+            return CreateResult.skipped();
+        }
+        GraphApiClient.CalendarEvent created;
+        try {
+            created = graph().createCalendarEvent(
+                    organizer, buildInternalEvent(interview, candidate, position, true, false, organizer));
+        } catch (Exception e) {
+            GraphWriteFailure failure = classifyGraphFailure(e);
+            log.warnv("Graph calendar create failed for interview {0}: {1} — proceeding without calendar event ({2})",
+                    interview.getUuid(), e.getMessage(),
+                    failure.retryable() ? "queued for retry" : "not retryable");
+            return new CreateResult(null, failure, null);
+        }
+        if (created == null || created.id() == null) {
+            return CreateResult.skipped();
+        }
+        String joinUrl = joinUrlOf(created);
+        CandidateEventOutcome candidateOutcome =
+                createCandidateEvent(interview, candidate, position, organizer, joinUrl);
+        return new CreateResult(
+                new CreatedEvent(created.id(), organizer, joinUrl,
+                        candidateOutcome.candidateEventId()),
+                null,
+                candidateOutcome.failure());
+    }
+
+    /**
+     * The candidate's own event, for an interview whose INTERNAL event
+     * already exists — the repair path for a row where the inline create
+     * degraded to internal-only (or a legacy/no-email row that has since
+     * gained an address). Uses the stored join link; the create-time
+     * {@code transactionId} makes replays safe.
+     */
+    public CandidateEventOutcome createCandidateEventFor(RecruitmentInterview interview,
+                                                         RecruitmentCandidate candidate,
+                                                         RecruitmentPosition position) {
+        if (!calendarEnabled) {
+            return new CandidateEventOutcome(null, null);
+        }
+        String organizer = organizerMailbox(interview);
+        if (organizer == null) {
+            return new CandidateEventOutcome(null, null);
+        }
+        return createCandidateEvent(interview, candidate, position, organizer,
+                interview.getJoinUrl());
+    }
+
+    /**
+     * Re-PATCH the candidate's event with the interview's CURRENT facts —
+     * the repair path for a reschedule whose candidate half failed,
+     * leaving the candidate holding an invitation with the OLD time.
+     * Success = null failure.
+     */
+    public GraphWriteFailure patchCandidateEvent(RecruitmentInterview interview,
+                                                 RecruitmentCandidate candidate,
+                                                 RecruitmentPosition position) {
+        if (!calendarEnabled || interview.getGraphCandidateEventId() == null) {
+            return null;
+        }
+        String organizer = organizerMailbox(interview);
+        if (organizer == null) {
+            return null;
         }
         try {
-            String organizer = organizerMailbox(interview);
-            if (organizer == null) {
-                log.warnv("Graph calendar: no organizer mailbox resolvable for interview {0} — skipping",
-                        interview.getUuid());
-                return Optional.empty();
-            }
-            GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
-                    organizer, buildInternalEvent(interview, candidate, position, true, false, organizer));
-            if (created == null || created.id() == null) {
-                return Optional.empty();
-            }
-            String joinUrl = joinUrlOf(created);
-            String candidateEventId =
-                    createCandidateEvent(interview, candidate, position, organizer, joinUrl);
-            return Optional.of(new CreatedEvent(created.id(), organizer, joinUrl,
-                    candidateEventId));
+            graph().updateCalendarEvent(candidateOrganizer(organizer),
+                    interview.getGraphCandidateEventId(),
+                    buildCandidateEvent(interview, candidate, position,
+                            interview.getJoinUrl(), false));
+            return null;
         } catch (Exception e) {
-            log.warnv("Graph calendar create failed for interview {0}: {1} — proceeding without calendar event",
+            GraphWriteFailure failure = classifyGraphFailure(e);
+            log.warnv("Graph candidate-event re-PATCH failed for interview {0}: {1}",
                     interview.getUuid(), e.getMessage());
-            return Optional.empty();
+            return failure;
         }
     }
 
-    /** Best-effort candidate event; null when not applicable or failed. */
-    private String createCandidateEvent(RecruitmentInterview interview,
-                                        RecruitmentCandidate candidate,
-                                        RecruitmentPosition position,
-                                        String internalOrganizer,
-                                        String joinUrl) {
+    /** The candidate event create, classified; not-applicable (no email)
+     * reports neither an id nor a failure. */
+    private CandidateEventOutcome createCandidateEvent(RecruitmentInterview interview,
+                                                       RecruitmentCandidate candidate,
+                                                       RecruitmentPosition position,
+                                                       String internalOrganizer,
+                                                       String joinUrl) {
         if (candidate == null || candidate.getEmail() == null || candidate.getEmail().isBlank()) {
-            return null;
+            return new CandidateEventOutcome(null, null);
         }
         try {
             GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
                     candidateOrganizer(internalOrganizer),
                     buildCandidateEvent(interview, candidate, position, joinUrl, true));
-            return created != null ? created.id() : null;
+            return new CandidateEventOutcome(created != null ? created.id() : null, null);
         } catch (Exception e) {
-            log.warnv("Graph candidate-event create failed for interview {0}: {1} — internal event stands alone",
-                    interview.getUuid(), e.getMessage());
-            return null;
+            GraphWriteFailure failure = classifyGraphFailure(e);
+            log.warnv("Graph candidate-event create failed for interview {0}: {1} — internal event stands alone ({2})",
+                    interview.getUuid(), e.getMessage(),
+                    failure.retryable() ? "queued for retry" : "not retryable");
+            return new CandidateEventOutcome(null, failure);
         }
     }
 
@@ -396,18 +553,22 @@ public class RecruitmentCalendarService {
      * event, exactly as before the split.
      *
      * @return the join link from the internal PATCH response when Graph
-     *         included one (it may lag — a later read backfills), else empty
+     *         included one (it may lag — a later read backfills), plus
+     *         whether the candidate's own event was actually re-issued
+     *         and, when it was not, the classified failure — a candidate
+     *         holding an invitation with the OLD time is worse than one
+     *         holding none, so that failure must never stay a WARN
      */
-    public Optional<String> updateEvent(RecruitmentInterview interview,
-                                        RecruitmentCandidate candidate,
-                                        RecruitmentPosition position) {
+    public UpdateResult updateEvent(RecruitmentInterview interview,
+                                    RecruitmentCandidate candidate,
+                                    RecruitmentPosition position) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
-            return Optional.empty();
+            return new UpdateResult(null, false, null);
         }
         try {
             String organizer = organizerMailbox(interview);
             if (organizer == null) {
-                return Optional.empty();
+                return new UpdateResult(null, false, null);
             }
             boolean split = interview.getGraphCandidateEventId() != null;
             GraphApiClient.CalendarEvent updated = graph().updateCalendarEvent(
@@ -420,16 +581,26 @@ public class RecruitmentCalendarService {
                             interview.getGraphCandidateEventId(),
                             buildCandidateEvent(interview, candidate, position,
                                     joinUrl != null ? joinUrl : interview.getJoinUrl(), false));
+                    return new UpdateResult(joinUrl, true, null);
                 } catch (Exception e) {
-                    log.warnv("Graph candidate-event update failed for interview {0}: {1} — candidate event may be stale",
-                            interview.getUuid(), e.getMessage());
+                    GraphWriteFailure failure = classifyGraphFailure(e);
+                    log.warnv("Graph candidate-event update failed for interview {0}: {1} — candidate event may be stale ({2})",
+                            interview.getUuid(), e.getMessage(),
+                            failure.retryable() ? "queued for retry" : "not retryable");
+                    return new UpdateResult(joinUrl, false, failure);
                 }
             }
-            return Optional.ofNullable(joinUrl);
+            return new UpdateResult(joinUrl, false, null);
         } catch (Exception e) {
             log.warnv("Graph calendar update failed for interview {0}: {1} — calendar may be stale",
                     interview.getUuid(), e.getMessage());
-            return Optional.empty();
+            // On a split row the internal PATCH failing means the candidate
+            // PATCH never ran either — the candidate's invitation still
+            // shows the OLD time. Report it so the repair sweep re-issues it.
+            return new UpdateResult(null, false,
+                    interview.getGraphCandidateEventId() != null
+                            ? classifyGraphFailure(e)
+                            : null);
         }
     }
 
@@ -599,30 +770,41 @@ public class RecruitmentCalendarService {
 
     /** Cancel the Outlook event(s) — attendees get cancellations; the
      * candidate event (when split) goes with the internal one. 404 =
-     * already gone, fine. */
-    public void cancelEvent(RecruitmentInterview interview) {
+     * already gone, fine. A failed delete is reported classified: a
+     * candidate keeping a live invitation to a CANCELLED interview will
+     * show up at the door. */
+    public CancelResult cancelEvent(RecruitmentInterview interview) {
         if (!calendarEnabled || interview.getGraphEventId() == null) {
-            return;
+            return new CancelResult(null);
         }
         String organizer = organizerMailbox(interview);
         if (organizer == null) {
-            return;
+            return new CancelResult(null);
         }
-        deleteQuietly(organizer, interview.getGraphEventId(), interview);
+        GraphWriteFailure internalFailure =
+                deleteQuietly(organizer, interview.getGraphEventId(), interview);
+        GraphWriteFailure candidateFailure = null;
         if (interview.getGraphCandidateEventId() != null) {
-            deleteQuietly(candidateOrganizer(organizer),
+            candidateFailure = deleteQuietly(candidateOrganizer(organizer),
                     interview.getGraphCandidateEventId(), interview);
         }
+        // The candidate-facing failure outranks the internal one.
+        return new CancelResult(candidateFailure != null ? candidateFailure : internalFailure);
     }
 
-    private void deleteQuietly(String organizer, String eventId, RecruitmentInterview interview) {
+    /** Delete one event; 404 = already gone = success (null). */
+    private GraphWriteFailure deleteQuietly(String organizer, String eventId,
+                                            RecruitmentInterview interview) {
         try {
             graph().deleteCalendarEvent(organizer, eventId);
+            return null;
         } catch (Exception e) {
-            if (!isGraphNotFound(e)) {
-                log.warnv("Graph calendar delete failed for interview {0}: {1}",
-                        interview.getUuid(), e.getMessage());
+            if (isGraphNotFound(e)) {
+                return null;
             }
+            log.warnv("Graph calendar delete failed for interview {0}: {1}",
+                    interview.getUuid(), e.getMessage());
+            return classifyGraphFailure(e);
         }
     }
 

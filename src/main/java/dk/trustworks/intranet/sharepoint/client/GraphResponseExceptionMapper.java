@@ -30,8 +30,26 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
         return new SharePointException(
             formatErrorMessage(status, statusInfo, responseBody),
             status,
-            retryAfter
+            retryAfter,
+            extractRequestId(responseBody)
         );
+    }
+
+    /**
+     * Graph's correlation id ({@code innerError.request-id}) — the handle
+     * Microsoft support asks for, and the one thing that lets an operator
+     * tie our failure to Graph's own logs. The 2026-08-24 candidate-invite
+     * 504 carried an EMPTY {@code message}, so without this id the alert
+     * would have said nothing actionable at all.
+     */
+    public static String extractRequestId(String responseBody) {
+        if (responseBody == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("\"request-id\"\\s*:\\s*\"([^\"]+)\"")
+                .matcher(responseBody);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     /**
@@ -111,7 +129,11 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
                 int colonPos = responseBody.indexOf(":", start);
                 int endQuote = responseBody.indexOf("\"", colonPos + 2);
                 int nextQuote = responseBody.indexOf("\"", endQuote + 1);
-                if (colonPos > 0 && endQuote > colonPos && nextQuote > endQuote) {
+                // A BLANK extracted message falls through to the full-body
+                // format: Graph's gateway errors (the 2026-08-24 504) carry
+                // "message":"" and the old path rendered them as
+                // "Graph API error 504: ," — an error that explains nothing.
+                if (colonPos > 0 && endQuote > colonPos && nextQuote > endQuote + 1) {
                     String message = responseBody.substring(endQuote + 1, nextQuote);
                     return String.format("Graph API error %d: %s", status, message);
                 }
@@ -126,15 +148,31 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
     public static class SharePointException extends RuntimeException {
         private final int statusCode;
         private final Integer retryAfterSeconds;
+        private final String requestId;
 
         public SharePointException(String message, int statusCode) {
             this(message, statusCode, null);
         }
 
         public SharePointException(String message, int statusCode, Integer retryAfterSeconds) {
+            this(message, statusCode, retryAfterSeconds, null);
+        }
+
+        public SharePointException(String message, int statusCode, Integer retryAfterSeconds,
+                                   String requestId) {
             super(message);
             this.statusCode = statusCode;
             this.retryAfterSeconds = retryAfterSeconds;
+            this.requestId = requestId;
+        }
+
+        /**
+         * Graph's {@code innerError.request-id} for this failure, or null
+         * when the body carried none. The correlation handle for operator
+         * alerts and Microsoft support tickets.
+         */
+        public String getRequestId() {
+            return requestId;
         }
 
         public int getStatusCode() {

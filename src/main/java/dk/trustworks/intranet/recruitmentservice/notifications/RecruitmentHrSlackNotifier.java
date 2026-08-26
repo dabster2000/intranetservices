@@ -6,6 +6,7 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -201,6 +202,82 @@ public class RecruitmentHrSlackNotifier {
             log.errorf(e, "HR Slack contract-sent notification failed for candidate=%s: %s",
                     candidate.getUuid(), e.getMessage());
         }
+    }
+
+    /**
+     * Alert HR that a candidate's Outlook interview invitation is in a
+     * state automation cannot fix: a permanent Graph error at scheduling
+     * time, the repair sweep's retry cap, the interview time passing with
+     * the invite still missing, or a cancellation that could not be
+     * delivered. This is the operator-visible half of the calendar-retry
+     * fix (production 2026-08-24: a Graph 504 dropped a candidate's ONLY
+     * invitation with nothing but a WARN — the interview happened the next
+     * day with the candidate never formally invited).
+     * <p>
+     * Not deduped: each call is a distinct terminal fact (the inline
+     * permanent failure and a later dead-letter cannot both fire for the
+     * same interview — the first never arms the retry marker).
+     *
+     * @param candidate      the affected candidate; may be null (message
+     *                       degrades to the interview reference)
+     * @param interview      the interview whose candidate event failed
+     * @param problem        one human sentence: what is wrong and what to
+     *                       do about it
+     * @param reason         the classified Graph error (truncated here)
+     * @param graphRequestId Graph's correlation id, when one came back —
+     *                       the handle a Microsoft ticket needs
+     */
+    public void notifyCandidateInviteFailed(RecruitmentCandidate candidate,
+                                            RecruitmentInterview interview,
+                                            String problem,
+                                            String reason,
+                                            String graphRequestId) {
+        if (interview == null) {
+            log.warn("notifyCandidateInviteFailed: interview is null, skipping");
+            return;
+        }
+        try {
+            slackService.sendMessage(hrChannel(),
+                    formatCandidateInviteFailedMessage(candidate, interview, problem,
+                            reason, graphRequestId),
+                    botTokenKey);
+            log.infof("HR Slack candidate-invite-failed notification posted for interview=%s",
+                    interview.getUuid());
+        } catch (Exception e) {
+            // Never propagate — Slack failure must not affect scheduling.
+            log.errorf(e, "HR Slack candidate-invite-failed notification failed for interview=%s: %s",
+                    interview.getUuid(), e.getMessage());
+        }
+    }
+
+    /** Visible for tests — the PII boundary applies (name yes, email no). */
+    String formatCandidateInviteFailedMessage(RecruitmentCandidate candidate,
+                                              RecruitmentInterview interview,
+                                              String problem,
+                                              String reason,
+                                              String graphRequestId) {
+        String candidateName = candidate == null ? "unknown candidate"
+                : (nullSafe(candidate.getFirstName()) + " "
+                        + nullSafe(candidate.getLastName())).trim();
+        StringBuilder sb = new StringBuilder(320);
+        sb.append(":warning: *Candidate interview invitation needs a hand* — ")
+                .append(candidateName).append('\n');
+        if (interview.getScheduledAt() != null) {
+            sb.append("Interview: ").append(interview.getScheduledAt()).append('\n');
+        }
+        sb.append(problem).append('\n');
+        if (reason != null && !reason.isBlank()) {
+            sb.append("Error: ").append(reason.length() > 300
+                    ? reason.substring(0, 300) + "…" : reason).append('\n');
+        }
+        if (graphRequestId != null && !graphRequestId.isBlank()) {
+            sb.append("Graph request-id: ").append(graphRequestId).append('\n');
+        }
+        if (candidate != null && candidate.getUuid() != null) {
+            sb.append(stripTrailingSlash(dossierBaseUrl)).append('/')
+                    .append(candidate.getUuid());
+        }
+        return sb.toString();
     }
 
     /** Visible for tests — the PII boundary applies (no case key, no signer emails). */

@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
+import dk.trustworks.intranet.scheduling.SchedulerShutdownGuard;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -42,7 +43,8 @@ public class EconomicsCustomerSyncRetryBatchlet {
     @Inject
     EconomicsCustomerSyncService syncService;
 
-    @Scheduled(every = "1m", identity = "economics-sync-retry")
+    @Scheduled(every = "1m", identity = "economics-sync-retry",
+            skipExecutionIf = SchedulerShutdownGuard.class)
     void retryDueFailures() {
         List<ClientEconomicsSyncFailure> due = failures.listDueForRetry(LocalDateTime.now());
         if (due.isEmpty()) {
