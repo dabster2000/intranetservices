@@ -51,7 +51,11 @@ import java.util.Map;
  *       {@link SlackInboundHandler#key()}; unknown keys are logged
  *       (key only, never payload content) and dropped — no dynamic
  *       dispatch. The allowlist is <b>empty in P13</b>; the first
- *       handlers arrive in P14.</li>
+ *       handlers arrive in P14. An unknown key we <em>authored</em> is a
+ *       dead control and logs at ERROR with
+ *       {@value #DEAD_CONTROL_MARKER}; one Slack generated for a
+ *       non-interactive element logs at DEBUG — see
+ *       {@link #isAuthoredKey(String)}.</li>
  * </ol>
  *
  * <p>PII discipline: nothing user-supplied is logged — surface, kind,
@@ -69,6 +73,16 @@ public class SlackInboundDispatchService {
 
     /** Claims older than this are pruned on the next dispatch. */
     static final int DEDUPE_TTL_HOURS = 24;
+
+    /**
+     * The greppable marker on the one drop that is always a bug. Alarm on
+     * this string, not on the drop count — the rest of the unknown-key
+     * traffic is Slack's own generated ids and never actionable.
+     */
+    static final String DEAD_CONTROL_MARKER = "Slack inbound DEAD CONTROL: no handler on the allowlist";
+
+    /** Longest Slack-generated id we will treat as generated rather than authored. */
+    private static final int GENERATED_ID_MAX_LENGTH = 10;
 
     @Inject
     RecruitmentSlackFeatureFlag slackFlags;
@@ -124,14 +138,56 @@ public class SlackInboundDispatchService {
             return SlackInboundResponse.duplicate();
         }
 
-        // 4. Allowlist dispatch — unknown ids logged and dropped.
+        // 4. Allowlist dispatch — unknown ids logged and dropped. An id we
+        //    authored is a dead control and shouts; one Slack minted for a
+        //    non-interactive element is noise and whispers.
         SlackInboundHandler handler = allowlist.get(request.handlerKey());
         if (handler == null) {
-            log.warnf("Slack inbound dropped: no handler on the allowlist (surface=%s kind=%s key=%s)",
-                    request.surface(), request.kind(), request.handlerKey());
+            if (isAuthoredKey(request.handlerKey())) {
+                log.errorf("%s (surface=%s kind=%s key=%s) — a rendered Slack control "
+                                + "reports clicks nobody answers: either register a "
+                                + "SlackInboundHandler for this key, or stop rendering the "
+                                + "element that carries it",
+                        DEAD_CONTROL_MARKER, request.surface(), request.kind(),
+                        request.handlerKey());
+            } else {
+                log.debugf("Slack inbound dropped: no handler for Slack-generated id "
+                                + "(surface=%s kind=%s key=%s)",
+                        request.surface(), request.kind(), request.handlerKey());
+            }
             return SlackInboundResponse.unknown();
         }
         return handler.handle(actor, request);
+    }
+
+    /**
+     * Did <em>we</em> write this key, or did Slack mint it?
+     * <p>
+     * Slack assigns a random {@code action_id}/{@code block_id} to any
+     * interactive element that does not declare one — a collapsible
+     * {@code container}, for instance, fires one on every expand. Those
+     * drops are unavoidable and benign, and drowning in them is how
+     * {@code digest_open_reports} sat dead in the weekly recruitment
+     * digest for weeks: at WARN it looked exactly like the noise around
+     * it, and only turned up in a manual log sweep after two people had
+     * clicked it (prod, 2026-08-24).
+     * <p>
+     * The discriminator: Slack's generated ids are short, separator-free,
+     * mixed-case base64-ish tokens ({@code om3Vo}, {@code KlJ8f}); every
+     * key this codebase authors is a slash command ({@code /refer}),
+     * snake_case ({@code recruitment_scorecard_open}), or a plain
+     * lowercase Events API type ({@code message}). Ties break <b>loud</b>
+     * — a false ERROR costs one look, a missed one costs a dead button.
+     */
+    static boolean isAuthoredKey(String key) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+        if (key.charAt(0) == '/' || key.indexOf('_') >= 0) {
+            return true;
+        }
+        return key.length() > GENERATED_ID_MAX_LENGTH
+                || key.chars().allMatch(c -> c >= 'a' && c <= 'z');
     }
 
     /**
