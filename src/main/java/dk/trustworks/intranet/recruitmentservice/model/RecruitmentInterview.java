@@ -109,6 +109,39 @@ public class RecruitmentInterview extends PanacheEntityBase implements Auditable
     @Column(name = "online_meeting", nullable = false)
     private boolean onlineMeeting;
 
+    /**
+     * When the calendar repair sweep should next retry this interview's
+     * Outlook sync (V533); {@code NULL} = nothing pending. Set by the
+     * scheduling commands when a Graph write fails RETRYABLY (429, 5xx,
+     * timeouts — the 2026-08-24 candidate-invite 504); what exactly needs
+     * repairing is derived from the linkage columns, never stored: no
+     * internal event → recreate both, no candidate event → create the
+     * candidate's invitation, both present → re-PATCH the candidate event,
+     * CANCELLED → finish the deletes. Cleared on success, on dead-letter
+     * (cap {@code RecruitmentCalendarRepairJob.MAX_ATTEMPTS}, HR alerted)
+     * and when the interview time passes unrepaired (also alerted).
+     */
+    @Column(name = "calendar_retry_at")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime calendarRetryAt;
+
+    /** Graph sync attempts burned so far (V533) — the inline try counts. */
+    @Column(name = "calendar_retry_attempts", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private int calendarRetryAttempts;
+
+    /** Last Graph sync error, truncated (V533) — operator context only. */
+    @Column(name = "calendar_retry_last_error", length = 500)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String calendarRetryLastError;
+
+    /** Truncate to the column bound — Graph error bodies easily exceed it. */
+    public void setCalendarRetryLastError(String error) {
+        this.calendarRetryLastError = error != null && error.length() > 500
+                ? error.substring(0, 500)
+                : error;
+    }
+
     /** The Teams join link Graph returned; {@code NULL} when not a Teams
      * meeting (or the link has not been read back yet). */
     @Column(name = "join_url", length = 1024)

@@ -93,6 +93,14 @@ class RecruitmentEventTypeCatalogTest {
         // note — a mutating command per spec §6.2, folded into the
         // displayed note by the timeline read path while the original
         // text stays in the stream as audit history.
+        // INTERVIEW_CANDIDATE_INVITE_SENT / _FAILED are the V533
+        // candidate-invite robustness additions (production 2026-08-24: a
+        // Graph 504 dropped a candidate's only Outlook invitation with
+        // nothing but a WARN): the moment the candidate's own calendar
+        // invitation actually went out (or was re-issued), and the terminal
+        // moment automation gave up and HR was alerted. Both are side
+        // effects of scheduling commands or the calendar repair sweep —
+        // events like every other reactor/sweep side effect.
         // UNSOLICITED_APPLICATION_RECEIVED / DUPLICATE_APPLICATION_RECEIVED
         // are the candidate-email remediation additions (F6/F7, 2026-08-22):
         // the two public-form paths that deliberately create no application —
@@ -108,6 +116,7 @@ class RecruitmentEventTypeCatalogTest {
                 "UNSOLICITED_APPLICATION_RECEIVED", "DUPLICATE_APPLICATION_RECEIVED",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
+                "INTERVIEW_CANDIDATE_INVITE_SENT", "INTERVIEW_CANDIDATE_INVITE_FAILED",
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED", "SCORECARD_PROMPTED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
@@ -146,7 +155,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
                         + "and the V519 INTERVIEW_DECISION_* pair exactly");
-        assertEquals(83, RecruitmentEventType.values().length);
+        assertEquals(85, RecruitmentEventType.values().length);
     }
 
     @Test

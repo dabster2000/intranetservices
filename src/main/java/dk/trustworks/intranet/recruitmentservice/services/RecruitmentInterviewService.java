@@ -101,6 +101,9 @@ public class RecruitmentInterviewService {
     RecruitmentCalendarService calendarService;
 
     @Inject
+    dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier hrNotifier;
+
+    @Inject
     CandidateProfileReadService profileReadService;
 
     @Inject
@@ -169,18 +172,23 @@ public class RecruitmentInterviewService {
         interview.setStatus(RecruitmentInterviewStatus.SCHEDULED);
         interview.persist();
 
-        // Outlook is best-effort: a Graph failure never fails scheduling.
-        // createCalendarEvent=false (F17) skips Outlook deliberately —
-        // the interview was booked by hand; nobody is invited to
-        // anything, and calendarSynced stays false until the reschedule
-        // dialog's recovery checkbox creates the missing event.
+        // Outlook is best-effort: a Graph failure never fails scheduling —
+        // but it is no longer SILENT either: a retryable failure queues
+        // the calendar repair sweep, a permanent one alerts HR (the
+        // 2026-08-24 Graph 504 dropped a candidate's only invitation with
+        // nothing but a WARN). createCalendarEvent=false (F17) skips
+        // Outlook deliberately — the interview was booked by hand; nobody
+        // is invited to anything, and calendarSynced stays false until the
+        // reschedule dialog's recovery checkbox creates the missing event.
+        RecruitmentCalendarService.CreateResult calendarResult = null;
         if (shouldCreateEventOnCreate(request.createCalendarEvent())) {
-            calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
-                interview.setGraphEventId(created.eventId());
-                interview.setGraphOrganizer(created.organizer());
-                interview.setJoinUrl(created.joinUrl());
-                interview.setGraphCandidateEventId(created.candidateEventId());
-            });
+            calendarResult = calendarService.createEvent(interview, candidate, position);
+            if (calendarResult.created() != null) {
+                interview.setGraphEventId(calendarResult.created().eventId());
+                interview.setGraphOrganizer(calendarResult.created().organizer());
+                interview.setJoinUrl(calendarResult.created().joinUrl());
+                interview.setGraphCandidateEventId(calendarResult.created().candidateEventId());
+            }
         }
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_SCHEDULED,
@@ -191,6 +199,12 @@ public class RecruitmentInterviewService {
                 .payload("room_email", interview.getRoomEmail())
                 .payload("online_meeting", interview.isOnlineMeeting())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
+        // After the SCHEDULED event on purpose: the invite events narrate
+        // what happened to the booking, so they must sort after it.
+        if (calendarResult != null) {
+            applyCalendarCreateOutcome(interview, application, position, candidate,
+                    calendarResult, actor);
+        }
         return interview;
     }
 
@@ -236,19 +250,22 @@ public class RecruitmentInterviewService {
             // existing event, so FALSE is treated as "keep" too.
             interview.setOnlineMeeting(true);
         }
+        RecruitmentCalendarService.CreateResult createResult = null;
+        RecruitmentCalendarService.UpdateResult updateResult = null;
         if (shouldCreateMissingEvent(interview.getGraphEventId(),
                 request.createCalendarEvent(), calendarService.isEnabled())) {
             // The recovery path for pre-toggle and Airtable-migrated rows:
             // the interview exists, the Outlook invitation never did.
-            calendarService.createEvent(interview, candidate, position).ifPresent(created -> {
-                interview.setGraphEventId(created.eventId());
-                interview.setGraphOrganizer(created.organizer());
-                interview.setJoinUrl(created.joinUrl());
-                interview.setGraphCandidateEventId(created.candidateEventId());
-            });
+            createResult = calendarService.createEvent(interview, candidate, position);
+            if (createResult.created() != null) {
+                interview.setGraphEventId(createResult.created().eventId());
+                interview.setGraphOrganizer(createResult.created().organizer());
+                interview.setJoinUrl(createResult.created().joinUrl());
+                interview.setGraphCandidateEventId(createResult.created().candidateEventId());
+            }
         } else {
-            calendarService.updateEvent(interview, candidate, position)
-                    .ifPresent(interview::setJoinUrl);
+            updateResult = calendarService.updateEvent(interview, candidate, position);
+            updateResult.joinUrlIfPresent().ifPresent(interview::setJoinUrl);
         }
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_RESCHEDULED,
@@ -265,6 +282,23 @@ public class RecruitmentInterviewService {
                 .payload("duration_minutes", interview.getDurationMinutes())
                 .payload("online_meeting", interview.isOnlineMeeting())
                 .payload("calendar_synced", interview.getGraphEventId() != null));
+        // After the RESCHEDULED event on purpose (same seq-ordering rule
+        // as create): the invite events narrate what the reschedule did to
+        // the candidate's invitation.
+        if (createResult != null) {
+            applyCalendarCreateOutcome(interview, application, position, candidate,
+                    createResult, actor);
+        } else if (updateResult != null) {
+            if (updateResult.candidateUpdated()) {
+                // The candidate's own event was re-issued with the new
+                // facts — Outlook mails them an updated invitation, and the
+                // timeline must say so (candidate history completeness).
+                recordCandidateInviteSent(interview, application, position, actor, "UPDATED");
+            } else if (updateResult.candidateFailure() != null) {
+                handleCalendarFailure(interview, application, position, candidate,
+                        updateResult.candidateFailure(), actor);
+            }
+        }
         return interview;
     }
 
@@ -309,12 +343,35 @@ public class RecruitmentInterviewService {
         interview.setDecision(null);
         interview.setDecidedBy(null);
         interview.setDecidedAt(null);
-        calendarService.cancelEvent(interview);
+        boolean candidateHadInvite = interview.getGraphCandidateEventId() != null;
+        RecruitmentCalendarService.CancelResult cancelResult =
+                calendarService.cancelEvent(interview);
+        if (!cancelResult.allDeleted()) {
+            // A candidate keeping a live invitation to a cancelled
+            // interview will show up at the door: retryable failures go to
+            // the repair sweep (CANCELLED status ⇒ it finishes the
+            // deletes); permanent ones go to a person.
+            if (cancelResult.failure().retryable()) {
+                scheduleCalendarRetry(interview, cancelResult.failure());
+            } else if (candidateHadInvite) {
+                RecruitmentCandidate candidate =
+                        RecruitmentCandidate.findById(application.getCandidateUuid());
+                hrNotifier.notifyCandidateInviteFailed(candidate, interview,
+                        "The candidate's Outlook invitation could NOT be cancelled — "
+                                + "they still hold a live invite to a cancelled interview. "
+                                + "Cancel it by hand from the " + interview.getGraphOrganizer()
+                                + " calendar, or tell them directly.",
+                        cancelResult.failure().message(),
+                        cancelResult.failure().graphRequestId());
+            }
+        }
 
         recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_CANCELLED,
                 interview, application, position, actor)
                 .payload("scheduled_at",
-                        interview.getScheduledAt() != null ? interview.getScheduledAt().toString() : null));
+                        interview.getScheduledAt() != null ? interview.getScheduledAt().toString() : null)
+                .payload("candidate_invite_cancelled",
+                        candidateHadInvite && cancelResult.allDeleted()));
         return interview;
     }
 
@@ -1054,20 +1111,21 @@ public class RecruitmentInterviewService {
     // ---- Event skeleton --------------------------------------------------------------
 
     /**
-     * All three subjects + acting user + the interview's structural facts;
+     * All three subjects + the interview's structural facts, NO actor yet;
      * {@code visibility=CIRCLE} on partner track (module rule — the
      * timeline applies the same hard filter as the state tables).
+     * Package-private: {@code RecruitmentCalendarRepairJob} appends its
+     * system-actor invite events through this same skeleton, so the two
+     * writers can never drift on the CIRCLE rule.
      */
-    private static RecruitmentEventBuilder interviewEvent(RecruitmentEventType type,
-                                                          RecruitmentInterview interview,
-                                                          RecruitmentApplication application,
-                                                          RecruitmentPosition position,
-                                                          UUID actor) {
+    static RecruitmentEventBuilder interviewEvent(RecruitmentEventType type,
+                                                  RecruitmentInterview interview,
+                                                  RecruitmentApplication application,
+                                                  RecruitmentPosition position) {
         RecruitmentEventBuilder builder = RecruitmentEventBuilder.event(type)
                 .candidate(application.getCandidateUuid())
                 .application(application.getUuid())
                 .position(application.getPositionUuid())
-                .actorUser(actor.toString())
                 .payload("interview_uuid", interview.getUuid())
                 .payload("kind", interview.getKind().name())
                 .payload("round", interview.getRound());
@@ -1075,6 +1133,102 @@ public class RecruitmentInterviewService {
             builder.visibility(RecruitmentEventVisibility.CIRCLE);
         }
         return builder;
+    }
+
+    private static RecruitmentEventBuilder interviewEvent(RecruitmentEventType type,
+                                                          RecruitmentInterview interview,
+                                                          RecruitmentApplication application,
+                                                          RecruitmentPosition position,
+                                                          UUID actor) {
+        return interviewEvent(type, interview, application, position)
+                .actorUser(actor.toString());
+    }
+
+    // ---- Calendar outcome handling (candidate-invite robustness) -----------
+
+    /**
+     * Turn a {@link RecruitmentCalendarService.CreateResult} into durable
+     * consequences — the half the 2026-08-24 Graph 504 was missing:
+     * <ul>
+     *   <li>candidate event created → {@code INTERVIEW_CANDIDATE_INVITE_SENT}
+     *       on the timeline (the candidate's invitation is finally a fact
+     *       the history shows);</li>
+     *   <li>retryable failure (either event) → the V533 retry marker, so
+     *       the repair sweep finishes the job after the transaction
+     *       commits — surviving restarts;</li>
+     *   <li>permanent failure → HR alerted on Slack now, and a terminal
+     *       {@code INTERVIEW_CANDIDATE_INVITE_FAILED} event when the
+     *       candidate's invitation is what was lost.</li>
+     * </ul>
+     */
+    private void applyCalendarCreateOutcome(RecruitmentInterview interview,
+                                            RecruitmentApplication application,
+                                            RecruitmentPosition position,
+                                            RecruitmentCandidate candidate,
+                                            RecruitmentCalendarService.CreateResult result,
+                                            UUID actor) {
+        if (result.created() != null && result.created().candidateEventId() != null) {
+            recordCandidateInviteSent(interview, application, position, actor, "CREATED");
+            return;
+        }
+        RecruitmentCalendarService.GraphWriteFailure failure =
+                result.internalFailure() != null ? result.internalFailure()
+                        : result.candidateFailure();
+        if (failure == null) {
+            return; // toggle off, no organizer, or candidate without email
+        }
+        handleCalendarFailure(interview, application, position, candidate, failure, actor);
+    }
+
+    /** Retryable → V533 marker; permanent → alert + terminal event. */
+    private void handleCalendarFailure(RecruitmentInterview interview,
+                                       RecruitmentApplication application,
+                                       RecruitmentPosition position,
+                                       RecruitmentCandidate candidate,
+                                       RecruitmentCalendarService.GraphWriteFailure failure,
+                                       UUID actor) {
+        if (failure.retryable()) {
+            scheduleCalendarRetry(interview, failure);
+            return;
+        }
+        interview.setCalendarRetryLastError(failure.message());
+        boolean candidateInviteAffected = candidate != null
+                && candidate.getEmail() != null && !candidate.getEmail().isBlank();
+        if (!candidateInviteAffected) {
+            return; // interviewers-only damage — visible as calendarSynced=false
+        }
+        recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_CANDIDATE_INVITE_FAILED,
+                interview, application, position, actor)
+                .payload("reason", failure.message())
+                .payload("attempts", interview.getCalendarRetryAttempts() + 1)
+                .payload("graph_request_id", failure.graphRequestId()));
+        hrNotifier.notifyCandidateInviteFailed(candidate, interview,
+                "The candidate's Outlook invitation could NOT be sent (Graph rejected the "
+                        + "write permanently — retrying would not help). Invite them by hand, "
+                        + "or fix the cause and re-save the interview.",
+                failure.message(), failure.graphRequestId());
+    }
+
+    /** Arm the V533 retry marker; the inline try counts as attempt #1. */
+    private static void scheduleCalendarRetry(
+            RecruitmentInterview interview,
+            RecruitmentCalendarService.GraphWriteFailure failure) {
+        interview.setCalendarRetryAttempts(interview.getCalendarRetryAttempts() + 1);
+        interview.setCalendarRetryAt(RecruitmentCalendarRepairJob.nextAttemptAt(
+                interview.getCalendarRetryAttempts(), LocalDateTime.now()));
+        interview.setCalendarRetryLastError(failure.message());
+    }
+
+    private void recordCandidateInviteSent(RecruitmentInterview interview,
+                                           RecruitmentApplication application,
+                                           RecruitmentPosition position,
+                                           UUID actor,
+                                           String inviteKind) {
+        recorder.record(interviewEvent(RecruitmentEventType.INTERVIEW_CANDIDATE_INVITE_SENT,
+                interview, application, position, actor)
+                .payload("invite_kind", inviteKind)
+                .payload("scheduled_at", interview.getScheduledAt() != null
+                        ? interview.getScheduledAt().toString() : null));
     }
 
     private static String fullName(RecruitmentCandidate candidate) {

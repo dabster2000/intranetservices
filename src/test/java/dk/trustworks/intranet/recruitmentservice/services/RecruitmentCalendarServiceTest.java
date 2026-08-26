@@ -23,6 +23,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -99,9 +100,9 @@ class RecruitmentCalendarServiceTest {
     @Test
     void toggleOff_neverTouchesGraph() {
         service.calendarEnabled = false;
-        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
+        RecruitmentCalendarService.CreateResult created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate(), null));
-        assertTrue(created.isEmpty());
+        assertNull(created.created());
         verifyNoInteractions(graph);
     }
 
@@ -136,10 +137,10 @@ class RecruitmentCalendarServiceTest {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-123", null, null));
 
-        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
+        RecruitmentCalendarService.CreateResult created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate(), null));
 
-        assertEquals("evt-123", created.orElseThrow().eventId());
+        assertEquals("evt-123", created.created().eventId());
         // Phase 6 split: two creates in the same mailbox (no shared-organizer
         // config in tests) — [0] internal, [1] the candidate's own event.
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
@@ -474,9 +475,9 @@ class RecruitmentCalendarServiceTest {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 403: missing Calendars.ReadWrite"));
 
-        Optional<RecruitmentCalendarService.CreatedEvent> created = QuarkusTransaction.requiringNew().call(() ->
+        RecruitmentCalendarService.CreateResult created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate(), null));
-        assertTrue(created.isEmpty(), "a Graph failure yields empty, never an exception");
+        assertNull(created.created(), "a Graph failure yields no event, never an exception");
     }
 
     // ---- Fixtures --------------------------------------------------------------

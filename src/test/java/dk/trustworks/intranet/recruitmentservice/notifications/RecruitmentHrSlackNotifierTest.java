@@ -343,4 +343,53 @@ class RecruitmentHrSlackNotifierTest {
         assertTrue(body.contains("2 signers"), "signer count should be present");
         assertTrue(body.contains(c.getUuid()), "dossier link must include candidate UUID");
     }
+
+    // ── Candidate invite failed (calendar-retry dead-letter, V533) ─────────
+
+    @Test
+    void formatCandidateInviteFailedMessage_namesTheFactsNeverPii() {
+        RecruitmentCandidate c = candidate();
+        c.setEmail("PII-EMAIL@example.com");
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
+                new dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview();
+        interview.setUuid("int-1");
+        interview.setScheduledAt(java.time.LocalDateTime.of(2026, 8, 25, 15, 0));
+
+        String body = notifier.formatCandidateInviteFailedMessage(c, interview,
+                "The candidate's Outlook invitation could NOT be sent. Invite them by hand.",
+                "Graph API error 504 Gateway Timeout",
+                "078c03a7-cc41-449a-bf8e-205e7c0db0c1");
+
+        assertFalse(body.contains("PII-EMAIL@example.com"),
+                "candidate email must not appear in Slack message");
+        assertTrue(body.contains("2026-08-25T15:00"), "the interview time is the actionable fact");
+        assertTrue(body.contains("Invite them by hand"), "the message tells HR what to do");
+        assertTrue(body.contains("078c03a7-cc41-449a-bf8e-205e7c0db0c1"),
+                "the Graph request-id is the support-ticket handle");
+        assertTrue(body.contains(c.getUuid()), "profile link must include candidate UUID");
+    }
+
+    @Test
+    void notifyCandidateInviteFailed_slackFailureNeverPropagates() {
+        doThrow(new RuntimeException("Slack down")).when(slackService)
+                .sendMessage(anyString(), anyString(), anyString());
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
+                new dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview();
+        interview.setUuid("int-1");
+
+        notifier.notifyCandidateInviteFailed(candidate(), interview, "problem", "reason", null);
+        // no exception = pass: a Slack outage must not fail scheduling or the sweep
+    }
+
+    @Test
+    void notifyCandidateInviteFailed_isNotDeduped_eachTerminalFactIsNews() {
+        dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
+                new dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview();
+        interview.setUuid("int-1");
+
+        notifier.notifyCandidateInviteFailed(candidate(), interview, "problem", "reason", null);
+        notifier.notifyCandidateInviteFailed(candidate(), interview, "problem", "reason", null);
+
+        verify(slackService, times(2)).sendMessage(anyString(), anyString(), anyString());
+    }
 }

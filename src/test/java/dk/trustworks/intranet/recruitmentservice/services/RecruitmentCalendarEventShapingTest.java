@@ -68,7 +68,7 @@ class RecruitmentCalendarEventShapingTest {
         RecruitmentInterview interview = interview();
         interview.setOnlineMeeting(true);
 
-        Optional<RecruitmentCalendarService.CreatedEvent> created =
+        RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview, candidateWithoutEmail(), null);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
@@ -84,11 +84,11 @@ class RecruitmentCalendarEventShapingTest {
                 "create idempotency: the interview UUID, so a retried create never double-books");
         assertEquals(Boolean.TRUE, request.responseRequested());
 
-        assertEquals("evt-1", created.orElseThrow().eventId());
-        assertEquals("career@trustworks.dk", created.orElseThrow().organizer(),
+        assertEquals("evt-1", created.created().eventId());
+        assertEquals("career@trustworks.dk", created.created().organizer(),
                 "the organizer used is handed back for persistence");
         assertEquals("https://teams.microsoft.com/l/meetup-join/x",
-                created.orElseThrow().joinUrl());
+                created.created().joinUrl());
     }
 
     @Test
@@ -121,7 +121,7 @@ class RecruitmentCalendarEventShapingTest {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-2", null, null));
 
-        Optional<RecruitmentCalendarService.CreatedEvent> created =
+        RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview(), candidateWithoutEmail(), null);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
@@ -130,7 +130,7 @@ class RecruitmentCalendarEventShapingTest {
         assertNull(body.getValue().isOnlineMeeting(),
                 "FALSE is never sent — absent keeps Graph's default");
         assertNull(body.getValue().onlineMeetingProvider());
-        assertNull(created.orElseThrow().joinUrl());
+        assertNull(created.created().joinUrl());
     }
 
     @Test
@@ -167,9 +167,10 @@ class RecruitmentCalendarEventShapingTest {
         interview.setGraphOrganizer("career@trustworks.dk");
         interview.setOnlineMeeting(true);
 
-        Optional<String> joinUrl = service.updateEvent(interview, candidateWithoutEmail(), null);
+        RecruitmentCalendarService.UpdateResult update =
+                service.updateEvent(interview, candidateWithoutEmail(), null);
 
-        assertEquals(Optional.of("https://teams.microsoft.com/l/meetup-join/y"), joinUrl);
+        assertEquals("https://teams.microsoft.com/l/meetup-join/y", update.joinUrl());
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
                 ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(anyString(), anyString(), body.capture());
@@ -195,14 +196,18 @@ class RecruitmentCalendarEventShapingTest {
     void graphFailure_stillSwallowed_neverThrows() {
         when(graph.createCalendarEvent(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
-        assertTrue(service.createEvent(interview(), candidateWithoutEmail(), null).isEmpty());
+        RecruitmentCalendarService.CreateResult failed =
+                service.createEvent(interview(), candidateWithoutEmail(), null);
+        assertNull(failed.created(), "a Graph failure yields no event, never an exception");
+        assertTrue(failed.internalFailure() != null,
+                "…but the failure is now CLASSIFIED for the caller, not swallowed");
 
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
         RecruitmentInterview synced = interview();
         synced.setGraphEventId("evt-6");
         synced.setGraphOrganizer("career@trustworks.dk");
-        assertTrue(service.updateEvent(synced, candidateWithoutEmail(), null).isEmpty());
+        assertNull(service.updateEvent(synced, candidateWithoutEmail(), null).joinUrl());
     }
 
     // ---- Two-event split (plan Phase 6) ----------------------------------------
@@ -214,7 +219,7 @@ class RecruitmentCalendarEventShapingTest {
                 .thenReturn(new GraphApiClient.CalendarEvent("evt-cand", null, null));
         RecruitmentPosition position = position();
 
-        Optional<RecruitmentCalendarService.CreatedEvent> created =
+        RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview(), candidate(), position);
 
         ArgumentCaptor<GraphApiClient.CalendarEventRequest> bodies =
@@ -242,7 +247,7 @@ class RecruitmentCalendarEventShapingTest {
                 "the candidate event must never mint a SECOND Teams meeting");
         assertEquals("int-1-candidate", candidateEvent.transactionId());
         assertTrue(candidateEvent.subject().contains("Trustworks"));
-        assertEquals("evt-cand", created.orElseThrow().candidateEventId());
+        assertEquals("evt-cand", created.created().candidateEventId());
     }
 
     @Test
