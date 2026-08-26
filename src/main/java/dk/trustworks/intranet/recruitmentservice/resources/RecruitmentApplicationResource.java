@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationCreateRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.CommunicationPlanResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationMovePositionRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ApplicationRejectRequest;
@@ -13,9 +14,11 @@ import dk.trustworks.intranet.recruitmentservice.dto.FormAnswersResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentApplicationService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -24,6 +27,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
@@ -31,6 +35,7 @@ import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -89,6 +94,9 @@ public class RecruitmentApplicationResource {
 
     @Inject
     CandidateProfileReadService profileReadService;
+
+    @Inject
+    RecruitmentCommunicationPlanService communicationPlanService;
 
     // ---- Per-candidate collection ------------------------------------------------
 
@@ -338,6 +346,78 @@ public class RecruitmentApplicationResource {
         RecruitmentApplication updated = applicationService.setExpectedStartDate(application, position,
                 request.expectedStartDate(), actor);
         return applicationService.toResponse(updated, position, actor.toString());
+    }
+
+    // ---- Communication plan (2026-08-26) --------------------------------------------
+
+    /**
+     * What a pending action would send to the candidate, judged against the
+     * live configuration — the action dialogs' "what will the candidate
+     * receive" strip. Read-only and side-effect free; the plan PREDICTS the
+     * reactors, it never drives them.
+     *
+     * <p>Visible exactly as the application is (the read tier — every role
+     * that can see an action surface can see what the action sends).
+     * Resolved copy-recipient names ride only for callers on the
+     * candidate-email tier; below it the copy policy shows as roles.</p>
+     *
+     * @param action          one of {@link RecruitmentCommunicationPlanService.PlanAction}
+     * @param toStage         target stage, required for STAGE_MOVE
+     * @param round           interview round 1–3 for INTERVIEW_SCHEDULE /
+     *                        METHOD_B_START; omit for INFORMAL/OFFER kinds
+     * @param manualDelivery  METHOD_B_START: recruiter delivers the option
+     *                        link personally, the system mails nothing
+     * @param reviewRequired  METHOD_B_START: options wait for recruiter
+     *                        review before the candidate hears anything
+     */
+    @GET
+    @Path("/applications/{uuid}/communication-plan")
+    public CommunicationPlanResponse communicationPlan(
+            @PathParam("uuid") UUID applicationUuid,
+            @QueryParam("action") String action,
+            @QueryParam("toStage") String toStage,
+            @QueryParam("round") Integer round,
+            @QueryParam("manualDelivery") @DefaultValue("false") boolean manualDelivery,
+            @QueryParam("reviewRequired") @DefaultValue("false") boolean reviewRequired) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
+        RecruitmentCommunicationPlanService.PlanAction planAction = parsePlanAction(action);
+        RecruitmentStage targetStage = null;
+        if (planAction == RecruitmentCommunicationPlanService.PlanAction.STAGE_MOVE) {
+            targetStage = parseStage(toStage);
+        }
+        if (round != null && (round < 1 || round > 3)) {
+            throw badRequest("round must be 1, 2 or 3");
+        }
+        RecruitmentCandidate candidate =
+                RecruitmentCandidate.findById(application.getCandidateUuid());
+        RecruitmentPosition position = positionOf(application);
+        boolean includeCopyNames = visibility.canEmailCandidates(actor.toString());
+        return communicationPlanService.plan(application, candidate, position, planAction,
+                targetStage, round, manualDelivery, reviewRequired, includeCopyNames);
+    }
+
+    private static RecruitmentCommunicationPlanService.PlanAction parsePlanAction(String action) {
+        if (action == null || action.isBlank()) {
+            throw badRequest("action is required");
+        }
+        try {
+            return RecruitmentCommunicationPlanService.PlanAction.valueOf(action.trim());
+        } catch (IllegalArgumentException e) {
+            throw badRequest("Unknown action: " + action);
+        }
+    }
+
+    private static RecruitmentStage parseStage(String stage) {
+        if (stage == null || stage.isBlank()) {
+            throw badRequest("toStage is required for STAGE_MOVE");
+        }
+        try {
+            return RecruitmentStage.valueOf(stage.trim());
+        } catch (IllegalArgumentException e) {
+            throw badRequest("Unknown stage: " + stage);
+        }
     }
 
     // ---- Helpers --------------------------------------------------------------------
