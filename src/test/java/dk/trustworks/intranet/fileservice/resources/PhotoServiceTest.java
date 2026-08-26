@@ -16,6 +16,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -253,8 +254,19 @@ class PhotoServiceTest {
 
     private static final String RESIZE_KEY = "resized/64/" + RELATED_UUID;
 
-    /** WebP header. Stock JDK ImageIO has no reader for it, so Thumbnailator cannot decode it. */
-    private static byte[] webpBytes() {
+    /**
+     * A WebP <em>container header</em> over 48 zero bytes — a damaged blob, not a picture. Tika
+     * still calls it {@code image/webp} because it matches on magic alone.
+     * <p>
+     * This was named {@code webpBytes()} and stood in for "a webp avatar" while no WebP reader
+     * existed, when the distinction could not be observed: nothing on the classpath could tell a
+     * real webp from a broken one, so both produced the same
+     * {@link net.coobird.thumbnailator.tasks.UnsupportedFormatException}. With
+     * {@code imageio-webp} registered the two now diverge — the SPI claims these bytes and then
+     * fails inside the decoder — so the fixture is renamed for what it actually is. Real webp
+     * coverage is {@link #lossyWebp()} and {@link #losslessWebp()}.
+     */
+    private static byte[] damagedWebpHeader() {
         byte[] data = new byte[64];
         System.arraycopy("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 0, 4);
         System.arraycopy("WEBPVP8 ".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 8, 8);
@@ -271,7 +283,7 @@ class PhotoServiceTest {
 
     @Test
     void undecodableFormatFallsBackToTheOriginalBytesWithoutAnError() {
-        byte[] webp = webpBytes();
+        byte[] webp = damagedWebpHeader();
 
         byte[] result = service.resizeImage(webp, 64, 0, RESIZE_KEY);
 
@@ -282,7 +294,7 @@ class PhotoServiceTest {
 
     @Test
     void undecodableFormatIsReportedAtWarnWithEnoughContextToFindThePhoto() {
-        service.resizeImage(webpBytes(), 64, 0, RESIZE_KEY);
+        service.resizeImage(damagedWebpHeader(), 64, 0, RESIZE_KEY);
 
         List<String> warnings = messagesAt(Level.WARNING);
         assertEquals(1, warnings.size(), "expected exactly one WARN, got: " + allMessages());
@@ -413,7 +425,7 @@ class PhotoServiceTest {
     void anUndecodableFormatStillFallsBackWhenASquareIsRequested() {
         // naturalSize() answers null for webp; the request must then pass through untouched to the
         // same UnsupportedFormatException fallback rather than failing on a null dereference.
-        byte[] webp = webpBytes();
+        byte[] webp = damagedWebpHeader();
 
         byte[] result = service.resizeImage(webp, 96, 96, RESIZE_KEY);
 
@@ -424,7 +436,7 @@ class PhotoServiceTest {
     @Test
     void naturalSizeReadsTheHeaderAndAdmitsWhenItCannot() throws Exception {
         assertArrayEquals(new int[]{1600, 800}, PhotoService.naturalSize(wideJpeg(1600, 800)));
-        assertNull(PhotoService.naturalSize(webpBytes()), "unknown must be null, never a zero size");
+        assertNull(PhotoService.naturalSize(damagedWebpHeader()), "unknown must be null, never a zero size");
         assertNull(PhotoService.naturalSize(new byte[0]));
     }
 
@@ -577,7 +589,7 @@ class PhotoServiceTest {
         // Load-bearing: gating on "Thumbnailator can decode it" instead of on the type would reject
         // every webp and heic upload, which succeed today and are simply stored unresized.
         assertTrue(PhotoService.isStorableImageType("image/webp"));
-        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(webpBytes())));
+        assertDoesNotThrow(() -> service.requireStorableImage(photoOf(damagedWebpHeader())));
     }
 
     @Test
@@ -795,6 +807,283 @@ class PhotoServiceTest {
         byte[] resized = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 64, 0);
 
         assertNotEquals(0, resized.length, "a real photo must still resize");
+    }
+
+    // --- webp: the format production could not decode -------------------------------------------
+    // Stock JDK 21 ImageIO ships readers for JPEG/PNG/GIF/BMP/TIFF only. Every webp avatar therefore
+    // raised UnsupportedFormatException, resizeImage fell back to the original bytes, and
+    // getResizedPhoto published those bytes to the thumbnail key — so production served full-size
+    // webp portraits into 96px circles, 93 times across ~40 users in a single day, and the S3 object
+    // written under resized/96x96/{uuid} made the condition permanent for each of them.
+    //
+    // The fixtures below are REAL webps, which matters twice over. The pre-existing fixture
+    // (damagedWebpHeader) is a header over zero bytes, so it exercises the failure branch in both
+    // worlds and could never have caught this. And webp has two independent decoder paths inside
+    // TwelveMonkeys — lossy VP8 and lossless VP8L — so a fixture in one format proves nothing about
+    // the other. Production's bytes are lossy VP8, the browser/CDN default.
+
+    /**
+     * A real 200x100 lossy (VP8) WebP — the encoding production's avatars actually arrive in.
+     * <p>
+     * Produced once with {@code cwebp 1.5.0 -q 40} from a 200x100 gradient with a filled ellipse
+     * (non-uniform on purpose, so a resize cannot be mistaken for a solid colour). Inlined rather
+     * than added as a binary resource because this suite has no binary fixtures and
+     * {@code pom.xml} declares no {@code <testResources>} filtering rule to keep one safe.
+     */
+    private static byte[] lossyWebp() {
+        return java.util.Base64.getDecoder().decode(
+                "UklGRigCAABXRUJQVlA4IBwCAAAwEgCdASrIAGQAPu12tlQpqCUjJPpIGTAdiWNu3Vr+MZlUT/ngCaAlQPZlRAetAPp/LvzV"
+                        + "35q781cmX5gerBDt0Fk3qawDwcAs7/LvzOyneqbynw/h35CDcQIUEUWYd8osy0yhFRM6CRTXcuXqGy2twCOQYa1MIN1PpRFe"
+                        + "TUI6YOHouZ7Jgwz2W87Dd7iF/LtfYhHsQj2IR66wAP7oUKn/Vfq72xK/9enNCsZ2cKpNkVd+nB7Tw5qbz6g52DsS0htYTY7g"
+                        + "OvJl5NqZlHcMkqHDF1UaIB59r/HcTxvzmBniK6fUf9vrnEw5HXU2xID38pcV7k3cr2g5NDP1j2w88Ok0952qQlYPbzQymqO6"
+                        + "zhRM0DIa1gmfo2JhYoALFJG2MVBRn7ARbKnYzKgUDb2YH7nk/IkjD5oLIk6CUw3BOdUuHVaHgB3iZWxY69B2SqBEQbuVx8ua"
+                        + "2n41x16KH1GjbQQ2g64P3/aViRstFnCvX+C+eNg0Ugsvfi0ijUO/OBJdBFC8RA3DQ5mt9oaakKQKlVP3+caPk/OPBBXxdBe4"
+                        + "fggIE/cuea5V2QerXZSKXCKNEYyzYHK1LcFQg9PuSh5bnUQwS43Qj+TNTXla5/DSp40Yucsc9rHlVaizJw5H0I4Oc0SfYrg+"
+                        + "2YwK18pIrEQzW9rvJqN+Y/L8DTfvQqOv2VlXXxsCwZ3tnzfcK+qDcsqY+bJf75y5KK2SdaRQAAA=");
+    }
+
+    /** The same 200x100 image as lossless VP8L — TwelveMonkeys decodes it through different code. */
+    private static byte[] losslessWebp() {
+        return java.util.Base64.getDecoder().decode(
+                "UklGRuQBAABXRUJQVlA4TNcBAAAvx8AYABkyaRty17/kMQsR/U+bPBtFbRtJnoM/qIWzCFbznQWhtm0bRin/n5fZk+ELMitq"
+                        + "2wYO+TkU9/o/ARRwv14SAAj0Gv+xJebA+sJh2zaSlBJPlarM3U0Ozv3nSJJs0zrRjzu08W2M3vjbtv3/DhluI0lSpFry9piZ"
+                        + "/iW26M6QWSdex3CkRpIjxUDCuN1Y9lTmBTd6FbHFUVBrUOBlFQX+1z7yTJ/I/4/hT+KQ5bwQRNQQXNUCpAxJd6jBkhD/pksP"
+                        + "/p/uxK/tVEQkWvgKeiV5kyt8hP2ifAkV3pIJVf5Ewks2Iwv9A514yqd0AXHCQzknjHVfo14oqDDhph3EXYl3j4KrftTZTUlw"
+                        + "X6MOLagg4WwexkVJ/L5GX6Cg1qinC8TAwXkcRyXZ+xr9poJao09T4PmIEFh7rHFCmFt5vjAfeTRPqFwMm2moHGucFHg86wVa"
+                        + "Z8vTLLT2CPVCkl9eUPcBvdX8Ogm9o6Ci/AsMJrPnORjsBR6O/t/dYFKmYPIO1Oc3LjMw+0SaHxmVCVh8Q83zDKQfVr9c81U9"
+                        + "6YUNyearRehIJ+xIN7fX8l1wUAn3QTSkA0465X6Omr8KFxN1X0pFzsPNJd5fU/LH8HDv833bf/6PFAEA");
+    }
+
+    /** A real 40x40 lossy WebP — smaller than any thumbnail box, for the no-upscale clamp. */
+    private static byte[] smallWebp() {
+        return java.util.Base64.getDecoder().decode(
+                "UklGRs4AAABXRUJQVlA4IMIAAAAwBgCdASooACgAPu1mqk6ppaOiLigBMB2JZADBEA108//wqSnHFOPl8rRuC3RFktGxT2km"
+                        + "3/IknzQoAP6cUG2gTWzEPPof+e/8dTZZjQd2nwmvn6XyJFPNcMT6npEQbIkPHdFN8ubf2HwmGGzTHZSxcjid3D9sJiuW8qjy"
+                        + "VepAZLNGGIStDymhR0c6eP0W52xQGMAxLqWwvbPl7zdsfQUu11dMDK3mD4LDWHYRPs3JaNxf65kjSaOvtsCgiq8kAAAAAA==");
+    }
+
+    @Test
+    void aWebpImageReaderIsRegisteredInThisJvm() {
+        // The whole fix in one assertion. This is a direct probe of the ImageIO reader registry, so
+        // it cannot pass by accident: before com.twelvemonkeys.imageio:imageio-webp was added it
+        // was false, and every other webp test below depends on it.
+        assertTrue(ImageIOPluginRegistrar.hasReaderFor("image/webp"),
+                "imageio-webp must be on the classpath — without it every webp avatar is served "
+                        + "at full size and the thumbnail cache is poisoned with the original");
+    }
+
+    @Test
+    void naturalSizeNowReadsWebpDimensions() {
+        // naturalSize answered null for webp, which made coverBox/fitBox pass the request through
+        // unclamped and left the caller unable to tell a thumbnail from an original.
+        assertArrayEquals(new int[]{200, 100}, PhotoService.naturalSize(lossyWebp()));
+        assertArrayEquals(new int[]{200, 100}, PhotoService.naturalSize(losslessWebp()));
+    }
+
+    @Test
+    void aRealWebpIsGenuinelyResizedIntoASquareThumbnail() throws Exception {
+        byte[] source = lossyWebp();
+
+        byte[] result = service.resizeImage(source, 96, 96, RESIZE_KEY);
+
+        // Four independent properties, because the fallback returns the input array verbatim and
+        // any single check could in principle be satisfied by accident.
+        assertFalse(java.util.Arrays.equals(source, result), "the fallback hands back its input");
+        assertEquals("image/jpeg", service.detectMimeType(result), "a real resize re-encodes as JPEG");
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result), "a circular 96px frame needs 96 rows");
+        // Pixels, not bytes. Byte count is the production symptom — a 37,882-byte master answering
+        // a 96px frame where a real thumbnail is ~2.5KB — but it cannot be asserted on a fixture
+        // this small: 200x100 of webp is 560 bytes, which JPEG does not beat at any quality.
+        int[] master = PhotoService.naturalSize(source);
+        int[] thumbnail = dimensionsOf(result);
+        assertTrue(thumbnail[0] * thumbnail[1] < master[0] * master[1],
+                "the thumbnail must carry fewer pixels than the master it came from");
+        assertEquals(List.of(), errorMessages(), "decoding a webp is now the happy path");
+        assertEquals(List.of(), messagesAt(Level.WARNING), "and must be silent");
+    }
+
+    @Test
+    void aLosslessWebpIsResizedToo() throws Exception {
+        // VP8L is a separate decoder inside TwelveMonkeys; passing on lossy proves nothing here.
+        byte[] result = service.resizeImage(losslessWebp(), 96, 96, RESIZE_KEY);
+
+        assertEquals("image/jpeg", service.detectMimeType(result));
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result));
+    }
+
+    @Test
+    void theWidthOnlyShapeOfAWebpStillFitsInsideRatherThanCropping() throws Exception {
+        // Client and team logos arrive as webp too, and centre-cropping them destroys them.
+        byte[] result = service.resizeImage(lossyWebp(), 96, 0, RESIZE_KEY);
+
+        assertArrayEquals(new int[]{96, 48}, dimensionsOf(result),
+                "width alone must keep bounding the long side for the logo callers");
+    }
+
+    @Test
+    void aWebpSmallerThanTheRequestedBoxIsNotEnlarged() throws Exception {
+        // Now that naturalSize can read webp, the shrink-only clamp finally applies to it. Before
+        // this it answered null, the box passed through unclamped, and a 40x40 webp would have been
+        // blown up to a "256x256" thumbnail carrying 40px of real detail.
+        byte[] result = service.resizeImage(smallWebp(), 256, 256, RESIZE_KEY);
+
+        assertArrayEquals(new int[]{40, 40}, dimensionsOf(result),
+                "upscaling claims a resolution the pixels do not carry");
+    }
+
+    @Test
+    void aWebpUploadIsNormalisedToJpegInsteadOfBeingStoredRaw() throws Exception {
+        // The write-path half of the same root cause: resizeToUploadDimensions logged
+        // "Image resize failed, saving original" and stored the raw webp, so the master every
+        // thumbnail derives from was itself undecodable.
+        byte[] stored = service.resizeToUploadDimensions(lossyWebp(), 1024, 1024);
+
+        assertEquals("image/jpeg", service.detectMimeType(stored),
+                "a webp upload must be normalised like every other in-bounds upload");
+        assertArrayEquals(new int[]{200, 100}, dimensionsOf(stored), "and must not be enlarged");
+    }
+
+    @Test
+    void aDamagedWebpStaysAWarningRatherThanBecomingAnError() {
+        // Registering a reader moves this blob from "no SPI claims it" to "claimed, then fails in
+        // the decoder" — a different exception type on the same data condition. Left unhandled that
+        // would have silently promoted this defect's own 93-a-day WARN stream to ERROR.
+        service.resizeImage(damagedWebpHeader(), 96, 96, RESIZE_KEY);
+
+        assertEquals(List.of(), errorMessages(),
+                "a corrupt stored blob is a data condition, not a system fault: " + allMessages());
+        assertEquals(1, messagesAt(Level.WARNING).size(), "still exactly one WARN: " + allMessages());
+    }
+
+    // --- the poisoned thumbnail cache -----------------------------------------------------------
+    // getResizedPhoto published whatever resizeImage returned, and resizeImage returns its INPUT
+    // when it cannot scale. So a format this JVM could not decode had its full-size original
+    // written to resized/{size}/{uuid} — and because getResizedPhoto short-circuits on
+    // s3ObjectExists, that copy was then served under the thumbnail key forever. This is why
+    // registering the WebP reader on its own would not have repaired one existing user.
+
+    /** A thumbnail object already present in S3 under its key. */
+    private void thumbnailInS3() {
+        org.mockito.Mockito
+                .doReturn(software.amazon.awssdk.services.s3.model.HeadObjectResponse.builder().build())
+                .when(s3).headObject(any(HeadObjectRequest.class));
+    }
+
+    @Test
+    void aPhotoThisJvmCannotDecodeIsNeverPublishedAsAThumbnail() {
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        s3Contains(Map.of(UUID, heicBytes()));
+        noThumbnailInS3();
+
+        serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 96, 96);
+
+        // after(...) rather than a bare never(): the publish is async, so an immediate assertion
+        // would pass even if the write were still queued.
+        verify(s3, org.mockito.Mockito.after(300).never())
+                .putObject(any(PutObjectRequest.class), any(RequestBody.class));
+    }
+
+    @Test
+    void aPhotoRowThatIsNotAnImageAnswersEmptyRatherThanServingADocument() {
+        // Four relateduuids in production hold text/plain under type='PHOTO' — rows predating
+        // requireStorableImage. Handing those back made FileResource serve a text file as a
+        // download named after a person; empty instead is the signal UserAvatar's DiceBear-then-
+        // initials fallback keys off, so those four render a normal avatar.
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        s3Contains(Map.of(UUID, "not an image at all, just text".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        noThumbnailInS3();
+
+        byte[] result = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 96, 96);
+
+        assertEquals(0, result.length, "a non-image row must answer empty, not its bytes");
+        verify(s3, org.mockito.Mockito.after(300).never())
+                .putObject(any(PutObjectRequest.class), any(RequestBody.class));
+    }
+
+    @Test
+    void theStorableAllowlistIsWhatTheReadGuardUses() {
+        // The read guard and the upload guard must stay the same set, or a format one accepts and
+        // the other refuses becomes unreachable-but-stored.
+        assertTrue(PhotoService.isStorableImageType("image/webp"), "webp is decodable now, and was always storable");
+        assertTrue(PhotoService.isStorableImageType("image/jpeg"));
+        assertFalse(PhotoService.isStorableImageType("text/plain"));
+        assertFalse(PhotoService.isStorableImageType("image/svg+xml"));
+    }
+
+    @Test
+    void aRealWebpIsPublishedAsAThumbnailEndToEnd() throws Exception {
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        s3Contains(Map.of(UUID, lossyWebp()));
+        noThumbnailInS3();
+
+        byte[] result = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 96, 96);
+
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result), "resize-on-read must work for webp");
+        assertEquals("image/jpeg", service.detectMimeType(result));
+        verify(s3, org.mockito.Mockito.timeout(2000))
+                .putObject(any(PutObjectRequest.class), any(RequestBody.class));
+    }
+
+    @Test
+    void anUnresizedCopyCachedUnderAThumbnailKeyIsDiscardedAndRegenerated() throws Exception {
+        // Exactly the state production is in for ~40 users: the thumbnail key holds the full-size
+        // original, put there by the pre-fix fallback. Without this repair the s3ObjectExists
+        // short-circuit means the working resize path is never reached again for that key.
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        String poisonedKey = PhotoService.resizedKey(RELATED_UUID, 96, 96);
+        s3Contains(Map.of(UUID, lossyWebp(), poisonedKey, lossyWebp()));
+        thumbnailInS3();
+
+        byte[] result = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 96, 96);
+
+        assertArrayEquals(new int[]{96, 96}, dimensionsOf(result),
+                "the poisoned entry must be regenerated, not served");
+        verify(s3).deleteObject(any(DeleteObjectRequest.class));
+        verify(s3, org.mockito.Mockito.timeout(2000))
+                .putObject(any(PutObjectRequest.class), any(RequestBody.class));
+    }
+
+    @Test
+    void aGenuineThumbnailAlreadyInS3IsServedUntouched() throws Exception {
+        // The counterpart guard: the repair must not fire on a healthy cache entry, or every avatar
+        // request would delete and regenerate its own thumbnail.
+        File stored = new File(UUID, RELATED_UUID, "PHOTO");
+        String key = PhotoService.resizedKey(RELATED_UUID, 96, 96);
+        byte[] realThumbnail = service.resizeImage(lossyWebp(), 96, 96, key);
+        s3Contains(Map.of(UUID, lossyWebp(), key, realThumbnail));
+        thumbnailInS3();
+
+        byte[] result = serviceWithStoredPhoto(Optional.of(stored)).getResizedPhoto(RELATED_UUID, 96, 96);
+
+        assertArrayEquals(realThumbnail, result, "a healthy thumbnail must be served as-is");
+        verify(s3, never()).deleteObject(any(DeleteObjectRequest.class));
+    }
+
+    @Test
+    void isUnresizedCopyRecognisesAnOriginalStoredUnderAThumbnailKey() throws Exception {
+        // Larger than the box in either dimension — the signature of a published fallback.
+        assertTrue(PhotoService.isUnresizedCopy(wideJpeg(1600, 800), 96, 96));
+        assertTrue(PhotoService.isUnresizedCopy(wideJpeg(200, 100), 96, 0),
+                "width-only keys bound the long side, so 200px wide is still oversized");
+        // Undecodable bytes were never produced by this service's JPEG encoder.
+        assertTrue(PhotoService.isUnresizedCopy(heicBytes(), 96, 96));
+    }
+
+    @Test
+    void isUnresizedCopyLeavesGenuineThumbnailsAlone() throws Exception {
+        assertFalse(PhotoService.isUnresizedCopy(wideJpeg(96, 96), 96, 96));
+        assertFalse(PhotoService.isUnresizedCopy(wideJpeg(96, 48), 96, 0));
+        // A clamped small source answers below the box and must not be mistaken for an original.
+        assertFalse(PhotoService.isUnresizedCopy(wideJpeg(40, 40), 256, 256));
+        assertFalse(PhotoService.isUnresizedCopy(new byte[0], 96, 96), "absent is not poisoned");
+    }
+
+    /** A format no reader on this classpath claims — HEIC and AVIF remain undecodable after the fix. */
+    private static byte[] heicBytes() {
+        byte[] data = new byte[64];
+        data[3] = 0x20;
+        System.arraycopy("ftypheic".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, data, 4, 8);
+        return data;
     }
 
     private static final class RecordingHandler extends Handler {
