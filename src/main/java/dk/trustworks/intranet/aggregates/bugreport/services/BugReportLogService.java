@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.bugreport.services;
 
+import dk.trustworks.intranet.utils.aws.CloudWatchLogGroupResolver;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -15,12 +17,11 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Retrieves recent backend and frontend logs from CloudWatch Logs for a specific user.
- * Dynamically discovers the active App Runner log group by prefix (since App Runner
- * log group names contain a random instance ID that changes on each deployment).
+ * The concrete log-group names carry a hash suffix that changes whenever the ECS service is
+ * recreated, so they are discovered from a stable prefix via {@link CloudWatchLogGroupResolver}.
  * Caps log excerpt at 500KB to prevent oversized database entries.
  */
 @JBossLog
@@ -37,10 +38,10 @@ public class BugReportLogService {
     @ConfigProperty(name = "bug-report.cloudwatch.log-group-frontend")
     String frontendLogGroupPrefix;
 
-    private final CloudWatchLogsClient logsClient;
+    @Inject
+    CloudWatchLogGroupResolver logGroupResolver;
 
-    // Cache resolved log group names (they only change on redeploy)
-    private final ConcurrentHashMap<String, String> resolvedLogGroups = new ConcurrentHashMap<>();
+    private final CloudWatchLogsClient logsClient;
 
     public BugReportLogService() {
         ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
@@ -67,18 +68,22 @@ public class BugReportLogService {
 
             List<FilteredLogEvent> allEvents = new ArrayList<>();
 
-            String backendGroup = resolveLogGroup(backendLogGroupPrefix);
+            // The resolver already logs the specific failure at ERROR; a bug report that silently
+            // attaches no logs is the failure mode this whole path exists to avoid.
+            String backendGroup = logGroupResolver.resolve(backendLogGroupPrefix);
             if (backendGroup != null) {
                 allEvents.addAll(queryLogGroup(backendGroup, userUuid, startTime, endTime));
             } else {
-                log.warnf("Could not resolve backend log group from prefix: %s", backendLogGroupPrefix);
+                log.errorf("Bug report for user %s will carry no backend logs: prefix %s resolved to no log group",
+                        userUuid, backendLogGroupPrefix);
             }
 
-            String frontendGroup = resolveLogGroup(frontendLogGroupPrefix);
+            String frontendGroup = logGroupResolver.resolve(frontendLogGroupPrefix);
             if (frontendGroup != null) {
                 allEvents.addAll(queryLogGroup(frontendGroup, userUuid, startTime, endTime));
             } else {
-                log.warnf("Could not resolve frontend log group from prefix: %s", frontendLogGroupPrefix);
+                log.errorf("Bug report for user %s will carry no frontend logs: prefix %s resolved to no log group",
+                        userUuid, frontendLogGroupPrefix);
             }
 
             allEvents.sort(Comparator.comparingLong(FilteredLogEvent::timestamp));
@@ -103,43 +108,6 @@ public class BugReportLogService {
         }
     }
 
-    /**
-     * Discovers the most recent "application" log group matching the given prefix.
-     * App Runner log groups have the format: /aws/apprunner/{service-name}/{instance-id}/application
-     * The instance ID changes on each deployment, so we discover it dynamically.
-     * Results are cached until invalidated.
-     */
-    private String resolveLogGroup(String prefix) {
-        return resolvedLogGroups.computeIfAbsent(prefix, this::discoverLogGroup);
-    }
-
-    private String discoverLogGroup(String prefix) {
-        try {
-            var response = logsClient.describeLogGroups(
-                    DescribeLogGroupsRequest.builder()
-                            .logGroupNamePrefix(prefix)
-                            .limit(20)
-                            .build());
-
-            var resolved = response.logGroups().stream()
-                    .filter(g -> g.logGroupName().endsWith("/application"))
-                    .max(Comparator.comparingLong(LogGroup::creationTime))
-                    .map(LogGroup::logGroupName)
-                    .orElse(null);
-
-            if (resolved != null) {
-                log.infof("Resolved log group: %s → %s", prefix, resolved);
-            } else {
-                log.warnf("No application log group found for prefix: %s (found %d groups total)",
-                        prefix, response.logGroups().size());
-            }
-            return resolved;
-        } catch (Exception e) {
-            log.warnf("Could not discover log group for prefix %s: %s", prefix, e.getMessage());
-            return null;
-        }
-    }
-
     private List<FilteredLogEvent> queryLogGroup(String logGroupName, String userUuid,
                                                   Instant startTime, Instant endTime) {
         try {
@@ -160,9 +128,12 @@ public class BugReportLogService {
                     response.events().size(), logGroupName, userUuid);
             return response.events();
         } catch (Exception e) {
-            log.warnf("Could not query log group %s for user %s: %s", logGroupName, userUuid, e.getMessage());
-            // Invalidate cached log group in case it changed (redeploy)
-            resolvedLogGroups.values().remove(logGroupName);
+            // A resolved-but-unqueryable group is either a stale name or a missing
+            // logs:FilterLogEvents grant — both silently strip logs off the bug report, so this
+            // is an ERROR, not a warning.
+            log.errorf(e, "Could not query log group %s for user %s: %s", logGroupName, userUuid, e.getMessage());
+            // Drop the cached name in case the service was recreated.
+            logGroupResolver.invalidateGroup(logGroupName);
             return List.of();
         }
     }
