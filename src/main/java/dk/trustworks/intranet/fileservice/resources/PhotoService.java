@@ -116,10 +116,11 @@ public class PhotoService {
      * Tika purely to pick a filename extension, and {@link #resizeToUploadDimensions} reports a
      * decode failure at WARN and then stores the original bytes verbatim.
      * <p>
-     * webp and ico stay on the list even though stock JDK 21 ImageIO cannot decode either — they
-     * are inert raster formats that browsers render, they arrive from real clients today, and they
-     * are already stored unresized. Dropping them would reject working uploads for no security
-     * gain, since neither can carry script.
+     * webp is decoded like any other raster format since {@code imageio-webp} joined the runtime
+     * classpath, so a webp upload is now normalised to JPEG on the way in and thumbnails properly
+     * on the way out. ico stays on the list without a reader: it is an inert raster format that
+     * browsers render, it arrives from real clients, and it is still stored unresized. Dropping
+     * either would reject working uploads for no security gain, since neither can carry script.
      */
     private static final Set<String> STORABLE_IMAGE_MIME_TYPES = Set.of(
             "image/jpeg",
@@ -391,6 +392,34 @@ public class PhotoService {
      *            photo nor the width, which left the one production occurrence untraceable.
      */
     byte[] resizeImage(byte[] data, int width, int height, String key) {
+        return resizeThumbnail(data, width, height, key).bytes();
+    }
+
+    /**
+     * What {@link #resizeImage} produced, and whether it is genuinely a thumbnail.
+     * <p>
+     * The distinction is the whole point. {@code resizeImage} returns servable bytes either way,
+     * which is right for the response but was catastrophic for the cache: {@link #getResizedPhoto}
+     * used to publish whatever came back to {@code resized/{size}/{uuid}}, so a fallback wrote the
+     * FULL-SIZE original under a thumbnail key. Every later request then short-circuited on
+     * {@link #s3ObjectExists} and served that copy forever — which is why merely registering a
+     * WebP reader would not have fixed a single already-affected user.
+     *
+     * @param resized false when {@code bytes} is the untouched input, handed back so the caller
+     *                still has something to serve.
+     */
+    record Thumbnail(byte[] bytes, boolean resized) {
+
+        static Thumbnail of(byte[] bytes) {
+            return new Thumbnail(bytes, true);
+        }
+
+        static Thumbnail unchanged(byte[] data) {
+            return new Thumbnail(data, false);
+        }
+    }
+
+    Thumbnail resizeThumbnail(byte[] data, int width, int height, String key) {
         log.debugf("Resizing image locally to width=%d height=%d", width, height);
         // An absent S3 object arrives here as an empty array (loadFromS3 returns byte[0] for both a
         // missing key and a hard S3 failure). Decoding that is guaranteed to raise the same
@@ -398,7 +427,7 @@ public class PhotoService {
         // there is nothing to resize, and the attempt would otherwise dominate the new WARN stream.
         if (data == null || data.length == 0) {
             log.debugf("Nothing to resize for %s width=%d — no bytes stored", key, width);
-            return data;
+            return Thumbnail.unchanged(data);
         }
         try {
             ByteArrayInputStream bais = new ByteArrayInputStream(data);
@@ -420,16 +449,33 @@ public class PhotoService {
                     .toOutputStream(baos);
             byte[] resized = baos.toByteArray();
             log.debug("Local resize complete, size=" + getFileSize(resized) + "KB");
-            return resized;
+            return Thumbnail.of(resized);
         } catch (UnsupportedFormatException e) {
+            // No ImageReader SPI recognised the leading bytes at all. With imageio-webp on the
+            // classpath that no longer includes webp; what is left here is heic, avif, svg and
+            // blobs too badly damaged to identify.
             log.warnf("No ImageReader for %s width=%d (detected %s, %d bytes) — serving original unresized",
                     key, width, detectMimeType(data), data.length);
-            return data;
+            return Thumbnail.unchanged(data);
         } catch (Exception e) {
-            // Anything else — a decode error on a recognised format, an I/O fault, a rejected
-            // width — is a real failure and keeps its stack trace.
+            // Split on whether the REQUEST was well-formed rather than on the exception type,
+            // because Thumbnailator raises IllegalArgumentException for both halves of this branch.
+            //
+            // A rejected width is a caller fault and keeps its stack trace. A well-formed box that
+            // still could not be filled means the stored bytes would not decode: a header the SPI
+            // recognises over pixel data that is cut short or corrupt. That is a property of the
+            // data, exactly like the unsupported-format case above, and it belongs on the same log
+            // level. Registering a WebP reader is precisely what makes the distinction matter — a
+            // damaged webp is now matched by the SPI and fails inside the decoder instead of before
+            // it, so classifying by exception type alone would have silently promoted this defect's
+            // own WARN stream to ERROR the moment the reader shipped.
+            if (width > 0) {
+                log.warnf("Could not decode %s width=%d (detected %s, %d bytes): %s — serving original unresized",
+                        key, width, detectMimeType(data), data.length, e.toString());
+                return Thumbnail.unchanged(data);
+            }
             log.error("Local resize failed for " + key + " width=" + width + " height=" + height, e);
-            return data;
+            return Thumbnail.unchanged(data);
         }
     }
 
@@ -457,7 +503,18 @@ public class PhotoService {
             ImageReader reader = readers.next();
             try {
                 reader.setInput(in);
-                return new int[]{reader.getWidth(0), reader.getHeight(0)};
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                // A reader that claims the stream is not the same as a reader that understood it.
+                // The WebP SPI matches on the RIFF/WEBP magic alone, so a damaged blob carrying a
+                // valid container header is accepted and then answers 0x0 instead of throwing.
+                // Passing that on as a real size is worse than admitting ignorance: coverBox
+                // divides by it, so 0x0 scales a 96x96 request down to a 1x1 thumbnail, and the
+                // caller would publish that as though it were the photo.
+                if (width <= 0 || height <= 0) {
+                    return null;
+                }
+                return new int[]{width, height};
             } finally {
                 reader.dispose();
             }
@@ -711,7 +768,18 @@ public class PhotoService {
         log.debug("Retrieving resized photo " + key);
 
         if (s3ObjectExists(key)) {
-            return loadFromS3(key);
+            byte[] cached = loadFromS3(key);
+            if (!isUnresizedCopy(cached, width, height)) {
+                return cached;
+            }
+            // Self-healing repair for objects the pre-fix code published. Until this change a
+            // failed resize was cached like a successful one, so ~40 users a day had their
+            // full-size webp portrait written to resized/{size}/{uuid} and served from there
+            // forever. Deleting it here is what lets the WebP reader actually reach them: the
+            // check above is the only thing standing between an affected user and a permanently
+            // poisoned thumbnail, because nothing else ever revisits a key that exists.
+            log.infof("Discarding unresized copy cached as %s (%d bytes) — regenerating", key, cached.length);
+            discardThumbnail(key);
         }
 
         Optional<File> stored = findStoredPhoto(relateduuid);
@@ -727,26 +795,135 @@ public class PhotoService {
         File photo = stored.get();
         photo.setFile(loadFromS3(photo.getUuid()));
         try {
-            byte[] resized = resizeImage(photo.getFile(), width, height, key);
-            // Never publish an empty thumbnail. resizeImage hands back what it was given when it
-            // cannot scale, so a photo whose S3 object is missing would otherwise persist a 0-byte
-            // object under this key — and s3ObjectExists would then serve those 0 bytes for this
-            // width forever, outliving the repair of the underlying photo.
-            if (resized != null && resized.length > 0) {
-                saveToS3Async(key, resized);
+            Thumbnail thumbnail = resizeThumbnail(photo.getFile(), width, height, key);
+            // Publish ONLY a genuine thumbnail.
+            //
+            // Two things are being kept out of the cache here. An empty payload, because a photo
+            // whose S3 object is missing would otherwise persist a 0-byte object that
+            // s3ObjectExists then serves for this width forever, outliving the repair of the
+            // underlying photo. And a fallback, because resizeThumbnail hands back its INPUT when
+            // it cannot scale — publishing that stored the full-size original under a thumbnail
+            // key, which is how a format this JVM could not decode turned into every avatar frame
+            // in the app downloading a 37KB image to draw 96 pixels.
+            if (thumbnail.resized() && thumbnail.bytes() != null && thumbnail.bytes().length > 0) {
+                saveToS3Async(key, thumbnail.bytes());
+                return thumbnail.bytes();
             }
-            return resized;
+            // Past here the resize did not happen and the stored bytes are about to be served raw,
+            // so this is the last point at which they can be vetted. Uploads have been allowlisted
+            // since requireStorableImage landed, but rows predating it are still out there: eight
+            // client logos in production hold text/plain, and FileResource hands those back as a
+            // download named after the client. Answering empty instead is what the image
+            // components are built for — an empty payload is the signal UserAvatar falls through
+            // to its DiceBear-then-initials fallback on, and the legacy client guards on
+            // length > 0. See sql/repair-non-image-photo-rows.md for the data side.
+            return servableOrEmpty(thumbnail.bytes(), relateduuid);
         } catch (Exception e) {
             log.error("Error resizing photo", e);
             return photo.getFile();
         }
     }
 
+    /**
+     * The bytes, or an empty array when they are not an image this service may serve as one.
+     * <p>
+     * The read-path counterpart of {@link #requireStorableImage}, and scoped exactly like it: the
+     * set of things safe to store and the set safe to hand a browser are the same set. The write
+     * path has been closed since that guard landed — {@code update} is the single chokepoint for
+     * {@code updatePhoto}, {@code updateLogo} and {@code updatePortrait}, and
+     * {@code PublicResource.decodeLogo} rejects independently — so anything reaching this method
+     * is a row that predates it, not a new upload getting through.
+     * <p>
+     * Empty rather than an exception because a legacy row is not a request error: the caller asked
+     * for an avatar that happens to be unusable, and every client already renders that as "no
+     * photo". See {@code FileResource#getImage}, which keeps the bytes retrievable at the
+     * width-less endpoint under {@code Content-Disposition: attachment}.
+     */
+    private byte[] servableOrEmpty(byte[] data, String relateduuid) {
+        if (data == null || data.length == 0) {
+            return new byte[0];
+        }
+        String mimeType = detectMimeType(data);
+        if (isStorableImageType(mimeType)) {
+            return data;
+        }
+        log.warnf("Photo row for %s holds %s (%d bytes), not an image — answering empty so the "
+                        + "caller falls back rather than rendering a document as an avatar",
+                relateduuid, mimeType, data.length);
+        return new byte[0];
+    }
+
+    /**
+     * Whether the bytes cached under a thumbnail key are really the full-size original.
+     * <p>
+     * A thumbnail this service wrote can never exceed the box it is keyed under — cover mode
+     * produces exactly {@code width × height} and fit mode bounds the long side by {@code width},
+     * and both clamp rather than enlarge, so a genuine entry is at most the requested size in
+     * every dimension. Anything larger is a copy of the original that the pre-fix code published
+     * when the resize failed.
+     * <p>
+     * Deliberately measured in pixels rather than by sniffing for JPEG magic. The formats that
+     * reached the fallback are exactly the ones {@link #naturalSize} could not read, so a
+     * dimension check also catches a poisoned entry whose original happened to be a JPEG — and an
+     * entry this JVM still cannot decode is, by that very fact, not something the JPEG encoder
+     * produced.
+     *
+     * @return false for an unreadable-but-small entry only when it is genuinely absent; an
+     *         undecodable non-empty entry is always treated as poisoned, since every thumbnail
+     *         written here is JPEG.
+     */
+    static boolean isUnresizedCopy(byte[] cached, int width, int height) {
+        if (cached == null || cached.length == 0) {
+            // Nothing useful to serve, but not this method's business: the caller's existing
+            // empty-payload handling covers it and regenerating cannot make it worse.
+            return false;
+        }
+        if (width <= 0) {
+            // No meaningful box to compare against; leave the entry alone.
+            return false;
+        }
+        int[] dimensions = naturalSize(cached);
+        if (dimensions == null) {
+            // Every thumbnail this service publishes goes through outputFormat("jpg"), so an entry
+            // no ImageReader can read was never one of ours.
+            return true;
+        }
+        int maxHeight = height > 0 ? height : width;
+        return dimensions[0] > width || dimensions[1] > maxHeight;
+    }
+
+    /**
+     * Drops a thumbnail from S3 <em>and</em> from the in-memory photo cache, so the very next read
+     * regenerates it.
+     * <p>
+     * Both halves are required. {@code photo-cache} is configured with neither an expiry nor a
+     * maximum size, so an entry left behind here would keep answering with the same poisoned bytes
+     * for the lifetime of the process and the repair would run again on every miss.
+     */
+    private void discardThumbnail(String key) {
+        try {
+            s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(key).build());
+        } catch (Exception e) {
+            // A thumbnail that cannot be deleted is regenerated and overwritten below anyway.
+            log.debugf("Could not delete thumbnail %s: %s", key, e.toString());
+        }
+        // Null in the unit tests, which construct this service directly rather than through CDI.
+        if (cacheManager != null) {
+            cacheManager.getCache(PHOTO_CACHE)
+                    .ifPresent(cache -> cache.invalidate(key).await().indefinitely());
+        }
+    }
+
     private void update(File photo) {
-        // The one chokepoint every upload passes through — updatePhoto, updateLogo and
+        // The one chokepoint every PHOTO upload passes through — updatePhoto, updateLogo and
         // updatePortrait all land here, and those three are the whole of the write surface exposed
         // by FileResource and PublicResource. Validating here rather than per-resource is what
-        // stops a fifth entry point from being added without the check.
+        // stops a fourth photo entry point from being added without the check.
+        //
+        // Not every writer of the files table routes through here, though: storeEmailImage
+        // persists directly, and relies on its caller (ConferenceResource) for the allowlist. That
+        // is safe only because it writes type='EMAIL_IMAGE', which findStoredPhoto's
+        // type = 'PHOTO' filter cannot return — so a second caller of it would need its own check.
         requireStorableImage(photo);
 
         if(photo.getUuid().isEmpty()) {

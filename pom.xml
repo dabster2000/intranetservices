@@ -326,6 +326,25 @@
       <artifactId>thumbnailator</artifactId>
       <version>0.4.21</version>
     </dependency>
+    <!--
+      A WebP ImageReader for javax.imageio. Stock JDK 21 ships readers for JPEG/PNG/GIF/BMP/TIFF
+      only, so ImageIO.getImageReaders() answered empty for every webp avatar and Thumbnailator
+      raised UnsupportedFormatException. PhotoService caught that and served the ORIGINAL bytes,
+      so production delivered full-size webp portraits under thumbnail keys — 93 WARNs across ~40
+      users in a single day, each one a 37KB image where a 2.5KB one was asked for.
+
+      Read-only by design (TwelveMonkeys ships no WebP writer) and that is all this needs:
+      PhotoService always encodes its output with outputFormat("jpg"). imageio-core,
+      imageio-metadata, common-lang, common-io and common-image arrive transitively; the reader
+      registers itself through META-INF/services/javax.imageio.spi.ImageReaderSpi, which
+      ImageIOPluginRegistrar re-scans at boot so discovery is not left to whichever thread happens
+      to touch IIORegistry first.
+    -->
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-webp</artifactId>
+      <version>3.14.0</version>
+    </dependency>
 
 
     <!-- OpenAI Java SDK (official) — used by InvoiceAttributionAIService -->
