@@ -141,7 +141,7 @@ public class RecruitmentInterviewRoomService {
             // (spec §5.1); competition and references stay behind the
             // candidate boundary the viewer does not hold (decision 5/6).
             FactsLedgerResponse full = factLedgerService.ledger(candidate, false);
-            gapFields = gaps(full, Set.of(FactGroup.TIMING, FactGroup.PRACTICALITIES), null);
+            gapFields = gaps(full, Set.of(FactGroup.TIMING), null);
         } else {
             facts = factLedgerService.ledger(candidate, compTier);
             // Compensation gaps surface only for comp-tier viewers — a

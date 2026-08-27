@@ -6,7 +6,6 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary
 
 import java.time.LocalDate;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Prompt and schema builders for the Interview Room's AI features (room
@@ -30,26 +29,54 @@ final class InterviewRoomPrompts {
     // Fact extraction (§5.4)
     // ------------------------------------------------------------------
 
-    static String extractionSystem() {
+    static String extractionSystem(List<String> subjectCodes) {
         return """
-                You extract HIRING FACTS from an interviewer's live notes, written in a mix of
-                Danish and English shorthand. You only report what the notes literally say —
-                you never infer, never assess the candidate, and never invent a value.
+                You read an interviewer's live notes, written in a mix of Danish and English
+                shorthand. Each note line is numbered. You do TWO jobs over the same lines.
+
+                JOB 1 — HIRING FACTS. Report only what the notes literally say: never infer,
+                never assess the candidate, never invent a value.
                 Allowed fact fields (use these keys exactly): %s.
-                For each fact found, quote the exact note fragment it rests on as `evidence`.
+                For each fact, set `lineIndex` to the number of the line it came from and
+                quote the exact note fragment it rests on as `evidence`.
                 Dates: resolve relative dates against today's date given in the input, ISO
                 format (yyyy-MM-dd) where the note pins a date, otherwise keep the note's own
-                wording. If nothing in the notes states a fact, return an empty list. Never
-                report family, health, partner, pregnancy, politics, religion or age — those
-                are deliberately not fields and must not be shoehorned into one.
+                wording. Most lines are NOT facts — an empty list is the common answer.
+
+                JOB 2 — SUBJECT TAGS. For each line that is evidence about the candidate,
+                say which ONE scorecard subject it speaks to.
+                Allowed subject codes (use these exactly): %s.
+                Tag a line only when it clearly belongs to one subject. Leave out lines that
+                are logistics, your own questions, reminders to yourself, or ambiguous
+                between subjects — an untagged line is the correct answer for those, and a
+                wrong tag is worse than none. Never tag a line twice.
+
+                Binding on both jobs: never report family, health, partner, pregnancy,
+                politics, religion or age — those are deliberately not fields and must not be
+                shoehorned into one. Never produce a score, a rating or a recommendation.
                 Answer with exactly one JSON document matching the schema.""".formatted(
-                String.join(", ", RecruitmentFactVocabulary.keys()));
+                String.join(", ", RecruitmentFactVocabulary.keys()),
+                subjectCodes.isEmpty() ? "(none — skip job 2)"
+                        : String.join(", ", subjectCodes));
     }
 
+    /**
+     * Lines are numbered from 0 and the numbering is the contract: the
+     * response anchors facts and tags back to the caller's own lines by
+     * index, so every line the caller sent is listed here, in order.
+     */
     static String extractionUser(LocalDate today, List<String> lines) {
-        return "Today: " + today + "\nNotes:\n" + lines.stream()
-                .map(line -> "- " + line)
-                .collect(Collectors.joining("\n"));
+        StringBuilder user = new StringBuilder("Today: ").append(today).append("\nNotes:\n");
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            // Unusable entries keep their slot in the caller's array but are
+            // not shown — printing "[2] " would invite a tag on nothing.
+            if (line == null || line.isBlank()) {
+                continue;
+            }
+            user.append('[').append(i).append("] ").append(line).append('\n');
+        }
+        return user.toString();
     }
 
     static ObjectNode extractionSchema() {
@@ -57,10 +84,20 @@ final class InterviewRoomPrompts {
         suggestion.put("type", "object");
         suggestion.put("additionalProperties", false);
         ObjectNode props = suggestion.putObject("properties");
+        props.putObject("lineIndex").put("type", "integer");
         props.putObject("field").put("type", "string");
         props.putObject("value").put("type", "string");
         props.putObject("evidence").put("type", "string");
-        suggestion.putArray("required").add("field").add("value").add("evidence");
+        suggestion.putArray("required")
+                .add("lineIndex").add("field").add("value").add("evidence");
+
+        ObjectNode tag = F.objectNode();
+        tag.put("type", "object");
+        tag.put("additionalProperties", false);
+        ObjectNode tagProps = tag.putObject("properties");
+        tagProps.putObject("lineIndex").put("type", "integer");
+        tagProps.putObject("subjectCode").put("type", "string");
+        tag.putArray("required").add("lineIndex").add("subjectCode");
 
         ObjectNode root = F.objectNode();
         root.put("type", "object");
@@ -69,7 +106,10 @@ final class InterviewRoomPrompts {
         ObjectNode suggestions = rootProps.putObject("suggestions");
         suggestions.put("type", "array");
         suggestions.set("items", suggestion);
-        root.putArray("required").add("suggestions");
+        ObjectNode tags = rootProps.putObject("subjectTags");
+        tags.put("type", "array");
+        tags.set("items", tag);
+        root.putArray("required").add("suggestions").add("subjectTags");
         return root;
     }
 

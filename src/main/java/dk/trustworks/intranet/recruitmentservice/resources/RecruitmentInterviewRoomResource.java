@@ -18,6 +18,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
@@ -194,7 +195,12 @@ public class RecruitmentInterviewRoomResource {
 
     // ---- AI (spec §9, each behind its own flag) ---------------------------------------
 
-    /** Fact extraction chips for the given lines (§5.4). */
+    /**
+     * Fact chips and subject tags for the given lines (§5.4). The allowed
+     * subject set comes from the position's own scorecard template — never
+     * from the request body, so a caller cannot have the model tag lines
+     * against subjects this interview does not score.
+     */
     @POST
     @Path("/interviews/{uuid}/notes/suggest")
     public RoomSuggestResponse suggest(@PathParam("uuid") UUID interviewUuid,
@@ -204,7 +210,8 @@ public class RecruitmentInterviewRoomResource {
             throw new NotFoundException("Resource not found");
         }
         RoomAccess access = resolveAccess(interviewUuid, currentActor(), true);
-        return roomAiService.suggest(access.interview, access.candidate, request, access.viewer);
+        return roomAiService.suggest(access.interview, access.candidate, request,
+                subjectCodesOf(access.position), access.viewer);
     }
 
     /** Tidy (+ alignment when that flag is on too) at land (§9). */
@@ -229,15 +236,20 @@ public class RecruitmentInterviewRoomResource {
             throw new NotFoundException("Resource not found");
         }
         RoomAccess access = resolveAccess(interviewUuid, currentActor(), true);
-        List<String> subjectCodes = access.position.getScorecardTemplate() == null
-                ? List.of()
-                : access.position.getScorecardTemplate().stream()
-                        .map(dk.trustworks.intranet.recruitmentservice.model.ScorecardAttribute::code)
-                        .toList();
-        return roomAiService.prep(access.interview, access.candidate, subjectCodes, access.viewer);
+        return roomAiService.prep(access.interview, access.candidate,
+                subjectCodesOf(access.position), access.viewer);
     }
 
     // ---- Helpers ---------------------------------------------------------------------
+
+    /** The position's scorecard subject codes — the only codes the AI may use. */
+    private static List<String> subjectCodesOf(RecruitmentPosition position) {
+        List<ScorecardAttribute> template =
+                position == null ? null : position.getScorecardTemplate();
+        return template == null
+                ? List.of()
+                : template.stream().map(ScorecardAttribute::code).toList();
+    }
 
     private record RoomAccess(UUID viewer, RecruitmentInterview interview,
                               RecruitmentApplication application, RecruitmentPosition position,

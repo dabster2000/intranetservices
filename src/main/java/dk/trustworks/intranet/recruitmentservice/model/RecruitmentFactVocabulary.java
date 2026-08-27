@@ -9,12 +9,20 @@ import java.util.stream.Collectors;
 
 /**
  * The closed fact vocabulary of the hiring ledger (Interview Room design
- * spec 2026-08-26 §4.2) — the objective things a hire depends on: notice
- * period, salary expectation and its components, start dates, competing
- * processes, references, practicalities. Facts are {@code NOTE_ADDED}
- * events with {@code payload.field} carrying one of these keys and the
- * value exclusively in {@code pii} (spec §3.3 — zero new anonymisation
- * targets, the entire reason decision 3 chose this shape).
+ * spec 2026-08-26 §4.2) — the objective things a hire depends on: salary
+ * expectation and its components, start dates, competing processes,
+ * references. Facts are {@code NOTE_ADDED} events with
+ * {@code payload.field} carrying one of these keys and the value
+ * exclusively in {@code pii} (spec §3.3 — zero new anonymisation targets,
+ * the entire reason decision 3 chose this shape).
+ * <p>
+ * <b>Removed 2026-08-27:</b> {@code NOTICE_PERIOD},
+ * {@code LOCATION_CONSTRAINTS} and {@code WORK_PERMIT} (the whole
+ * PRACTICALITIES group) were retired on the hiring team's request. Notes
+ * already recorded against those keys survive in the event stream — they
+ * are simply no longer part of the vocabulary, so the ledger stops
+ * deriving rows from them. The deterministic notice-vs-start-date check
+ * went with them: nothing feeds it any more.
  * <p>
  * Three definitions of this list exist and a contract test on each side
  * asserts they are identical (spec §4.2): this class, the BFF route's
@@ -48,18 +56,17 @@ public final class RecruitmentFactVocabulary {
     }
 
     /**
-     * The five groups. Freshness windows (spec §4.3): Competition 14 days,
-     * Timing 30, Compensation 60, References and Practicalities never
-     * ({@code null}). Visibility per group is spec §7.1: Compensation is
-     * comp-tier, Competition is the candidate boundary (and NEVER a Slack
+     * The four groups. Freshness windows (spec §4.3): Competition 14 days,
+     * Timing 30, Compensation 60, References never ({@code null}).
+     * Visibility per group is spec §7.1: Compensation is comp-tier,
+     * Competition is the candidate boundary (and NEVER a Slack
      * notification — §7.2, a separate mechanism), the rest hiring tier.
      */
     public enum FactGroup {
         COMPENSATION(60),
         TIMING(30),
         COMPETITION(14),
-        REFERENCES(null),
-        PRACTICALITIES(null);
+        REFERENCES(null);
 
         private final Integer freshnessDays;
 
@@ -104,9 +111,6 @@ public final class RecruitmentFactVocabulary {
                     "Current package", AskRole.RECRUITER,
                     List.of(), false),
             // --- Timing (hiring tier; 30-day window) --------------------------
-            new FactField("NOTICE_PERIOD", FactGroup.TIMING,
-                    "Notice period", AskRole.ANY_INTERVIEWER,
-                    List.of("NOTICE"), true),
             new FactField("EARLIEST_START", FactGroup.TIMING,
                     "Earliest start", AskRole.ANY_INTERVIEWER,
                     List.of("START_DATE", "STARTDATE"), true),
@@ -135,14 +139,7 @@ public final class RecruitmentFactVocabulary {
                     List.of(), false),
             new FactField("REFERENCE_TAKEN", FactGroup.REFERENCES,
                     "Reference taken", AskRole.HIRING_OWNER,
-                    List.of(), false),
-            // --- Practicalities (hiring tier; never stale) --------------------
-            new FactField("LOCATION_CONSTRAINTS", FactGroup.PRACTICALITIES,
-                    "Location & travel", AskRole.ANY_INTERVIEWER,
-                    List.of(), false),
-            new FactField("WORK_PERMIT", FactGroup.PRACTICALITIES,
-                    "Work permit", AskRole.ANY_INTERVIEWER,
-                    List.of("PERMIT"), false));
+                    List.of(), false));
 
     private static final Map<String, FactField> BY_KEY = FIELDS.stream()
             .collect(Collectors.toMap(FactField::key, f -> f, (a, b) -> a, LinkedHashMap::new));

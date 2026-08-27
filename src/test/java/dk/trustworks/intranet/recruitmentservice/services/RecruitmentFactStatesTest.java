@@ -26,7 +26,7 @@ class RecruitmentFactStatesTest {
     private static final FactField COMPETITION =
             RecruitmentFactVocabulary.forKey("OTHER_PROCESSES").orElseThrow();
     private static final FactField TIMING =
-            RecruitmentFactVocabulary.forKey("NOTICE_PERIOD").orElseThrow();
+            RecruitmentFactVocabulary.forKey("EARLIEST_START").orElseThrow();
     private static final FactField NEVER_STALE =
             RecruitmentFactVocabulary.forKey("EXTERNAL_REFERENCE").orElseThrow();
 
@@ -43,8 +43,8 @@ class RecruitmentFactStatesTest {
     @Test
     void asked_recordsTheSpentQuestion() {
         Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of(
-                note(1, "NOTICE_PERIOD", T0, true, false)));
-        Persisted persisted = folded.get("NOTICE_PERIOD");
+                note(1, "EARLIEST_START", T0, true, false)));
+        Persisted persisted = folded.get("EARLIEST_START");
         assertEquals("ASKED", persisted.state());
         assertNull(persisted.lastStatedAt());
         assertEquals(State.ASKED, RecruitmentFactStates.effective(TIMING, persisted, T0));
@@ -53,11 +53,11 @@ class RecruitmentFactStatesTest {
     @Test
     void stated_thenConfirmed_endsConfirmed() {
         Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of(
-                note(1, "NOTICE_PERIOD", T0, false, false),
-                note(2, "NOTICE_PERIOD", T0.plusDays(3), false, true)));
-        assertEquals("CONFIRMED", folded.get("NOTICE_PERIOD").state());
+                note(1, "EARLIEST_START", T0, false, false),
+                note(2, "EARLIEST_START", T0.plusDays(3), false, true)));
+        assertEquals("CONFIRMED", folded.get("EARLIEST_START").state());
         assertEquals(State.CONFIRMED,
-                RecruitmentFactStates.effective(TIMING, folded.get("NOTICE_PERIOD"),
+                RecruitmentFactStates.effective(TIMING, folded.get("EARLIEST_START"),
                         T0.plusYears(1)));
     }
 
@@ -68,9 +68,9 @@ class RecruitmentFactStatesTest {
     @Test
     void askedAfterStated_keepsTheValue() {
         Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of(
-                note(1, "NOTICE_PERIOD", T0, false, false),
-                note(2, "NOTICE_PERIOD", T0.plusDays(3), true, false)));
-        Persisted persisted = folded.get("NOTICE_PERIOD");
+                note(1, "EARLIEST_START", T0, false, false),
+                note(2, "EARLIEST_START", T0.plusDays(3), true, false)));
+        Persisted persisted = folded.get("EARLIEST_START");
         assertEquals("STATED", persisted.state());
         assertEquals(T0, persisted.lastStatedAt());
         assertEquals(2, persisted.lastValueEventSeq(), "the seq still advances — replay guard");
@@ -105,24 +105,24 @@ class RecruitmentFactStatesTest {
     @Test
     void fold_ignoresUnknownFieldsAndOrdersBySeq() {
         Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of(
-                note(5, "NOTICE_PERIOD", T0.plusDays(5), false, false),
+                note(5, "EARLIEST_START", T0.plusDays(5), false, false),
                 note(2, "NOT_A_FIELD", T0, false, false),
-                note(1, "NOTICE_PERIOD", T0, false, true)));
+                note(1, "EARLIEST_START", T0, false, true)));
         assertEquals(1, folded.size());
         // seq 5 (unconfirmed) is newer than seq 1 (confirmed) — newest wins.
-        assertEquals("STATED", folded.get("NOTICE_PERIOD").state());
-        assertEquals(T0.plusDays(5), folded.get("NOTICE_PERIOD").lastStatedAt());
+        assertEquals("STATED", folded.get("EARLIEST_START").state());
+        assertEquals(T0.plusDays(5), folded.get("EARLIEST_START").lastStatedAt());
     }
 
     /** The projector's idempotency root: replay of an already-seen seq is a no-op upstream. */
     @Test
     void apply_matchesFoldForIncrementalUse() {
-        FactNote first = note(1, "NOTICE_PERIOD", T0, false, false);
-        FactNote second = note(2, "NOTICE_PERIOD", T0.plusDays(1), false, true);
+        FactNote first = note(1, "EARLIEST_START", T0, false, false);
+        FactNote second = note(2, "EARLIEST_START", T0.plusDays(1), false, true);
         Persisted incremental = RecruitmentFactStates.apply(
                 RecruitmentFactStates.apply(null, first), second);
         Persisted folded = RecruitmentFactStates.fold(List.of(first, second))
-                .get("NOTICE_PERIOD");
+                .get("EARLIEST_START");
         assertEquals(folded, incremental);
     }
 }

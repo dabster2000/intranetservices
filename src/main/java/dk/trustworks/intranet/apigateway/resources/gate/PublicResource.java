@@ -1,10 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources.gate;
 
-
-import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
-import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.apigateway.dto.PublicUser;
-import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.Task;
@@ -13,11 +9,9 @@ import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.crm.services.TaskService;
 import dk.trustworks.intranet.dao.workservice.model.Week;
-import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WeekService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.newsservice.model.News;
@@ -33,14 +27,7 @@ import jakarta.ws.rs.*;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
-import org.eclipse.microprofile.openapi.annotations.media.Content;
-import org.eclipse.microprofile.openapi.annotations.media.ExampleObject;
-import org.eclipse.microprofile.openapi.annotations.media.Schema;
-import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
-import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
-import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 
@@ -74,9 +61,6 @@ public class PublicResource {
     PhotoService photoAPI;
 
     @Inject
-    SlackService slackService;
-
-    @Inject
     WeekService weekService;
 
     @Inject
@@ -87,9 +71,6 @@ public class PublicResource {
 
     @Inject
     WorkService workService;
-
-    @Inject
-    AggregateEventSender sender;
 
     @GET
     @Path("/clients")
@@ -182,43 +163,6 @@ public class PublicResource {
             coffeeDate.addPublicUser(Employee.findById(coffeeDate.getUseruuid()));
         });
         return coffeeDateList;
-    }
-
-    @POST
-    @Path("/work")
-    public void save(Work work) {
-        workService.persistOrUpdate(work);
-
-        sender.handleEvent(new UpdateWorkEvent(work.getUseruuid(), work));
-        if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
-            sender.handleEvent(new UpdateWorkEvent(work.getWorkas(), work));
-    }
-
-    @POST
-    @Path("/messaging/slack/message")
-    @Operation(summary = "Send Slack message", description = "Sends a message to Slack")
-    @RequestBody(
-            description = "KeyValueDTO object containing the key (Slack channel name) and value (the message) for the Slack message",
-            required = true,
-            content = @Content(
-                    mediaType = "application/json",
-                    schema = @Schema(implementation = KeyValueDTO.class),
-                    examples = @ExampleObject(
-                            name = "SlackMessageExample",
-                            summary = "Example Slack message",
-                            value = "{\"key\": \"channel\", \"value\": \"Hello, this is a test message!\"}"
-                    )
-            )
-    )
-    @APIResponses({
-            @APIResponse(responseCode = "200", description = "Message sent successfully"),
-            @APIResponse(responseCode = "400", description = "Bad request"),
-            @APIResponse(responseCode = "401", description = "Unauthorized"),
-            @APIResponse(responseCode = "403", description = "Forbidden"),
-            @APIResponse(responseCode = "500", description = "Internal server error")
-    })
-    public void sendSlackMessage(KeyValueDTO keyValueDTO) {
-        slackService.sendMessage(keyValueDTO.getKey(), keyValueDTO.getValue());
     }
 
     @PUT

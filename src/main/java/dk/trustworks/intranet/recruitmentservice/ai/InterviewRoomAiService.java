@@ -10,6 +10,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepResponse.PrepSubjec
 import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestResponse.RoomFactSuggestion;
+import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestResponse.RoomSubjectTag;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomTidyRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomTidyResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomTidyResponse.TidySubject;
@@ -22,7 +23,6 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardGuidance;
 import dk.trustworks.intranet.recruitmentservice.model.ScorecardGuidanceCatalog;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
-import dk.trustworks.intranet.recruitmentservice.services.InterviewFactArithmetic;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -32,8 +32,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -72,6 +74,10 @@ public class InterviewRoomAiService {
 
     private static final ZoneId COPENHAGEN = ZoneId.of("Europe/Copenhagen");
 
+    /** Nothing usable came back — the room simply shows no chips. */
+    private static final RoomSuggestResponse EMPTY_SUGGESTION =
+            new RoomSuggestResponse(List.of(), List.of());
+
     /** Shares the intake/triage extraction model (see {@link AiIntakeGenerationService}). */
     @ConfigProperty(name = "dk.trustworks.recruitment.ai.extraction-model",
             defaultValue = "gpt-5.6-terra")
@@ -94,33 +100,55 @@ public class InterviewRoomAiService {
     // ------------------------------------------------------------------
 
     /**
-     * Propose vocabulary-keyed facts from the given note lines. Ephemeral:
-     * a human accepts each chip via the fact write, which records
-     * {@code AI_SUGGESTION_RESOLVED}. Appends one
-     * {@code AI_SUGGESTIONS_GENERATED} per call (skipped when nothing
-     * valid came back).
+     * Read the given note lines: propose vocabulary-keyed facts, and say
+     * which scorecard subject each line is evidence for.
+     * <p>
+     * The two halves have deliberately different postures. Facts are
+     * <em>ephemeral</em> — a human accepts each chip via the fact write,
+     * which records {@code AI_SUGGESTION_RESOLVED}; the model never writes
+     * a fact (spec §5.4). Subject tags are note metadata that never reaches
+     * the ledger, so the room applies them directly and ⌘1–⌘6 overrides
+     * them; there is nothing to un-write, so there is nothing to accept.
+     * <p>
+     * Both anchor by {@code lineIndex} into the caller's own array, so the
+     * line list is NOT compacted here — a blank entry keeps its slot
+     * ({@link #sanitizeLinesKeepingIndex}) or every later index would point
+     * at the wrong line. Appends one {@code AI_SUGGESTIONS_GENERATED} per
+     * call (skipped when nothing valid came back).
+     *
+     * @param subjectCodes the interview's own scorecard subjects — resolved
+     *                     by the resource from the position's template, never
+     *                     taken from the request body
      */
     public RoomSuggestResponse suggest(RecruitmentInterview interview,
                                        RecruitmentCandidate candidate,
                                        RoomSuggestRequest request,
+                                       List<String> subjectCodes,
                                        UUID actor) {
-        List<String> lines = sanitizeLines(request == null ? null : request.lines());
-        if (lines.isEmpty()) {
-            return new RoomSuggestResponse(List.of());
+        List<String> lines = sanitizeLinesKeepingIndex(request == null ? null : request.lines());
+        if (lines.stream().allMatch(String::isBlank)) {
+            return EMPTY_SUGGESTION;
         }
+        Set<String> allowedSubjects = subjectCodes == null
+                ? Set.of() : new LinkedHashSet<>(subjectCodes);
         LocalDate today = LocalDate.now(COPENHAGEN);
         String raw = callUntransacted(() -> openAIService.askQuestionWithSchema(
-                InterviewRoomPrompts.extractionSystem(),
+                InterviewRoomPrompts.extractionSystem(List.copyOf(allowedSubjects)),
                 InterviewRoomPrompts.extractionUser(today, lines),
                 InterviewRoomPrompts.extractionSchema(), "RoomFactExtraction",
-                "{\"suggestions\":[]}", extractionModel, MAX_OUTPUT_TOKENS, false, "low"));
+                "{\"suggestions\":[],\"subjectTags\":[]}",
+                extractionModel, MAX_OUTPUT_TOKENS, false, "low"));
 
-        List<RoomFactSuggestion> suggestions = validateSuggestions(raw, today);
-        if (!suggestions.isEmpty()) {
+        RoomSuggestResponse validated =
+                validateExtraction(raw, allowedSubjects, lines.size());
+        // Only the FACT half is an AI Act suggestion event: a subject tag
+        // carries no candidate assertion, only which heading a line sits
+        // under, and the note text it classifies is already the human's own.
+        if (!validated.suggestions().isEmpty()) {
             recordGenerated(interview, candidate, actor, "INTERVIEW_ROOM",
-                    suggestions.size(), suggestionsPii(suggestions));
+                    validated.suggestions().size(), suggestionsPii(validated.suggestions()));
         }
-        return new RoomSuggestResponse(List.copyOf(suggestions));
+        return validated;
     }
 
     // ------------------------------------------------------------------
@@ -243,46 +271,68 @@ public class InterviewRoomAiService {
     // contract is silently dropped (posture of AiIntakeGenerationService).
     // ------------------------------------------------------------------
 
-    /** Extraction: vocabulary-guarded, evidence mandatory, arithmetic-flagged. */
-    static List<RoomFactSuggestion> validateSuggestions(String raw, LocalDate today) {
-        List<RoomFactSuggestion> suggestions = new ArrayList<>();
+    /**
+     * Extraction: vocabulary-guarded facts and subject-set-guarded tags,
+     * both anchored to a line the caller actually sent.
+     * <p>
+     * The model is UNTRUSTED. A fact needs a known vocabulary key, a
+     * non-blank value AND its evidence quote; a tag needs a subject code
+     * from THIS interview's template. Either one needs a {@code lineIndex}
+     * inside {@code [0, lineCount)} — an out-of-range index is the shape a
+     * hallucinated anchor takes, and letting one through would attach a
+     * chip to a line the interviewer never wrote. At most one tag per line
+     * survives (first wins): a line is evidence for one subject or none.
+     */
+    static RoomSuggestResponse validateExtraction(String raw, Set<String> allowedSubjects,
+                                                  int lineCount) {
         JsonNode parsed = parseSingleDocument(raw);
-        JsonNode array = parsed == null ? null : parsed.get("suggestions");
-        String noticeText = null;
+        if (parsed == null) {
+            return EMPTY_SUGGESTION;
+        }
+
+        List<RoomFactSuggestion> suggestions = new ArrayList<>();
+        JsonNode array = parsed.get("suggestions");
         if (array != null && array.isArray()) {
             for (JsonNode node : array) {
+                Integer lineIndex = lineIndex(node, lineCount);
                 String field = text(node, "field");
                 String value = clamp(text(node, "value"), MAX_VALUE_CHARS);
                 String evidence = clamp(text(node, "evidence"), MAX_EVIDENCE_CHARS);
-                if (!RecruitmentFactVocabulary.isKnown(field)
+                if (lineIndex == null
+                        || !RecruitmentFactVocabulary.isKnown(field)
                         || value == null || value.isBlank()
                         || evidence == null || evidence.isBlank()) {
-                    continue; // untrusted output — outside the vocabulary, drop
-                }
-                if ("NOTICE_PERIOD".equals(field)) {
-                    noticeText = value;
+                    continue; // untrusted output — outside the contract, drop
                 }
                 suggestions.add(new RoomFactSuggestion(UUID.randomUUID().toString(),
-                        field, value, evidence, null));
+                        lineIndex, field, value, evidence));
             }
         }
-        // Arithmetic check — deterministic, no model involved (§5.2/§5.4):
-        // a proposed start the notice period cannot reach gets flagged.
-        if (noticeText != null) {
-            for (int i = 0; i < suggestions.size(); i++) {
-                RoomFactSuggestion s = suggestions.get(i);
-                if ("EARLIEST_START".equals(s.field()) || "PREFERRED_START".equals(s.field())) {
-                    String flag = InterviewFactArithmetic
-                            .startConflict(today, noticeText, parseIsoDate(s.value()))
-                            .orElse(null);
-                    if (flag != null) {
-                        suggestions.set(i, new RoomFactSuggestion(s.id(), s.field(),
-                                s.value(), s.evidence(), flag));
-                    }
+
+        Map<Integer, RoomSubjectTag> tags = new LinkedHashMap<>();
+        JsonNode tagArray = parsed.get("subjectTags");
+        if (tagArray != null && tagArray.isArray()) {
+            for (JsonNode node : tagArray) {
+                Integer lineIndex = lineIndex(node, lineCount);
+                String subjectCode = text(node, "subjectCode");
+                if (lineIndex == null || subjectCode == null
+                        || !allowedSubjects.contains(subjectCode)) {
+                    continue; // not a subject this interview scores — drop
                 }
+                tags.putIfAbsent(lineIndex, new RoomSubjectTag(lineIndex, subjectCode));
             }
         }
-        return suggestions;
+        return new RoomSuggestResponse(List.copyOf(suggestions), List.copyOf(tags.values()));
+    }
+
+    /** A line anchor the caller can actually resolve, or null. */
+    private static Integer lineIndex(JsonNode node, int lineCount) {
+        JsonNode value = node.get("lineIndex");
+        if (value == null || !value.isIntegralNumber()) {
+            return null;
+        }
+        int index = value.asInt();
+        return index >= 0 && index < lineCount ? index : null;
     }
 
     /** Tidy: the gap rule — only subjects present in the input may appear. */
@@ -407,15 +457,21 @@ public class InterviewRoomAiService {
         }
     }
 
-    private static List<String> sanitizeLines(List<String> lines) {
+    /**
+     * Clean each line WITHOUT compacting the list: an entry that sanitises
+     * to nothing becomes an empty string and keeps its slot, because the
+     * response anchors back to the caller's array by index. Dropping it
+     * here would silently shift every later line's identity.
+     */
+    private static List<String> sanitizeLinesKeepingIndex(List<String> lines) {
         if (lines == null) {
             return List.of();
         }
         return lines.stream()
-                .filter(line -> line != null && !line.isBlank())
-                .map(line -> line.replaceAll("[\\p{Cntrl}&&[^\n\t]]", "").strip())
-                .filter(line -> !line.isBlank())
                 .limit(MAX_INPUT_LINES)
+                .map(line -> line == null
+                        ? ""
+                        : line.replaceAll("[\\p{Cntrl}&&[^\n\t]]", "").strip())
                 .toList();
     }
 
@@ -430,16 +486,5 @@ public class InterviewRoomAiService {
         }
         String stripped = value.replaceAll("[\\p{Cntrl}&&[^\n\t]]", "").strip();
         return stripped.length() <= maxChars ? stripped : stripped.substring(0, maxChars);
-    }
-
-    private static LocalDate parseIsoDate(String value) {
-        if (value == null) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(value.trim().substring(0, Math.min(10, value.trim().length())));
-        } catch (Exception e) {
-            return null;
-        }
     }
 }

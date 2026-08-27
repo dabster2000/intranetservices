@@ -23,7 +23,7 @@ public record FactsLedgerResponse(List<FactEntry> facts,
      * One field of the ledger.
      *
      * @param field    vocabulary key
-     * @param group    COMPENSATION | TIMING | COMPETITION | REFERENCES | PRACTICALITIES
+     * @param group    COMPENSATION | TIMING | COMPETITION | REFERENCES
      * @param label    human label
      * @param askRole  whose job it is to raise it (guidance, spec §7.1)
      * @param state    UNKNOWN | ASKED | STATED | CONFIRMED | STALE (derived, read-time)
