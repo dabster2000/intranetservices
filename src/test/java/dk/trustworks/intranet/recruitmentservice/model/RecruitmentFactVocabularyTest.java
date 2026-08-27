@@ -24,10 +24,9 @@ class RecruitmentFactVocabularyTest {
     /** The pinned wire-format list, ledger order — the cross-repo contract. */
     private static final List<String> CONTRACT = List.of(
             "SALARY_EXPECTATION", "SALARY_COMPONENTS", "CURRENT_PACKAGE",
-            "NOTICE_PERIOD", "EARLIEST_START", "PREFERRED_START", "HARD_DATES",
+            "EARLIEST_START", "PREFERRED_START", "HARD_DATES",
             "OTHER_PROCESSES", "DECISION_DRIVERS", "DECISION_DATE",
-            "INTERNAL_REFERENCE", "EXTERNAL_REFERENCE", "REFERENCE_TAKEN",
-            "LOCATION_CONSTRAINTS", "WORK_PERMIT");
+            "INTERNAL_REFERENCE", "EXTERNAL_REFERENCE", "REFERENCE_TAKEN");
 
     @Test
     void vocabulary_matchesTheCrossRepoContractExactly() {
@@ -38,12 +37,11 @@ class RecruitmentFactVocabularyTest {
 
     @Test
     void freshnessWindows_areTheSpecNumbers() {
-        // Competition 14 · Timing 30 · Compensation 60 · the rest never (§4.3).
+        // Competition 14 · Timing 30 · Compensation 60 · References never (§4.3).
         assertEquals(14, FactGroup.COMPETITION.freshnessDays());
         assertEquals(30, FactGroup.TIMING.freshnessDays());
         assertEquals(60, FactGroup.COMPENSATION.freshnessDays());
         assertNull(FactGroup.REFERENCES.freshnessDays());
-        assertNull(FactGroup.PRACTICALITIES.freshnessDays());
     }
 
     @Test
@@ -93,7 +91,13 @@ class RecruitmentFactVocabularyTest {
     void unknownKeys_areRejected() {
         assertFalse(RecruitmentFactVocabulary.isKnown("SOME_OTHER_FIELD"));
         assertFalse(RecruitmentFactVocabulary.isKnown(null));
-        assertTrue(RecruitmentFactVocabulary.isKnown("NOTICE_PERIOD"));
+        assertTrue(RecruitmentFactVocabulary.isKnown("EARLIEST_START"));
+        // Retired 2026-08-27 — the whole PRACTICALITIES group and the notice
+        // period. Old NOTE_ADDED events carrying these keys stay in the event
+        // stream; the vocabulary no longer derives ledger rows from them.
+        assertFalse(RecruitmentFactVocabulary.isKnown("NOTICE_PERIOD"));
+        assertFalse(RecruitmentFactVocabulary.isKnown("LOCATION_CONSTRAINTS"));
+        assertFalse(RecruitmentFactVocabulary.isKnown("WORK_PERMIT"));
     }
 
     @Test
