@@ -3,7 +3,6 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateTimelineResponse;
-import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.TimelineEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentActorType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
@@ -11,6 +10,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -319,8 +319,12 @@ public class RecruitmentTimelineService {
                                 boolean canReadDossier,
                                 boolean canReadFinalOutcome,
                                 RecruitmentEvent newestEdit) {
+        // The whole compensation group is comp-gated (Interview Room spec
+        // §7.1 — SALARY_COMPONENTS and CURRENT_PACKAGE redact exactly like
+        // the salary expectation always has).
         boolean salaryNote = event.getEventType() == RecruitmentEventType.NOTE_ADDED
-                && NoteRequest.FIELD_SALARY_EXPECTATION.equals(payload.get("field"));
+                && payload.get("field") instanceof String field
+                && RecruitmentFactVocabulary.isCompScoped(field);
         // P11 blind rule on the timeline: scorecard notes only for the
         // author (and ADMIN) — everyone else reads them through the
         // blind-filtered scorecards/debrief endpoints.

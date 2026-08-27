@@ -4,12 +4,16 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateBriefResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateConsentsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateDocumentsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateTimelineResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.FactsLedgerResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.FormAnswersResponse;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateBriefService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService.DocumentDownload;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFactLedgerService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentTimelineService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -28,6 +32,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -94,6 +99,9 @@ public class RecruitmentCandidateProfileResource {
     @Inject
     CandidateBriefService briefService;
 
+    @Inject
+    RecruitmentFactLedgerService factLedgerService;
+
     // ---- Restricted brief ----------------------------------------------------------
 
     /**
@@ -142,6 +150,34 @@ public class RecruitmentCandidateProfileResource {
         }
         RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, viewer);
         return timelineService.timeline(viewer.toString(), candidate, effectiveLimit, beforeSeq);
+    }
+
+    // ---- Fact ledger (Interview Room spec §4.3/§6.2) --------------------------------
+
+    /**
+     * The hiring-fact ledger: every vocabulary field with its derived state
+     * (UNKNOWN/ASKED/STATED/CONFIRMED/STALE), the newest value where the
+     * viewer may read it, and the append-only drift history. Candidate
+     * boundary (profile visibility) is the per-person gate; compensation
+     * VALUES additionally require the comp tier — non-comp viewers get
+     * {@code redacted=true} entries, never the text. Gated by
+     * {@code recruitment.facts.enabled} (slice 0), 404 when off for
+     * non-admin callers, same convention as the pipeline flag.
+     */
+    @GET
+    @Path("/candidates/{uuid}/facts")
+    public FactsLedgerResponse facts(@PathParam("uuid") UUID candidateUuid) {
+        enforcePipelineFlag();
+        enforceFactsFlag();
+        UUID viewer = currentActor();
+        RecruitmentCandidate candidate = requireVisibleCandidate(candidateUuid, viewer);
+        List<RecruitmentApplication> applications =
+                RecruitmentApplication.list("candidateUuid", candidate.getUuid());
+        List<RecruitmentPosition> positions = applications.isEmpty() ? List.of()
+                : RecruitmentPosition.list("uuid in ?1", applications.stream()
+                        .map(RecruitmentApplication::getPositionUuid).distinct().toList());
+        boolean compTier = visibility.isCompTierFor(viewer.toString(), positions);
+        return factLedgerService.ledger(candidate, compTier);
     }
 
     // ---- Form answers (candidate-scoped leg) ---------------------------------------
@@ -286,6 +322,17 @@ public class RecruitmentCandidateProfileResource {
      */
     private void enforcePipelineFlag() {
         if (featureFlag.isPipelineEnabled()) {
+            return;
+        }
+        if (scopeContext.hasScope(ADMIN_WILDCARD)) {
+            return;
+        }
+        throw new NotFoundException("Resource not found");
+    }
+
+    /** Slice-0 gate for the fact ledger — same 404 + admin-bypass convention. */
+    private void enforceFactsFlag() {
+        if (featureFlag.isFactsEnabled()) {
             return;
         }
         if (scopeContext.hasScope(ADMIN_WILDCARD)) {

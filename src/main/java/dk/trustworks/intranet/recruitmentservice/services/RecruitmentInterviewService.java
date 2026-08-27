@@ -90,6 +90,8 @@ public class RecruitmentInterviewService {
     /** {@code SCORECARD_SUBMITTED.payload.origin} values (P18 — the P14 referral idiom). */
     public static final String ORIGIN_WEB = "web";
     public static final String ORIGIN_SLACK = "slack";
+    /** The Interview Room's land command (room spec 2026-08-26 §5.3). */
+    public static final String ORIGIN_ROOM = "room";
 
     @Inject
     RecruitmentEventRecorder recorder;
@@ -548,7 +550,9 @@ public class RecruitmentInterviewService {
         RecruitmentEventBuilder event = interviewEvent(RecruitmentEventType.SCORECARD_SUBMITTED,
                 interview, application, position, actor)
                 .payload("scorecard_uuid", scorecard.getUuid())
-                .payload("origin", ORIGIN_SLACK.equals(origin) ? ORIGIN_SLACK : ORIGIN_WEB);
+                .payload("origin", ORIGIN_SLACK.equals(origin) || ORIGIN_ROOM.equals(origin)
+                        ? origin
+                        : ORIGIN_WEB);
         if (notes != null) {
             event.pii("notes", notes);
         }

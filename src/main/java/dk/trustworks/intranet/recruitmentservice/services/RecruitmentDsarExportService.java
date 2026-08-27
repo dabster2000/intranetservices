@@ -8,6 +8,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplicationAns
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentConsent;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterviewNote;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentReferral;
@@ -106,6 +107,13 @@ public class RecruitmentDsarExportService {
         List<RecruitmentScorecard> scorecards = interviews.isEmpty() ? List.of()
                 : RecruitmentScorecard.list("interviewUuid in ?1",
                         interviews.stream().map(RecruitmentInterview::getUuid).toList());
+        // Interview Room live drafts (spec 2026-08-26 §4.4 leg 3): notes an
+        // interviewer typed but never landed are still the subject's data.
+        // The author's identity is third-party data and stays out — same
+        // rule as scorecards and event actors.
+        List<RecruitmentInterviewNote> interviewNoteDrafts = interviews.isEmpty() ? List.of()
+                : RecruitmentInterviewNote.list("interviewUuid in ?1",
+                        interviews.stream().map(RecruitmentInterview::getUuid).toList());
         List<RecruitmentReferral> referrals =
                 RecruitmentReferral.list("candidateUuid", candidateUuid);
         List<RecruitmentEvent> events = RecruitmentEvent.list(
@@ -117,8 +125,8 @@ public class RecruitmentDsarExportService {
         Map<String, String> positionTitles = positionTitles(applications);
 
         Map<String, Object> json = buildJson(candidate, consents, applications, answers,
-                interviews, scorecards, referrals, events, pendingEmails, documents,
-                positionTitles);
+                interviews, scorecards, interviewNoteDrafts, referrals, events, pendingEmails,
+                documents, positionTitles);
 
         try {
             byte[] jsonBytes = objectMapper.writerWithDefaultPrettyPrinter()
@@ -147,6 +155,7 @@ public class RecruitmentDsarExportService {
                                           List<RecruitmentApplicationAnswer> answers,
                                           List<RecruitmentInterview> interviews,
                                           List<RecruitmentScorecard> scorecards,
+                                          List<RecruitmentInterviewNote> interviewNoteDrafts,
                                           List<RecruitmentReferral> referrals,
                                           List<RecruitmentEvent> events,
                                           List<RecruitmentPendingEmail> pendingEmails,
@@ -190,6 +199,13 @@ public class RecruitmentDsarExportService {
             m.put("scores", s.getScores());
             m.put("recommendation", String.valueOf(s.getRecommendation()));
             m.put("submitted_at", String.valueOf(s.getSubmittedAt()));
+            return m;
+        }).toList());
+        root.put("interview_note_drafts", interviewNoteDrafts.stream().map(d -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("interview_uuid", d.getInterviewUuid());
+            m.put("updated_at", String.valueOf(d.getUpdatedAt()));
+            m.put("lines", parseArray(d.getLines()));
             return m;
         }).toList());
         // Source category satisfies Art. 15(1)(g); the referrer's identity
@@ -421,6 +437,18 @@ public class RecruitmentDsarExportService {
         RecruitmentPosition.<RecruitmentPosition>list("uuid in ?1", positionUuids)
                 .forEach(p -> titles.put(p.getUuid(), p.getTitle()));
         return titles;
+    }
+
+    /** A stored JSON array (draft lines), parsed leniently for the export. */
+    private Object parseArray(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     private Map<String, Object> parse(String json) {

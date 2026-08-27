@@ -140,7 +140,8 @@ class RecruitmentEventTypeCatalogTest {
                 "SCHEDULING_EXPIRED", "SCHEDULING_REMINDER_SENT", "SCHEDULING_NOTE_ROUTED",
                 "AVAILABILITY_EVIDENCE_RECEIVED", "AVAILABILITY_EVIDENCE_CONFIRMED",
                 "AVAILABILITY_EVIDENCE_CANCELLED", "AVAILABILITY_IMAGE_DELETED",
-                "AI_SCHEDULING_EXCHANGE");
+                "AI_SCHEDULING_EXCHANGE",
+                "AI_NOTES_TIDIED");
 
         Set<String> actual = Set.of(RecruitmentEventType.values()).stream()
                 .map(Enum::name)
@@ -154,8 +155,10 @@ class RecruitmentEventTypeCatalogTest {
                         + "V481 RECORD_CHECK_*, APPLICATION_POSITION_CHANGED "
                         + "and the Method B SCHEDULING_*/SLOT_*/HOLD_*/OPTION*/"
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
-                        + "and the V519 INTERVIEW_DECISION_* pair exactly");
-        assertEquals(85, RecruitmentEventType.values().length);
+                        + "and the V519 INTERVIEW_DECISION_* pair exactly, plus the "
+                        + "Interview Room's AI_NOTES_TIDIED (room spec 2026-08-26 \u00a73.4: "
+                        + "the structural Tidy log the AI Act obligation reads)");
+        assertEquals(86, RecruitmentEventType.values().length);
     }
 
     @Test
@@ -166,8 +169,10 @@ class RecruitmentEventTypeCatalogTest {
         // The five AI_* types exist since P1 (plan §P1 scope);
         // AI_ASSISTANT_EXCHANGE is the P25 spot-review log (findings §P25);
         // AI_SCHEDULING_EXCHANGE is Method B Phase 12's clarifying-question
-        // log (plan 2026-08-12 §12.4, D6).
-        assertEquals(7, aiTypes, "five P1 AI_* types + the P25 and Method B exchanges");
+        // log (plan 2026-08-12 §12.4, D6); AI_NOTES_TIDIED is the Interview
+        // Room's structural Tidy log (room spec 2026-08-26 §3.4).
+        assertEquals(8, aiTypes,
+                "five P1 AI_* types + the P25/Method B exchanges + AI_NOTES_TIDIED");
     }
 
     @Test

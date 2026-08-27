@@ -100,6 +100,9 @@ public class RecruitmentBoardService {
     @Inject
     dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility visibility;
 
+    @Inject
+    RecruitmentFeatureFlag featureFlag;
+
     /**
      * Build the board for a position the viewer is already cleared to read.
      *
@@ -184,6 +187,11 @@ public class RecruitmentBoardService {
         // flip cards to VOTERING up to two hours early.
         LocalDateTime nowCopenhagen = LocalDateTime.now(COPENHAGEN);
 
+        // Completeness rings (room spec §4.3): one grouped read over the
+        // fact-state projection for the whole board — never per card.
+        Map<String, Integer> factsGatheredByCandidate =
+                factsGathered(candidates.keySet());
+
         return stageSet.stream()
                 .map(stage -> new BoardColumn(stage,
                         openByStage.getOrDefault(stage, List.of()).stream()
@@ -198,6 +206,8 @@ public class RecruitmentBoardService {
                                                         application.getCandidateUuid())),
                                         idleThresholdDays,
                                         subStatusInputs.contractSigned().contains(
+                                                application.getCandidateUuid()),
+                                        factsGatheredByCandidate.get(
                                                 application.getCandidateUuid())))
                                 .toList()))
                 .toList();
@@ -209,7 +219,8 @@ public class RecruitmentBoardService {
                              LocalDateTime now,
                              BoardCardSubStatus subStatus,
                              int idleThresholdDays,
-                             boolean contractSigned) {
+                             boolean contractSigned,
+                             Integer factsGathered) {
         long daysInStage = Math.max(0,
                 ChronoUnit.DAYS.between(application.getStageEnteredAt(), now));
         CandidateSource source = candidate == null ? null : candidate.getSource();
@@ -233,7 +244,60 @@ public class RecruitmentBoardService {
                 daysInStage > idleThresholdDays && !contractSigned,
                 application.getExpectedStartDate(),
                 application.getAssignedTeamUuid(),
-                subStatus);
+                subStatus,
+                factsGathered == null ? null : boardRequiredFieldCount(),
+                factsGathered);
+    }
+
+    // ---- Completeness rings (Interview Room spec §4.3) -------------------------
+
+    /**
+     * The board-grain required set: the vocabulary's default-required
+     * fields. The per-candidate dossier-placeholder derivation belongs to
+     * the profile ledger — eighty cards get the cheap, uniform ring.
+     */
+    private static java.util.List<String> boardRequiredFields() {
+        return dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary
+                .all().stream()
+                .filter(dk.trustworks.intranet.recruitmentservice.model
+                        .RecruitmentFactVocabulary.FactField::defaultRequired)
+                .map(dk.trustworks.intranet.recruitmentservice.model
+                        .RecruitmentFactVocabulary.FactField::key)
+                .toList();
+    }
+
+    private static int boardRequiredFieldCount() {
+        return boardRequiredFields().size();
+    }
+
+    /**
+     * Gathered counts per candidate from the V535 projection — one grouped
+     * query for the whole board. Empty map while the facts flag is off
+     * (the cards then carry {@code null} and no ring renders).
+     */
+    private Map<String, Integer> factsGathered(java.util.Set<String> candidateUuids) {
+        if (candidateUuids.isEmpty() || !featureFlag.isFactsEnabled()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        java.util.List<Object[]> rows = em.createNativeQuery(
+                        "SELECT candidate_uuid, COUNT(*) "
+                                + "FROM recruitment_candidate_fact_state "
+                                + "WHERE candidate_uuid IN (:candidates) "
+                                + "AND field IN (:fields) "
+                                + "AND state IN ('STATED', 'CONFIRMED') "
+                                + "GROUP BY candidate_uuid")
+                .setParameter("candidates", candidateUuids)
+                .setParameter("fields", boardRequiredFields())
+                .getResultList();
+        Map<String, Integer> gathered = new java.util.HashMap<>();
+        for (String candidateUuid : candidateUuids) {
+            gathered.put(candidateUuid, 0);
+        }
+        for (Object[] row : rows) {
+            gathered.put((String) row[0], ((Number) row[1]).intValue());
+        }
+        return gathered;
     }
 
     // ---- Sub-status (pipeline sub-status feature) ------------------------------
