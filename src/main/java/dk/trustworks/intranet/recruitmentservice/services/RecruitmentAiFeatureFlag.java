@@ -37,6 +37,10 @@ import java.util.Optional;
 public class RecruitmentAiFeatureFlag {
 
     static final String INTAKE_KEY = "recruitment.ai.intake.enabled";
+    static final String ROOM_PREP_KEY = "recruitment.ai.interview-room.prep.enabled";
+    static final String ROOM_EXTRACTION_KEY = "recruitment.ai.interview-room.extraction.enabled";
+    static final String ROOM_TIDY_KEY = "recruitment.ai.interview-room.tidy.enabled";
+    static final String ROOM_ALIGNMENT_KEY = "recruitment.ai.interview-room.alignment.enabled";
     static final String BRIEF_KEY = "recruitment.ai.brief.enabled";
     static final String REFERRAL_TRIAGE_KEY = "recruitment.ai.referral-triage.enabled";
     static final String EMAIL_COMPOSER_KEY = "recruitment.ai.email-composer.enabled";
@@ -74,6 +78,26 @@ public class RecruitmentAiFeatureFlag {
     /** Quarterly rejection-pattern digest — toggle exists, feature ships in P24. */
     public boolean isRejectionPatternsDigestEnabled() {
         return readFlag(REJECTION_PATTERNS_DIGEST_KEY);
+    }
+
+    /** Interview Room prep pack — probes specialised to this candidate (room spec §9). */
+    public boolean isInterviewRoomPrepEnabled() {
+        return readFlag(ROOM_PREP_KEY);
+    }
+
+    /** Interview Room live fact extraction — vocabulary-keyed chips with a source quote. */
+    public boolean isInterviewRoomExtractionEnabled() {
+        return readFlag(ROOM_EXTRACTION_KEY);
+    }
+
+    /** Interview Room Tidy — shorthand to prose at land; never fills an empty subject. */
+    public boolean isInterviewRoomTidyEnabled() {
+        return readFlag(ROOM_TIDY_KEY);
+    }
+
+    /** Interview Room alignment check — evidence vs rubric; never proposes a score. */
+    public boolean isInterviewRoomAlignmentEnabled() {
+        return readFlag(ROOM_ALIGNMENT_KEY);
     }
 
     private boolean readFlag(String key) {

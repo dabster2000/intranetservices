@@ -10,6 +10,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteEditRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.NoteRequest;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSummary;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
@@ -872,13 +873,33 @@ public class CandidateService {
         Objects.requireNonNull(note, "note must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
-        if (note.field() != null && !NoteRequest.FIELD_SALARY_EXPECTATION.equals(note.field())) {
-            throw badRequest("Unknown note field: only " + NoteRequest.FIELD_SALARY_EXPECTATION
-                    + " is supported");
+        // The fact vocabulary is closed (Interview Room spec §4.2): the field
+        // marker must be one of the defined keys — the value itself is prose
+        // and lands exclusively in pii below.
+        if (note.field() != null && !RecruitmentFactVocabulary.isKnown(note.field())) {
+            throw badRequest("Unknown note field: expected one of "
+                    + String.join(", ", RecruitmentFactVocabulary.keys()));
+        }
+        if (note.outcome() != null && !NoteRequest.OUTCOME_ASKED.equals(note.outcome())) {
+            throw badRequest("Unknown note outcome: only "
+                    + NoteRequest.OUTCOME_ASKED + " is supported");
+        }
+        if ((note.outcome() != null || Boolean.TRUE.equals(note.confirmed()))
+                && note.field() == null) {
+            throw badRequest("outcome/confirmed markers are only valid on a fact note");
         }
         var builder = candidateEvent(RecruitmentEventType.NOTE_ADDED, candidate, actor)
                 .payload("private", Boolean.TRUE.equals(note.isPrivate()))
                 .payload("field", note.field());
+        if (note.outcome() != null) {
+            builder.payload("outcome", note.outcome());
+        }
+        if (Boolean.TRUE.equals(note.confirmed())) {
+            builder.payload("confirmed", true);
+        }
+        if (note.interviewUuid() != null) {
+            builder.payload("interview_uuid", note.interviewUuid());
+        }
         if (origin != null) {
             builder.payload("origin", origin);
         }

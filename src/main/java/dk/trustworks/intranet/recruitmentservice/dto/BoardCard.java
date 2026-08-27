@@ -26,6 +26,14 @@ import java.time.LocalDateTime;
  * ({@link BoardCardSubStatus}); {@code null} for stages with no ladder
  * (SCREENING, HIRED) — old clients ignore the field, and the frontend
  * renders nothing when it is null.
+ * <p>
+ * {@code factsRequired}/{@code factsGathered} drive the completeness ring
+ * (Interview Room spec 2026-08-26 §4.3/§6.1): at board grain the required
+ * set is the vocabulary's default-required fields and gathered counts
+ * STATED/CONFIRMED rows in the V535 projection — a cache fold, never a
+ * per-card event derivation. Both {@code null} while
+ * {@code recruitment.facts.enabled} is off; the frontend then renders no
+ * ring.
  */
 public record BoardCard(
         String applicationUuid,
@@ -38,6 +46,8 @@ public record BoardCard(
         boolean idle,
         LocalDate expectedStartDate,
         String assignedTeamUuid,
-        BoardCardSubStatus subStatus
+        BoardCardSubStatus subStatus,
+        Integer factsRequired,
+        Integer factsGathered
 ) {
 }

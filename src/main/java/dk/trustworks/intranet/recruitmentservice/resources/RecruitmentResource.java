@@ -34,6 +34,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.WithdrawRequest;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
@@ -644,9 +645,12 @@ public class RecruitmentResource {
 
     /**
      * Add a note (recorded as a NOTE_ADDED event; text in pii). The
-     * SALARY_EXPECTATION field is the only place salary data may exist and
-     * requires the {@code recruitment:comp} scope — an interviewer-scoped
-     * caller gets 403 (spec §4.1, §7.1).
+     * compensation-group fact fields (SALARY_EXPECTATION,
+     * SALARY_COMPONENTS, CURRENT_PACKAGE) are the only place salary data
+     * may exist and require the {@code recruitment:comp} scope — an
+     * interviewer-scoped caller gets 403 (spec §4.1, §7.1; Interview Room
+     * spec §4.2 widened the vocabulary, §7.1 keeps the comp gate on the
+     * whole group).
      */
     @POST
     @Path("/candidates/{uuid}/notes")
@@ -658,10 +662,10 @@ public class RecruitmentResource {
         // alone, and @RolesAllowed gates only the API client.
         requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
-        if (NoteRequest.FIELD_SALARY_EXPECTATION.equals(request.field())
+        if (RecruitmentFactVocabulary.isCompScoped(request.field())
                 && !scopeContext.hasScope("recruitment:comp")) {
             throw new WebApplicationException(
-                    "Salary-expectation notes require the recruitment:comp scope",
+                    "Compensation facts require the recruitment:comp scope",
                     Response.Status.FORBIDDEN);
         }
         UUID actor = currentActor();
@@ -669,9 +673,13 @@ public class RecruitmentResource {
         // AFTER the note's transaction committed: Slack channel thread +
         // mention DMs (author + candidate + link, never the note body).
         // The notifier is dark until its app-setting flag is on, checks the
-        // confidentiality rules itself, and never throws.
+        // confidentiality rules itself, and never throws. Structured FACT
+        // notes never notify at all (Interview Room spec §7.2): a channel
+        // post is a broadcast, and a fact — a competing offer above all —
+        // must never reach one. The exclusion is by field marker, not by
+        // group, so no future vocabulary entry can inherit a broadcast.
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(uuid.toString());
-        if (candidate != null) {
+        if (candidate != null && request.field() == null) {
             discussionSlackNotifier.onNoteAdded(candidate, actor, request.mentions(),
                     Boolean.TRUE.equals(request.isPrivate()));
         }

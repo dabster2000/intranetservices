@@ -570,7 +570,7 @@ public class RecruitmentMorningBriefService {
         } else {
             sb.append(interview.getScheduledAt().format(TIME));
         }
-        sb.append(" — *").append(briefLink(candidate)).append('*');
+        sb.append(" — *").append(candidateLink(interview, candidate)).append('*');
         if (position != null && position.getTitle() != null) {
             sb.append(" (*").append(SlackCandidateFacts.mrkdwnSafe(position.getTitle()))
                     .append('*');
@@ -610,6 +610,25 @@ public class RecruitmentMorningBriefService {
             return name;
         }
         return "<" + baseUrl + "/recruitment/brief/" + candidate.getUuid() + "|" + name + ">";
+    }
+
+    /**
+     * The brief's candidate link, room-aware (Interview Room spec
+     * 2026-08-26 §5.1): while {@code recruitment.interview-room.enabled}
+     * is on, the name opens the INTERVIEW ROOM — prep pins, subject lanes
+     * and the gap list, five minutes to an agenda — instead of the
+     * read-only brief page. With the flag off the brief link stands, so
+     * the pack never links into a 404.
+     */
+    private String candidateLink(RecruitmentInterview interview, RecruitmentCandidate candidate) {
+        // Composition runs on the batch thread — flag reads go through the
+        // service's inTx idiom like every other app-settings read here.
+        if (inTx(featureFlag::isInterviewRoomEnabled) && interview.getUuid() != null) {
+            String name = displayName(candidate);
+            return "<" + baseUrl + "/recruitment/interviews/" + interview.getUuid()
+                    + "/room|" + name + ">";
+        }
+        return briefLink(candidate);
     }
 
     private static String displayName(RecruitmentCandidate candidate) {

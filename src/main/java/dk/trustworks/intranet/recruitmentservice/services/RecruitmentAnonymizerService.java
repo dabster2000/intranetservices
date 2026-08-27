@@ -118,6 +118,7 @@ public class RecruitmentAnonymizerService {
                                        int documentsDeleted, int referralsScrubbed,
                                        int pendingEmailsScrubbed, int dossiersScrubbed,
                                        int revisionsScrubbed, int consentTokensCleared,
+                                       int interviewNoteDraftsDeleted,
                                        boolean alreadyAnonymized) {
     }
 
@@ -153,7 +154,7 @@ public class RecruitmentAnonymizerService {
         }
         if (candidate.getStatus() == CandidateStatus.ANONYMIZED) {
             log.infof("Anonymization skipped: candidate %s is already anonymized", candidateUuid);
-            return new AnonymizationSummary(candidateUuid, mode, 0, 0, 0, 0, 0, 0, 0, 0, true);
+            return new AnonymizationSummary(candidateUuid, mode, 0, 0, 0, 0, 0, 0, 0, 0, 0, true);
         }
         if (candidate.getStatus() == CandidateStatus.HIRED) {
             throw new BusinessRuleViolation(
@@ -188,6 +189,12 @@ public class RecruitmentAnonymizerService {
         int revisionsScrubbed = scrubDossierRevisions(candidateUuid);
         int consentTokensCleared = clearConsentTokens(candidateUuid);
 
+        // ---- Target 5: interview note drafts (Interview Room spec §4.4) --
+        // A DELETE, not a scrub: the rows are live drafts of one person's
+        // written impressions of another — the most sensitive prose in the
+        // module — with no structural value worth preserving.
+        int interviewNoteDraftsDeleted = deleteInterviewNoteDrafts(candidateUuid);
+
         // ---- Bookkeeping event (pii-free, same transaction) ---------------
         RecruitmentEventBuilder event = RecruitmentEventBuilder
                 .event(RecruitmentEventType.CANDIDATE_ANONYMIZED)
@@ -199,7 +206,8 @@ public class RecruitmentAnonymizerService {
                 .payload("referrals_scrubbed", referralsScrubbed)
                 .payload("pending_emails_scrubbed", pendingEmailsScrubbed)
                 .payload("dossiers_scrubbed", dossiersScrubbed)
-                .payload("revisions_scrubbed", revisionsScrubbed);
+                .payload("revisions_scrubbed", revisionsScrubbed)
+                .payload("interview_note_drafts_deleted", interviewNoteDraftsDeleted);
         if (mode == Mode.ON_REQUEST) {
             event.actorUser(actorUserUuid);
         } else {
@@ -213,13 +221,14 @@ public class RecruitmentAnonymizerService {
         eventRecorder.record(event);
 
         log.infof("Anonymized candidate %s (mode=%s): events=%d answers=%d documents=%d "
-                        + "referrals=%d pendingEmails=%d dossiers=%d revisions=%d tokens=%d",
+                        + "referrals=%d pendingEmails=%d dossiers=%d revisions=%d tokens=%d "
+                        + "interviewNoteDrafts=%d",
                 candidateUuid, mode, eventsRewritten, answersScrubbed, documentsDeleted,
                 referralsScrubbed, pendingEmailsScrubbed, dossiersScrubbed, revisionsScrubbed,
-                consentTokensCleared);
+                consentTokensCleared, interviewNoteDraftsDeleted);
         return new AnonymizationSummary(candidateUuid, mode, eventsRewritten, answersScrubbed,
                 documentsDeleted, referralsScrubbed, pendingEmailsScrubbed, dossiersScrubbed,
-                revisionsScrubbed, consentTokensCleared, false);
+                revisionsScrubbed, consentTokensCleared, interviewNoteDraftsDeleted, false);
     }
 
     // ------------------------------------------------------------------
@@ -361,6 +370,24 @@ public class RecruitmentAnonymizerService {
                 .setParameter("candidate", candidateUuid)
                 .executeUpdate();
         return revisions;
+    }
+
+    /**
+     * Target 5 (Interview Room spec §4.4): DELETE every live interview
+     * note draft on the candidate's interviews — the drafts an interviewer
+     * never landed. The fact-state projection is deliberately NOT
+     * touched: it holds no prose and is rebuilt from a stream this method
+     * has already anonymised (room spec §4.4).
+     */
+    private int deleteInterviewNoteDrafts(String candidateUuid) {
+        return em.createNativeQuery("""
+                        DELETE n FROM recruitment_interview_notes n
+                        JOIN recruitment_interviews i ON n.interview_uuid = i.uuid
+                        JOIN recruitment_applications a ON i.application_uuid = a.uuid
+                        WHERE a.candidate_uuid = :candidate
+                        """)
+                .setParameter("candidate", candidateUuid)
+                .executeUpdate();
     }
 
     /** No live public consent link may survive the erasure. */
