@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS recruitment_interview_notes (
         COMMENT 'FK recruitment_interviews.uuid (soft — the sweep and the anonymiser resolve it)',
     author_uuid     VARCHAR(36) NOT NULL
         COMMENT 'Soft FK users.uuid — the interviewer whose private draft this is',
-    lines           JSON        NOT NULL
+    -- named note_lines, not lines: LINES is a MariaDB reserved word
+    -- (LOAD DATA ... LINES TERMINATED BY) and broke the CREATE at parse
+    -- time on the first staging deploy (2026-08-26 22:03 UTC canary).
+    note_lines      JSON        NOT NULL
         COMMENT 'INoteLine[] — the whole draft, read and written as one array (spec §3.3)',
     client_revision BIGINT      NOT NULL DEFAULT 0
         COMMENT 'Monotonic, client-assigned; a PUT with a lower value answers 409 (last-write-wins guard, no merge)',

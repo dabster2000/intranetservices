@@ -62,8 +62,9 @@ public class RecruitmentInterviewNote extends PanacheEntityBase implements Audit
     @Column(name = "author_uuid", length = 36, nullable = false, updatable = false)
     private String authorUuid;
 
-    /** The whole draft: {@code INoteLine[]} as one JSON document. */
-    @Column(name = "lines", columnDefinition = "JSON", nullable = false)
+    /** The whole draft: {@code INoteLine[]} as one JSON document. The
+     * column is {@code note_lines} — LINES is a MariaDB reserved word. */
+    @Column(name = "note_lines", columnDefinition = "JSON", nullable = false)
     private String lines;
 
     /** Monotonic, client-assigned. Lower-than-stored PUT ⇒ 409. */
