@@ -85,7 +85,15 @@ public record InterviewRoomResponse(
     }
 
     /** The evidence-shelf manifest — documents and form answers, viewer-scoped. */
-    public record RoomShelf(List<CandidateDocument> documents, List<FormAnswer> answers) {
+    /**
+     * @param employment the workplaces the AI brief read out of the CV
+     *                   (brief-v2), newest first — the shelf's answer to
+     *                   "where has this person worked?" without opening the
+     *                   PDF. Empty when the brief flag is off or no brief
+     *                   exists for this interview's application.
+     */
+    public record RoomShelf(List<CandidateDocument> documents, List<FormAnswer> answers,
+                            List<CandidateAiStateResponse.AiEmployment> employment) {
     }
 
     /** Which AI capabilities the room may offer (all default off, spec §9). */

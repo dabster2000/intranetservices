@@ -26,8 +26,33 @@ public record CandidateAiStateResponse(
         AiRegenerateInfo regenerate
 ) {
 
-    /** The latest visible AI brief (Danish, descriptive-only bullets). */
-    public record AiBrief(List<String> bullets, LocalDateTime generatedAt, String model) {
+    /**
+     * The latest visible AI brief (Danish, descriptive-only bullets).
+     *
+     * @param employment    the candidate's workplaces as read out of the CV
+     *                      (brief-v2), newest first as the model listed them.
+     *                      Empty both when the CV showed none AND when the
+     *                      brief predates the section — {@link #promptVersion}
+     *                      is what tells those two apart.
+     * @param promptVersion the {@code payload.prompt_version} the brief was
+     *                      generated with, e.g. {@code brief-v2}. The profile
+     *                      compares it against the current version to decide
+     *                      whether an empty history means "nothing to show" or
+     *                      "never asked for" — null for briefs recorded before
+     *                      the key existed.
+     */
+    public record AiBrief(List<String> bullets, LocalDateTime generatedAt, String model,
+                          List<AiEmployment> employment, String promptVersion) {
+    }
+
+    /**
+     * One workplace from the CV (brief-v2). Dates are {@code YYYY} or
+     * {@code YYYY-MM} strings, never full dates: that is the precision a CV
+     * actually carries, and the server drops anything it cannot read to null
+     * rather than guessing.
+     */
+    public record AiEmployment(String employer, String title, String startDate, String endDate,
+                               boolean current) {
     }
 
     /** One unresolved suggestion; {@code value} is a String or List of Strings. */

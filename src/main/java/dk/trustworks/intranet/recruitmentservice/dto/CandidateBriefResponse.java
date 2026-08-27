@@ -29,10 +29,17 @@ import java.util.List;
  * the frontend sends them to the full profile instead — the brief is
  * additive, never a downgrade.
  *
- * @param documents the application attachments only (CV, cover letter and
- *                  unclassified uploads). Contract drafts, signed
- *                  documents, appendices and identity documents are never
- *                  included — see {@code CandidateBriefService}.
+ * @param documents  the application attachments only (CV, cover letter and
+ *                   unclassified uploads). Contract drafts, signed
+ *                   documents, appendices and identity documents are never
+ *                   included — see {@code CandidateBriefService}.
+ * @param employment the workplaces the AI brief read out of the CV
+ *                   (brief-v2), newest first. This is a RE-STATEMENT of the
+ *                   CV the viewer can already open, in a form they can read
+ *                   at a glance — not an addition to what the brief admits.
+ *                   Empty when the brief flag is off, when no brief has been
+ *                   generated for one of the viewer's own interviews'
+ *                   applications, or when the CV showed no history.
  */
 public record CandidateBriefResponse(
         String candidateUuid,
@@ -40,6 +47,7 @@ public record CandidateBriefResponse(
         String linkedinUrl,
         List<CandidateDocument> documents,
         List<FormAnswer> answers,
-        List<CandidateBriefInterview> interviews
+        List<CandidateBriefInterview> interviews,
+        List<CandidateAiStateResponse.AiEmployment> employment
 ) {
 }
