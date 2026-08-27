@@ -121,6 +121,9 @@ public class InvoiceFinalizationOrchestrator {
     InvoiceBookingAttemptRepository attemptRepo;
 
     @Inject
+    dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight periodPreflight;
+
+    @Inject
     jakarta.transaction.TransactionManager transactionManager;
 
     /**
@@ -209,6 +212,17 @@ public class InvoiceFinalizationOrchestrator {
         // notes (strict 1:1, enforced at creation) and non-credit-note invoices.
         creditCoverage.assertFinalizableWithinResidual(inv);
 
+        // Ask the issuer's e-conomic whether this date can be posted at all, before anything is
+        // sent and before the expensive attribution rebuild below. A closed or barred period is
+        // otherwise discovered at the booking call — the last step — by which time a real draft
+        // exists, and the rollback that follows orphans it at the vendor.
+        //
+        // Placed after the local guards on purpose: a zero-quantity line or an over-credit is
+        // rejected here without any network call at all, which is what those guards promise.
+        // Fails open — it blocks only on a positively identified closed/barred period, never on a
+        // vendor error. See AccountingPeriodPreflight.
+        periodPreflight.assertPeriodOpen(inv);
+
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
             bonus.recalcForInvoice(inv);
@@ -279,9 +293,9 @@ public class InvoiceFinalizationOrchestrator {
         // cancelFinalization, then the subsequent createLinesBulk 404s on that recycled (deleted)
         // draft. UUID suffix forces a fresh attempt each time.
         //
-        // The booking path deliberately does NOT do this — see reserveBookingAttempt. Its key must
-        // stay invariant so that during a blue/green rollout an old task and a new task still
-        // collide at the vendor instead of producing two booked invoices.
+        // The booking path uses a draft-number suffix rather than a random one — see
+        // reserveBookingAttempt. It must stay stable across replays of the same frozen body, which
+        // a UUID would not be; here every call is a genuinely new attempt, so a UUID is correct.
         String idempotencyKey = "draft-" + invoiceUuid + "-" + UUID.randomUUID();
         log.infof("createDraft: invoiceUuid=%s idempotencyKey=%s", invoiceUuid, idempotencyKey);
 
@@ -525,7 +539,7 @@ public class InvoiceFinalizationOrchestrator {
                     attempt.getIdempotencyKey(),
                     req);
         } catch (WebApplicationException e) {
-            throw classifyBookingFailure(attempt, invoiceUuid, e);
+            throw classifyBookingFailure(attempt, inv, e);
         } catch (RuntimeException e) {
             // No HTTP response reached us, so we cannot know whether e-conomic booked it.
             // Fail closed: never retry blindly (P3).
@@ -880,11 +894,21 @@ public class InvoiceFinalizationOrchestrator {
      * path the frozen value is reused verbatim — re-resolving it is what changed the payload under
      * an unchanged key and produced the 2026-08-07 {@code PayloadChanged} failures.
      *
-     * <p>The idempotency key is deliberately the invariant {@code "book-" + invoiceUuid}, with no
-     * per-attempt suffix. During a blue/green rollout old tasks still send exactly that string; if
-     * new tasks sent a different one, an old task's booking and a new task's booking would no longer
-     * collide at the vendor and would silently produce two booked invoices. The per-attempt suffix
-     * (mirroring {@code createDraft}) belongs in a follow-up deploy, once no old tasks remain.
+     * <p>The idempotency key is {@code "book-" + invoiceUuid + "-" + draftInvoiceNumber}: keyed on
+     * exactly what the body contains. Same body ⇒ same key, so a replay of THIS attempt still hits
+     * e-conomic's cache instead of booking twice — the property the frozen body exists to protect.
+     * A different draft ⇒ different key, so a fresh attempt after a definitive rejection is no
+     * longer refused with {@code PayloadChanged} for the crime of naming a different draft.
+     *
+     * <p>Until 2026-08-27 the key was the invariant {@code "book-" + invoiceUuid}, deferred as a
+     * blue/green concern: an old task and a new task sending different keys would not collide at
+     * the vendor. That trade has flipped. The invariant key made every retry after a hard rejection
+     * fail — invoice 89886353 was rejected for a barred period, and its retry, differing only in
+     * draft number, came back {@code PayloadChanged} and was recorded NEEDS_RECONCILIATION for a
+     * booking that had never happened. Vendor-key collision was only ever the second line of
+     * defence anyway: {@link #loadForFinalization} takes a row lock per invoice and
+     * {@link #assertNoUnresolvedPostedSibling} refuses to mint an attempt while an earlier POST is
+     * unresolved, and both are shared state that old and new tasks contend on equally.
      */
     private InvoiceBookingAttempt reserveBookingAttempt(String invoiceUuid,
                                                         String companyUuid,
@@ -919,17 +943,17 @@ public class InvoiceFinalizationOrchestrator {
                 inv.getEconomicsDraftNumber(),
                 draftInvoiceNumber,
                 sendBy,
-                "book-" + invoiceUuid,
+                "book-" + invoiceUuid + "-" + draftInvoiceNumber,
                 EconomicsBookingRequest.of(draftInvoiceNumber, sendBy));
     }
 
     /**
-     * Fail-closed double-booking guard. The booking idempotency key is the invariant
-     * {@code "book-" + invoiceUuid} (blue/green requirement, see {@link #reserveBookingAttempt}),
-     * so a NEW attempt for the same invoice sends a <em>different body under the same key</em>: a
-     * {@code PayloadChanged} 400 inside the vendor's one-hour TTL, and a <b>second booked
-     * invoice</b> after it — the exact mechanism of the 2026-08-07 duplicate (28218). While any
-     * earlier attempt has been POSTed but not resolved (PENDING with {@code posted_at}, or
+     * Fail-closed double-booking guard, and since the key gained its draft-number suffix (see
+     * {@link #reserveBookingAttempt}) the <em>only</em> thing standing between an unresolved POST
+     * and a second booked invoice. A new attempt now carries a new key, so the vendor will no
+     * longer refuse it just because an earlier body differed — which is what accidentally capped
+     * the 2026-08-07 duplicate (28218) at one extra booking rather than several. While any earlier
+     * attempt has been POSTed but not resolved (PENDING with {@code posted_at}, or
      * NEEDS_RECONCILIATION), refuse to mint a new one before anything goes out the door.
      * Replaying the SAME attempt (same draftInvoiceNumber) stays allowed — that is the designed
      * recovery. Resolution paths: {@code InternalInvoiceOrchestrator.adoptVendorBooking} when the
@@ -940,16 +964,121 @@ public class InvoiceFinalizationOrchestrator {
                                                 String invoiceUuid) {
         for (InvoiceBookingAttempt a : postedUnresolved) {
             if (a.getDraftInvoiceNumber() != draftInvoiceNumber) {
-                throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
-                        .entity("Invoice " + invoiceUuid + " has an earlier booking attempt ("
+                throw new UnresolvedBookingAttemptException(
+                        "Invoice " + invoiceUuid + " has an earlier booking attempt ("
                                 + a.getUuid() + ", draftInvoiceNumber " + a.getDraftInvoiceNumber()
                                 + ", posted at " + a.getPostedAt() + ", state " + a.getState()
                                 + ") whose e-conomic outcome is unresolved. Booking again could "
                                 + "create a duplicate booked invoice. Reconcile the earlier attempt "
                                 + "first (adopt its booked number via the reconcile endpoint, or "
-                                + "resolve it at e-conomic).")
-                        .build());
+                                + "resolve it at e-conomic).");
             }
+        }
+    }
+
+    /**
+     * The 409 raised by {@link #assertNoUnresolvedPostedSibling}. A distinct type, not a bare
+     * {@code WebApplicationException}, so the caller can tell "an EARLIER attempt is unresolved"
+     * (this draft never left the process, delete it) apart from "e-conomic's answer was ambiguous"
+     * (keep the draft as evidence). Both are 409s on the wire; only one is safe to clean up after.
+     */
+    public static class UnresolvedBookingAttemptException extends WebApplicationException {
+        public UnresolvedBookingAttemptException(String message) {
+            super(Response.status(Response.Status.CONFLICT).entity(message).build());
+        }
+    }
+
+    /**
+     * True when the vendor's answer proves this draft was NOT booked, so the draft behind it is
+     * safe to delete and a fresh attempt is safe to mint.
+     *
+     * <p>A definitive 4xx (other than 409, and other than an idempotency conflict) means e-conomic
+     * refused the document outright: a barred period, a validation error, a missing reference. No
+     * booked invoice exists. Everything else — 409, any 5xx, a transport failure with no response,
+     * and above all a {@code PayloadChanged} 400, which says the vendor is holding SOMETHING under
+     * this key — leaves the outcome unknown, and unknown must never delete evidence.
+     *
+     * <p>Deliberately the same rule {@link InvoiceBookingAttemptRepository#listPostedUnresolvedByInvoice}
+     * already encodes by excluding {@code FAILED}; keeping one predicate means the "is it booked?"
+     * question cannot be answered two different ways in two places.
+     */
+    static boolean isProvablyUnbooked(WebApplicationException e) {
+        if (e instanceof UnresolvedBookingAttemptException) {
+            // Raised by our own pre-flight guard, before this draft's body ever left the process.
+            // The blocking evidence belongs to an EARLIER draft; this one is certainly unbooked.
+            return true;
+        }
+        int status = e.getResponse() != null ? e.getResponse().getStatus() : 0;
+        return status >= 400 && status < 500 && status != 409 && !isIdempotencyConflict(e);
+    }
+
+    /**
+     * e-conomic error code for "the invoice date lies within a barred period". Its raw body names
+     * the date and the draft number but not the agreement, which is the one fact that matters:
+     * barring is per company, so the same date books in one entity and is refused in the next.
+     */
+    private static final String BARRED_PERIOD_CODE = "E04870";
+
+    /**
+     * Rewrites a barred-period rejection into an instruction, or returns {@code null} when the
+     * failure is something else and the raw message should stand.
+     *
+     * <p>2026-08-27: this reached the operator as a wall of vendor JSON on five invoices, and
+     * nothing in it said which company had barred the period or that a different date would have
+     * worked — the same date had booked four other invoices minutes earlier, in a different
+     * company. Naming the company, the date and both remedies is the whole fix.
+     */
+    // Package-private static for the same reason as isProvablyUnbooked: directly unit-testable.
+    static RuntimeException asBarredPeriodError(Invoice inv, String vendorMessage) {
+        if (!vendorMessage.contains(BARRED_PERIOD_CODE) && !vendorMessage.contains("barred period")) {
+            return null;
+        }
+        String company = inv.getCompany() != null && inv.getCompany().getName() != null
+                ? inv.getCompany().getName()
+                : "the issuing company";
+        return new BadRequestException(String.format(
+                "Invoice date %s falls in a period that is barred in %s's e-conomic, so it cannot "
+                        + "be booked there. Either force-create it with a date in an open period, "
+                        + "or have the period unbarred in e-conomic (Indstillinger → Regnskabsår → "
+                        + "Perioder). Barring is per company, so the same date may well book in "
+                        + "another Trustworks entity. Nothing was booked. (e-conomic %s)",
+                inv.getInvoicedate(), company, BARRED_PERIOD_CODE));
+    }
+
+    /** e-conomic refusing a body that differs from what it already cached under the same key. */
+    private static boolean isIdempotencyConflict(WebApplicationException e) {
+        int status = e.getResponse() != null ? e.getResponse().getStatus() : 0;
+        String message = String.valueOf(e.getMessage());
+        return status == 400
+                && (message.contains("Idempotency") || message.contains("PayloadChanged"));
+    }
+
+    /**
+     * Deletes a draft whose booking definitively failed, for callers that created it inside a
+     * transaction which is now rolling back (see {@code InternalInvoiceOrchestrator.finalizeAutomatically}).
+     * Once that rollback clears {@code economics_draft_number}, nothing local names the draft again.
+     *
+     * <p>NOT transactional and never throws: this runs on an exception path whose own exception is
+     * the one the caller must surface. A failed cleanup leaves exactly the orphan we had before, so
+     * it is logged and swallowed rather than allowed to mask the real error.
+     */
+    public void deleteUnbookedDraft(String invoiceUuid, int draftNumber) {
+        try {
+            Invoice inv = invoices.findByUuid(invoiceUuid).orElse(null);
+            if (inv == null || inv.getCompany() == null) return;
+            EconomicsAgreementResolver.Tokens tokens = agreements.tokens(inv.getCompany().getUuid());
+            draftApi.delete(tokens.appSecret(), tokens.agreementGrant(), draftNumber);
+            log.infof("deleteUnbookedDraft: deleted e-conomic draft %d for invoiceUuid=%s after a "
+                    + "definitive booking rejection", draftNumber, invoiceUuid);
+        } catch (Exception cleanupFailure) {
+            if (isNotFound(cleanupFailure)) {
+                log.infof("deleteUnbookedDraft: draft %d already gone for invoiceUuid=%s",
+                        draftNumber, invoiceUuid);
+                return;
+            }
+            log.warnf(cleanupFailure, "deleteUnbookedDraft: could not delete e-conomic draft %d for "
+                    + "invoiceUuid=%s — it is now orphaned and needs deleting by hand",
+                    draftNumber, invoiceUuid);
         }
     }
 
@@ -963,18 +1092,23 @@ public class InvoiceFinalizationOrchestrator {
      * @return the exception to rethrow, so callers can {@code throw classifyBookingFailure(...)}
      */
     private RuntimeException classifyBookingFailure(InvoiceBookingAttempt attempt,
-                                                    String invoiceUuid,
+                                                    Invoice inv,
                                                     WebApplicationException e) {
+        String invoiceUuid = inv.getUuid();
         int status = e.getResponse() != null ? e.getResponse().getStatus() : 0;
         String message = String.valueOf(e.getMessage());
-        boolean idempotencyConflict = status == 400
-                && (message.contains("Idempotency") || message.contains("PayloadChanged"));
 
-        if (idempotencyConflict) {
+        if (isIdempotencyConflict(e)) {
             attempts.markNeedsReconciliation(attempt.getUuid(),
                     "e-conomic reported PayloadChanged against a frozen body — " + message);
-        } else if (status >= 400 && status < 500 && status != 409) {
+        } else if (isProvablyUnbooked(e)) {
             attempts.markFailed(attempt.getUuid(), "HTTP " + status + " — " + message);
+            // The attempt row and the log above keep the raw vendor body for forensics; what the
+            // operator gets back is rewritten into something they can act on. A barred period is
+            // not a bug to report, it is a date to change or a period to open, and neither is
+            // guessable from e-conomic's raw JSON.
+            RuntimeException legible = asBarredPeriodError(inv, message);
+            if (legible != null) return legible;
         } else {
             // 409/5xx: retryable, but only inside the idempotency window. Leave PENDING so the
             // next attempt replays the same key and body; isReplaySafe() guards the deadline.

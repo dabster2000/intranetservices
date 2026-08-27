@@ -116,9 +116,23 @@ public class InternalInvoiceOrchestrator {
     @Transactional
     public Invoice finalizeAutomatically(String invoiceUuid) {
         assertInternalType(invoiceUuid);
-        issuerSide.createDraft(invoiceUuid);
-        return issuerSide.bookDraft(invoiceUuid, null);
-        // DEBTOR side fires inline in bookDraft — no additional call required.
+        Invoice withDraft = issuerSide.createDraft(invoiceUuid);
+        Integer draftNumber = withDraft.getEconomicsDraftNumber();
+        try {
+            return issuerSide.bookDraft(invoiceUuid, null);
+            // DEBTOR side fires inline in bookDraft — no additional call required.
+        } catch (WebApplicationException e) {
+            // This transaction is about to roll back and take economicsDraftNumber with it, so the
+            // draft createDraft just made at e-conomic becomes unreferenced — nothing local will
+            // ever name it again and no later call can clean it up. Delete it here, while the
+            // number is still in hand, but ONLY when this draft provably never booked. On an
+            // ambiguous outcome the draft is evidence and must survive (2026-08-27: a barred-period
+            // 400 on TWC left drafts 73/74/75 stranded, one more every night the batchlet re-ran).
+            if (InvoiceFinalizationOrchestrator.isProvablyUnbooked(e) && draftNumber != null) {
+                issuerSide.deleteUnbookedDraft(invoiceUuid, draftNumber);
+            }
+            throw e;
+        }
     }
 
     /**
@@ -144,6 +158,32 @@ public class InternalInvoiceOrchestrator {
      */
     @Transactional
     public Invoice forceFinalizeQueued(String invoiceUuid) {
+        return forceFinalizeQueued(invoiceUuid, null);
+    }
+
+    /**
+     * As {@link #forceFinalizeQueued(String)}, but with an explicit document date.
+     *
+     * <p>Exists because "today" is only the right date when the internal is finalized promptly
+     * after its client invoice. An internal invoice is the intercompany mirror of a client
+     * invoice, so back-filling one belonging to an earlier period must be able to carry that
+     * period's date — otherwise last year's revenue and the matching debtor-side cost both land
+     * in the current financial year. It is also the only way to book into a company whose current
+     * e-conomic period is barred while the target period is open (2026-08-27: five TWC internals
+     * mirroring 30.06.2026 client invoices were rejected as {@code E04870} because force-create
+     * stamped 27.08.2026, which TWC has barred for all of FY 2026/27).
+     *
+     * <p>The nightly batchlet is deliberately untouched and still uses today — changing its
+     * convention would start dating routine finalizations into periods that may since have closed.
+     *
+     * @param invoiceUuid the UUID of a QUEUED INTERNAL / INTERNAL_SERVICE invoice
+     * @param invoicedate the document date to book under, or {@code null} for today. {@code duedate}
+     *                    follows the batchlet convention of one day later.
+     * @throws BadRequestException when the date is in the future — e-conomic accepts it, but a
+     *                             document dated ahead of its own booking is never intended.
+     */
+    @Transactional
+    public Invoice forceFinalizeQueued(String invoiceUuid, LocalDate invoicedate) {
         Invoice inv = invoices.findByUuid(invoiceUuid)
                 .orElseThrow(() -> new NotFoundException("Invoice not found: " + invoiceUuid));
         if (inv.getType() != InvoiceType.INTERNAL
@@ -156,10 +196,22 @@ public class InternalInvoiceOrchestrator {
             throw new BadRequestException(
                     "Invoice must be in QUEUED status. Current: " + inv.getStatus());
         }
+        LocalDate effective = invoicedate != null ? invoicedate : LocalDate.now();
+        if (effective.isAfter(LocalDate.now())) {
+            throw new BadRequestException(
+                    "invoicedate cannot be in the future: " + effective);
+        }
+        if (invoicedate != null) {
+            // Accounting-affecting manual override: log it so the period an invoice landed in is
+            // answerable from the logs alone, without diffing the row against the batchlet default.
+            log.infof("forceFinalizeQueued: invoiceUuid=%s invoicedate overridden to %s "
+                            + "(default would be %s), period year=%d month=%d",
+                    invoiceUuid, effective, LocalDate.now(), inv.getYear(), inv.getMonth());
+        }
         // Mirror the nightly batchlet's date handling so manually and automatically
         // finalized invoices land on the same invoicedate/duedate convention.
-        inv.setInvoicedate(LocalDate.now());
-        inv.setDuedate(LocalDate.now().plusDays(1));
+        inv.setInvoicedate(effective);
+        inv.setDuedate(effective.plusDays(1));
         return finalizeAutomatically(invoiceUuid);
     }
 
