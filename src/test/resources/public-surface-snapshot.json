@@ -1,10 +1,10 @@
 {
   "generatedFrom": "src/test/java/dk/trustworks/intranet/security/surface/PublicSurfaceSnapshotter.java",
   "totals": {
-    "endpoints": 40,
+    "endpoints": 38,
     "permitAllEndpoints": 23,
     "entityReturningEndpoints": 11,
-    "entityRequestBodies": 3,
+    "entityRequestBodies": 2,
     "unresolved": 9,
     "truncated": 0,
     "sensitiveFields": 3
@@ -880,20 +880,6 @@
         }
       }
     },
-    "POST /public/messaging/slack/message": {
-      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#sendSlackMessage",
-      "access": "public:read",
-      "returns": "void",
-      "returnsEntity": false,
-      "requestBody": "dk.trustworks.intranet.dto.KeyValueDTO",
-      "requestBodyIsEntity": false,
-      "fields": {
-        "dk.trustworks.intranet.dto.KeyValueDTO": {
-          "key": "java.lang.String",
-          "value": "java.lang.String"
-        }
-      }
-    },
     "POST /public/scheduling/{token}/none-work": {
       "resource": "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource#noneWork",
       "access": "permit-all",
@@ -936,32 +922,6 @@
         },
         "dk.trustworks.intranet.recruitmentservice.resources.PublicSchedulingResource$SelectRequest": {
           "optionId": "java.lang.String"
-        }
-      }
-    },
-    "POST /public/work": {
-      "resource": "dk.trustworks.intranet.apigateway.resources.gate.PublicResource#save",
-      "access": "public:read",
-      "returns": "void",
-      "returnsEntity": false,
-      "requestBody": "dk.trustworks.intranet.dao.workservice.model.Work",
-      "requestBodyIsEntity": true,
-      "fields": {
-        "dk.trustworks.intranet.dao.workservice.model.Work": {
-          "billable": "boolean @JsonIgnore",
-          "clientuuid": "java.lang.String",
-          "comments": "java.lang.String",
-          "contractuuid": "java.lang.String",
-          "createdAt": "java.time.LocalDateTime",
-          "paidOut": "java.time.LocalDateTime",
-          "projectuuid": "java.lang.String",
-          "rate": "double",
-          "registered": "java.time.LocalDate",
-          "taskuuid": "java.lang.String",
-          "useruuid": "java.lang.String",
-          "uuid": "java.lang.String",
-          "workas": "java.lang.String",
-          "workduration": "double"
         }
       }
     },

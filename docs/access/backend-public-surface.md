@@ -13,10 +13,10 @@ That count is Phase 13's burn-down target (findings F-21).
 
 | | Count |
 |---|---|
-| Endpoints | 40 |
+| Endpoints | 38 |
 | … reachable with no credential (`@PermitAll`) | 23 |
 | … returning a persistence entity | 11 |
-| … accepting a persistence entity as request body | 3 |
+| … accepting a persistence entity as request body | 2 |
 | Sensitive-named fields on the surface | 3 |
 | Unresolved response shapes | 9 |
 
@@ -58,10 +58,8 @@ That count is Phase 13's burn-down target (findings F-21).
 | `POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants` | permit-all | `void` | no | `ConferenceParticipant` **entity** | `ConferenceResource#createParticipant` |
 | `POST /onboarding/tokens/{tokenUuid}/upload` | permit-all | `jakarta.ws.rs.core.Response` | no | `String` | `OnboardingResource#upload` |
 | `POST /public/client` | public:read | `Client` | **yes** | `PublicResource$CreateClientRequest` | `PublicResource#createClient` |
-| `POST /public/messaging/slack/message` | public:read | `void` | no | `KeyValueDTO` | `PublicResource#sendSlackMessage` |
 | `POST /public/scheduling/{token}/none-work` | permit-all | `jakarta.ws.rs.core.Response` | no | `PublicSchedulingResource$NoneWorkRequest` | `PublicSchedulingResource#noneWork` |
 | `POST /public/scheduling/{token}/select` | permit-all | `PublicSchedulingResponse` | no | `PublicSchedulingResource$SelectRequest` | `PublicSchedulingResource#select` |
-| `POST /public/work` | public:read | `void` | no | `Work` **entity** | `PublicResource#save` |
 | `POST /users/command/confirmpasswordchange/{key}` | permit-all | `void` | no | — | `UserResource#confirmPasswordChange` |
 | `PUT /public/client/{clientuuid}` | public:read | `jakarta.ws.rs.core.Response` | no | `PublicResource$UpdateClientLogoRequest` | `PublicResource#updateClientLogo` |
 
