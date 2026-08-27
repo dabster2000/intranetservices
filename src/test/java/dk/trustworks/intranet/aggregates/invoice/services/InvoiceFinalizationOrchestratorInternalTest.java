@@ -63,6 +63,8 @@ class InvoiceFinalizationOrchestratorInternalTest {
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter attempts;
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptRepository attemptRepo;
     @Mock dk.trustworks.intranet.perf.PerfMetrics perfMetrics;
+    /** Pre-flight is a courtesy check in front of createDraft; a no-op mock means "period open". */
+    @Mock dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight periodPreflight;
 
     /**
      * requireEditableInvoice now loads the row under a PESSIMISTIC_WRITE lock (S4), so the

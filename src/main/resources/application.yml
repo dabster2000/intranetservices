@@ -157,6 +157,16 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 10000
       read-timeout: 30000
+    # Read-only accounting periods, used by AccountingPeriodPreflight to reject a barred or
+    # closed invoice date before a draft is created. Timeouts are deliberately tighter than the
+    # other e-conomic clients: this call sits in front of every finalization and only ever
+    # informs a courtesy check, so a slow vendor must cost seconds, not half a minute. It fails
+    # open, so a timeout simply restores the old behaviour.
+    economics-accounting-years-api:
+      url: https://apis.e-conomic.com/accountingyearsapi/v2.0.1
+      scope: jakarta.inject.Singleton
+      connect-timeout: 5000
+      read-timeout: 10000
     economics-legacy-rest:
       url: https://restapi.e-conomic.com
       scope: jakarta.inject.Singleton

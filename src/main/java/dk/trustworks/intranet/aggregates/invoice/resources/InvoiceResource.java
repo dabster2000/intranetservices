@@ -43,6 +43,7 @@ import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -737,6 +738,10 @@ public class InvoiceResource {
      * {@code PARTIALLY_UPLOADED}; {@code EconomicsUploadRetryBatchlet} re-attempts on backoff.
      *
      * @param invoiceuuid UUID of a QUEUED INTERNAL / INTERNAL_SERVICE invoice
+     * @param invoicedate optional {@code yyyy-MM-dd} document date; defaults to today. Supply it to
+     *                    book an internal into the period of the client invoice it mirrors, rather
+     *                    than into whichever period happens to be open on the day the button is
+     *                    pressed — see {@code InternalInvoiceOrchestrator.forceFinalizeQueued}.
      * @return Response with success message or error details
      */
     @POST
@@ -744,10 +749,21 @@ public class InvoiceResource {
     @RolesAllowed({"invoices:write"})
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
-    public Response forceCreateQueuedInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
-        log.infof("forceCreateQueuedInvoice: invoiceuuid=%s (manual bypass, Q2C route)", invoiceuuid);
+    public Response forceCreateQueuedInvoice(@PathParam("invoiceuuid") String invoiceuuid,
+                                             @QueryParam("invoicedate") String invoicedate) {
+        log.infof("forceCreateQueuedInvoice: invoiceuuid=%s invoicedate=%s (manual bypass, Q2C route)",
+                invoiceuuid, invoicedate);
         try {
-            Invoice finalized = internalInvoiceOrchestrator.forceFinalizeQueued(invoiceuuid);
+            LocalDate requestedDate = null;
+            if (invoicedate != null && !invoicedate.isBlank()) {
+                try {
+                    requestedDate = LocalDate.parse(invoicedate);
+                } catch (DateTimeParseException dtpe) {
+                    throw new BadRequestException(
+                            "invoicedate must be yyyy-MM-dd, got: " + invoicedate);
+                }
+            }
+            Invoice finalized = internalInvoiceOrchestrator.forceFinalizeQueued(invoiceuuid, requestedDate);
 
             String message = String.format(
                     "Invoice %d finalized. status=%s economics_status=%s booked_number=%s",

@@ -46,6 +46,9 @@ class InternalInvoiceOrchestratorRefinalizeTest {
 
         Invoice booked = pendingReviewInternalService("inv-1");
         booked.setStatus(InvoiceStatus.CREATED);
+        // createDraft returns the invoice it stamped the draft number onto; finalizeAutomatically
+        // needs that number to clean up the vendor draft if booking is refused.
+        when(issuerSide.createDraft("inv-1")).thenReturn(stranded);
         when(issuerSide.bookDraft("inv-1", null)).thenReturn(booked);
 
         Invoice result = internal.refinalizePendingReview("inv-1");
@@ -65,6 +68,7 @@ class InternalInvoiceOrchestratorRefinalizeTest {
         Invoice booked = pendingReviewInternalService("inv-2");
         booked.setType(InvoiceType.INTERNAL);
         booked.setStatus(InvoiceStatus.CREATED);
+        when(issuerSide.createDraft("inv-2")).thenReturn(stranded);
         when(issuerSide.bookDraft("inv-2", null)).thenReturn(booked);
 
         Invoice result = internal.refinalizePendingReview("inv-2");

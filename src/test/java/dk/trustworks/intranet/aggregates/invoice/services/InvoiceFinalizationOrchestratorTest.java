@@ -61,6 +61,8 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter attempts;
     @Mock dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptRepository attemptRepo;
     @Mock dk.trustworks.intranet.perf.PerfMetrics perfMetrics;
+    /** Pre-flight is a courtesy check in front of createDraft; a no-op mock means "period open". */
+    @Mock dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight periodPreflight;
 
     /**
      * requireEditableInvoice now loads the row under a PESSIMISTIC_WRITE lock (S4), so the
@@ -405,6 +407,28 @@ class InvoiceFinalizationOrchestratorTest {
 
         assertEquals(409, thrown.getResponse().getStatus());
         // The second concurrent finalizer must fail cleanly with NO e-conomic side effects.
+        verifyNoInteractions(draftApi, bookApi);
+    }
+
+    /**
+     * The 2026-08-27 fix. A barred period used to be discovered at the booking call, after a real
+     * e-conomic draft existed; the rollback then orphaned it, and the nightly batchlet repeated
+     * that every night. Catching it here means no draft is ever created.
+     */
+    @Test
+    void createDraft_barredPeriod_aborts_before_any_economic_call() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        doThrow(new jakarta.ws.rs.BadRequestException(
+                "Invoice date 2026-08-27 falls in an accounting period that is barred in "
+                        + "Trustworks Cyber Security ApS's e-conomic (period 2 of 2026/2027)."))
+                .when(periodPreflight).assertPeriodOpen(inv);
+
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
+                () -> orchestrator.createDraft("i1"));
+
+        assertTrue(thrown.getMessage().contains("barred"), thrown.getMessage());
         verifyNoInteractions(draftApi, bookApi);
     }
 

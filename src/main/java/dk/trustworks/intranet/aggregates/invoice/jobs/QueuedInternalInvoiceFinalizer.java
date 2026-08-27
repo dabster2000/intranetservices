@@ -70,6 +70,10 @@ public class QueuedInternalInvoiceFinalizer {
     @Inject
     SelfBilledDeltaQuery selfBilledDeltaQuery;
 
+    /** Decides whether the source period is still open, so a back-dated finalization is safe. */
+    @Inject
+    dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight periodPreflight;
+
     @Inject
     EntityManager em;
 
@@ -158,9 +162,10 @@ public class QueuedInternalInvoiceFinalizer {
             return Outcome.SKIPPED;
         }
 
-        // Set dates before auto-finalization: invoicedate = today, duedate = tomorrow
-        queuedInvoice.setInvoicedate(LocalDate.now());
-        queuedInvoice.setDuedate(LocalDate.now().plusDays(1));
+        // Date it into the period of the client invoice it mirrors, when that period is still
+        // open. See chooseFinalizationDate — "today" is only right when the client paid promptly.
+        applyFinalizationDate(queuedInvoice, referencedInvoice.getInvoicedate(),
+                "client invoice " + referencedInvoice.getInvoicenumber());
 
         log.infof("Auto-finalizing queued invoice %s (references paid invoice %s)",
                 queuedInvoice.getUuid(), referencedInvoice.getUuid());
@@ -212,12 +217,69 @@ public class QueuedInternalInvoiceFinalizer {
             return Outcome.SKIPPED;
         }
 
-        internal.setInvoicedate(LocalDate.now());
-        internal.setDuedate(LocalDate.now().plusDays(1));
+        // A settlement internal has no source invoice; its period is the month it settles.
+        applyFinalizationDate(internal, endOfSettlementMonth(internal),
+                "settlement month " + internal.getSettlementYear() + "-"
+                        + String.format("%02d", internal.getSettlementMonth()));
         log.infof("Auto-finalizing settlement internal %s (self-billing vouchers paid)", internal.getUuid());
         internalOrchestrator.finalizeAutomatically(internal.getUuid());
         log.infof("Successfully auto-finalized settlement internal %s", internal.getUuid());
         return Outcome.PROCESSED;
+    }
+
+    /**
+     * Stamps {@code invoicedate}/{@code duedate} on an invoice about to be finalized, preferring
+     * the period the work actually belongs to over the day the job happens to run.
+     *
+     * <h2>Why not just "today"</h2>
+     * An internal invoice is the intercompany mirror of something that already happened. This job
+     * fires when the client pays, which is typically one to three months after the work was billed
+     * out — 239 of 273 booked internals are dated later than the invoice they mirror, 98 of them by
+     * more than two months. Inside a financial year that only shifts the monthly phasing. Across
+     * the 30 June boundary it misstates the subsidiaries' annual revenue, and it has done so at
+     * each of the last three year-ends: nine invoices, ~1.86M DKK, every one of them dated July or
+     * August, which is the signature of June work paid after the year closed.
+     *
+     * <h2>Why not just the source period either</h2>
+     * By the time payment lands, that period may be closed or barred — and then a job that
+     * insisted on it would fail every night instead of booking late, which is strictly worse than
+     * the problem it set out to fix. So the source period is used only when e-conomic confirms it
+     * is open; anything else falls back to today, which is the old behaviour.
+     *
+     * <p>Both branches are logged at INFO with the date and the reason, so a late booking is
+     * visible in the log rather than silently inferred from a date that looks like any other.
+     *
+     * @param inv        the invoice about to be finalized
+     * @param sourceDate the date of the period it belongs to, or null when there is none
+     * @param sourceWhat short description of where sourceDate came from, for the log line
+     */
+    // Package-private so the date decision is testable without going through Panache statics.
+    void applyFinalizationDate(Invoice inv, LocalDate sourceDate, String sourceWhat) {
+        LocalDate today = LocalDate.now();
+        String issuer = inv.getCompany() != null ? inv.getCompany().getUuid() : null;
+
+        if (sourceDate != null && !sourceDate.isAfter(today) && issuer != null
+                && periodPreflight.isKnownOpen(issuer, sourceDate)) {
+            inv.setInvoicedate(sourceDate);
+            inv.setDuedate(sourceDate.plusDays(1));
+            log.infof("Finalization date for %s: %s, from %s — that period is open in the issuer's "
+                            + "e-conomic", inv.getUuid(), sourceDate, sourceWhat);
+            return;
+        }
+
+        inv.setInvoicedate(today);
+        inv.setDuedate(today.plusDays(1));
+        log.infof("Finalization date for %s: %s (today). Source period %s from %s was closed, "
+                        + "barred, or could not be confirmed open",
+                inv.getUuid(), today, sourceDate, sourceWhat);
+    }
+
+    /** Last day of the month a settlement internal settles, or null when it carries no period. */
+    static LocalDate endOfSettlementMonth(Invoice internal) {
+        Integer year = internal.getSettlementYear();
+        Integer month = internal.getSettlementMonth();
+        if (year == null || month == null || month < 1 || month > 12) return null;
+        return LocalDate.of(year, month, 1).plusMonths(1).minusDays(1);
     }
 
     /** The single consultant on a settlement internal's items, or null if items carry zero or >1 consultants. */

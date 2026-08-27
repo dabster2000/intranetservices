@@ -12,12 +12,11 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit tests for {@link InvoiceFinalizationOrchestrator#assertNoUnresolvedPostedSibling}.
  *
- * <p>The booking idempotency key is the invariant {@code "book-" + invoiceUuid}. A NEW attempt for
- * the same invoice therefore sends a different body under the same key: PayloadChanged inside the
- * vendor's one-hour TTL, and a SECOND booked invoice after it (the 2026-08-07 duplicate 28218
- * mechanism). The guard must refuse to mint a new attempt while an earlier one has been POSTed but
- * not resolved — while still allowing replay of the SAME attempt (same draftInvoiceNumber), which
- * is the designed recovery.
+ * <p>Since the booking idempotency key gained its draft-number suffix (2026-08-27) this guard is
+ * the only thing standing between an unresolved POST and a second booked invoice — the vendor no
+ * longer refuses a new attempt merely because its body names a different draft. It must refuse to
+ * mint a new attempt while an earlier one has been POSTed but not resolved, while still allowing
+ * replay of the SAME attempt (same draftInvoiceNumber), which is the designed recovery.
  */
 class BookingDoubleBookGuardTest {
 
