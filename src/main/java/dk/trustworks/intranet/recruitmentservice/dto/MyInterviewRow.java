@@ -40,6 +40,14 @@ public record MyInterviewRow(
         String applicationStage,
         List<ScorecardAttribute> focusAreas,
         String cvFileUuid,
+        /**
+         * The CV's stored name and content type. Present so the kit card can
+         * decide whether the file can be READ in place rather than saved to
+         * disk — the download route serves every document as an attachment,
+         * so a link alone always means "download".
+         */
+        String cvFilename,
+        String cvContentType,
         boolean scorecardRequired,
         boolean ownScorecardSubmitted,
         List<String> coInterviewerNames

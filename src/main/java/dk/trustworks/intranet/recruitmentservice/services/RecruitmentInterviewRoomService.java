@@ -102,6 +102,9 @@ public class RecruitmentInterviewRoomService {
     RecruitmentAiFeatureFlag aiFeatureFlag;
 
     @Inject
+    CandidateAiReadService aiReadService;
+
+    @Inject
     dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder eventRecorder;
 
     // ------------------------------------------------------------------
@@ -151,11 +154,19 @@ public class RecruitmentInterviewRoomService {
                     compTier ? null : FactGroup.COMPENSATION);
         }
 
+        // Scoped to THIS interview's application, restricted or not: the room
+        // is one interview's surface, and the history it shows belongs to the
+        // application that interview hangs off.
+        List<dk.trustworks.intranet.recruitmentservice.dto.CandidateAiStateResponse.AiEmployment>
+                employment = aiReadService.employmentForApplications(
+                        List.of(interview.getApplicationUuid()));
         RoomShelf shelf = restricted
                 ? new RoomShelf(briefService.briefDocuments(candidate.getUuid()),
-                        profileReadService.answersForCandidate(candidate.getUuid()).answers())
+                        profileReadService.answersForCandidate(candidate.getUuid()).answers(),
+                        employment)
                 : new RoomShelf(profileReadService.documents(candidate.getUuid(), false).documents(),
-                        profileReadService.answersForCandidate(candidate.getUuid()).answers());
+                        profileReadService.answersForCandidate(candidate.getUuid()).answers(),
+                        employment);
 
         RoomCandidate roomCandidate = restricted
                 ? new RoomCandidate(candidate.getUuid(), fullName(candidate), null,
@@ -369,8 +380,14 @@ public class RecruitmentInterviewRoomService {
                     actor, RecruitmentInterviewService.ORIGIN_ROOM);
             scorecardUuid = scorecard.getUuid();
         } else if (request.notes() != null && !request.notes().isBlank()) {
+            // The interview uuid rides along (payload.interview_uuid) exactly
+            // as it does on fact notes. Without it a screening's notes land in
+            // the discussion as an unattributed wall of text with no way back
+            // to the conversation they came from — which is precisely how they
+            // became unfindable.
             candidateService.addNote(java.util.UUID.fromString(candidate.getUuid()),
-                    new NoteRequest(request.notes(), false, null, null),
+                    new NoteRequest(request.notes(), false, null, null, null, null,
+                            interview.getUuid()),
                     actor, "interview_room", null);
         }
 

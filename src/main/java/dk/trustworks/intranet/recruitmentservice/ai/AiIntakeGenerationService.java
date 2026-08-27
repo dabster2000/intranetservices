@@ -102,6 +102,19 @@ public class AiIntakeGenerationService {
     static final int MAX_LANGUAGES = 10;
     static final int MAX_LANGUAGE_CHARS = 120;
     static final int MAX_EMPLOYER_CHARS = 200;
+    /** brief-v2: workplaces per brief. A twenty-job CV is already a red flag for a parse. */
+    static final int MAX_EMPLOYMENT_ENTRIES = 20;
+    /** brief-v2: cap for an employer name or a job title — over it the entry is dropped. */
+    static final int MAX_EMPLOYMENT_TEXT_CHARS = 160;
+
+    /**
+     * The only date shape the employment section may persist: {@code 2021} or
+     * {@code 2021-03}. Everything else a CV writes ("efterår 2019", "3 år",
+     * "present") is dropped to null — a period we cannot read is better shown
+     * as unknown than guessed at, and the UI computes gaps off these values.
+     */
+    private static final java.util.regex.Pattern EMPLOYMENT_DATE =
+            java.util.regex.Pattern.compile("^\\d{4}(-(0[1-9]|1[0-2]))?$");
 
     private static final String SCHEMA_NAME = "RecruitmentAiIntake";
 
@@ -190,6 +203,15 @@ public class AiIntakeGenerationService {
 
     /** One validated suggestion: {@code value} is a String or a List of Strings. */
     record Suggestion(String field, Object value, String evidence) {
+    }
+
+    /**
+     * One validated workplace (brief-v2). Every field except {@code employer}
+     * may be absent: a CV that names a company without a title, or without
+     * readable dates, still describes a real job.
+     */
+    record Employment(String employer, String title, String startDate, String endDate,
+                      boolean current) {
     }
 
     /**
@@ -374,6 +396,9 @@ public class AiIntakeGenerationService {
         List<String> bullets = prepared.briefOn()
                 ? validateBullets(root.path("brief"))
                 : List.of();
+        List<Employment> employment = prepared.briefOn()
+                ? validateEmployment(root.path("employment"))
+                : List.of();
 
         String generationId = UUID.randomUUID().toString();
         if (!suggestions.isEmpty()) {
@@ -384,7 +409,7 @@ public class AiIntakeGenerationService {
         if (!bullets.isEmpty()) {
             appendBriefEvent(prepared.candidate(), prepared.anchor(), prepared.position(),
                     prepared.visibility(), generationId, origin, sourceEventSeq,
-                    output.model(), bullets);
+                    output.model(), bullets, employment);
         }
     }
 
@@ -515,6 +540,62 @@ public class AiIntakeGenerationService {
     }
 
     /**
+     * The employment section (brief-v2): the candidate's workplaces, read
+     * out of the CV.
+     * <p>
+     * Unlike {@link #validateBullets} this NEVER throws. The bullets are the
+     * brief; employment rides along with it, and a model that fumbles the
+     * shape of a secondary section must not cost the interviewer the summary
+     * they actually asked for. Everything unusable is dropped instead:
+     * <ul>
+     *   <li>a non-array section (missing, null, an object) ⇒ no history;</li>
+     *   <li>an entry whose {@code employer} is blank or over
+     *       {@link #MAX_EMPLOYMENT_TEXT_CHARS} ⇒ that entry only. Over-cap is
+     *       a drop, not a truncation, for the same reason it is on
+     *       suggestions: half a company name is a fabrication;</li>
+     *   <li>a date that is not {@code ÅÅÅÅ} or {@code ÅÅÅÅ-MM} ⇒ that date
+     *       only, so "Netcompany, efterår 2019–" still lists the employer;</li>
+     *   <li>any scratchpad tell anywhere in the section ⇒ the WHOLE section,
+     *       on {@link #looksLikeModelScratchpad}'s reasoning: a model that
+     *       broke channel discipline once cannot be trusted for the entries
+     *       around it either. The brief itself survives — its own bullets
+     *       were checked separately and strictly.</li>
+     * </ul>
+     * Entries keep the model's order (the prompt asks for newest first); the
+     * UI sorts on the dates it can parse and falls back to this order.
+     */
+    List<Employment> validateEmployment(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<Employment> out = new ArrayList<>();
+        for (JsonNode item : node) {
+            if (!item.isObject() || out.size() >= MAX_EMPLOYMENT_ENTRIES) {
+                continue;
+            }
+            String employer = sanitizeStrict(text(item, "employer"), MAX_EMPLOYMENT_TEXT_CHARS);
+            if (employer == null) {
+                continue; // an entry with no employer names no workplace
+            }
+            String title = sanitizeStrict(text(item, "title"), MAX_EMPLOYMENT_TEXT_CHARS);
+            String startDate = employmentDate(text(item, "startDate"));
+            String endDate = employmentDate(text(item, "endDate"));
+            boolean current = item.path("current").asBoolean(false);
+            if (looksLikeModelScratchpad(employer) || looksLikeModelScratchpad(title)) {
+                return List.of();
+            }
+            out.add(new Employment(employer, title, startDate, endDate, current));
+        }
+        return List.copyOf(out);
+    }
+
+    /** A CV period we can actually read, or null. */
+    private static String employmentDate(String value) {
+        String cleaned = clean(value);
+        return cleaned != null && EMPLOYMENT_DATE.matcher(cleaned).matches() ? cleaned : null;
+    }
+
+    /**
      * Whether a cleaned bullet is the model's own deliberation rather than
      * candidate prose. One whole-brief tell is enough: when the model breaks
      * channel discipline on one bullet, the neighbouring bullets are just as
@@ -587,7 +668,7 @@ public class AiIntakeGenerationService {
     private void appendBriefEvent(RecruitmentCandidate candidate, RecruitmentApplication anchor,
                                   RecruitmentPosition position, RecruitmentEventVisibility visibility,
                                   String generationId, String origin, Long sourceEventSeq,
-                                  String model, List<String> bullets) {
+                                  String model, List<String> bullets, List<Employment> employment) {
         RecruitmentEventBuilder event = RecruitmentEventBuilder
                 .event(RecruitmentEventType.AI_BRIEF_GENERATED)
                 .candidate(candidate.getUuid())
@@ -600,6 +681,21 @@ public class AiIntakeGenerationService {
                 .payload("model", model)
                 .payload("prompt_version", AiIntakePrompts.PROMPT_VERSION_BRIEF)
                 .pii("bullets", bullets);
+        if (!employment.isEmpty()) {
+            // Employer names and titles are the candidate's own history:
+            // pii, never payload, exactly like the bullets above (spec §3.4).
+            event.pii("employment", employment.stream()
+                    .map(e -> {
+                        Map<String, Object> entry = new LinkedHashMap<String, Object>();
+                        entry.put("employer", e.employer());
+                        entry.put("title", e.title());
+                        entry.put("start_date", e.startDate());
+                        entry.put("end_date", e.endDate());
+                        entry.put("current", e.current());
+                        return entry;
+                    })
+                    .toList());
+        }
         if (sourceEventSeq != null) {
             event.payload("source_event_seq", sourceEventSeq);
         }

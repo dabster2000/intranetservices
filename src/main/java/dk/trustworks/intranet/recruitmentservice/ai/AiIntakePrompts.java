@@ -22,8 +22,17 @@ public final class AiIntakePrompts {
 
     /** Recorded in AI_SUGGESTIONS_GENERATED payload.prompt_version. */
     public static final String PROMPT_VERSION_INTAKE = "intake-v1";
-    /** Recorded in AI_BRIEF_GENERATED payload.prompt_version. */
-    public static final String PROMPT_VERSION_BRIEF = "brief-v1";
+    /**
+     * Recorded in AI_BRIEF_GENERATED payload.prompt_version.
+     * <p>
+     * {@code brief-v2} (2026-08-27) added the {@code employment} section — the
+     * candidate's workplaces, read out of the CV. The version is load-bearing
+     * on the read side: a brief stamped older than this means "employment was
+     * never asked for", which the profile answers with an offer to regenerate
+     * rather than with an empty history for a CV that simply predates the
+     * prompt. Bump it again the next time the brief's SHAPE changes.
+     */
+    public static final String PROMPT_VERSION_BRIEF = "brief-v2";
 
     /** Data-delimiter markers — referenced by the containment preamble. */
     static final String DATA_START = "<<<KANDIDATMATERIALE";
@@ -76,7 +85,17 @@ public final class AiIntakePrompts {
         if (includeBrief) {
             sb.append("\nRESUMÉ (brief): 3-5 korte, RENT BESKRIVENDE punkter på dansk om kandidatens ")
               .append("baggrund og ansøgning. FORBUDT: vurdering, anbefaling, rangering, score, ")
-              .append("egnethed eller \"fit\" — beskriv kun fakta fra materialet.\n");
+              .append("egnethed eller \"fit\" — beskriv kun fakta fra materialet.\n")
+              .append("\nARBEJDSHISTORIK (employment): Kandidatens ansættelser som de står i CV'et, ")
+              .append("NYESTE FØRST. Ét element pr. ansættelse:\n")
+              .append("- employer: virksomhedens navn, ordret som det står.\n")
+              .append("- title: stillingsbetegnelsen, ordret — null hvis den ikke fremgår.\n")
+              .append("- startDate / endDate: \"ÅÅÅÅ\" eller \"ÅÅÅÅ-MM\" — null hvis perioden ikke ")
+              .append("fremgår. Gæt ALDRIG et årstal.\n")
+              .append("- current: true for den stilling kandidaten har nu (endDate er da null).\n")
+              .append("Kun ansættelser — ikke uddannelse, kurser, certificeringer eller frivilligt ")
+              .append("arbejde. Medtag kun arbejdspladser der faktisk står i materialet; ")
+              .append("tom liste eller null hvis der ingen er.\n");
         }
         return sb.toString();
     }
@@ -135,8 +154,48 @@ public final class AiIntakePrompts {
             brief.put("minItems", AiIntakeGenerationService.MIN_BULLETS);
             brief.put("maxItems", AiIntakeGenerationService.MAX_BULLETS);
             required.add("brief");
+
+            props.set("employment", employmentSchema());
+            required.add("employment");
         }
         return root;
+    }
+
+    /**
+     * The employment section (brief-v2): a nullable array of workplaces.
+     * <p>
+     * Dates are declared as plain nullable strings rather than a format-
+     * constrained type on purpose — CV periods are written every way a human
+     * can write them, and a schema the model cannot satisfy produces a
+     * refusal or a fabricated date. The narrow {@code ÅÅÅÅ[-MM]} shape is
+     * asked for in the prompt and ENFORCED server-side
+     * ({@code AiIntakeGenerationService.validateEmployment}), which drops what
+     * does not match instead of persisting it.
+     */
+    private static ObjectNode employmentSchema() {
+        ObjectNode node = MAPPER.createObjectNode();
+        ArrayNode type = node.putArray("type");
+        type.add("array");
+        type.add("null");
+        node.put("maxItems", AiIntakeGenerationService.MAX_EMPLOYMENT_ENTRIES);
+
+        ObjectNode item = node.putObject("items");
+        item.put("type", "object");
+        item.put("additionalProperties", false);
+        ObjectNode props = item.putObject("properties");
+        ArrayNode required = item.putArray("required");
+
+        props.putObject("employer").put("type", "string");
+        required.add("employer");
+        for (String field : List.of("title", "startDate", "endDate")) {
+            nullableString(props.putObject(field));
+            required.add(field);
+        }
+        ArrayNode currentType = props.putObject("current").putArray("type");
+        currentType.add("boolean");
+        currentType.add("null");
+        required.add("current");
+        return node;
     }
 
     private static ObjectNode suggestionsSchema() {

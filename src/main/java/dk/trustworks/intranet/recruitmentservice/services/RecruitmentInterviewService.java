@@ -724,6 +724,7 @@ public class RecruitmentInterviewService {
                     String stage = readablePositionUuids.contains(application.getPositionUuid())
                             ? application.getStage().name()
                             : null;
+                    CandidateDocument cv = latestCv(candidate.getUuid());
                     return new MyInterviewRow(
                             interview.getUuid(),
                             application.getUuid(),
@@ -738,7 +739,9 @@ public class RecruitmentInterviewService {
                             interview.getStatus(),
                             stage,
                             focusAreas(position),
-                            latestCvFileUuid(candidate.getUuid()),
+                            cv == null ? null : cv.fileUuid(),
+                            cv == null ? null : cv.filename(),
+                            cv == null ? null : cv.contentType(),
                             interview.getKind().takesScorecard(),
                             ownSubmitted,
                             coInterviewers);
@@ -924,13 +927,12 @@ public class RecruitmentInterviewService {
     }
 
     /** The latest CV on file, reusing the P8 documents derivation. */
-    private String latestCvFileUuid(String candidateUuid) {
+    private CandidateDocument latestCv(String candidateUuid) {
         // My Interviews is a restricted interview-kit surface, not an offer
         // dossier surface. Monotonic classification must win even when the
         // latest display label says CV.
         return profileReadService.documents(candidateUuid, false).documents().stream()
                 .filter(d -> "CV".equals(d.kind()))
-                .map(CandidateDocument::fileUuid)
                 .findFirst()
                 .orElse(null);
     }

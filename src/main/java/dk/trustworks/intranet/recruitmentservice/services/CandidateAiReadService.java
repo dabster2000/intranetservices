@@ -22,6 +22,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,7 +101,9 @@ public class CandidateAiReadService {
                 List<String> bullets = stringList(pii.get("bullets"));
                 if (!bullets.isEmpty()) {
                     brief = new AiBrief(bullets, briefEvent.getOccurredAt(),
-                            payload.get("model") instanceof String m ? m : null);
+                            payload.get("model") instanceof String m ? m : null,
+                            employmentList(pii.get("employment")),
+                            payload.get("prompt_version") instanceof String v ? v : null);
                 }
             }
         }
@@ -113,6 +116,38 @@ public class CandidateAiReadService {
         return new CandidateAiStateResponse(brief, suggestions, new AiRegenerateInfo(
                 Math.max(0, DAILY_REGENERATION_LIMIT - regenerationsToday(routeScope)),
                 latestVisibleOpenApplication(routeScope) != null));
+    }
+
+    /**
+     * The CV employment history for a viewer who reaches the candidate
+     * through an INTERVIEW rather than through the profile — the restricted
+     * brief page and the Interview Room's evidence shelf.
+     * <p>
+     * Scoping is the caller's own interview assignments, expressed as the
+     * applications those interviews hang off: the latest brief generated for
+     * an application this person is interviewing on. That is deliberately not
+     * the {@code routeScope} the profile uses, because these viewers hold no
+     * recruitment role and {@code readablePositionUuids} would answer empty
+     * for them — while the CIRCLE boundary the route scope exists to enforce
+     * is already satisfied here, since being assigned to the interview IS
+     * being inside that candidate's loop.
+     * <p>
+     * Returns empty when the brief flag is off: the history is AI output, and
+     * the flag governs whether AI output is shown at all.
+     *
+     * @param applicationUuids the viewer's own interviews' applications; empty
+     *                         in ⇒ empty out
+     */
+    public List<CandidateAiStateResponse.AiEmployment> employmentForApplications(
+            Collection<String> applicationUuids) {
+        if (!aiFlags.isBriefEnabled() || applicationUuids == null || applicationUuids.isEmpty()) {
+            return List.of();
+        }
+        RecruitmentEvent latest = RecruitmentEvent.find(
+                        "applicationUuid in ?1 and eventType = ?2 order by seq desc",
+                        List.copyOf(applicationUuids), RecruitmentEventType.AI_BRIEF_GENERATED)
+                .firstResult();
+        return latest == null ? List.of() : employmentList(parse(latest.getPii()).get("employment"));
     }
 
     /**
@@ -348,6 +383,40 @@ public class CandidateAiReadService {
             }
         }
         return out;
+    }
+
+    /**
+     * The {@code pii.employment} array of a brief-v2 event, read defensively.
+     * <p>
+     * Absent, null or malformed all mean the same thing here — no history —
+     * because the write side already dropped everything it could not vouch
+     * for. An entry without an employer is skipped: it names no workplace.
+     */
+    static List<CandidateAiStateResponse.AiEmployment> employmentList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<CandidateAiStateResponse.AiEmployment> out = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+            String employer = string(map.get("employer"));
+            if (employer == null) {
+                continue;
+            }
+            out.add(new CandidateAiStateResponse.AiEmployment(
+                    employer,
+                    string(map.get("title")),
+                    string(map.get("start_date")),
+                    string(map.get("end_date")),
+                    Boolean.TRUE.equals(map.get("current"))));
+        }
+        return List.copyOf(out);
+    }
+
+    private static String string(Object value) {
+        return value instanceof String s && !s.isBlank() ? s : null;
     }
 
     private Map<String, Object> parse(String json) {

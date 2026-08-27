@@ -56,6 +56,9 @@ public class CandidateBriefService {
     @Inject
     CandidateProfileReadService profileReadService;
 
+    @Inject
+    CandidateAiReadService aiReadService;
+
     /**
      * Assemble the brief for one viewer and one candidate. The caller has
      * already established access; this method assumes nothing and still
@@ -118,7 +121,14 @@ public class CandidateBriefService {
                 candidate.getLinkedinUrl(),
                 briefDocuments(candidate.getUuid()),
                 profileReadService.answersForCandidate(candidate.getUuid()).answers(),
-                interviewRows);
+                interviewRows,
+                // Scoped to the viewer's OWN interviews, like every other
+                // collection above — a brief generated for an application this
+                // person is not interviewing on is not theirs to read.
+                aiReadService.employmentForApplications(ownInterviews.stream()
+                        .map(RecruitmentInterview::getApplicationUuid)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toCollection(LinkedHashSet::new))));
     }
 
     /**

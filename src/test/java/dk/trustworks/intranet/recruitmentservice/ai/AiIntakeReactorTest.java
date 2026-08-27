@@ -266,7 +266,10 @@ class AiIntakeReactorTest {
         assertEquals(payload.path("generation_id").asText(),
                 briefPayload.path("generation_id").asText(),
                 "one round-trip = one shared generation id");
-        assertEquals("brief-v1", briefPayload.path("prompt_version").asText());
+        assertEquals(AiIntakePrompts.PROMPT_VERSION_BRIEF,
+                briefPayload.path("prompt_version").asText(),
+                "a fresh generation is stamped with the CURRENT brief prompt version — "
+                        + "the profile reads this to tell 'no history' from 'never asked'");
         assertEquals(3, json(briefEvent.getPii()).path("bullets").size());
     }
 
