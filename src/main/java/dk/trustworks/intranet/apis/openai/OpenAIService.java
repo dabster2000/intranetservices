@@ -15,6 +15,17 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 @ApplicationScoped
 public class OpenAIService {
 
+    /** Parses error envelopes only — never the model answer. */
+    private static final ObjectMapper ERROR_MAPPER = new ObjectMapper();
+    /** The error class whose messages describe the REQUEST DOCUMENT we sent, not its content. */
+    private static final String REQUEST_SHAPE_ERROR = "invalid_request_error";
+    /** Codes inside that class whose messages can quote the prompt — message stays suppressed. */
+    private static final java.util.Set<String> CONTENT_ERROR_CODES = java.util.Set.of(
+            "content_policy_violation", "invalid_prompt", "moderation_blocked");
+    private static final int MAX_ERROR_FIELD_CHARS = 200;
+    private static final int MAX_ERROR_MESSAGE_CHARS = 500;
+
+
     @Inject
     @RestClient
     OpenAIClient openAIClient;
@@ -130,8 +141,8 @@ public class OpenAIService {
 
             if (http.getStatus() / 100 != 2) {
                 if (!store) {
-                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
-                            http.getStatus(), chosenModel);
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s %s",
+                            http.getStatus(), chosenModel, describeErrorEnvelope(payload));
                 } else {
                     log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s",
                             http.getStatus(), chosenModel, payload);
@@ -249,8 +260,8 @@ public class OpenAIService {
                 if (Boolean.FALSE.equals(store)) {
                     // Privacy-sensitive no-store calls may contain contract/HR data. Do not risk an
                     // upstream diagnostic echoing request fragments into application logs.
-                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
-                            http.getStatus(), chosenModel);
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s %s",
+                            http.getStatus(), chosenModel, describeErrorEnvelope(payload));
                 } else {
                     log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s",
                             http.getStatus(), chosenModel, payload);
@@ -285,8 +296,9 @@ public class OpenAIService {
                 // body already consumed/closed — status alone will have to do
             }
             if (Boolean.FALSE.equals(store)) {
-                log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s (body suppressed)",
-                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?");
+                log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s %s",
+                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?",
+                        describeErrorEnvelope(errBody));
             } else {
                 log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s body=%s",
                         chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?", errBody);
@@ -963,8 +975,8 @@ public class OpenAIService {
                 if (Boolean.FALSE.equals(store)) {
                     // Privacy-sensitive no-store calls may contain HR/candidate data. Do not risk
                     // an upstream diagnostic echoing request fragments into application logs.
-                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
-                            http.getStatus(), chosenModel);
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s %s",
+                            http.getStatus(), chosenModel, describeErrorEnvelope(payload));
                 } else {
                     log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s", http.getStatus(), chosenModel, payload);
                 }
@@ -988,6 +1000,25 @@ public class OpenAIService {
             }
             return out;
 
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            // Same reason as the text path: the REST client throws for 4xx/5xx before the
+            // status branch above can run, so without this catch an image-CV schema 400 is
+            // reported only as a ProcessingException with no envelope at all.
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            if (Boolean.FALSE.equals(store)) {
+                log.errorf("[OpenAIService] Responses request failed (schema + image, model=%s): status=%s %s",
+                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?",
+                        describeErrorEnvelope(errBody));
+            } else {
+                log.errorf("[OpenAIService] Responses request failed (schema + image, model=%s): status=%s body=%s",
+                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?", errBody);
+            }
+            return "{}";
         } catch (Exception e) {
             if (Boolean.FALSE.equals(store)) {
                 log.errorf("[OpenAIService] Responses request failed (schema + image, model=%s, error=%s; payload suppressed)",
@@ -1262,6 +1293,86 @@ public class OpenAIService {
      * a read timeout, a connection reset or a serialization bug — which made the 2026-08-06
      * ai-intake live-delivery failure undiagnosable from logs.
      */
+    /**
+     * A PII-safe, one-line description of an OpenAI error body, for the {@code store=false}
+     * paths where the raw body must never reach the logs.
+     * <p>
+     * Suppressing the body wholesale made a whole failure class undiagnosable: the
+     * 2026-08-27 ai-intake schema 400 logged only {@code status=400 (body suppressed)},
+     * and the body is exactly what names the rejected field. But the body is also the one
+     * place an upstream diagnostic can echo request fragments — candidate CV text — into a
+     * CloudWatch group that never expires. So this reports the envelope's STRUCTURE and
+     * withholds its prose, on the same allow-list doctrine as
+     * {@link #describeFailureChain(Throwable)}:
+     * <ul>
+     *   <li>{@code type}, {@code code}, {@code param} — always. These are API-level
+     *       identifiers from a closed vocabulary, and {@code param} is a path into the
+     *       request document we built ({@code text.format.schema}), never into its content.
+     *       Every {@code store=false} caller in this repo builds its schema from static,
+     *       hardcoded property names, so no candidate value can surface as a param.</li>
+     *   <li>{@code message} — only for the request-shape error class, whose messages describe
+     *       the schema document we sent ("Invalid schema for response_format 'X': In
+     *       context=('properties','brief')…"). Content-policy codes are excluded by name
+     *       because those messages CAN quote the input. Anything else is reported as a
+     *       length only.</li>
+     * </ul>
+     * Every field is capped and newline-stripped: none of them carries a length contract,
+     * and a proxy error body is not OpenAI's at all.
+     */
+    static String describeErrorEnvelope(String body) {
+        if (body == null || body.isBlank()) {
+            return "no body";
+        }
+        JsonNode error;
+        try {
+            error = ERROR_MAPPER.readTree(body).path("error");
+        } catch (Exception e) {
+            // Not JSON: an ALB/proxy HTML page or a half-received stream. Not OpenAI's
+            // envelope, so nothing inside it is on the allow-list.
+            return "unparseable body (" + body.length() + " chars)";
+        }
+        if (!error.isObject()) {
+            return "no error envelope (" + body.length() + " chars)";
+        }
+        String type = errorField(error, "type");
+        String code = errorField(error, "code");
+        StringBuilder out = new StringBuilder()
+                .append("type=").append(type)
+                .append(" code=").append(code)
+                .append(" param=").append(errorField(error, "param"));
+
+        String message = error.path("message").isTextual() ? error.path("message").asText() : null;
+        if (message == null || message.isBlank()) {
+            out.append(" message=<none>");
+        } else if (REQUEST_SHAPE_ERROR.equals(type) && !CONTENT_ERROR_CODES.contains(code)) {
+            out.append(" message=").append(logSafe(message, MAX_ERROR_MESSAGE_CHARS));
+        } else {
+            // Could quote the prompt — report that it exists, not what it says.
+            out.append(" message=<suppressed, ").append(message.length()).append(" chars>");
+        }
+        return out.toString();
+    }
+
+    /** One envelope field, capped and newline-stripped; {@code "<none>"} when absent. */
+    private static String errorField(JsonNode error, String name) {
+        JsonNode value = error.path(name);
+        if (value.isMissingNode() || value.isNull() || !value.isValueNode()) {
+            return "<none>";
+        }
+        String text = value.asText();
+        return text.isBlank() ? "<none>" : logSafe(text, MAX_ERROR_FIELD_CHARS);
+    }
+
+    /**
+     * Cap and flatten one value for a single log line — a newline in an upstream
+     * diagnostic would otherwise forge extra log records (the convention
+     * {@code LoggingFilter} already applies).
+     */
+    private static String logSafe(String value, int maxChars) {
+        String flat = value.replace('\n', ' ').replace('\r', ' ');
+        return flat.length() > maxChars ? flat.substring(0, maxChars) + "…" : flat;
+    }
+
     static String describeFailureChain(Throwable failure) {
         StringBuilder chain = new StringBuilder();
         Throwable current = failure;

@@ -24,8 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * deliberation about schema conformance — harmony channel markers
  * ("assistant to=system" / "assistant to=final") and an unterminated JSON
  * fragment — into the pii block behind the real bullets, because the old
- * validator truncated every bullet at the length cap instead of rejecting
+ * validator kept the head of every over-long bullet instead of discarding
  * it and because {@code readTree} silently ignored trailing tokens.
+ * <p>
+ * The two guards that stop that are the SCRATCHPAD MARKERS and the
+ * single-document parse, and both are unchanged. LENGTH is not one of them:
+ * it briefly became a hard reject, which permanently dead-lettered three
+ * candidates (seq 888/1672/1887) for bullets of 447 and 463 characters —
+ * a budget the prompt never stated. An over-cap bullet is now dropped, so
+ * none of its text is persisted and none of it can reach the practice
+ * Slack channel, while the rest of the candidate's intake survives.
  * <p>
  * Deliberately a plain JUnit test, not a {@code @QuarkusTest}: only this
  * DB-free tier runs in the CI deploy gate.
@@ -110,11 +118,55 @@ class AiIntakeBriefValidationTest {
                 "the failure message must never carry candidate PII");
     }
 
+    // ---- Over the length cap => that bullet is DROPPED, never fatal ------------
+    //
+    // Length is the one constraint the model was never told about (the prompt said
+    // only "3-5 korte punkter"), so an over-cap bullet is ordinary model behaviour,
+    // not evidence of contamination. It costs its own bullet and nothing else:
+    // production events seq 1672 (447 chars) and seq 1887 (463 chars) each
+    // permanently dead-lettered a candidate's whole intake while this was a hard
+    // reject. Nothing over-cap is ever persisted, so this lets through exactly what
+    // rejecting did -- and unlike shortening the bullet it never fabricates a
+    // sentence the candidate did not say.
+
     @Test
-    void aBulletOverTheLengthCap_isRejected_notTruncated() {
-        // The old validator truncated at MAX_BULLET_CHARS, which is precisely how
-        // a scratchpad dump became a 400-character "bullet" with unbalanced JSON.
-        String dump = "Vi skal overholde skemaet og returnere praecis 3-5 punkter. ".repeat(20);
+    void anOverCapBullet_isDropped_andTheRestOfTheBriefSurvives() {
+        String overCap = "Kandidaten har arbejdet med udbud og kontraktstyring. ".repeat(9);
+        assertTrue(overCap.length() > 400, "fixture must exceed the cap");
+        assertFalse(AiIntakeGenerationService.looksLikeModelScratchpad(overCap),
+                "fixture must be marker-free, so length is the only thing under test");
+
+        List<String> bullets = service.validateBullets(MAPPER.createArrayNode()
+                .add("Kandidaten er uddannet cand.merc. fra CBS.")
+                .add("Har otte aars erfaring som forretningsanalytiker.")
+                .add(overCap)
+                .add("Angiver dansk og engelsk som arbejdssprog."));
+
+        assertEquals(3, bullets.size(), "the over-cap bullet is dropped, the other three stand");
+        assertFalse(bullets.stream().anyMatch(b -> b.length() > 400),
+                "nothing over the cap may be persisted");
+        assertFalse(bullets.stream().anyMatch(b -> b.startsWith("Kandidaten har arbejdet med udbud")),
+                "the over-cap bullet must be dropped whole, never shortened and kept");
+    }
+
+    @Test
+    void anOverCapBulletThatLeavesTooFewBullets_isThin_notAFailure() {
+        // Dropping may push the brief under MIN_BULLETS. That is the ordinary thin
+        // path of contract 4.3 -- no brief, no error, and crucially no dead letter.
+        String overCap = "Kandidaten har arbejdet med udbud og kontraktstyring. ".repeat(9);
+
+        assertTrue(service.validateBullets(MAPPER.createArrayNode()
+                        .add("Kandidaten er uddannet cand.merc. fra CBS.")
+                        .add("Har otte aars erfaring som forretningsanalytiker.")
+                        .add(overCap)).isEmpty(),
+                "two survivors is thin -- absent, not contaminated");
+    }
+
+    @Test
+    void aLongScratchpadDump_isStillRejectedWholesale_onItsMarkers() {
+        // The 2026-08 production shape. Length is no longer what catches it, so this
+        // pins that the marker guard ALONE still rejects the whole section.
+        String dump = "Vi skal overholde skemaet og returnere \"brief\": praecis 3-5 punkter. ".repeat(20);
         assertTrue(dump.length() > 400, "fixture must exceed the cap");
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
@@ -123,7 +175,27 @@ class AiIntakeBriefValidationTest {
                         .add("Har otte aars erfaring som forretningsanalytiker.")
                         .add(dump)));
 
-        assertTrue(failure.getMessage().contains("cap is"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("scratchpad"), failure.getMessage());
+        assertFalse(failure.getMessage().contains("cand.merc."),
+                "the failure message must never carry candidate PII");
+    }
+
+    @Test
+    void anOverCapBulletCarryingMarkers_rejectsRatherThanDropping() {
+        // Ordering guard: markers are checked BEFORE length. If that ever flipped, an
+        // over-cap deliberation dump would be quietly dropped and the model's other
+        // contaminated bullets would be persisted alongside the real ones.
+        String dump = "assistant to=final Jeg skal formulere punktet om baggrunden. ".repeat(8);
+        assertTrue(dump.length() > 400, "fixture must exceed the cap");
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> service.validateBullets(MAPPER.createArrayNode()
+                        .add("Kandidaten er uddannet cand.merc. fra CBS.")
+                        .add("Har otte aars erfaring som forretningsanalytiker.")
+                        .add("Angiver dansk og engelsk som arbejdssprog.")
+                        .add(dump)));
+
+        assertTrue(failure.getMessage().contains("scratchpad"), failure.getMessage());
     }
 
     @Test

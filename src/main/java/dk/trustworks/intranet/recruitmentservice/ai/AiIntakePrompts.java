@@ -84,7 +84,10 @@ public final class AiIntakePrompts {
         }
         if (includeBrief) {
             sb.append("\nRESUMÉ (brief): 3-5 korte, RENT BESKRIVENDE punkter på dansk om kandidatens ")
-              .append("baggrund og ansøgning. FORBUDT: vurdering, anbefaling, rangering, score, ")
+              .append("baggrund og ansøgning. Hvert punkt er ÉN sætning på højst ")
+              .append(AiIntakeGenerationService.MAX_BULLET_CHARS)
+              .append(" tegn — længere punkter bliver kasseret. ")
+              .append("FORBUDT: vurdering, anbefaling, rangering, score, ")
               .append("egnethed eller \"fit\" — beskriv kun fakta fra materialet.\n")
               .append("\nARBEJDSHISTORIK (employment): Kandidatens ansættelser som de står i CV'et, ")
               .append("NYESTE FØRST. Ét element pr. ansættelse:\n")
