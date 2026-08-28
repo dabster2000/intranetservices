@@ -110,22 +110,22 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyHire(c, UUID.randomUUID(), List.of("Contract_signed.pdf"));
 
         verify(slackService, times(1))
-                .sendMessage(anyString(), anyString(), anyString());
+                .sendMessageStrict(anyString(), anyString(), anyString());
         assertTrue(dedupSet().contains(c.getUuid()),
                 "candidate UUID must be added to dedup set after first send");
     }
 
     /** AC11: second call with same candidate UUID is a no-op. */
     @Test
-    void notifyHire_sameCandidateTwice_secondCallIsNoOp() {
+    void notifyHire_sameCandidateTwice_secondCallIsNoOp() throws Exception {
         RecruitmentCandidate c = candidate();
 
         notifier.notifyHire(c, null, List.of("a_signed.pdf"));
         notifier.notifyHire(c, null, List.of("a_signed.pdf"));
 
-        // sendMessage invoked exactly once across the two calls
+        // sendMessageStrict invoked exactly once across the two calls
         verify(slackService, times(1))
-                .sendMessage(anyString(), anyString(), anyString());
+                .sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     /** AC12: channel id and token key flow through to SlackService unchanged. */
@@ -140,7 +140,7 @@ class RecruitmentHrSlackNotifierTest {
         ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> tokenKey = ArgumentCaptor.forClass(String.class);
-        verify(slackService).sendMessage(channel.capture(), message.capture(), tokenKey.capture());
+        verify(slackService).sendMessageStrict(channel.capture(), message.capture(), tokenKey.capture());
 
         assertEquals("C-TEST-CHANNEL", channel.getValue());
         assertEquals("admin", tokenKey.getValue());
@@ -150,7 +150,7 @@ class RecruitmentHrSlackNotifierTest {
     @Test
     void notifyHire_slackThrows_doesNotPropagate_butStillMarksDedup() throws Exception {
         doThrow(new RuntimeException("boom"))
-                .when(slackService).sendMessage(anyString(), anyString(), anyString());
+                .when(slackService).sendMessageStrict(anyString(), anyString(), anyString());
         RecruitmentCandidate c = candidate();
 
         // Must not throw out of notifier
@@ -159,18 +159,18 @@ class RecruitmentHrSlackNotifierTest {
         // Dedup set was added first (atomic add-and-check) — second call still no-ops
         assertTrue(dedupSet().contains(c.getUuid()));
         notifier.notifyHire(c, null, List.of("a_signed.pdf"));
-        verify(slackService, times(1)).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, times(1)).sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     /** Null candidate / null UUID early-return — never invokes SlackService. */
     @Test
-    void notifyHire_nullCandidate_isSafeNoOp() {
+    void notifyHire_nullCandidate_isSafeNoOp() throws Exception {
         notifier.notifyHire(null, UUID.randomUUID(), List.of());
         verifyNoInteractions(slackService);
     }
 
     @Test
-    void notifyHire_candidateWithoutUuid_isSafeNoOp() {
+    void notifyHire_candidateWithoutUuid_isSafeNoOp() throws Exception {
         RecruitmentCandidate c = new RecruitmentCandidate();
         c.setUuid(null);
         notifier.notifyHire(c, null, List.of());
@@ -183,7 +183,7 @@ class RecruitmentHrSlackNotifierTest {
      * Allowed: candidate first/last name, signed-PDF filenames, dossier link.
      */
     @Test
-    void formatMessage_doesNotIncludePiiOrCaseKey() {
+    void formatMessage_doesNotIncludePiiOrCaseKey() throws Exception {
         RecruitmentCandidate c = candidate();
         c.setEmail("PII-EMAIL@example.com");
 
@@ -201,10 +201,10 @@ class RecruitmentHrSlackNotifierTest {
 
     /** signedFilenames null is tolerated — formatter treats it as empty. */
     @Test
-    void notifyHire_nullSignedFilenames_doesNotThrow() {
+    void notifyHire_nullSignedFilenames_doesNotThrow() throws Exception {
         notifier.notifyHire(candidate(), null, null);
         verify(slackService, times(1))
-                .sendMessage(anyString(), anyString(), anyString());
+                .sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     /** Verify slackService is not called from a code path that did not get past dedup. */
@@ -212,7 +212,7 @@ class RecruitmentHrSlackNotifierTest {
     void notifyHire_noOpCalls_doNotInvokeSlack() throws Exception {
         notifier.notifyHire(null, null, null);
         notifier.notifyHire(new RecruitmentCandidate(), null, null);
-        verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, never()).sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     // ── Hired, but nothing signed to file ──────────────────────────────────
@@ -223,20 +223,20 @@ class RecruitmentHrSlackNotifierTest {
      * told to file the contract by hand.
      */
     @Test
-    void notifyHireWithoutSignedContract_asksAHumanToFileThePaperwork() {
+    void notifyHireWithoutSignedContract_asksAHumanToFileThePaperwork() throws Exception {
         RecruitmentCandidate c = candidate();
 
         notifier.notifyHireWithoutSignedContract(c, null);
 
         ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
-        verify(slackService, times(1)).sendMessage(anyString(), body.capture(), anyString());
+        verify(slackService, times(1)).sendMessageStrict(anyString(), body.capture(), anyString());
         assertTrue(body.getValue().contains("no signed contract"),
                 "the message must say what is missing: " + body.getValue());
         assertTrue(body.getValue().contains(c.getUuid()), "dossier link must include candidate UUID");
     }
 
     @Test
-    void notifyHireWithoutSignedContract_sharesTheHireDedupSet() {
+    void notifyHireWithoutSignedContract_sharesTheHireDedupSet() throws Exception {
         // A candidate is announced once, whichever outcome got there first —
         // otherwise a re-drive after a deploy posts a second message.
         RecruitmentCandidate c = candidate();
@@ -245,11 +245,11 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyHireWithoutSignedContract(c, null);
         notifier.notifyHire(c, null, List.of());
 
-        verify(slackService, times(1)).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, times(1)).sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     @Test
-    void notifyHireWithoutSignedContract_doesNotLeakCandidateEmail() {
+    void notifyHireWithoutSignedContract_doesNotLeakCandidateEmail() throws Exception {
         RecruitmentCandidate c = candidate();
         c.setEmail("PII-EMAIL@example.com");
 
@@ -260,52 +260,52 @@ class RecruitmentHrSlackNotifierTest {
     }
 
     @Test
-    void notifyHireWithoutSignedContract_noOpCalls_doNotInvokeSlack() {
+    void notifyHireWithoutSignedContract_noOpCalls_doNotInvokeSlack() throws Exception {
         notifier.notifyHireWithoutSignedContract(null, null);
         notifier.notifyHireWithoutSignedContract(new RecruitmentCandidate(), null);
-        verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, never()).sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     // ── Offer-channel routing (offer split, 2026-08-25) ────────────────────
 
     /** Offer channel configured ⇒ hire messages move there. */
     @Test
-    void notifyHire_prefersTheOfferChannel() {
+    void notifyHire_prefersTheOfferChannel() throws Exception {
         when(router.offerChannel()).thenReturn(java.util.Optional.of("C-OFFER"));
 
         notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
 
         ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
-        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        verify(slackService).sendMessageStrict(channel.capture(), anyString(), anyString());
         assertEquals("C-OFFER", channel.getValue());
     }
 
     /** Offer blank, default set ⇒ the default channel carries the message. */
     @Test
-    void notifyHire_fallsBackToTheDefaultChannel() {
+    void notifyHire_fallsBackToTheDefaultChannel() throws Exception {
         when(router.defaultChannel()).thenReturn(java.util.Optional.of("C-DEFAULT"));
 
         notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
 
         ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
-        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        verify(slackService).sendMessageStrict(channel.capture(), anyString(), anyString());
         assertEquals("C-DEFAULT", channel.getValue());
     }
 
     /** Both settings blank ⇒ the config channelId — byte-identical pre-split behavior. */
     @Test
-    void notifyHire_bothChannelsBlank_usesTheConfigFallback() {
+    void notifyHire_bothChannelsBlank_usesTheConfigFallback() throws Exception {
         notifier.notifyHire(candidate(), null, List.of("a_signed.pdf"));
 
         ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
-        verify(slackService).sendMessage(channel.capture(), anyString(), anyString());
+        verify(slackService).sendMessageStrict(channel.capture(), anyString(), anyString());
         assertEquals("C0B1XUB3AEB", channel.getValue());
     }
 
     // ── Contract sent (a moment that exists only on the offer channel) ─────
 
     @Test
-    void notifyContractSent_postsOnlyWhenTheOfferChannelIsConfigured() {
+    void notifyContractSent_postsOnlyWhenTheOfferChannelIsConfigured() throws Exception {
         // Blank offer channel: this NEW ping must not leak into the default
         // channel — blank means "everything behaves as before the split".
         notifier.notifyContractSent(candidate(), 2, 1);
@@ -315,23 +315,23 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyContractSent(candidate(), 2, 1);
 
         ArgumentCaptor<String> channel = ArgumentCaptor.forClass(String.class);
-        verify(slackService, times(1)).sendMessage(channel.capture(), anyString(), anyString());
+        verify(slackService, times(1)).sendMessageStrict(channel.capture(), anyString(), anyString());
         assertEquals("C-OFFER", channel.getValue());
     }
 
     @Test
-    void notifyContractSent_isNotDeduped_aResendIsNews() {
+    void notifyContractSent_isNotDeduped_aResendIsNews() throws Exception {
         when(router.offerChannel()).thenReturn(java.util.Optional.of("C-OFFER"));
         RecruitmentCandidate c = candidate();
 
         notifier.notifyContractSent(c, 2, 1);
         notifier.notifyContractSent(c, 2, 1);
 
-        verify(slackService, times(2)).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, times(2)).sendMessageStrict(anyString(), anyString(), anyString());
     }
 
     @Test
-    void formatContractSentMessage_carriesCountsAndLink_neverPii() {
+    void formatContractSentMessage_carriesCountsAndLink_neverPii() throws Exception {
         RecruitmentCandidate c = candidate();
         c.setEmail("PII-EMAIL@example.com");
 
@@ -347,7 +347,7 @@ class RecruitmentHrSlackNotifierTest {
     // ── Candidate invite failed (calendar-retry dead-letter, V533) ─────────
 
     @Test
-    void formatCandidateInviteFailedMessage_namesTheFactsNeverPii() {
+    void formatCandidateInviteFailedMessage_namesTheFactsNeverPii() throws Exception {
         RecruitmentCandidate c = candidate();
         c.setEmail("PII-EMAIL@example.com");
         dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
@@ -370,9 +370,13 @@ class RecruitmentHrSlackNotifierTest {
     }
 
     @Test
-    void notifyCandidateInviteFailed_slackFailureNeverPropagates() {
-        doThrow(new RuntimeException("Slack down")).when(slackService)
-                .sendMessage(anyString(), anyString(), anyString());
+    void notifyCandidateInviteFailed_slackFailureNeverPropagates() throws Exception {
+        // The real-world shape (2026-08-27): a private channel without the bot
+        // answers channel_not_found, which the STRICT send raises as a checked
+        // IOException — the notifier must swallow that exactly like a crash.
+        doThrow(new java.io.IOException("Slack post failed for channel C-OFFER: channel_not_found"))
+                .when(slackService)
+                .sendMessageStrict(anyString(), anyString(), anyString());
         dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
                 new dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview();
         interview.setUuid("int-1");
@@ -382,7 +386,7 @@ class RecruitmentHrSlackNotifierTest {
     }
 
     @Test
-    void notifyCandidateInviteFailed_isNotDeduped_eachTerminalFactIsNews() {
+    void notifyCandidateInviteFailed_isNotDeduped_eachTerminalFactIsNews() throws Exception {
         dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview interview =
                 new dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview();
         interview.setUuid("int-1");
@@ -390,6 +394,6 @@ class RecruitmentHrSlackNotifierTest {
         notifier.notifyCandidateInviteFailed(candidate(), interview, "problem", "reason", null);
         notifier.notifyCandidateInviteFailed(candidate(), interview, "problem", "reason", null);
 
-        verify(slackService, times(2)).sendMessage(anyString(), anyString(), anyString());
+        verify(slackService, times(2)).sendMessageStrict(anyString(), anyString(), anyString());
     }
 }

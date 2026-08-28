@@ -141,10 +141,10 @@ public class AiIntakeGenerationService {
      * than describing the candidate. Deliberately STRUCTURAL, never semantic:
      * these byte sequences cannot occur in the short descriptive Danish prose
      * the brief is specified to be, whereas a word list ("json", "schema")
-     * would false-reject a real bullet about an IT consultant's CV. The hard
-     * guards against long scratchpad dumps are the {@link #MAX_BULLET_CHARS}
-     * cap (now a rejection, not a truncation) and the single-document parse
-     * above; this list catches the short leaks those two miss.
+     * would false-reject a real bullet about an IT consultant's CV. This list
+     * is the PRIMARY guard against scratchpad dumps and is checked before the
+     * length rule, which only discards its own bullet; the single-document
+     * parse above catches the re-emitted-envelope case.
      */
     private static final List<String> SCRATCHPAD_MARKERS = List.of(
             "assistant to=",   // harmony channel routing, e.g. "assistant to=final"
@@ -484,17 +484,44 @@ public class AiIntakeGenerationService {
      *       bullets (contract §4.3). Returns an empty list ⇒ no
      *       {@code AI_BRIEF_GENERATED} event, no error, watermark advances.</li>
      *   <li><b>Contaminated</b> — the section is not the shape the schema
-     *       promised (missing, non-array, non-text item) or a "bullet" is
-     *       really model scratchpad (over the length cap, or carrying a
-     *       {@link #SCRATCHPAD_MARKERS} tell). Throws, so the reactor's
-     *       2-attempt posture retries once and the regenerate endpoint
-     *       surfaces a 500 — raw model text is never persisted.</li>
+     *       promised (missing, non-array, non-text item) or a "bullet"
+     *       carries a {@link #SCRATCHPAD_MARKERS} tell. Throws, so the
+     *       reactor's 2-attempt posture retries once and the regenerate
+     *       endpoint surfaces a 500 — raw model text is never persisted.</li>
      * </ul>
-     * The over-cap rule is a REJECTION, not the truncation it used to be:
-     * cutting a multi-thousand-character scratchpad dump at
-     * {@link #MAX_BULLET_CHARS} is exactly how deliberation prose and an
-     * unterminated JSON fragment ended up looking like a bullet in
-     * production. Real bullets run ~120 characters; 400 is already 3× that.
+     * <h4>Why length is a DROP and not one of those two</h4>
+     * An over-cap bullet is discarded on its own; the rest of the brief
+     * stands. It is deliberately neither of the outcomes above:
+     * <ul>
+     *   <li>Not a TRUNCATION. Cutting a bullet and keeping the head is how
+     *       deliberation prose reached {@code recruitment_events.pii} in
+     *       production, and an accepted bullet is not merely rendered on the
+     *       profile — {@code RecruitmentSlackReactor} forwards it to the
+     *       practice channel, where nothing can retract it. A cut also
+     *       fabricates: Danish briefs are dense with abbreviations
+     *       (cand.merc., ph.d., bl.a., f.eks., "3. semester"), so both a
+     *       naive last-period scan and {@code BreakIterator} produce a
+     *       sentence-shaped fragment that states something the candidate
+     *       never said. A missing bullet is honest; a cut one is not.</li>
+     *   <li>Not a REJECTION either — that is what caused this change. Length
+     *       was the only constraint the model was never TOLD about: the
+     *       prompt said just "3-5 korte punkter" while the evidence field two
+     *       lines above already said "højst 200 tegn", and the strict schema
+     *       declares minItems/maxItems but no maxLength. So 447 and 463 chars
+     *       were not the model misbehaving, they were "korte" landing past an
+     *       invisible line — and each one permanently dead-lettered a
+     *       candidate's whole generation (seq 1672, seq 1887; the third,
+     *       seq 888, was genuine marker contamination and still rejects).
+     *       {@link AiIntakePrompts} now states the budget, so this path is
+     *       the backstop rather than the norm.</li>
+     * </ul>
+     * The contamination guard is unweakened, because dropping persists NOTHING
+     * of the over-cap text — strictly safer than truncation, and identical to
+     * rejection in everything it lets through. Markers are still checked
+     * FIRST and are still fatal to the whole section, so a long scratchpad
+     * dump carrying a tell rejects exactly as it did before; only a
+     * marker-free over-long sentence now costs its own bullet instead of the
+     * candidate's entire intake. Real bullets run ~120 characters.
      * <p>
      * Sibling failure mode, same root cause: a reasoning model can also
      * spend the whole {@link #MAX_OUTPUT_TOKENS} budget thinking and answer
@@ -523,12 +550,14 @@ public class AiIntakeGenerationService {
             if (bullet == null) {
                 continue; // blank bullet — thin, not contaminated
             }
-            if (bullet.length() > MAX_BULLET_CHARS) {
-                throw contaminated("brief bullet is " + bullet.length() + " chars, cap is "
-                        + MAX_BULLET_CHARS);
-            }
             if (looksLikeModelScratchpad(bullet)) {
                 throw contaminated("brief bullet carries model-scratchpad markers");
+            }
+            if (bullet.length() > MAX_BULLET_CHARS) {
+                // Structure only — the bullet text itself is never logged.
+                log.warnf("[AiIntake] dropped an over-cap brief bullet (%d chars, cap %d)",
+                        bullet.length(), MAX_BULLET_CHARS);
+                continue;
             }
             bullets.add(bullet);
         }

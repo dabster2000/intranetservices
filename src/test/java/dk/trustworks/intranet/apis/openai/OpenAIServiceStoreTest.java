@@ -287,6 +287,70 @@ class OpenAIServiceStoreTest {
         assertTrue(OpenAIService.describeFailureChain(outer).startsWith("Exception <- Exception"));
     }
 
+    // ---- describeErrorEnvelope: diagnosable without leaking the prompt ---------
+    //
+    // The 2026-08-27 ai-intake schema 400 logged only "status=400 (body suppressed)",
+    // which made the failure undiagnosable. These pin the two halves of the fix:
+    // the schema diagnostics must come through, and the prompt must not.
+
+    @Test
+    void schemaValidation400_reportsTheRejectedField() {
+        String body = "{\"error\":{\"message\":\"Invalid schema for response_format "
+                + "'RecruitmentAiIntake': In context=('properties','brief'), 'maxLength' is not "
+                + "permitted.\",\"type\":\"invalid_request_error\",\"param\":\"text.format.schema\","
+                + "\"code\":null}}";
+
+        String described = OpenAIService.describeErrorEnvelope(body);
+
+        assertTrue(described.contains("type=invalid_request_error"), described);
+        assertTrue(described.contains("param=text.format.schema"), described);
+        assertTrue(described.contains("code=<none>"), described);
+        assertTrue(described.contains("'properties','brief'"),
+                "the whole point is naming the rejected field: " + described);
+    }
+
+    @Test
+    void contentPolicy400_withholdsTheMessage_becauseItCanQuoteThePrompt() {
+        String body = "{\"error\":{\"message\":\"Your input was blocked: 'Ansoegerens CV naevner "
+                + "en sygemelding'\",\"type\":\"invalid_request_error\","
+                + "\"code\":\"content_policy_violation\",\"param\":null}}";
+
+        String described = OpenAIService.describeErrorEnvelope(body);
+
+        assertTrue(described.contains("code=content_policy_violation"), described);
+        assertTrue(described.contains("message=<suppressed"), described);
+        assertFalse(described.contains("sygemelding"),
+                "a content-policy message can quote the CV and must never be logged: " + described);
+    }
+
+    @Test
+    void aNonJsonBody_isReportedByLengthOnly() {
+        // An ALB/proxy HTML page is not OpenAI's envelope, so nothing in it is safe.
+        String described = OpenAIService.describeErrorEnvelope(
+                "<html><body>502 Bad Gateway: upstream sent Ansoeger Jens Hansen</body></html>");
+
+        assertTrue(described.startsWith("unparseable body ("), described);
+        assertFalse(described.contains("Jens Hansen"), described);
+    }
+
+    @Test
+    void envelopeFields_areCappedAndKeptToOneLogLine() {
+        String body = "{\"error\":{\"message\":\"" + "x".repeat(4000)
+                + "\",\"type\":\"invalid_request_error\",\"param\":\"a\\nb\",\"code\":null}}";
+
+        String described = OpenAIService.describeErrorEnvelope(body);
+
+        assertFalse(described.contains("\n"), "a newline would forge extra log records: " + described);
+        assertTrue(described.length() < 1200, "must stay one bounded line, was " + described.length());
+    }
+
+    @Test
+    void anAbsentOrEmptyBody_doesNotBlowUp() {
+        assertEquals("no body", OpenAIService.describeErrorEnvelope(null));
+        assertEquals("no body", OpenAIService.describeErrorEnvelope("   "));
+        assertTrue(OpenAIService.describeErrorEnvelope("{\"ok\":true}").startsWith("no error envelope"));
+    }
+
     private static Response successfulResponse() {
         Response response = mock(Response.class);
         when(response.getStatus()).thenReturn(200);

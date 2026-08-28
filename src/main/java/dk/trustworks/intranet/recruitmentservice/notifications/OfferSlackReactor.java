@@ -50,6 +50,11 @@ import java.util.Optional;
  *       fields plus structural payload facts only — names, position titles,
  *       stage codes, the profile link. Never salary, CPR, case keys or
  *       signer emails.</li>
+ *   <li><b>Failure posture:</b> the post is STRICT — a transport failure or
+ *       not-ok Slack response throws, so the delivery retries (≤3) and then
+ *       dead-letters durably (V490), replayable once the channel is fixed.
+ *       These are "HR must react" moments; losing one silently is the
+ *       failure mode this reactor had on 2026-08-27.</li>
  * </ul>
  * Offset seeding to the stream head at deploy comes free from the P1
  * startup guard — no historical replay.
@@ -111,7 +116,13 @@ public class OfferSlackReactor extends RecruitmentReactor {
             default -> null;
         };
         if (message != null) {
-            slackService.sendMessage(channel.get(), message);
+            // Strict: a failed post must THROW so this delivery retries and
+            // then dead-letters (V490). The swallow variant committed a
+            // channel_not_found as success — 2026-08-27, the offer channel
+            // was private without the mother bot as member, and two
+            // "documents signed" messages vanished with one ERROR line that
+            // named neither reactor, seq, nor candidate.
+            slackService.sendMessageStrict(channel.get(), message);
         }
     }
 
