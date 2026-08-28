@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.recruitmentservice.ai.InterviewRoomAiService;
+import dk.trustworks.intranet.recruitmentservice.dto.FactRedactRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.InterviewRoomResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomDraftRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomFactRequest;
@@ -105,6 +106,9 @@ public class RecruitmentInterviewRoomResource {
     @Inject
     InterviewRoomAiService roomAiService;
 
+    @Inject
+    dk.trustworks.intranet.recruitmentservice.services.CandidateService candidateService;
+
     // ---- Read model -----------------------------------------------------------------
 
     /** The room in one round trip (spec §6.2). */
@@ -170,6 +174,40 @@ public class RecruitmentInterviewRoomResource {
         return Response.status(Response.Status.CREATED)
                 .entity(Map.of(
                         "eventId", event.getEventId(),
+                        "occurredAt", event.getOccurredAt().toString()))
+                .build();
+    }
+
+    /**
+     * Withdraw a fact recorded from this room (change request 2026-08-28).
+     *
+     * <p>The room-scoped sibling of the profile's retraction, and it exists
+     * for the same reason {@code recordFact} does: a restricted interviewer
+     * has no candidate-profile access, and they are precisely the person
+     * sitting in front of the AI sweep when it records something that was
+     * never said. Assignment authorizes it, exactly as it authorizes the
+     * write — you may take back what you could have written.
+     *
+     * <p>The comp gates are the WRITE's, not the read's: withdrawing a
+     * salary fact is a compensation act. A caller who could not have created
+     * the fact does not get to decide it never happened.
+     */
+    @POST
+    @Path("/interviews/{uuid}/facts/redact")
+    public Response redactFact(@PathParam("uuid") UUID interviewUuid, FactRedactRequest request) {
+        enforceRoomFlag();
+        Objects.requireNonNull(request, "request body must not be null");
+        RoomAccess access = resolveAccess(interviewUuid, currentActor(), true);
+        RecruitmentEvent note = roomService.requireFactNote(access.candidate, request.eventId());
+        String field = roomService.factFieldOf(note);
+        requireCompScopeForCompFact(field);
+        requireFullProfileForCompFact(access, field);
+        RecruitmentEvent event = candidateService.redactFact(
+                UUID.fromString(access.candidate.getUuid()), request.eventId(), access.viewer,
+                "interview_room", access.interview.getUuid());
+        return Response.ok(Map.of(
+                        "eventId", event.getEventId(),
+                        "redactedEventId", request.eventId(),
                         "occurredAt", event.getOccurredAt().toString()))
                 .build();
     }

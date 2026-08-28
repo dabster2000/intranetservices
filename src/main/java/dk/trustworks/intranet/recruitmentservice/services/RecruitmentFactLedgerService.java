@@ -44,6 +44,14 @@ import java.util.Set;
  * candidate's readers; the VALUE is what the comp gate protects — the
  * same split the timeline applies to salary notes.
  * <p>
+ * Redaction (change request 2026-08-28): a fact-bearing note withdrawn by a
+ * {@code FACT_REDACTED} event stops counting — it is excluded from the fold,
+ * so the state falls back to whatever was stated before it (or UNKNOWN), and
+ * it never supplies the newest value. It still appears in the history, marked
+ * and without its value: a drift history that silently dropped a statement
+ * would misrepresent its own gaps, and "recorded, then taken back" is exactly
+ * what a later reader needs to see.
+ * <p>
  * Completeness is derived, never hand-maintained (spec §4.3): a fact is
  * <em>required</em> when its key matches a placeholder in the candidate's
  * dossier shape, or when the vocabulary marks it default-required —
@@ -71,10 +79,11 @@ public class RecruitmentFactLedgerService {
         List<RecruitmentEvent> noteEvents = RecruitmentEvent.list(
                 "candidateUuid = ?1 and eventType = ?2 order by seq",
                 candidate.getUuid(), RecruitmentEventType.NOTE_ADDED);
+        Set<String> redactedEventIds = redactedEventIds(candidate.getUuid());
 
         Map<String, List<ParsedNote>> byField = new LinkedHashMap<>();
         for (RecruitmentEvent event : noteEvents) {
-            ParsedNote parsed = parseNote(event);
+            ParsedNote parsed = parseNote(event, redactedEventIds);
             if (parsed != null) {
                 byField.computeIfAbsent(parsed.field(), f -> new ArrayList<>()).add(parsed);
             }
@@ -88,6 +97,7 @@ public class RecruitmentFactLedgerService {
         for (FactField field : RecruitmentFactVocabulary.all()) {
             List<ParsedNote> notes = byField.getOrDefault(field.key(), List.of());
             Persisted persisted = RecruitmentFactStates.fold(notes.stream()
+                    .filter(n -> !n.redacted())
                     .map(ParsedNote::note).toList()).get(field.key());
             State state = RecruitmentFactStates.effective(field, persisted, nowUtc);
             boolean required = requiredKeys.contains(field.key());
@@ -98,7 +108,7 @@ public class RecruitmentFactLedgerService {
             List<FactHistoryEntry> history = List.of();
             if (!redacted) {
                 ParsedNote newestValue = notes.stream()
-                        .filter(n -> !n.note().asked())
+                        .filter(n -> !n.note().asked() && !n.redacted())
                         .reduce((a, b) -> b).orElse(null);
                 if (newestValue != null && (state == State.STATED
                         || state == State.CONFIRMED || state == State.STALE)) {
@@ -107,11 +117,13 @@ public class RecruitmentFactLedgerService {
                 }
                 history = notes.stream()
                         .map(n -> new FactHistoryEntry(
-                                n.note().asked() ? null : n.text(),
+                                n.eventId(),
+                                n.note().asked() || n.redacted() ? null : n.text(),
                                 n.note().occurredAt().toString(),
                                 n.interviewUuid(),
                                 n.note().asked() ? "ASKED" : null,
-                                n.note().confirmed()))
+                                n.note().confirmed(),
+                                n.redacted()))
                         .toList();
             }
             if (required && (state == State.STATED || state == State.CONFIRMED
@@ -164,11 +176,34 @@ public class RecruitmentFactLedgerService {
         }
     }
 
-    /** One fact-bearing NOTE_ADDED with the pieces the ledger renders. */
-    private record ParsedNote(String field, FactNote note, String text, String interviewUuid) {
+    /**
+     * Every {@code NOTE_ADDED} this candidate's stream has had withdrawn.
+     * One extra indexed query per ledger read, and almost always empty —
+     * cheaper than carrying a redaction flag on the note events, which would
+     * mean mutating an append-only row.
+     */
+    private Set<String> redactedEventIds(String candidateUuid) {
+        List<RecruitmentEvent> redactions = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType = ?2",
+                candidateUuid, RecruitmentEventType.FACT_REDACTED);
+        if (redactions.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (RecruitmentEvent redaction : redactions) {
+            if (parse(redaction.getPayload()).get("redacted_event_id") instanceof String id) {
+                ids.add(id);
+            }
+        }
+        return ids;
     }
 
-    private ParsedNote parseNote(RecruitmentEvent event) {
+    /** One fact-bearing NOTE_ADDED with the pieces the ledger renders. */
+    private record ParsedNote(String eventId, String field, FactNote note, String text,
+                              String interviewUuid, boolean redacted) {
+    }
+
+    private ParsedNote parseNote(RecruitmentEvent event, Set<String> redactedEventIds) {
         Map<String, Object> payload = parse(event.getPayload());
         String field = payload.get("field") instanceof String s ? s : null;
         if (!RecruitmentFactVocabulary.isKnown(field)) {
@@ -176,12 +211,13 @@ public class RecruitmentFactLedgerService {
         }
         Map<String, Object> pii = parse(event.getPii());
         String text = pii.get("text") instanceof String s ? s : null;
-        return new ParsedNote(field,
+        return new ParsedNote(event.getEventId(), field,
                 new FactNote(event.getSeq(), field, event.getOccurredAt(),
                         "ASKED".equals(payload.get("outcome")),
                         Boolean.TRUE.equals(payload.get("confirmed"))),
                 text,
-                payload.get("interview_uuid") instanceof String i ? i : null);
+                payload.get("interview_uuid") instanceof String i ? i : null,
+                redactedEventIds.contains(event.getEventId()));
     }
 
     private Map<String, Object> parse(String json) {

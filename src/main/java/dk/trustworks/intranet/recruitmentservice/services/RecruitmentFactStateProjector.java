@@ -15,7 +15,11 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Maintains the {@code recruitment_candidate_fact_state} read model (V535)
@@ -32,6 +36,14 @@ import java.util.Map;
  * <p>
  * Holds no prose (the fact VALUE lives in the event's pii and never
  * reaches this table), so anonymisation does not touch it (spec §4.4).
+ * <p>
+ * {@code FACT_REDACTED} (change request 2026-08-28) is the one event this
+ * projector cannot fold forward: withdrawing the newest statement must make
+ * the state fall BACK to whatever stood before it, and an incremental
+ * {@code apply} has no inverse. That one (candidate, field) is therefore
+ * re-folded from its own notes — a handful of rows behind one indexed query,
+ * not a rebuild — and the row is deleted outright when nothing survives, so
+ * the field reads UNKNOWN again rather than lingering as a stale STATED.
  */
 @JBossLog
 @ApplicationScoped
@@ -56,8 +68,14 @@ public class RecruitmentFactStateProjector extends RecruitmentReactor {
 
     @Override
     protected void handle(RecruitmentEvent event) {
-        if (event.getEventType() != RecruitmentEventType.NOTE_ADDED
-                || event.getCandidateUuid() == null) {
+        if (event.getCandidateUuid() == null) {
+            return;
+        }
+        if (event.getEventType() == RecruitmentEventType.FACT_REDACTED) {
+            refold(event);
+            return;
+        }
+        if (event.getEventType() != RecruitmentEventType.NOTE_ADDED) {
             return;
         }
         Map<String, Object> payload = parse(event.getPayload());
@@ -89,6 +107,78 @@ public class RecruitmentFactStateProjector extends RecruitmentReactor {
         } else {
             applyTo(row, next);
         }
+    }
+
+    /**
+     * Recompute one (candidate, field) from the surviving notes after a
+     * redaction. Deliberately NOT guarded by {@code lastValueEventSeq}: the
+     * whole point is to move the row BACKWARDS, which every forward guard
+     * would refuse. Replaying the same redaction simply recomputes the same
+     * answer, so idempotence comes from the fold being pure rather than from
+     * a seq comparison.
+     */
+    private void refold(RecruitmentEvent redaction) {
+        Map<String, Object> payload = parse(redaction.getPayload());
+        String field = payload.get("field") instanceof String s ? s : null;
+        if (!RecruitmentFactVocabulary.isKnown(field)) {
+            return;
+        }
+        String candidateUuid = redaction.getCandidateUuid();
+        Set<String> redactedIds = redactedEventIds(candidateUuid);
+        List<RecruitmentEvent> notes = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType = ?2 order by seq",
+                candidateUuid, RecruitmentEventType.NOTE_ADDED);
+
+        List<FactNote> surviving = new ArrayList<>();
+        for (RecruitmentEvent note : notes) {
+            if (redactedIds.contains(note.getEventId())) {
+                continue;
+            }
+            Map<String, Object> notePayload = parse(note.getPayload());
+            if (!field.equals(notePayload.get("field"))) {
+                continue;
+            }
+            surviving.add(new FactNote(note.getSeq(), field, note.getOccurredAt(),
+                    "ASKED".equals(notePayload.get("outcome")),
+                    Boolean.TRUE.equals(notePayload.get("confirmed"))));
+        }
+
+        RecruitmentCandidateFactState.Key key =
+                new RecruitmentCandidateFactState.Key(candidateUuid, field);
+        RecruitmentCandidateFactState row =
+                entityManager.find(RecruitmentCandidateFactState.class, key);
+        Persisted next = RecruitmentFactStates.fold(surviving).get(field);
+        if (next == null) {
+            // Nothing survives — the field is UNKNOWN again, and an UNKNOWN
+            // field has no row (that is what the rest of the read path
+            // assumes, and a leftover row would keep the ring counting it).
+            if (row != null) {
+                entityManager.remove(row);
+            }
+            return;
+        }
+        if (row == null) {
+            row = new RecruitmentCandidateFactState();
+            row.setCandidateUuid(candidateUuid);
+            row.setField(field);
+            applyTo(row, next);
+            entityManager.persist(row);
+        } else {
+            applyTo(row, next);
+        }
+    }
+
+    /** Every withdrawn note id for one candidate. */
+    private Set<String> redactedEventIds(String candidateUuid) {
+        Set<String> ids = new HashSet<>();
+        for (RecruitmentEvent redaction : RecruitmentEvent.<RecruitmentEvent>list(
+                "candidateUuid = ?1 and eventType = ?2",
+                candidateUuid, RecruitmentEventType.FACT_REDACTED)) {
+            if (parse(redaction.getPayload()).get("redacted_event_id") instanceof String id) {
+                ids.add(id);
+            }
+        }
+        return ids;
     }
 
     private static void applyTo(RecruitmentCandidateFactState row, Persisted value) {

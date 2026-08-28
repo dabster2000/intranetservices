@@ -41,13 +41,23 @@ public record FactsLedgerResponse(List<FactEntry> facts,
     /**
      * One historical statement of a fact — the drift timeline (§4.3).
      *
-     * @param value         the stated text ({@code null} for an ASKED entry)
+     * @param eventId       the {@code NOTE_ADDED} behind this line — what a
+     *                      redaction addresses, so the client never has to
+     *                      guess which statement it is withdrawing
+     * @param value         the stated text ({@code null} for an ASKED entry,
+     *                      and for a redacted one — a retraction that keeps
+     *                      showing the value has not retracted anything)
      * @param occurredAt    UTC ISO timestamp
      * @param interviewUuid provenance, when captured in a room
      * @param outcome       {@code "ASKED"} or null
      * @param confirmed     restated / settled in the offer conversation
+     * @param redacted      withdrawn by {@code FACT_REDACTED}; the line stays
+     *                      in the history because "this was recorded and then
+     *                      taken back" is the audit trail, and hiding it would
+     *                      make the drift history lie about its own gaps
      */
-    public record FactHistoryEntry(String value, String occurredAt, String interviewUuid,
-                                   String outcome, boolean confirmed) {
+    public record FactHistoryEntry(String eventId, String value, String occurredAt,
+                                   String interviewUuid, String outcome, boolean confirmed,
+                                   boolean redacted) {
     }
 }

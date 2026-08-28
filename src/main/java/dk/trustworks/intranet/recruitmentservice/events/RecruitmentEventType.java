@@ -214,6 +214,27 @@ public enum RecruitmentEventType {
      * themselves; the original text stays in the stream as audit history.
      */
     NOTE_EDITED,
+    /**
+     * A fact-bearing {@code NOTE_ADDED} was withdrawn (change request
+     * 2026-08-28). Payload, structural only: {@code redacted_event_id} (the
+     * note this withdraws), {@code field}, {@code origin}
+     * ({@code interview_room} | {@code candidate_profile}) and
+     * {@code interview_uuid} when it came from a room. No pii section — the
+     * withdrawn VALUE is not restated here.
+     * <p>
+     * It exists because the ledger is append-only and a fact the AI sweep
+     * recorded unprompted (2026-08-27) could otherwise only ever be
+     * superseded, never taken back: writing a corrected value works when
+     * the model read the wrong NUMBER, and does nothing when it read a fact
+     * that was never said at all. Redaction is the second case.
+     * <p>
+     * The original event is NOT deleted or emptied. It stays in the stream
+     * with its pii intact for the audit trail; every read path — the fact
+     * ledger, the fact-state projection and the timeline — folds the
+     * redaction in and stops both counting and showing it. That asymmetry
+     * is the point: what a hiring team sees changes, what happened does not.
+     */
+    FACT_REDACTED,
     DOCUMENT_UPLOADED,
     /**
      * A recruiter manually re-typed a stored candidate document whose

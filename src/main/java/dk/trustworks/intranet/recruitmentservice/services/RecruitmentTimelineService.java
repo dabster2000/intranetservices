@@ -48,6 +48,9 @@ import java.util.stream.Collectors;
  *       teamlead/hiring-owner of one of the candidate's positions) —
  *       otherwise the event stays, {@code pii} is withheld and
  *       {@code piiRedacted=true};</li>
+ *   <li>a {@code NOTE_ADDED} withdrawn by {@code FACT_REDACTED}: the row
+ *       stays, the value is withheld from everyone and the payload gains
+ *       {@code redacted}/{@code redacted_at} (change request 2026-08-28);</li>
  *   <li>{@code SCORECARD_SUBMITTED} (P11): {@code pii} (the interviewer's
  *       free-text notes) only for the AUTHOR and ADMIN — everyone else gets
  *       {@code piiRedacted=true} and reads notes through the blind-filtered
@@ -168,6 +171,10 @@ public class RecruitmentTimelineService {
         // whole candidate in one query — the edit may sit on a different
         // page than the note it corrects, so the scan window can't serve it.
         Map<String, RecruitmentEvent> newestEditByNoteId = loadNoteEdits(candidate.getUuid());
+        // Fact retractions fold in the same way (change request 2026-08-28):
+        // the withdrawn note keeps its row and loses its value, so the
+        // timeline shows THAT a fact was taken back without restating it.
+        Map<String, RecruitmentEvent> redactionByNoteId = loadFactRedactions(candidate.getUuid());
 
         // Event-level filtering over the full remainder, then one page.
         Map<Long, Map<String, Object>> payloads = raw.stream().collect(Collectors.toMap(
@@ -177,7 +184,8 @@ public class RecruitmentTimelineService {
         List<RecruitmentEvent> visible = new ArrayList<>();
         for (RecruitmentEvent event : raw) {
             Map<String, Object> payload = payloads.get(event.getSeq());
-            if (event.getEventType() == RecruitmentEventType.NOTE_EDITED) {
+            if (event.getEventType() == RecruitmentEventType.NOTE_EDITED
+                    || event.getEventType() == RecruitmentEventType.FACT_REDACTED) {
                 // Never a feed row of its own — it rides along on the note.
                 continue;
             }
@@ -197,7 +205,8 @@ public class RecruitmentTimelineService {
                         canReadDossier,
                         canReadFinalOutcome(event, viewerUuid, positions,
                                 canReadFinalOutcomeByPosition),
-                        newestEditByNoteId.get(event.getEventId())))
+                        newestEditByNoteId.get(event.getEventId()),
+                        redactionByNoteId.get(event.getEventId())))
                 .toList();
         return new CandidateTimelineResponse(events, hasMore, compTier);
     }
@@ -318,7 +327,8 @@ public class RecruitmentTimelineService {
                                 boolean compTier, String viewerUuid, boolean admin,
                                 boolean canReadDossier,
                                 boolean canReadFinalOutcome,
-                                RecruitmentEvent newestEdit) {
+                                RecruitmentEvent newestEdit,
+                                RecruitmentEvent redaction) {
         // The whole compensation group is comp-gated (Interview Room spec
         // §7.1 — SALARY_COMPONENTS and CURRENT_PACKAGE redact exactly like
         // the salary expectation always has).
@@ -331,11 +341,23 @@ public class RecruitmentTimelineService {
         boolean scorecardNotes = event.getEventType() == RecruitmentEventType.SCORECARD_SUBMITTED
                 && !admin
                 && (viewerUuid == null || !viewerUuid.equals(event.getActorUuid()));
-        boolean redactPii = (salaryNote && !compTier) || scorecardNotes;
+        // A withdrawn fact keeps its row and loses its value on EVERY read,
+        // including an admin's: the retraction is the hiring team's decision
+        // that the statement was never made, and a surface that still shows
+        // the text has not honoured it. The event itself is untouched in the
+        // stream, which is where the audit trail lives.
+        boolean redactPii = (salaryNote && !compTier) || scorecardNotes || redaction != null;
         Map<String, Object> pii = (redactPii || event.getPii() == null)
                 ? null
                 : parseJson(event.getPii());
         boolean piiRedacted = redactPii && event.getPii() != null;
+
+        if (redaction != null) {
+            Map<String, Object> annotated = new HashMap<>(payload);
+            annotated.put("redacted", Boolean.TRUE);
+            annotated.put("redacted_at", redaction.getOccurredAt().toString());
+            payload = annotated;
+        }
 
         if (!canReadDossier) {
             payload = withoutDossierPayload(event.getEventType(), payload);
@@ -360,6 +382,8 @@ public class RecruitmentTimelineService {
         if (newestEdit != null
                 && event.getEventType() == RecruitmentEventType.NOTE_ADDED
                 && !salaryNote && !redactPii) {
+            // `redactPii` covers the retraction case too — an edit must never
+            // put a withdrawn value back on the screen.
             Map<String, Object> annotated = new HashMap<>(payload);
             annotated.put("edited", Boolean.TRUE);
             annotated.put("edited_at", newestEdit.getOccurredAt().toString());
@@ -478,6 +502,25 @@ public class RecruitmentTimelineService {
      * wins: the stream is scanned descending and only the first edit per
      * note id is kept.
      */
+    private Map<String, RecruitmentEvent> loadFactRedactions(String candidateUuid) {
+        List<RecruitmentEvent> redactions = RecruitmentEvent.<RecruitmentEvent>find(
+                        "candidateUuid = ?1 and eventType = ?2 order by seq desc",
+                        candidateUuid, RecruitmentEventType.FACT_REDACTED)
+                .page(0, EVENT_SCAN_CAP)
+                .list();
+        if (redactions.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, RecruitmentEvent> byNoteId = new HashMap<>();
+        for (RecruitmentEvent redaction : redactions) {
+            Object noteId = parseJson(redaction.getPayload()).get("redacted_event_id");
+            if (noteId instanceof String id) {
+                byNoteId.putIfAbsent(id, redaction);
+            }
+        }
+        return byNoteId;
+    }
+
     private Map<String, RecruitmentEvent> loadNoteEdits(String candidateUuid) {
         // Same defense-in-depth cap as the main scan window: newest-first,
         // so on pathological data the freshest edits still win.
