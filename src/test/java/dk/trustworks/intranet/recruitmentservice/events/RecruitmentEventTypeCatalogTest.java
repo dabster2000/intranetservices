@@ -107,6 +107,13 @@ class RecruitmentEventTypeCatalogTest {
         // unsolicited submissions and repeat submissions onto an open
         // process — previously produced no event at all, so the candidate
         // mailer had nothing to acknowledge and the applicant heard nothing.
+        // FACT_REDACTED is the fact-retraction addition (change request
+        // 2026-08-28): withdrawing a fact-bearing NOTE_ADDED is a mutating
+        // command per spec §6.2, and the append-only ledger had no way to
+        // take one back — only to supersede it with another value, which
+        // does nothing when the recorded fact was never said at all. It
+        // became load-bearing when the room's AI sweep started RECORDING
+        // its reads rather than proposing them (2026-08-27).
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -122,7 +129,8 @@ class RecruitmentEventTypeCatalogTest {
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
                 "EVE_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
-                "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
+                "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "FACT_REDACTED",
+                "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
                 "OFFER_OPENED", "DOSSIER_CREATED", "SIGNING_COMPLETED", "CANDIDATE_HIRED",
                 "TEAM_ASSIGNED",
                 "RECORD_CHECK_DRAWN", "RECORD_CHECK_OUTCOME_RECORDED",
@@ -157,8 +165,9 @@ class RecruitmentEventTypeCatalogTest {
                         + "AVAILABILITY_EVIDENCE_* additions, DOSSIER_CREATED "
                         + "and the V519 INTERVIEW_DECISION_* pair exactly, plus the "
                         + "Interview Room's AI_NOTES_TIDIED (room spec 2026-08-26 \u00a73.4: "
-                        + "the structural Tidy log the AI Act obligation reads)");
-        assertEquals(86, RecruitmentEventType.values().length);
+                        + "the structural Tidy log the AI Act obligation reads) "
+                        + "and FACT_REDACTED (the append-only ledger's retraction)");
+        assertEquals(87, RecruitmentEventType.values().length);
     }
 
     @Test

@@ -716,6 +716,53 @@ public class RecruitmentResource {
                 .build();
     }
 
+    /**
+     * Withdraw a recorded fact (change request 2026-08-28) — the
+     * candidate-page sibling of the room's retraction.
+     *
+     * <p>A wrong fact is usually NOTICED here rather than in the room: the
+     * room goes read-only once the interview lands, and the ledger is where
+     * a closing conversation reads the numbers back. Appends
+     * {@code FACT_REDACTED}; the original note keeps its row and its pii in
+     * the stream, and every read path stops counting and showing it.
+     *
+     * <p>Gated like the WRITE, not the read — {@code recruitment:write}, the
+     * per-person candidate gate, and the comp scope for a compensation
+     * field. Someone who may read a salary fact but not record one does not
+     * get to decide it was never stated. Idempotent: redacting an already
+     * withdrawn fact returns the original retraction.
+     */
+    @POST
+    @Path("/candidates/{uuid}/facts/{eventId}/redact")
+    @RolesAllowed({"recruitment:write"})
+    public Response redactFact(@PathParam("uuid") UUID uuid,
+                               @PathParam("eventId") String eventId) {
+        enforcePipelineFlag();
+        requireVisibleCandidate(uuid);
+        RecruitmentEvent note = RecruitmentEvent
+                .<RecruitmentEvent>find("eventId", eventId).firstResult();
+        if (note == null || !uuid.toString().equals(note.getCandidateUuid())) {
+            throw new NotFoundException("Fact not found: " + eventId);
+        }
+        // null when the note carries no field at all — no comp concern, and
+        // redactFact refuses it a line later for being the wrong kind of note.
+        String field = candidateService.factFieldOfNote(note);
+        if (field != null
+                && RecruitmentFactVocabulary.isCompScoped(field)
+                && !scopeContext.hasScope("recruitment:comp")) {
+            throw new WebApplicationException(
+                    "Compensation facts require the recruitment:comp scope",
+                    Response.Status.FORBIDDEN);
+        }
+        RecruitmentEvent event = candidateService.redactFact(
+                uuid, eventId, currentActor(), "candidate_profile", null);
+        return Response.ok(Map.of(
+                        "eventId", event.getEventId(),
+                        "redactedEventId", eventId,
+                        "occurredAt", event.getOccurredAt().toString()))
+                .build();
+    }
+
     /** Kinds a manually uploaded candidate document may carry. */
     private static final Set<String> DOCUMENT_KINDS = Set.of("CV", "COVER_LETTER", "OTHER");
 

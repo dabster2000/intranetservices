@@ -430,6 +430,53 @@ public class RecruitmentInterviewRoomService {
                 request.confirmed(), request.asked(), request.suggestionId());
     }
 
+    /**
+     * Resolve a fact-bearing {@code NOTE_ADDED} on this candidate, or 404.
+     *
+     * <p>Separate from the redaction itself because the caller has to know
+     * the FIELD before it can apply the compensation gates — and it must
+     * apply them before anything is written, not after.
+     */
+    public dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent requireFactNote(
+            RecruitmentCandidate candidate, String eventId) {
+        if (eventId == null || eventId.isBlank()) {
+            throw new BusinessRuleViolation("eventId is required");
+        }
+        var note = dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent
+                .<dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent>
+                        find("eventId", eventId).firstResult();
+        if (note == null
+                || !candidate.getUuid().equals(note.getCandidateUuid())
+                || note.getEventType() != dk.trustworks.intranet.recruitmentservice.events
+                        .RecruitmentEventType.NOTE_ADDED) {
+            throw new jakarta.ws.rs.NotFoundException("Fact not found: " + eventId);
+        }
+        return note;
+    }
+
+    /** The vocabulary field a fact note carries, or 400 when it carries none. */
+    public String factFieldOf(
+            dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent note) {
+        String field = null;
+        try {
+            var payload = objectMapper.readValue(
+                    note.getPayload() == null ? "{}" : note.getPayload(),
+                    new com.fasterxml.jackson.core.type.TypeReference<
+                            java.util.Map<String, Object>>() {
+                    });
+            if (payload.get("field") instanceof String f) {
+                field = f;
+            }
+        } catch (Exception e) {
+            field = null;
+        }
+        if (!RecruitmentFactVocabulary.isKnown(field)) {
+            throw new BusinessRuleViolation(
+                    "Only a recorded fact can be redacted — this note carries no field");
+        }
+        return field;
+    }
+
     /** One NOTE_ADDED fact append + the AI resolve bookkeeping when accepted from a chip. */
     private dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent appendFact(
             RecruitmentInterview interview, RecruitmentCandidate candidate,

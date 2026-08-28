@@ -125,4 +125,79 @@ class RecruitmentFactStatesTest {
                 .get("EARLIEST_START");
         assertEquals(folded, incremental);
     }
+
+    // ---- Retraction (change request 2026-08-28) --------------------------
+    //
+    // Redaction is expressed as a re-fold over the SURVIVING notes — the
+    // ledger filters them out before folding and the projector re-folds that
+    // one (candidate, field) from scratch, because an incremental `apply`
+    // has no inverse and withdrawing the newest statement has to move the
+    // state BACKWARDS. These lock the semantics both of them depend on.
+
+    @Test
+    void redactingTheNewestValue_fallsBackToTheOneBeforeIt() {
+        List<FactNote> surviving = List.of(
+                note(1, "EARLIEST_START", T0, false, false));
+        // seq 2 ("1 September", say) was withdrawn and is simply not here.
+
+        Map<String, Persisted> folded = RecruitmentFactStates.fold(surviving);
+
+        Persisted persisted = folded.get("EARLIEST_START");
+        assertEquals("STATED", persisted.state());
+        assertEquals(1, persisted.lastValueEventSeq());
+        assertEquals(State.STATED, RecruitmentFactStates.effective(TIMING, persisted, T0));
+    }
+
+    @Test
+    void redactingEveryStatement_leavesNoEntryAtAll() {
+        // Not "an entry that says nothing" — no entry, which is what makes
+        // the projector delete the row and the field read UNKNOWN again.
+        Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of());
+
+        assertNull(folded.get("EARLIEST_START"));
+        assertEquals(State.UNKNOWN,
+                RecruitmentFactStates.effective(TIMING, folded.get("EARLIEST_START"), T0));
+    }
+
+    @Test
+    void redactingTheValueUnderAnAskedNote_leavesTheSpentQuestion() {
+        // "Asked, nothing usable" at seq 2 kept an earlier value alive; once
+        // that value is withdrawn only the spent question survives, and it
+        // must not be reported as a value the offer can rely on.
+        Map<String, Persisted> withValue = RecruitmentFactStates.fold(List.of(
+                note(1, "EARLIEST_START", T0, false, false),
+                note(2, "EARLIEST_START", T0.plusHours(1), true, false)));
+        assertEquals("STATED", withValue.get("EARLIEST_START").state());
+
+        Map<String, Persisted> afterRedaction = RecruitmentFactStates.fold(List.of(
+                note(2, "EARLIEST_START", T0.plusHours(1), true, false)));
+
+        Persisted persisted = afterRedaction.get("EARLIEST_START");
+        assertEquals("ASKED", persisted.state());
+        assertNull(persisted.lastStatedAt());
+        assertEquals(State.ASKED, RecruitmentFactStates.effective(TIMING, persisted, T0));
+    }
+
+    @Test
+    void redactingAConfirmation_fallsBackToTheUnconfirmedValue() {
+        // The offer relies on CONFIRMED, so a withdrawn confirmation must
+        // not leave the field still reading settled.
+        Map<String, Persisted> folded = RecruitmentFactStates.fold(List.of(
+                note(1, "EARLIEST_START", T0, false, false)));
+
+        assertEquals("STATED", folded.get("EARLIEST_START").state());
+    }
+
+    @Test
+    void refoldIsPure_soReplayingARedactionChangesNothing() {
+        // The projector's re-fold is deliberately not seq-guarded (a guard
+        // would refuse to move the row backwards), so idempotence has to
+        // come from the fold itself.
+        List<FactNote> surviving = List.of(
+                note(1, "EARLIEST_START", T0, false, false),
+                note(3, "EARLIEST_START", T0.plusDays(1), false, true));
+
+        assertEquals(RecruitmentFactStates.fold(surviving),
+                RecruitmentFactStates.fold(surviving));
+    }
 }

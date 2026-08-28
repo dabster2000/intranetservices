@@ -971,6 +971,96 @@ public class CandidateService {
         return eventRecorder.record(builder.pii("text", edit.text()));
     }
 
+    /**
+     * Withdraw a fact-bearing {@code NOTE_ADDED} (change request 2026-08-28).
+     *
+     * <p>Appends {@code FACT_REDACTED} and leaves the original event exactly
+     * as it is: its pii stays in the stream for the audit trail while every
+     * read path stops counting and showing it. The value is deliberately not
+     * restated in the redaction's payload — a retraction that copies the
+     * thing it retracts into a second row has not retracted much.
+     *
+     * <p>Idempotent by design: a second call for the same note returns the
+     * existing redaction rather than appending another. The pill is clicked
+     * mid-interview, and a double-click must not put two rows on the stream.
+     *
+     * <p>The COMP GATE IS THE CALLER'S — the room authorizes by interview
+     * assignment and the profile by candidate visibility, and they are not
+     * the same gate. This method refuses only what is structurally wrong.
+     *
+     * @param noteEventId   the {@code NOTE_ADDED} to withdraw
+     * @param origin        {@code interview_room} or {@code candidate_profile}
+     * @param interviewUuid the room it was withdrawn from, or null
+     * @return the {@code FACT_REDACTED} event
+     */
+    public RecruitmentEvent redactFact(UUID candidateUuid, String noteEventId, UUID actor,
+                                       String origin, String interviewUuid) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (noteEventId == null || noteEventId.isBlank()) {
+            throw badRequest("eventId is required");
+        }
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        RecruitmentEvent original = RecruitmentEvent
+                .<RecruitmentEvent>find("eventId", noteEventId).firstResult();
+        if (original == null
+                || !candidate.getUuid().equals(original.getCandidateUuid())
+                || original.getEventType() != RecruitmentEventType.NOTE_ADDED) {
+            throw new NotFoundException("Fact not found: " + noteEventId);
+        }
+        Map<String, Object> payload = parseEventJson(original.getPayload());
+        String field = payload.get("field") instanceof String f ? f : null;
+        if (!RecruitmentFactVocabulary.isKnown(field)) {
+            // A discussion note is edited by its author, not redacted — the
+            // two corrections have different rules and different audiences.
+            throw badRequest("Only a recorded fact can be redacted — this note carries no field");
+        }
+        RecruitmentEvent existing = findRedaction(candidate.getUuid(), noteEventId);
+        if (existing != null) {
+            return existing;
+        }
+        RecruitmentEventBuilder builder = RecruitmentEventBuilder
+                .event(RecruitmentEventType.FACT_REDACTED)
+                .candidate(candidate.getUuid())
+                .application(original.getApplicationUuid())
+                .position(original.getPositionUuid())
+                .actorUser(actor.toString())
+                // Inherited so a redaction can never be more widely readable
+                // than the fact it withdraws.
+                .visibility(original.getVisibility())
+                .payload("redacted_event_id", noteEventId)
+                .payload("field", field)
+                .payload("origin", origin == null ? "candidate_profile" : origin);
+        if (interviewUuid != null && !interviewUuid.isBlank()) {
+            builder = builder.payload("interview_uuid", interviewUuid);
+        }
+        return eventRecorder.record(builder);
+    }
+
+    /**
+     * The vocabulary field a note carries, or null when it is an ordinary
+     * discussion note. Public so a resource can apply its own comp gate
+     * BEFORE {@link #redactFact} writes anything — the two resources gate
+     * differently and neither gate belongs in here.
+     */
+    public String factFieldOfNote(RecruitmentEvent note) {
+        Object field = parseEventJson(note.getPayload()).get("field");
+        return field instanceof String key && RecruitmentFactVocabulary.isKnown(key) ? key : null;
+    }
+
+    /** The existing redaction of one note, or null — the idempotency probe. */
+    private RecruitmentEvent findRedaction(String candidateUuid, String noteEventId) {
+        List<RecruitmentEvent> redactions = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType = ?2",
+                candidateUuid, RecruitmentEventType.FACT_REDACTED);
+        for (RecruitmentEvent redaction : redactions) {
+            if (noteEventId.equals(parseEventJson(redaction.getPayload())
+                    .get("redacted_event_id"))) {
+                return redaction;
+            }
+        }
+        return null;
+    }
+
     /** Parse an event's JSON payload section; null/blank/broken → empty map. */
     private Map<String, Object> parseEventJson(String json) {
         if (json == null || json.isBlank()) {
