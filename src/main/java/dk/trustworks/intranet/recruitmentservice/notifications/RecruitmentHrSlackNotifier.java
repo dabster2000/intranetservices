@@ -45,7 +45,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * Any exception thrown by {@link SlackService} (or by data resolution) is
  * caught, logged at ERROR with the candidate UUID, and swallowed so the
  * caller's transactional flow ({@code applySharePointResult}) is not
- * affected.
+ * affected. Sends use the STRICT variant, so a not-ok Slack response (e.g.
+ * {@code channel_not_found} on a private offer channel the bot is not a
+ * member of) reaches that catch block instead of being swallowed inside
+ * {@link SlackService} — before 2026-08-27 such a loss logged a false
+ * "posted" INFO here and one unattributable ERROR there.
  */
 @JBossLog
 @ApplicationScoped
@@ -118,7 +122,7 @@ public class RecruitmentHrSlackNotifier {
             String channel = hrChannel();
             String message = formatMessage(candidate, recruiterUuid,
                     signedFilenames == null ? List.of() : signedFilenames);
-            slackService.sendMessage(channel, message, botTokenKey);
+            slackService.sendMessageStrict(channel, message, botTokenKey);
             log.infof("HR Slack notification posted for candidate=%s channel=%s",
                     candidate.getUuid(), channel);
         } catch (Exception e) {
@@ -155,7 +159,7 @@ public class RecruitmentHrSlackNotifier {
 
         try {
             String channel = hrChannel();
-            slackService.sendMessage(channel, formatNoBindingDocumentsMessage(candidate, recruiterUuid),
+            slackService.sendMessageStrict(channel, formatNoBindingDocumentsMessage(candidate, recruiterUuid),
                     botTokenKey);
             log.infof("HR Slack no-signed-contract notification posted for candidate=%s channel=%s",
                     candidate.getUuid(), channel);
@@ -193,7 +197,7 @@ public class RecruitmentHrSlackNotifier {
             return; // offer split off — this moment only exists on the offer channel
         }
         try {
-            slackService.sendMessage(channel,
+            slackService.sendMessageStrict(channel,
                     formatContractSentMessage(candidate, documentCount, signerCount), botTokenKey);
             log.infof("HR Slack contract-sent notification posted for candidate=%s channel=%s",
                     candidate.getUuid(), channel);
@@ -237,7 +241,7 @@ public class RecruitmentHrSlackNotifier {
             return;
         }
         try {
-            slackService.sendMessage(hrChannel(),
+            slackService.sendMessageStrict(hrChannel(),
                     formatCandidateInviteFailedMessage(candidate, interview, problem,
                             reason, graphRequestId),
                     botTokenKey);
@@ -442,7 +446,7 @@ public class RecruitmentHrSlackNotifier {
                     submissions == null ? List.of() : submissions,
                     displayName == null ? "unknown" : displayName,
                     linkUrl == null ? "" : linkUrl);
-            slackService.sendMessage(channel, message, botTokenKey);
+            slackService.sendMessageStrict(channel, message, botTokenKey);
             log.infof("HR Slack onboarding-complete notification posted for token=%s channel=%s",
                     token.getUuid(), channel);
         } catch (Exception e) {

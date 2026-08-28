@@ -125,6 +125,39 @@ public class SlackService {
     }
 
     /**
+     * Strict sibling of {@link #sendMessage(String, String, String)} — the
+     * same plain-text post, but a transport failure or a not-ok API response
+     * THROWS instead of being logged and swallowed. For callers whose failure
+     * handling is real: a reactor delivery that retries and dead-letters, or
+     * a notifier whose catch block records which message was lost. The
+     * swallow variant let a {@code channel_not_found} on the offer channel
+     * commit as a success (2026-08-27, two "documents signed" messages),
+     * leaving one ERROR line that named neither caller nor content.
+     */
+    public void sendMessageStrict(String channel, String message)
+            throws SlackApiException, IOException {
+        sendMessageStrict(channel, message, "mother");
+    }
+
+    /** Token selection as in {@link #sendMessage(String, String, String)}. */
+    public void sendMessageStrict(String channel, String message, String tokenKey)
+            throws SlackApiException, IOException {
+        String token = (tokenKey != null && tokenKey.equalsIgnoreCase("admin"))
+                ? adminSlackBotToken : motherSlackBotToken;
+        ChatPostMessageResponse response = Slack.getInstance().methods(token)
+                .chatPostMessage(req -> req
+                        .channel(channel)
+                        .text(message));
+        if (!response.isOk()) {
+            // The channel id belongs in the message: this is what a dead
+            // letter or a caller's ERROR line carries, and "channel_not_found"
+            // with no channel is not diagnosable after the fact.
+            throw new IOException("Slack post failed for channel " + channel + ": "
+                    + response.getError());
+        }
+    }
+
+    /**
      * Posts a Block Kit message to the given channel using the mother bot token.
      * Best-effort: logs (label + channel only, never the token) and swallows on
      * failure; never throws. {@code fallbackText} is the notification/preview text.
