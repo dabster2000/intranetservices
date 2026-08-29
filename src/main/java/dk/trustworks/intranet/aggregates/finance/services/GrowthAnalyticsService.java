@@ -5,6 +5,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthBaselineDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthTimelineDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthTimelineMonthDTO;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
+import dk.trustworks.intranet.financeservice.services.BankLiquidityService;
+import dk.trustworks.intranet.financeservice.services.BankLiquidityService.GroupFlowMonth;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -79,30 +81,41 @@ public class GrowthAnalyticsService {
     @Inject
     DistributionAwareOpexProvider opexProvider;
 
+    @Inject
+    BankLiquidityService bankLiquidityService;
+
     // ========================================================================
-    // Public API
+    // Public API — group-level only. Liquidity is managed by moving money
+    // between the three companies, so this tab deliberately has no company
+    // filter; every series is the combined total.
     // ========================================================================
 
-    public GrowthTimelineDTO getTimeline(Set<String> companyIds, CostSource costSource) {
+    public GrowthTimelineDTO getTimeline(CostSource costSource) {
         LocalDate today = LocalDate.now();
         YearMonth current = YearMonth.from(today);
 
-        Map<String, Double> revenueByMonth = queryMonthlyRevenue(companyIds, null, monthKey(current));
+        Map<String, Double> revenueByMonth = queryMonthlyRevenue(null, null, monthKey(current));
         Map<String, Double> opexByMonth = opexProvider.getMonthlyOpex(
-                COST_DATA_FROM_KEY, monthKey(current), companyIds, costSource);
+                COST_DATA_FROM_KEY, monthKey(current), null, costSource);
         Map<String, Double> glDirectByMonth = queryMonthlyGlDirectCost(
-                companyIds, COST_DATA_FROM_KEY, monthKey(current), costSource);
-        List<StatusRow> statusRows = queryStatusRows(companyIds);
+                null, COST_DATA_FROM_KEY, monthKey(current), costSource);
+        List<StatusRow> statusRows = queryStatusRows(null);
 
         Map<String, HeadcountMonth> headcountByMonth =
                 foldHeadcount(statusRows, REVENUE_START, current, today);
 
+        List<GroupFlowMonth> bankFlows = bankLiquidityService.groupMonthlyFlows();
+        Map<String, Double> bankBalanceByMonth = cumulativeBalances(bankFlows);
+        Map<String, Double> bankFlowByMonth = new HashMap<>();
+        for (GroupFlowMonth flow : bankFlows) bankFlowByMonth.put(flow.monthKey(), flow.totalFlow());
+
         List<GrowthTimelineMonthDTO> months = assembleTimeline(
-                REVENUE_START, current, revenueByMonth, opexByMonth, glDirectByMonth, headcountByMonth);
+                REVENUE_START, current, revenueByMonth, opexByMonth, glDirectByMonth,
+                headcountByMonth, bankBalanceByMonth, bankFlowByMonth);
         return new GrowthTimelineDTO(months, COST_DATA_FROM_KEY, monthKey(current));
     }
 
-    public GrowthBaselineDTO getSimulationBaseline(Set<String> companyIds, CostSource costSource) {
+    public GrowthBaselineDTO getSimulationBaseline(CostSource costSource) {
         LocalDate today = LocalDate.now();
         YearMonth current = YearMonth.from(today);
         YearMonth asOf = current.minusMonths(1);
@@ -112,7 +125,7 @@ public class GrowthAnalyticsService {
 
         // People — current counts (clamped to today so future-dated status rows
         // don't count yet) and TTM average ACTIVE per type for hour normalization.
-        List<StatusRow> statusRows = queryStatusRows(companyIds);
+        List<StatusRow> statusRows = queryStatusRows(null);
         Map<String, HeadcountMonth> currentFold = foldHeadcount(statusRows, current, current, today);
         HeadcountMonth now = currentFold.getOrDefault(monthKey(current), HeadcountMonth.EMPTY);
         Map<String, HeadcountMonth> ttmFold = foldHeadcount(statusRows, ttmFrom, asOf, today);
@@ -120,37 +133,60 @@ public class GrowthAnalyticsService {
         double avgStudents = averageOf(ttmFold, HeadcountMonth::students);
 
         // Salary per person per type — latest complete month with salary facts.
-        String salaryMonthKey = queryLatestSalaryMonthKey(companyIds, ttmToKey);
-        Map<String, SalaryStats> salaryByType = querySalaryByType(companyIds, salaryMonthKey);
+        String salaryMonthKey = queryLatestSalaryMonthKey(null, ttmToKey);
+        Map<String, SalaryStats> salaryByType = querySalaryByType(null, salaryMonthKey);
 
         // Payroll overhead — GL payroll (SALARIES) TTM vs. salary-fact TTM.
         List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
-                ttmFromKey, ttmToKey, companyIds, null, null, costSource);
+                ttmFromKey, ttmToKey, null, null, null, costSource);
         double payrollTtm = 0d;
         double nonPayrollTtm = 0d;
         for (OpexRow row : opexRows) {
             if (row.isPayrollFlag()) payrollTtm += row.opexAmountDkk();
             else nonPayrollTtm += row.opexAmountDkk();
         }
-        double salaryFactTtm = querySalaryFactTtm(companyIds, ttmFromKey, ttmToKey);
+        double salaryFactTtm = querySalaryFactTtm(null, ttmFromKey, ttmToKey);
         Double overheadFactor = salaryFactTtm > 0 ? payrollTtm / salaryFactTtm : null;
 
-        // Revenue + direct cost TTM.
-        Map<String, Double> revenueByMonth = queryMonthlyRevenue(companyIds, ttmFromKey, ttmToKey);
-        double revenueTtm = revenueByMonth.values().stream().mapToDouble(Double::doubleValue).sum();
+        // Revenue + cost maps over the whole cost-data era — the TTM figures are
+        // subsets, and the cash-conversion measurement needs the full window.
+        Map<String, Double> revenueByMonth =
+                queryMonthlyRevenue(null, COST_DATA_FROM_KEY, ttmToKey);
+        Map<String, Double> opexByMonth = opexProvider.getMonthlyOpex(
+                COST_DATA_FROM_KEY, ttmToKey, null, costSource);
         Map<String, Double> glDirectByMonth =
-                queryMonthlyGlDirectCost(companyIds, ttmFromKey, ttmToKey, costSource);
-        double glDirectTtm = glDirectByMonth.values().stream().mapToDouble(Double::doubleValue).sum();
+                queryMonthlyGlDirectCost(null, COST_DATA_FROM_KEY, ttmToKey, costSource);
+        double revenueTtm = sumWindow(revenueByMonth, ttmFromKey, ttmToKey);
+        double glDirectTtm = sumWindow(glDirectByMonth, ttmFromKey, ttmToKey);
 
         // Billable work per type (TTM).
         Map<String, WorkStats> workByType =
-                queryWorkStatsByType(companyIds, ttmFrom.atDay(1), current.atDay(1));
+                queryWorkStatsByType(null, ttmFrom.atDay(1), current.atDay(1));
         WorkStats consultantWork = workByType.get("CONSULTANT");
         WorkStats studentWork = workByType.get("STUDENT");
 
         SalaryStats consultantSalary = salaryByType.get("CONSULTANT");
         SalaryStats studentSalary = salaryByType.get("STUDENT");
         SalaryStats staffSalary = salaryByType.get("STAFF");
+
+        // Liquidity — combined imported bank flows across all three companies.
+        List<GroupFlowMonth> bankFlows = bankLiquidityService.groupMonthlyFlows();
+        Double bankBalance = bankFlows.isEmpty() ? null
+                : bankFlows.stream().mapToDouble(GroupFlowMonth::totalFlow).sum();
+        Double bankBalanceBooked = bankFlows.isEmpty() ? null
+                : bankFlows.stream().mapToDouble(GroupFlowMonth::bookedFlow).sum();
+        Map<String, Double> ebitdaByMonth = new HashMap<>();
+        for (Map.Entry<String, Double> e : revenueByMonth.entrySet()) {
+            String mk = e.getKey();
+            ebitdaByMonth.put(mk, e.getValue()
+                    - opexByMonth.getOrDefault(mk, 0d)
+                    - glDirectByMonth.getOrDefault(mk, 0d));
+        }
+        Double conversion = measureCashConversion(bankFlows, ebitdaByMonth, COST_DATA_FROM_KEY, ttmToKey);
+        List<Double> seasonal = seasonalFlowPattern(bankFlows);
+        int lastCompleteFy = fiscalYearOf(asOf) - 1;
+        Double lastFyDividend = lastFiscalYearDividend(bankFlows, lastCompleteFy);
+        Integer dividendMonth = dominantDividendMonth(bankFlows);
 
         return new GrowthBaselineDTO(
                 ttmToKey,
@@ -168,7 +204,14 @@ public class GrowthAnalyticsService {
                 perPersonMonthlyHours(consultantWork, avgConsultants),
                 perPersonMonthlyHours(studentWork, avgStudents),
                 revenueTtm,
-                payrollTtm + nonPayrollTtm + glDirectTtm);
+                payrollTtm + nonPayrollTtm + glDirectTtm,
+                bankBalance,
+                bankBalanceBooked,
+                conversion,
+                seasonal,
+                lastFyDividend,
+                dividendMonth,
+                payrollTtm / 12d);
     }
 
     // ========================================================================
@@ -277,7 +320,9 @@ public class GrowthAnalyticsService {
             Map<String, Double> revenueByMonth,
             Map<String, Double> opexByMonth,
             Map<String, Double> glDirectByMonth,
-            Map<String, HeadcountMonth> headcountByMonth) {
+            Map<String, HeadcountMonth> headcountByMonth,
+            Map<String, Double> bankBalanceByMonth,
+            Map<String, Double> bankFlowByMonth) {
 
         List<GrowthTimelineMonthDTO> result = new ArrayList<>();
         for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
@@ -296,6 +341,8 @@ public class GrowthAnalyticsService {
                     opex,
                     glDirect,
                     totalCost,
+                    bankBalanceByMonth.get(mk),
+                    bankFlowByMonth.get(mk),
                     hc.consultants(),
                     hc.students(),
                     hc.staff(),
@@ -304,6 +351,137 @@ public class GrowthAnalyticsService {
                     hc.terminations()));
         }
         return result;
+    }
+
+    /**
+     * End-of-month combined balance per month: running sum of the (chronological)
+     * flow series. Cumulative flows equal the accounting balance because opening
+     * entries are excluded at import — verified to the øre for all three
+     * companies. Months between the first and last flow month with no row still
+     * get a balance (the running sum carries forward).
+     */
+    static Map<String, Double> cumulativeBalances(List<GroupFlowMonth> flows) {
+        Map<String, Double> result = new HashMap<>();
+        if (flows.isEmpty()) return result;
+        double running = 0;
+        YearMonth cursor = null;
+        Map<String, Double> byKey = new HashMap<>();
+        for (GroupFlowMonth flow : flows) byKey.put(flow.monthKey(), flow.totalFlow());
+        YearMonth first = parseMonthKey(flows.get(0).monthKey());
+        YearMonth last = parseMonthKey(flows.get(flows.size() - 1).monthKey());
+        for (cursor = first; !cursor.isAfter(last); cursor = cursor.plusMonths(1)) {
+            String mk = monthKey(cursor);
+            running += byKey.getOrDefault(mk, 0d);
+            result.put(mk, running);
+        }
+        return result;
+    }
+
+    /**
+     * Measured EBITDA→cash conversion: Σ(non-dividend bank flow) ÷ Σ(EBITDA)
+     * over the months in {@code [fromKey..toKey]} where both series exist.
+     * Null when the window is empty or EBITDA is non-positive.
+     */
+    static Double measureCashConversion(
+            List<GroupFlowMonth> flows, Map<String, Double> ebitdaByMonth,
+            String fromKey, String toKey) {
+        double flowSum = 0;
+        double ebitdaSum = 0;
+        boolean any = false;
+        for (GroupFlowMonth flow : flows) {
+            String mk = flow.monthKey();
+            if (mk.compareTo(fromKey) < 0 || mk.compareTo(toKey) > 0) continue;
+            Double ebitda = ebitdaByMonth.get(mk);
+            if (ebitda == null) continue;
+            flowSum += flow.totalFlow() - flow.dividendFlow();
+            ebitdaSum += ebitda;
+            any = true;
+        }
+        if (!any || ebitdaSum <= 0) return null;
+        return flowSum / ebitdaSum;
+    }
+
+    /**
+     * Median intra-year cash-flow deviation per calendar month, measured on
+     * non-dividend flows across complete fiscal years, re-centered to sum ≈ 0.
+     * Index 0 = January. Returns an empty list when fewer than two complete
+     * fiscal years of bank data exist.
+     */
+    static List<Double> seasonalFlowPattern(List<GroupFlowMonth> flows) {
+        // Group non-dividend flows by fiscal year; keep only complete (12-month) years.
+        Map<Integer, Map<Integer, Double>> byFy = new TreeMap<>();
+        for (GroupFlowMonth flow : flows) {
+            YearMonth ym = parseMonthKey(flow.monthKey());
+            byFy.computeIfAbsent(fiscalYearOf(ym), k -> new HashMap<>())
+                    .merge(ym.getMonthValue(), flow.totalFlow() - flow.dividendFlow(), Double::sum);
+        }
+        List<double[]> residualYears = new ArrayList<>();
+        for (Map<Integer, Double> months : byFy.values()) {
+            if (months.size() < 12) continue;
+            double mean = months.values().stream().mapToDouble(Double::doubleValue).sum() / 12d;
+            double[] residuals = new double[12];
+            for (Map.Entry<Integer, Double> e : months.entrySet()) {
+                residuals[e.getKey() - 1] = e.getValue() - mean;
+            }
+            residualYears.add(residuals);
+        }
+        if (residualYears.size() < 2) return List.of();
+
+        double[] medians = new double[12];
+        for (int m = 0; m < 12; m++) {
+            double[] values = new double[residualYears.size()];
+            for (int y = 0; y < residualYears.size(); y++) values[y] = residualYears.get(y)[m];
+            java.util.Arrays.sort(values);
+            int n = values.length;
+            medians[m] = n % 2 == 1 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) / 2d;
+        }
+        double center = java.util.Arrays.stream(medians).average().orElse(0);
+        List<Double> result = new ArrayList<>(12);
+        for (double median : medians) result.add(median - center);
+        return result;
+    }
+
+    /** Absolute dividend outflow total in the given fiscal year; null when zero/none. */
+    static Double lastFiscalYearDividend(List<GroupFlowMonth> flows, int fiscalYear) {
+        double sum = 0;
+        for (GroupFlowMonth flow : flows) {
+            if (fiscalYearOf(parseMonthKey(flow.monthKey())) == fiscalYear) {
+                sum += flow.dividendFlow();
+            }
+        }
+        return sum != 0 ? Math.abs(sum) : null;
+    }
+
+    /** Calendar month (1–12) with the largest historical dividend outflows; null when none. */
+    static Integer dominantDividendMonth(List<GroupFlowMonth> flows) {
+        double[] byMonth = new double[12];
+        for (GroupFlowMonth flow : flows) {
+            byMonth[parseMonthKey(flow.monthKey()).getMonthValue() - 1] += Math.abs(flow.dividendFlow());
+        }
+        int best = -1;
+        double bestValue = 0;
+        for (int m = 0; m < 12; m++) {
+            if (byMonth[m] > bestValue) {
+                bestValue = byMonth[m];
+                best = m;
+            }
+        }
+        return best >= 0 ? best + 1 : null;
+    }
+
+    static double sumWindow(Map<String, Double> byMonth, String fromKey, String toKey) {
+        double sum = 0;
+        for (Map.Entry<String, Double> e : byMonth.entrySet()) {
+            if (e.getKey().compareTo(fromKey) >= 0 && e.getKey().compareTo(toKey) <= 0) {
+                sum += e.getValue();
+            }
+        }
+        return sum;
+    }
+
+    static YearMonth parseMonthKey(String monthKey) {
+        return YearMonth.of(Integer.parseInt(monthKey.substring(0, 4)),
+                Integer.parseInt(monthKey.substring(4, 6)));
     }
 
     /** Fiscal year (July 1 → June 30) a month belongs to, named by its starting calendar year. */

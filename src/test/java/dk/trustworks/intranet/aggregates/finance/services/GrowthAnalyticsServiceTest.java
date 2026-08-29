@@ -4,10 +4,12 @@ import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthTimelineMonthD
 import dk.trustworks.intranet.aggregates.finance.services.GrowthAnalyticsService.HeadcountMonth;
 import dk.trustworks.intranet.aggregates.finance.services.GrowthAnalyticsService.StatusRow;
 import dk.trustworks.intranet.aggregates.finance.services.GrowthAnalyticsService.WorkStats;
+import dk.trustworks.intranet.financeservice.services.BankLiquidityService.GroupFlowMonth;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -18,6 +20,7 @@ import static dk.trustworks.intranet.aggregates.finance.services.GrowthAnalytics
 import static dk.trustworks.intranet.aggregates.finance.services.GrowthAnalyticsService.perPersonMonthlyHours;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * DB-free tests for the pure fold/assembly logic behind the Growth &amp; Scenarios
@@ -181,6 +184,8 @@ class GrowthAnalyticsServiceTest {
                 Map.of("202406", 10.0, "202407", 12.0),
                 Map.of("202407", 8.0),
                 Map.of(),
+                Map.of(),
+                Map.of(),
                 Map.of());
 
         assertEquals(3, months.size());
@@ -207,7 +212,9 @@ class GrowthAnalyticsServiceTest {
         List<GrowthTimelineMonthDTO> months = assembleTimeline(
                 YearMonth.of(2026, 6), YearMonth.of(2026, 7),
                 Map.of(), Map.of(), Map.of(),
-                Map.of("202607", new HeadcountMonth(5, 2, 1, 1, 3, 1)));
+                Map.of("202607", new HeadcountMonth(5, 2, 1, 1, 3, 1)),
+                Map.of("202607", 24_700_000.0),
+                Map.of("202607", 1_200_000.0));
 
         assertEquals(2025, months.get(0).fiscalYear());
         assertEquals(2026, months.get(1).fiscalYear());
@@ -218,6 +225,72 @@ class GrowthAnalyticsServiceTest {
         assertEquals(1, july.onLeave());
         assertEquals(3, july.hires());
         assertEquals(1, july.terminations());
+        assertEquals(24_700_000.0, july.bankBalance());
+        assertEquals(1_200_000.0, july.bankNetFlow());
+        assertNull(months.get(0).bankBalance());
+    }
+
+    // -------------------------------------------------------------------------
+    // Liquidity helpers
+    // -------------------------------------------------------------------------
+
+    private static GroupFlowMonth flow(String monthKey, double total, double dividend) {
+        return new GroupFlowMonth(monthKey, total, total, dividend);
+    }
+
+    @Test
+    void cumulativeBalancesCarryForwardThroughGapMonths() {
+        var balances = GrowthAnalyticsService.cumulativeBalances(List.of(
+                flow("202601", 10.0, 0),
+                flow("202603", -4.0, 0)));
+        assertEquals(10.0, balances.get("202601"));
+        assertEquals(10.0, balances.get("202602"));
+        assertEquals(6.0, balances.get("202603"));
+        assertTrue(GrowthAnalyticsService.cumulativeBalances(List.of()).isEmpty());
+    }
+
+    @Test
+    void cashConversionExcludesDividendsAndNeedsPositiveEbitda() {
+        var flows = List.of(
+                flow("202501", 780_000, 0),
+                flow("202502", -220_000, -1_000_000)); // dividend month: flow excl. div = 780k
+        Map<String, Double> ebitda = Map.of("202501", 1_000_000.0, "202502", 1_000_000.0);
+        Double conversion = GrowthAnalyticsService.measureCashConversion(flows, ebitda, "202407", "202606");
+        assertEquals(0.78, conversion, 1e-9);
+        assertNull(GrowthAnalyticsService.measureCashConversion(flows, Map.of(), "202407", "202606"));
+    }
+
+    @Test
+    void seasonalFlowPatternIsZeroCenteredMedianOfCompleteFiscalYears() {
+        // Two complete FYs where July is consistently 1.2M below the year mean.
+        List<GroupFlowMonth> flows = new ArrayList<>();
+        for (int fy : new int[]{2023, 2024}) {
+            for (int i = 0; i < 12; i++) {
+                YearMonth ym = YearMonth.of(fy, 7).plusMonths(i);
+                double value = ym.getMonthValue() == 7 ? -200_000 : 1_000_000;
+                flows.add(flow(monthKey(ym), value, 0));
+            }
+        }
+        List<Double> pattern = GrowthAnalyticsService.seasonalFlowPattern(flows);
+        assertEquals(12, pattern.size());
+        double sum = pattern.stream().mapToDouble(Double::doubleValue).sum();
+        assertEquals(0.0, sum, 1.0);
+        // July (index 6) is the dip.
+        assertTrue(pattern.get(6) < pattern.get(0));
+        // A single complete year is not enough.
+        assertTrue(GrowthAnalyticsService.seasonalFlowPattern(flows.subList(0, 12)).isEmpty());
+    }
+
+    @Test
+    void dividendHelpersMeasureLastFyAndDominantMonth() {
+        var flows = List.of(
+                flow("202511", -3_000_000, -2_000_000),  // Nov, FY2025
+                flow("202604", -1_500_000, -1_500_000),  // Apr, FY2025
+                flow("202411", -900_000, -900_000));     // Nov, FY2024
+        assertEquals(3_500_000.0, GrowthAnalyticsService.lastFiscalYearDividend(flows, 2025));
+        assertNull(GrowthAnalyticsService.lastFiscalYearDividend(flows, 2020));
+        assertEquals(11, GrowthAnalyticsService.dominantDividendMonth(flows));
+        assertNull(GrowthAnalyticsService.dominantDividendMonth(List.of(flow("202601", 5.0, 0))));
     }
 
     // -------------------------------------------------------------------------

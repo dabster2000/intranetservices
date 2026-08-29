@@ -16,6 +16,11 @@ package dk.trustworks.intranet.aggregates.finance.dto.growth;
  * {@code onLeave} counts employees of the same three types whose current status
  * is a leave status (maternity / paid / non-pay leave). {@code hires} and
  * {@code terminations} count employment transitions dated in the month.</p>
+ *
+ * <p>{@code bankBalance} (end-of-month) and {@code bankNetFlow} are the
+ * combined liquidity across all three companies, from the imported e-conomic
+ * bank flows ({@code fact_bank_flow_monthly}) — null until the first import
+ * has run or for months before bank data starts.</p>
  */
 public record GrowthTimelineMonthDTO(
         String monthKey,
@@ -26,6 +31,8 @@ public record GrowthTimelineMonthDTO(
         Double opexCost,
         Double glDirectCost,
         Double totalCost,
+        Double bankBalance,
+        Double bankNetFlow,
         long consultants,
         long students,
         long staff,

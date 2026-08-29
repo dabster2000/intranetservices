@@ -35,6 +35,27 @@ package dk.trustworks.intranet.aggregates.finance.dto.growth;
  * @param ttmRevenue              net revenue over the TTM window, DKK
  * @param ttmTotalCost            OPEX (incl. payroll) + GL direct cost over the TTM
  *                                window, DKK
+ * @param bankBalance             combined liquidity across all three companies right
+ *                                now: cumulative imported bank flows incl. Smart Bank
+ *                                drafts (fresh to ~yesterday). Null until the first
+ *                                e-conomic import has run
+ * @param bankBalanceBooked       the booked-only subset of {@code bankBalance} — the
+ *                                accounting balance, which lags the truth by the
+ *                                unbooked draft outflows/inflows
+ * @param cashConversionRatio     measured Δcash (excl. dividends) ÷ EBITDA over the
+ *                                months where both GL cost data and bank flows exist;
+ *                                null when not computable
+ * @param seasonalFlowDkk         12 mean-zero DKK amounts (index 0 = January): the
+ *                                median intra-year cash-flow deviation per calendar
+ *                                month, measured on non-dividend flows across complete
+ *                                fiscal years — VAT, corporate tax and vacation-pay
+ *                                rhythms live here. Empty until bank data exists
+ * @param lastFiscalYearDividendDkk  absolute sum of dividend-matched outflows in the
+ *                                last complete fiscal year; null when none found
+ * @param dividendMonth           calendar month (1–12) historically carrying the
+ *                                largest dividend outflows; null when none found
+ * @param payrollMonthly          average monthly GL payroll cost, DKK (TTM) — the
+ *                                liquidity warning threshold
  */
 public record GrowthBaselineDTO(
         String asOfMonthKey,
@@ -52,5 +73,12 @@ public record GrowthBaselineDTO(
         Double billableHoursConsultant,
         Double billableHoursStudent,
         double ttmRevenue,
-        double ttmTotalCost) {
+        double ttmTotalCost,
+        Double bankBalance,
+        Double bankBalanceBooked,
+        Double cashConversionRatio,
+        java.util.List<Double> seasonalFlowDkk,
+        Double lastFiscalYearDividendDkk,
+        Integer dividendMonth,
+        double payrollMonthly) {
 }

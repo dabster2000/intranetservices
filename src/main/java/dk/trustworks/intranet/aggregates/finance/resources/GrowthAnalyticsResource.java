@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
-import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthBaselineDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.growth.GrowthTimelineDTO;
 import dk.trustworks.intranet.aggregates.finance.services.GrowthAnalyticsService;
@@ -42,38 +41,34 @@ public class GrowthAnalyticsResource {
 
     /**
      * Multi-year monthly timeline: net revenue (2017-07 →), total cost (2024-07 →,
-     * null before) and point-in-time headcount by employee type incl. hires and
-     * terminations.
+     * null before), combined bank liquidity (balance + net flow, from the
+     * e-conomic import) and point-in-time headcount by employee type incl. hires
+     * and terminations.
      *
-     * @param companyIds optional comma-separated UUID list; absent/blank means group view
+     * <p>Group-level only — liquidity is managed by moving money between the
+     * three companies, so this endpoint deliberately has no company filter.</p>
+     *
      * @param costSource BOOKED or BOOKED_PLUS_DRAFT (defaults to BOOKED)
      */
     @GET
     @Path("/timeline")
-    public GrowthTimelineDTO timeline(
-            @QueryParam("companyIds") String companyIds,
-            @QueryParam("costSource") String costSource) {
-        return growthAnalyticsService.getTimeline(
-                CxoSqlSupport.parseCommaSeparated(companyIds),
-                CostSource.fromQueryParam(costSource));
+    public GrowthTimelineDTO timeline(@QueryParam("costSource") String costSource) {
+        return growthAnalyticsService.getTimeline(CostSource.fromQueryParam(costSource));
     }
 
     /**
      * Measured trailing-12-month actuals that seed the scenario simulation:
      * current headcount and average salary per employee type, payroll overhead
      * factor, non-payroll OPEX, subcontractor share of revenue, realized rates
-     * and billable hours per person.
+     * and billable hours per person, plus the liquidity seeds (combined bank
+     * balance, measured cash conversion, seasonal flow pattern, dividend
+     * history). Group-level only, like the timeline.
      *
-     * @param companyIds optional comma-separated UUID list; absent/blank means group view
      * @param costSource BOOKED or BOOKED_PLUS_DRAFT (defaults to BOOKED)
      */
     @GET
     @Path("/simulation-baseline")
-    public GrowthBaselineDTO simulationBaseline(
-            @QueryParam("companyIds") String companyIds,
-            @QueryParam("costSource") String costSource) {
-        return growthAnalyticsService.getSimulationBaseline(
-                CxoSqlSupport.parseCommaSeparated(companyIds),
-                CostSource.fromQueryParam(costSource));
+    public GrowthBaselineDTO simulationBaseline(@QueryParam("costSource") String costSource) {
+        return growthAnalyticsService.getSimulationBaseline(CostSource.fromQueryParam(costSource));
     }
 }
