@@ -15,10 +15,14 @@ import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.IndustryEngagementTrendDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.IndustryRateTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.IndustryRevenueTrendDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.IndustryServiceLineTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import dk.trustworks.intranet.aggregates.finance.services.IndustryRevenueTrendService;
+import dk.trustworks.intranet.aggregates.finance.services.IndustryWorkTrendService;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -55,6 +59,9 @@ public class CxoClientResource {
 
     @Inject
     IndustryRevenueTrendService industryRevenueTrendService;
+
+    @Inject
+    IndustryWorkTrendService industryWorkTrendService;
 
     @Inject
     ClientProfitabilityProvider clientProfitabilityProvider;
@@ -750,5 +757,80 @@ public class CxoClientResource {
         log.debugf("GET /clients/cxo/industry-revenue-trend: companyIds=%s, asOfDate=%s", companyIds, asOfDate);
 
         return industryRevenueTrendService.getIndustryRevenueTrend(asOfDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Gets the quarterly hours-weighted average billable rate per industry for the
+     * Industries tab.
+     *
+     * <p>Per industry segment: SUM(hours × rate) / SUM(hours) of registered work for
+     * the trailing 12 full calendar quarters, using the contract-consultant rate in
+     * effect on the registration date (the work_full view semantics). Includes each
+     * segment's client breakdown for the drill-down panel. The internal Trustworks
+     * client is excluded throughout.</p>
+     *
+     * @param companyIds Comma-separated company UUIDs (optional; filters on the contract's company)
+     * @param asOfDate   Reference date for the quarter window (optional, defaults to today; used in tests)
+     * @return IndustryRateTrendDTO with quarter metadata and per-segment series
+     */
+    @GET
+    @Path("/industry-rate-trend")
+    public IndustryRateTrendDTO getIndustryRateTrend(
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("asOfDate") LocalDate asOfDate) {
+
+        log.debugf("GET /clients/cxo/industry-rate-trend: companyIds=%s, asOfDate=%s", companyIds, asOfDate);
+
+        return industryWorkTrendService.getIndustryRateTrend(asOfDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Gets the quarterly average consultant-engagement length per industry for the
+     * Industries tab.
+     *
+     * <p>Engagements are derived from registered work rather than contract dates:
+     * one consultant working at one client, where months with at least 8 billable
+     * hours count as active, silences of up to 2 months (vacation, sick leave,
+     * short bench time) are bridged, and a longer silence ends the engagement.
+     * Covers the trailing 12 full calendar quarters; the internal Trustworks client
+     * is excluded.</p>
+     *
+     * @param companyIds Comma-separated company UUIDs (optional; filters on the contract's company)
+     * @param asOfDate   Reference date for the quarter window (optional, defaults to today; used in tests)
+     * @return IndustryEngagementTrendDTO with quarter metadata and per-segment series
+     */
+    @GET
+    @Path("/industry-engagement-trend")
+    public IndustryEngagementTrendDTO getIndustryEngagementTrend(
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("asOfDate") LocalDate asOfDate) {
+
+        log.debugf("GET /clients/cxo/industry-engagement-trend: companyIds=%s, asOfDate=%s", companyIds, asOfDate);
+
+        return industryWorkTrendService.getIndustryEngagementTrend(asOfDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Gets the quarterly service-line penetration per industry for the Industries tab.
+     *
+     * <p>Per industry segment and quarter: distinct active clients, distinct clients
+     * per service line, and the average number of distinct service lines an active
+     * client bought. Same revenue source as the Client &amp; Portfolio tab's Service
+     * Line Penetration chart. Covers the trailing 12 full calendar quarters; the
+     * internal Trustworks client is excluded.</p>
+     *
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param asOfDate   Reference date for the quarter window (optional, defaults to today; used in tests)
+     * @return IndustryServiceLineTrendDTO with quarter metadata and per-segment series
+     */
+    @GET
+    @Path("/industry-service-line-trend")
+    public IndustryServiceLineTrendDTO getIndustryServiceLineTrend(
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("asOfDate") LocalDate asOfDate) {
+
+        log.debugf("GET /clients/cxo/industry-service-line-trend: companyIds=%s, asOfDate=%s", companyIds, asOfDate);
+
+        return industryWorkTrendService.getIndustryServiceLineTrend(asOfDate, parseCommaSeparated(companyIds));
     }
 }
