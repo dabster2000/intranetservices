@@ -998,17 +998,22 @@ public class CxoDeliveryService {
      * Business Logic:
      * - Normalizes dates to a full 12-month window ending at toDate
      * - Calculates prior year window for YoY comparison
-     * - Queries work_full_optimized view for billable work records
+     * - Prices the timesheet at contract rates (work_full_optimized, rate &gt; 0) for the
+     *   expected side, and reads invoiced revenue (fact_project_financials_mat) for the
+     *   actual side
      * - Builds 12-month sparkline showing monthly realization rates
      *
      * Realization Formula:
-     * - Billed Value = SUM(workduration × rate) where rate > 0
-     * - Expected Value = SUM(workduration × rate) (all billable work)
+     * - Expected Value = SUM(workduration × contract rate) where rate &gt; 0
+     * - Billed Value = SUM(recognized_revenue_dkk), deduplicated per project-month
      * - Realization Rate = (Billed Value / Expected Value) × 100
+     *
+     * See {@link #queryRealizationPercent} for why the two sides cannot both come from
+     * work_full_optimized, and why {@code work.billable} is not a usable filter.
      *
      * @param fromDate Start date (optional, auto-calculated if null)
      * @param toDate End date (optional, defaults to today)
-     * @param practices Multi-select practice filter (e.g., "PM", "DEV", "BA")
+     * @param practices Multi-select practice filter (canonical codes: PM, IA, BU, TECH, CYB)
      * @param companyIds Multi-select company filter (UUIDs)
      * @return RealizationRateDTO with current/prior percentages, YoY change, and sparkline
      */
@@ -1064,15 +1069,37 @@ public class CxoDeliveryService {
 
     /**
      * Query realization rate percentage for a date range.
-     * Calculates: (SUM(billed_value) / SUM(expected_value)) * 100
      *
-     * Uses work_full_optimized view which joins work with contracts to get actual and contract rates.
+     * <p>Realization measures value leakage: how much of the work performed at contracted
+     * rates actually turned into invoiced revenue. That needs two <em>independent</em>
+     * sources — an expected side priced from the timesheet at contract rates, and an actual
+     * side taken from the invoiced-revenue fact table.
      *
-     * @param fromDate Start date
-     * @param toDate End date
-     * @param practices Optional practice filter
+     * <pre>
+     *   expected    = SUM(workduration * rate)     from work_full_optimized  (rate &gt; 0)
+     *   actual      = SUM(recognized_revenue_dkk)  from fact_project_financials_mat
+     *   realization = actual / expected * 100
+     * </pre>
+     *
+     * <p><b>Why both sides cannot come from work_full_optimized.</b> The previous
+     * implementation divided {@code SUM(CASE WHEN rate > 0 THEN duration * rate ELSE 0 END)}
+     * by {@code SUM(duration * rate)} over the same row set. Those two expressions are
+     * algebraically identical, so the ratio could only ever be 100% — or 0% when the row set
+     * was empty. It was empty: the query also filtered on {@code w.billable = true}, and
+     * nothing has written {@code work.billable} since 2023-12-08 (every row registered after
+     * that date has {@code billable = 0}), so the KPI reported a flat 0.0% for every recent
+     * period. The maintained billability signal is {@code rate > 0} — the contract-consultant
+     * rate in effect on the registration date — which is what the expected side uses here and
+     * what {@code IndustryWorkTrendService} uses for the same purpose.
+     *
+     * <p>Internal Trustworks work is excluded on both sides: it is never invoiced, so leaving
+     * it in the denominator would depress realization by pure construction.
+     *
+     * @param fromDate Start date (inclusive)
+     * @param toDate End date (inclusive)
+     * @param practices Optional practice filter (canonical codes: PM, IA, BU, TECH, CYB)
      * @param companyIds Optional company filter
-     * @return Realization percentage (0-100+), rounded to 2 decimals
+     * @return Realization percentage (0-100+); 0.0 when there is no expected value in range
      */
     private double queryRealizationPercent(
             LocalDate fromDate,
@@ -1082,64 +1109,152 @@ public class CxoDeliveryService {
 
         log.tracef("queryRealizationPercent: date range [%s to %s]", fromDate, toDate);
 
-        // Build SQL query
-        StringBuilder sql = new StringBuilder();
-        sql.append("SELECT ");
-        sql.append("  SUM(CASE WHEN w.rate > 0 THEN w.workduration * w.rate ELSE 0 END) AS billed_value, ");
-        sql.append("  SUM(w.workduration * w.rate) AS expected_value ");
-        sql.append("FROM work_full_optimized w ");
-        sql.append("WHERE w.registered >= :fromDate ");
-        sql.append("  AND w.registered <= :toDate ");
-        sql.append("  AND w.type = 'CONSULTANT' ");
-        sql.append("  AND w.billable = true ");  // Only billable work
-
-        // Optional filters (null-safe)
-        // Note: work_full_optimized doesn't have practice_id directly
-        // We'll filter by consultant_company_uuid
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND w.consultant_company_uuid IN (:companyIds) ");
-        }
-
-        // Create and bind query
-        Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", toDate);
-
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        // Execute query and extract results
-        Object[] result = (Object[]) query.getSingleResult();
-        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
-        BigDecimal billedValue = result[0] != null
-            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
-            : BigDecimal.ZERO;
-        BigDecimal expectedValue = result[1] != null
-            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
-            : BigDecimal.ZERO;
-
-        // Handle null results (no data in range)
-        if (billedValue == null || expectedValue == null) {
-            log.tracef("No realization data found for range [%s to %s]", fromDate, toDate);
-            return 0.0;
-        }
-
-        // Calculate realization percentage
-        double billed = billedValue.doubleValue();
-        double expected = expectedValue.doubleValue();
-
+        double expected = queryExpectedValueAtContractRate(fromDate, toDate, practices, companyIds);
         if (expected <= 0) {
             log.tracef("Zero expected value for range [%s to %s]", fromDate, toDate);
             return 0.0;
         }
 
-        double realizationPercent = (billed / expected) * 100.0;
+        double billed = queryActualBilledRevenue(fromDate, toDate, practices, companyIds);
+        double realizationPercent = realizationPercent(billed, expected);
 
         log.tracef("Range [%s to %s]: billed=%.2f, expected=%.2f, realization=%.2f%%",
                 fromDate, toDate, billed, expected, realizationPercent);
 
         return realizationPercent;
+    }
+
+    /**
+     * Pure arithmetic seam for {@link #queryRealizationPercent}, so the divide-by-zero guard
+     * is unit-testable without a database.
+     *
+     * @return {@code billed / expected * 100}, or 0.0 when {@code expected} is not positive
+     */
+    static double realizationPercent(double billed, double expected) {
+        if (expected <= 0) return 0.0;
+        return (billed / expected) * 100.0;
+    }
+
+    /**
+     * Expected value: the timesheet priced at the contract-consultant rate in effect on the
+     * registration date. {@code rate > 0} is the billability signal — see
+     * {@link #queryRealizationPercent} for why {@code work.billable} is not used.
+     */
+    private double queryExpectedValueAtContractRate(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        Query query = em.createNativeQuery(buildExpectedValueSql(hasPractices, hasCompanies));
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+        if (hasPractices) {
+            query.setParameter("practices", practices);
+        }
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        Object result = query.getSingleResult();
+        return result != null ? ((Number) result).doubleValue() : 0.0;
+    }
+
+    /**
+     * SQL seam for {@link #queryExpectedValueAtContractRate}, package-private so the filter
+     * wiring can be asserted without a database.
+     */
+    static String buildExpectedValueSql(boolean hasPractices, boolean hasCompanies) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT COALESCE(SUM(w.workduration * w.rate), 0.0) AS expected_value ");
+        sql.append("FROM work_full_optimized w ");
+        sql.append("WHERE w.registered >= :fromDate ");
+        sql.append("  AND w.registered <= :toDate ");
+        sql.append("  AND w.type = 'CONSULTANT' ");
+        sql.append("  AND w.rate > 0 ");
+        sql.append("  AND w.workduration > 0 ");
+        sql.append("  AND (w.clientuuid IS NULL OR w.clientuuid NOT IN (:excludedClientIds)) ");
+
+        if (hasPractices) {
+            sql.append("  AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid ");
+            sql.append("    AND COALESCE((SELECT prc.code FROM practice prc WHERE prc.uuid = u.practice_uuid), 'UD') IN (:practices)) ");
+        }
+        if (hasCompanies) {
+            sql.append("  AND w.consultant_company_uuid IN (:companyIds) ");
+        }
+        return sql.toString();
+    }
+
+    /**
+     * Actual billed revenue for the month range covering {@code fromDate}..{@code toDate}.
+     *
+     * <p>V118 grain is unique per (project_id, month_key, companyuuid): a project-month split
+     * across companies has one row per company with no same-company duplicates, so SUM across
+     * companies is correct — MAX would silently drop the other companies' revenue.
+     *
+     * <p>{@code practices} maps to {@code service_line_id}. V429 re-keyed that column to the
+     * canonical practice codes (PM, IA, BU, TECH, CYB), the same code space
+     * {@code practice.code} uses on the expected side, so the two filters select the same
+     * population.
+     */
+    private double queryActualBilledRevenue(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        String fromMonthKey = String.format("%d%02d", fromDate.getYear(), fromDate.getMonthValue());
+        String toMonthKey = String.format("%d%02d", toDate.getYear(), toDate.getMonthValue());
+
+        Query query = em.createNativeQuery(buildActualRevenueSql(hasPractices, hasCompanies));
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+        if (hasPractices) {
+            query.setParameter("practices", practices);
+        }
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        Object result = query.getSingleResult();
+        return result != null ? ((Number) result).doubleValue() : 0.0;
+    }
+
+    /**
+     * SQL seam for {@link #queryActualBilledRevenue}, package-private so the V118
+     * deduplication and the filter wiring can be asserted without a database.
+     */
+    static String buildActualRevenueSql(boolean hasPractices, boolean hasCompanies) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT COALESCE(SUM(pm_revenue), 0.0) AS total_revenue ");
+        sql.append("FROM ( ");
+        sql.append("  SELECT f.project_id, f.month_key, ");
+        sql.append("         SUM(f.recognized_revenue_dkk) AS pm_revenue ");
+        sql.append("  FROM fact_project_financials_mat f ");
+        sql.append("  WHERE f.month_key BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+
+        if (hasPractices) {
+            sql.append("    AND f.service_line_id IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("  GROUP BY f.project_id, f.month_key ");
+        sql.append(") AS deduplicated");
+        return sql.toString();
     }
 
     /**

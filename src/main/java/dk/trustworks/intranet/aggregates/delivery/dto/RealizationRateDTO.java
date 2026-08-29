@@ -9,11 +9,15 @@ import lombok.NoArgsConstructor;
  * Returns realization rate percentage and year-over-year comparison.
  *
  * Realization Rate = (Billed Value / Expected Value) * 100
- * - Billed Value = SUM(workduration × actual_rate) where rate > 0
- * - Expected Value = SUM(workduration × contract_rate)
+ * - Expected Value = SUM(workduration × contract_rate) where rate &gt; 0, from work_full_optimized
+ * - Billed Value = SUM(recognized_revenue_dkk) from fact_project_financials_mat,
+ *   deduplicated per (project_id, month_key)
  *
- * Use Case: Measures billing efficiency - how much of potential value is actually billed to clients.
- * Higher percentage = better realization of billable hours.
+ * Internal Trustworks work is excluded on both sides — it is never invoiced.
+ *
+ * Use Case: Measures value leakage - how much of the work performed at contracted rates
+ * actually turned into invoiced revenue. A rate below 100% indicates leakage through
+ * discounts given after the work, write-offs, or unbilled time.
  */
 @Data
 @NoArgsConstructor
