@@ -6,6 +6,8 @@ import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.model.enums.ItExpenseStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import org.hibernate.annotations.Generated;
+import org.hibernate.generator.EventType;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -41,6 +43,13 @@ public class ItExpenseItem extends PanacheEntityBase {
     @JsonDeserialize(using = LocalDateDeserializer.class)
     private LocalDate invoicedate;
 
+    /**
+     * Written by the column default, never by us. {@code @Generated} makes
+     * Hibernate read the value back after the insert — without it the row the
+     * POST returns carries a null createdAt, and the BFF's 48-hour edit window
+     * is evaluated against it.
+     */
+    @Generated(event = EventType.INSERT)
     @Column(name = "created_at", insertable = false, updatable = false)
     private LocalDateTime createdAt;
 

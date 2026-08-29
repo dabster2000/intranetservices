@@ -19,11 +19,12 @@ import dk.trustworks.intranet.dao.workservice.services.WeekService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
+import dk.trustworks.intranet.dto.itbudget.ItBudgetSummaryDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.security.EffectivePermissionService;
 import dk.trustworks.intranet.security.ScopeContext;
-import dk.trustworks.intranet.services.TeamSettingService;
+import dk.trustworks.intranet.services.ItExpenseService;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
@@ -132,7 +133,7 @@ public class UserResource {
     ScopeContext scopeContext;
 
     @Inject
-    TeamSettingService teamSettingService;
+    ItExpenseService itExpenseService;
 
     /** DTO for linking Azure fields **/
     public static class AzureLinkDto {
@@ -345,12 +346,19 @@ public class UserResource {
         return knowledgeExpenseAPI.calculateBudgets(useruuid, fromYear, toYear);
     }
 
+    /**
+     * The whole IT budget picture: total, used, available, the registered
+     * equipment with its amortization state, the equipment types, and why the
+     * total is what it is. This answered {@code {"itBudget": n}} and left the
+     * arithmetic to two BFF routes and a React component that each did it
+     * differently; {@code itBudget} survives as a key of the summary so nothing
+     * reading it breaks.
+     */
     @GET
     @Path("/{useruuid}/it-budget")
     @RolesAllowed({"devices:read"})
-    public Map<String, Integer> getItBudget(@PathParam("useruuid") String useruuid) {
-        // IT budget resolves from the user's current MEMBER team (V418, re-homed from practice).
-        return Map.of("itBudget", teamSettingService.resolveItBudgetForUser(useruuid));
+    public ItBudgetSummaryDTO getItBudget(@PathParam("useruuid") String useruuid) {
+        return itExpenseService.getBudgetSummary(useruuid);
     }
 
     @GET

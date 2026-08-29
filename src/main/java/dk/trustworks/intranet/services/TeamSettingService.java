@@ -64,6 +64,18 @@ public class TeamSettingService {
      * intended invariant).
      */
     public int resolveItBudgetForUser(String useruuid) {
+        return resolveItBudget(useruuid).amount();
+    }
+
+    /**
+     * The resolved amount together with whether it actually came from a
+     * {@code team_settings} row. The two cannot be inferred from each other: a
+     * user in two MEMBER teams where only one carries a row takes the MAX, which
+     * may well be the default from the team that has none — so "a row exists"
+     * and "the answer came from a row" are different questions, and only the
+     * second one may be shown to the user as "set by your team".
+     */
+    public ResolvedItBudget resolveItBudget(String useruuid) {
         List<Team> teams = teamService.findByRoles(useruuid, LocalDate.now(), "MEMBER");
         List<Integer> budgets = teams.stream()
                 .map(team -> getItBudgetForTeam(team.getUuid()))
@@ -72,8 +84,15 @@ public class TeamSettingService {
             log.warnf("resolveItBudgetForUser: user %s is a current MEMBER of %d teams; taking MAX it_budget",
                     useruuid, budgets.size());
         }
-        return resolveBudget(budgets, DEFAULT_IT_BUDGET);
+        int amount = resolveBudget(budgets, DEFAULT_IT_BUDGET);
+        boolean fromTeamRow = teams.stream()
+                .filter(team -> findByTeamAndKey(team.getUuid(), IT_BUDGET_KEY).isPresent())
+                .anyMatch(team -> getItBudgetForTeam(team.getUuid()) == amount);
+        return new ResolvedItBudget(amount, fromTeamRow);
     }
+
+    /** @param fromTeamRow true when {@code amount} is the value of a stored team setting. */
+    public record ResolvedItBudget(int amount, boolean fromTeamRow) {}
 
     // ── Mutations ─────────────────────────────────────────────────────────
 
