@@ -517,7 +517,12 @@ public class GrowthAnalyticsService {
 
     /**
      * Monthly GROUP external net revenue from live invoices — INVOICE + PHANTOM
-     * − external CREDIT_NOTEs, bucketed by invoice date (INVOICED basis).
+     * − external CREDIT_NOTEs, bucketed by the WORK PERIOD the invoice covers
+     * ({@code invoices.year}/{@code month}), matching the Annual P&amp;L's
+     * default work-period basis. Invoice-date bucketing was measured to drop a
+     * full month of revenue at the fiscal-year edge (June work is invoiced in
+     * July): FY25/26 work-period 146.8M vs invoice-date 136.8M — only the
+     * former reconciles with the Executive Summary's accumulated EBITDA.
      *
      * <p>Deliberately NOT {@code fact_company_revenue_mat}: that table's
      * {@code internal_dkk} is seller-side only (measured FY25/26: +28.7M on the
@@ -529,14 +534,10 @@ public class GrowthAnalyticsService {
      * Null bounds mean open-ended.</p>
      */
     private Map<String, Double> queryMonthlyRevenue(String fromKey, String toKey) {
-        LocalDate fromDate = fromKey != null
-                ? parseMonthKey(fromKey).atDay(1)
-                : REVENUE_START.atDay(1);
-        LocalDate toDateExclusive = toKey != null
-                ? parseMonthKey(toKey).plusMonths(1).atDay(1)
-                : LocalDate.now().plusMonths(1).withDayOfMonth(1);
+        String effectiveFromKey = fromKey != null ? fromKey : monthKey(REVENUE_START);
+        String effectiveToKey = toKey != null ? toKey : monthKey(YearMonth.from(LocalDate.now()));
 
-        String sql = "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+        String sql = "SELECT CONCAT(i.year, LPAD(i.month, 2, '0')) AS month_key, " +
                 "COALESCE(SUM(ii.rate * ii.hours " +
                 "  * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
                 "  * CASE WHEN i.currency = 'DKK' THEN 1 ELSE COALESCE(cur.conversion, 1) END), 0) AS net_revenue " +
@@ -550,12 +551,13 @@ public class GrowthAnalyticsService {
                 // internal netting (see Invoice.isInternalCreditNote()).
                 "  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL) " +
                 "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
-                "  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate " +
-                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m')";
+                "  AND i.month BETWEEN 1 AND 12 " +
+                "  AND CONCAT(i.year, LPAD(i.month, 2, '0')) BETWEEN :fromKey AND :toKey " +
+                "GROUP BY CONCAT(i.year, LPAD(i.month, 2, '0'))";
 
         Query query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", toDateExclusive);
+        query.setParameter("fromKey", effectiveFromKey);
+        query.setParameter("toKey", effectiveToKey);
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         Map<String, Double> result = new HashMap<>();

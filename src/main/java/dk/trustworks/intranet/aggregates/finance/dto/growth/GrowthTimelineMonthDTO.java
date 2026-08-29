@@ -4,9 +4,10 @@ package dk.trustworks.intranet.aggregates.finance.dto.growth;
  * One month on the Growth &amp; Scenarios timeline.
  *
  * <p>Revenue is GROUP external net revenue from live invoices (INVOICE +
- * PHANTOM − external credit notes, invoice-date basis, from 2017-07) —
- * intercompany invoices are eliminated, matching the Executive Summary's group
- * P&amp;L netting. Cost components are nullable because the GL-derived cost
+ * PHANTOM − external credit notes, work-period basis — bucketed by the month
+ * the work was performed, from 2017-07) — intercompany invoices are eliminated,
+ * matching the Executive Summary's Annual P&amp;L group netting and default
+ * basis. Cost components are nullable because the GL-derived cost
  * facts ({@code fact_opex_distribution_mat}, {@code finance_details}) only
  * exist from 2024-07 — months before that carry {@code null} costs, and the
  * frontend renders the cost/EBITDA layer only where data exists.</p>
