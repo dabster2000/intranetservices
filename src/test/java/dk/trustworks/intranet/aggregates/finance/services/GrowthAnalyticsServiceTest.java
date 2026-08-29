@@ -69,15 +69,18 @@ class GrowthAnalyticsServiceTest {
     }
 
     @Test
-    void leaveMovesToOnLeaveWithoutHireOrTermination() {
+    void leaveKeepsPersonEmployedAndCountsOnLeave() {
         var fold = foldHeadcount(
                 List.of(row("u1", "ACTIVE", "CONSULTANT", "2025-01-01"),
                         row("u1", "MATERNITY_LEAVE", "CONSULTANT", "2026-02-01"),
                         row("u1", "ACTIVE", "CONSULTANT", "2026-05-01")),
                 YearMonth.of(2026, 1), YearMonth.of(2026, 6), TODAY);
 
+        // Someone on leave is still an employee — stays in the type count
+        // (matching the HR & People headcount) AND shows in onLeave.
         assertEquals(1, month(fold, "202601").consultants());
-        assertEquals(0, month(fold, "202602").consultants());
+        assertEquals(0, month(fold, "202601").onLeave());
+        assertEquals(1, month(fold, "202602").consultants());
         assertEquals(1, month(fold, "202602").onLeave());
         assertEquals(1, month(fold, "202605").consultants());
         assertEquals(0, month(fold, "202605").onLeave());
