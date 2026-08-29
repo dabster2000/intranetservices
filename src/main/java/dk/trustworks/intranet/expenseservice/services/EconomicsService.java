@@ -87,17 +87,110 @@ public class  EconomicsService {
     }
 
     /**
-     * Detects e-conomic error responses indicating the voucher's entry date falls in a
-     * closed accounting period. e-conomic uses errorCode names in its problem-detail
-     * body; we match the known variants seen in production / documented in the API.
+     * e-conomic's code for "entry date is barred in the accounting year" — what the voucher
+     * endpoint actually returns. Production 2026-08-29: expense
+     * ab4db6b7-a441-4689-be6a-57cbcdd8b237 failed permanently because none of the older
+     * name-style tokens below appear anywhere in that body, so the auto-shift never engaged.
+     */
+    static final String BARRED_ENTRY_DATE_CODE = "E04041";
+
+    /**
+     * Markers meaning "this date is refused because its period is closed or barred".
+     *
+     * <p>Note e-conomic's two locks are independent: a period can be <em>Åben</em> with
+     * <em>Spærret</em> ticked and still refuse postings, so "closed" tokens alone are not enough.
+     */
+    private static final List<String> PERIOD_CLOSED_MARKERS = List.of(
+            // Legacy name-style codes, kept so bodies that already matched still match.
+            "AccountingYearClosed", "EntryDateInClosedPeriod", "DateInClosedPeriod",
+            "PeriodClosed", "ClosedAccountingYear",
+            // What the voucher endpoint returns: numeric code, Danish message, English hint.
+            BARRED_ENTRY_DATE_CODE, "Perioden er spærret", "barred in the accounting",
+            // The invoice endpoint's equivalent (see InvoiceFinalizationOrchestrator): a
+            // different code for the same condition, with the same remedy.
+            "E04870", "barred period");
+
+    /** JSON fields carrying an error signal, as opposed to the request input e-conomic echoes back. */
+    private static final Set<String> ERROR_SIGNAL_FIELDS =
+            Set.of("errorCode", "errorMessage", "developerHint", "message");
+
+    /**
+     * Detects e-conomic error responses indicating the voucher's entry date falls in a closed or
+     * barred accounting period.
      */
     boolean isPeriodClosedError(String body) {
-        if (body == null) return false;
-        return body.contains("AccountingYearClosed")
-                || body.contains("EntryDateInClosedPeriod")
-                || body.contains("DateInClosedPeriod")
-                || body.contains("PeriodClosed")
-                || body.contains("ClosedAccountingYear");
+        if (body == null || body.isBlank()) return false;
+        for (String signal : errorSignals(body)) {
+            for (String marker : PERIOD_CLOSED_MARKERS) {
+                if (signal.contains(marker)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The error-bearing strings anywhere in an e-conomic problem body. The voucher endpoint buries
+     * the real cause under {@code errors[].entries.items[].date.errors[]}, and that shape differs
+     * per endpoint and per API generation, so this walks the tree instead of assuming one path.
+     *
+     * <p>Reading the error fields rather than the whole body also keeps the caller's own echoed
+     * {@code inputValue} out of the match — a voucher text containing "PeriodClosed" is not a
+     * closed period. Falls back to the raw body when it is not JSON or carries no recognisable
+     * error field, so nothing that matched before can stop matching.
+     */
+    private static List<String> errorSignals(String body) {
+        List<String> signals = new ArrayList<>();
+        try {
+            collectErrorSignals(new ObjectMapper().readTree(body), signals);
+        } catch (Exception notJson) {
+            return List.of(body);
+        }
+        return signals.isEmpty() ? List.of(body) : signals;
+    }
+
+    private static void collectErrorSignals(JsonNode node, List<String> out) {
+        if (node == null) return;
+        if (node.isObject()) {
+            node.fields().forEachRemaining(field -> {
+                JsonNode value = field.getValue();
+                if (value.isTextual() && ERROR_SIGNAL_FIELDS.contains(field.getKey())) {
+                    out.add(value.asText());
+                } else {
+                    collectErrorSignals(value, out);
+                }
+            });
+        } else if (node.isArray()) {
+            node.forEach(child -> collectErrorSignals(child, out));
+        }
+    }
+
+    /**
+     * Rewrites an exhausted closed-period retry into an instruction the operator can act on.
+     *
+     * <p>Why not shift into an open year instead: the shift loop moves the entry date, and moving
+     * it far enough to escape a barred year would post the expense into a different financial year
+     * from the one it belongs to. Barring is a deliberate act by finance, not a race we may drive
+     * around — for TWC in FY2026/27 the nearest unbarred window is 10 months out. A wrong date is
+     * worse than a stopped pipeline, so the pipeline stops and says why.
+     *
+     * <p>The vendor body names the date and the year but never the agreement, which is the one fact
+     * that matters: barring is per company, so the same date posts in one Trustworks entity and is
+     * refused in the next. Same defect, and same fix, as
+     * {@code InvoiceFinalizationOrchestrator.asBarredPeriodError}.
+     */
+    // Package-private static so it is directly unit-testable without booting Quarkus.
+    static String barredPeriodMessage(String companyName, String accountingYear, int shiftDays) {
+        String company = (companyName == null || companyName.isBlank())
+                ? "the employee's company" : companyName;
+        String year = (accountingYear == null || accountingYear.isBlank())
+                ? "the expense's accounting year" : accountingYear;
+        return String.format(
+                "Accounting year %s is closed or barred in %s's e-conomic, so this expense cannot "
+                        + "be posted: every entry date from today through +%d days was refused. "
+                        + "Have the period unbarred in e-conomic (Indstillinger → Regnskabsår → "
+                        + "Perioder), then requeue the expense. Barring is per company, so the same "
+                        + "date may well post in another Trustworks entity. No voucher was created.",
+                year, company, shiftDays);
     }
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws Exception {
@@ -164,10 +257,20 @@ public class  EconomicsService {
                 }
             }
             if (response == null) {
-                log.error("Voucher post failed after " + (MAX_PERIOD_SHIFT_DAYS + 1) + " period-shift attempts. Expense uuid: " + expense.getUuid() + ", lastStatus: " + lastStatus + ", lastBody: " + lastBody);
+                String barredYear = (voucher != null && voucher.getAccountingYear() != null)
+                        ? voucher.getAccountingYear().getYear()
+                        : expense.getAccountingyear();
+                // The raw body stays HERE, in the log, where it is diagnostic. It deliberately does
+                // not go on the expense record (errorDetails = null below): ExpenseService writes
+                // getDetailedMessage() into the row an operator reads, and a wall of vendor JSON
+                // told them neither which company had barred the year nor what to do about it.
+                log.errorf("Voucher post failed after %d period-shift attempts. Expense uuid: %s, "
+                                + "company: %s, accountingYear: %s, lastStatus: %d, lastBody: %s",
+                        MAX_PERIOD_SHIFT_DAYS + 1, expense.getUuid(), company.getName(),
+                        barredYear, lastStatus, lastBody);
                 throw new ExpenseUploadException(
-                        "Voucher post failed: closed period persists after " + MAX_PERIOD_SHIFT_DAYS + " day-shift retries",
-                        null, lastStatus, lastBody);
+                        barredPeriodMessage(company.getName(), barredYear, MAX_PERIOD_SHIFT_DAYS),
+                        null, lastStatus, null);
             }
 
             try (Response voucherResponse = response) {

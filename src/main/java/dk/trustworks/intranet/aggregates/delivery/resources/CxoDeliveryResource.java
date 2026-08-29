@@ -332,7 +332,7 @@ public class CxoDeliveryResource {
      *
      * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
      * @param toDate End date (ISO-8601 format, optional, defaults to today)
-     * @param practices Comma-separated practice IDs (optional, e.g., "PM,DEV,BA")
+     * @param practices Comma-separated practice codes (optional, e.g., "PM,TECH,BU")
      * @param companyIds Comma-separated company UUIDs (optional)
      * @return RealizationRateDTO with current/prior percentages, YoY change points, and sparkline
      */

@@ -3,19 +3,21 @@ package dk.trustworks.intranet.aggregates.finance.dto.growth;
 /**
  * One month on the Growth &amp; Scenarios timeline.
  *
- * <p>Revenue is canonical invoice-based net revenue from
- * {@code fact_company_revenue_mat} (available from 2017-07). Cost components are
- * nullable because the GL-derived cost facts ({@code fact_opex_distribution_mat},
- * {@code finance_details}) only exist from 2024-07 — months before that carry
- * {@code null} costs, and the frontend renders the cost/EBITDA layer only where
- * data exists.</p>
+ * <p>Revenue is GROUP external net revenue from live invoices (INVOICE +
+ * PHANTOM − external credit notes, work-period basis — bucketed by the month
+ * the work was performed, from 2017-07) — intercompany invoices are eliminated,
+ * matching the Executive Summary's Annual P&amp;L group netting and default
+ * basis. Cost components are nullable because the GL-derived cost
+ * facts ({@code fact_opex_distribution_mat}, {@code finance_details}) only
+ * exist from 2024-07 — months before that carry {@code null} costs, and the
+ * frontend renders the cost/EBITDA layer only where data exists.</p>
  *
  * <p>Headcount fields are point-in-time counts at month end from
  * {@code userstatus}: {@code consultants}/{@code students}/{@code staff} count
- * {@code status='ACTIVE'} by type (matching the HR headcount-growth chart), and
- * {@code onLeave} counts employees of the same three types whose current status
- * is a leave status (maternity / paid / non-pay leave). {@code hires} and
- * {@code terminations} count employment transitions dated in the month.</p>
+ * EMPLOYED people by type — ACTIVE plus leave statuses (maternity / paid /
+ * non-pay leave), matching the HR &amp; People tab's headcount. {@code onLeave}
+ * is the leave subset. {@code hires} and {@code terminations} count employment
+ * transitions dated in the month.</p>
  *
  * <p>{@code bankBalance} (end-of-month) and {@code bankNetFlow} are the
  * combined liquidity across all three companies, from the imported e-conomic

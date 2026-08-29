@@ -94,7 +94,7 @@ public class GrowthAnalyticsService {
         LocalDate today = LocalDate.now();
         YearMonth current = YearMonth.from(today);
 
-        Map<String, Double> revenueByMonth = queryMonthlyRevenue(null, null, monthKey(current));
+        Map<String, Double> revenueByMonth = queryMonthlyRevenue(null, monthKey(current));
         Map<String, Double> opexByMonth = opexProvider.getMonthlyOpex(
                 COST_DATA_FROM_KEY, monthKey(current), null, costSource);
         Map<String, Double> glDirectByMonth = queryMonthlyGlDirectCost(
@@ -118,8 +118,12 @@ public class GrowthAnalyticsService {
     public GrowthBaselineDTO getSimulationBaseline(CostSource costSource) {
         LocalDate today = LocalDate.now();
         YearMonth current = YearMonth.from(today);
-        YearMonth asOf = current.minusMonths(1);
-        YearMonth ttmFrom = current.minusMonths(12);
+        // GL cost booking lags ~3–4 weeks, so the last calendar month is not a
+        // complete month yet. All financial windows therefore end at the month
+        // BEFORE last (e.g. June 30 when today is August 29) — otherwise the
+        // TTM EBITDA overstates because recent costs are missing.
+        YearMonth asOf = current.minusMonths(2);
+        YearMonth ttmFrom = asOf.minusMonths(11);
         String ttmFromKey = monthKey(ttmFrom);
         String ttmToKey = monthKey(asOf);
 
@@ -151,7 +155,7 @@ public class GrowthAnalyticsService {
         // Revenue + cost maps over the whole cost-data era — the TTM figures are
         // subsets, and the cash-conversion measurement needs the full window.
         Map<String, Double> revenueByMonth =
-                queryMonthlyRevenue(null, COST_DATA_FROM_KEY, ttmToKey);
+                queryMonthlyRevenue(COST_DATA_FROM_KEY, ttmToKey);
         Map<String, Double> opexByMonth = opexProvider.getMonthlyOpex(
                 COST_DATA_FROM_KEY, ttmToKey, null, costSource);
         Map<String, Double> glDirectByMonth =
@@ -159,9 +163,9 @@ public class GrowthAnalyticsService {
         double revenueTtm = sumWindow(revenueByMonth, ttmFromKey, ttmToKey);
         double glDirectTtm = sumWindow(glDirectByMonth, ttmFromKey, ttmToKey);
 
-        // Billable work per type (TTM).
+        // Billable work per type (TTM to asOf).
         Map<String, WorkStats> workByType =
-                queryWorkStatsByType(null, ttmFrom.atDay(1), current.atDay(1));
+                queryWorkStatsByType(null, ttmFrom.atDay(1), asOf.plusMonths(1).atDay(1));
         WorkStats consultantWork = workByType.get("CONSULTANT");
         WorkStats studentWork = workByType.get("STUDENT");
 
@@ -240,8 +244,10 @@ public class GrowthAnalyticsService {
      * <p>Point-in-time rule: a user's state in month M is their latest status row
      * dated on or before min(last day of M, {@code today}) — the {@code today}
      * clamp keeps future-dated rows (planned starts/terminations) out of the
-     * current month. ACTIVE counts under the user's type; leave statuses count in
-     * {@code onLeave}; PREBOARDING and TERMINATED count nowhere.</p>
+     * current month. EMPLOYED people (ACTIVE or on leave) count under their type
+     * — someone on maternity leave is still an employee, and this matches the
+     * HR &amp; People tab's headcount. The leave subset is additionally counted
+     * in {@code onLeave}; PREBOARDING and TERMINATED count nowhere.</p>
      *
      * <p>Transition rule (independent of the clamp, bucketed by the row's own
      * date): a row with an employed status following no row / TERMINATED /
@@ -292,15 +298,16 @@ public class GrowthAnalyticsService {
                     latest = row;
                 }
                 if (latest == null) continue;
-                if ("ACTIVE".equals(latest.status())) {
+                if (EMPLOYED_STATUSES.contains(latest.status())) {
                     switch (latest.type()) {
                         case "CONSULTANT" -> consultants++;
                         case "STUDENT" -> students++;
                         case "STAFF" -> staff++;
                         default -> { /* filtered above */ }
                     }
-                } else if (LEAVE_STATUSES.contains(latest.status())) {
-                    onLeave++;
+                    if (LEAVE_STATUSES.contains(latest.status())) {
+                        onLeave++;
+                    }
                 }
             }
             String mk = monthKey(ym);
@@ -508,21 +515,49 @@ public class GrowthAnalyticsService {
     // Queries
     // ========================================================================
 
-    /** Monthly net revenue from fact_company_revenue_mat. Null bounds mean open-ended. */
-    private Map<String, Double> queryMonthlyRevenue(Set<String> companyIds, String fromKey, String toKey) {
-        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
-        StringBuilder sql = new StringBuilder(
-                "SELECT r.month_key AS month_key, SUM(r.net_revenue_dkk) AS net_revenue " +
-                "FROM fact_company_revenue_mat r WHERE 1=1 ");
-        if (fromKey != null) sql.append("AND r.month_key >= :fromKey ");
-        if (toKey != null) sql.append("AND r.month_key <= :toKey ");
-        if (hasCompanyFilter) sql.append("AND r.company_id IN (:companyIds) ");
-        sql.append("GROUP BY r.month_key");
+    /**
+     * Monthly GROUP external net revenue from live invoices — INVOICE + PHANTOM
+     * − external CREDIT_NOTEs, bucketed by the WORK PERIOD the invoice covers
+     * ({@code invoices.year}/{@code month}), matching the Annual P&amp;L's
+     * default work-period basis. Invoice-date bucketing was measured to drop a
+     * full month of revenue at the fiscal-year edge (June work is invoiced in
+     * July): FY25/26 work-period 146.8M vs invoice-date 136.8M — only the
+     * former reconciles with the Executive Summary's accumulated EBITDA.
+     *
+     * <p>Deliberately NOT {@code fact_company_revenue_mat}: that table's
+     * {@code internal_dkk} is seller-side only (measured FY25/26: +28.7M on the
+     * subsidiaries, 0 on the buyer), so summing it across companies double-counts
+     * intercompany work. This SQL mirrors the Executive Summary's group
+     * invoice-revenue netting ({@code buildGroupInvoiceRevenueSql}: every
+     * INTERNAL nets to 0 within the group, so it is simply omitted) and matches
+     * the fact table exactly in the years before intercompany billing existed.
+     * Null bounds mean open-ended.</p>
+     */
+    private Map<String, Double> queryMonthlyRevenue(String fromKey, String toKey) {
+        String effectiveFromKey = fromKey != null ? fromKey : monthKey(REVENUE_START);
+        String effectiveToKey = toKey != null ? toKey : monthKey(YearMonth.from(LocalDate.now()));
 
-        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
-        if (fromKey != null) query.setParameter("fromKey", fromKey);
-        if (toKey != null) query.setParameter("toKey", toKey);
-        if (hasCompanyFilter) query.setParameter("companyIds", companyIds);
+        String sql = "SELECT CONCAT(i.year, LPAD(i.month, 2, '0')) AS month_key, " +
+                "COALESCE(SUM(ii.rate * ii.hours " +
+                "  * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
+                "  * CASE WHEN i.currency = 'DKK' THEN 1 ELSE COALESCE(cur.conversion, 1) END), 0) AS net_revenue " +
+                "FROM invoiceitems ii " +
+                "JOIN invoices i ON ii.invoiceuuid = i.uuid " +
+                "LEFT JOIN currences cur ON cur.currency = i.currency " +
+                "  AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
+                "WHERE i.status = 'CREATED' " +
+                "  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                // External credit notes only — internal CNs belong to the omitted
+                // internal netting (see Invoice.isInternalCreditNote()).
+                "  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL) " +
+                "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
+                "  AND i.month BETWEEN 1 AND 12 " +
+                "  AND CONCAT(i.year, LPAD(i.month, 2, '0')) BETWEEN :fromKey AND :toKey " +
+                "GROUP BY CONCAT(i.year, LPAD(i.month, 2, '0'))";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromKey", effectiveFromKey);
+        query.setParameter("toKey", effectiveToKey);
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         Map<String, Double> result = new HashMap<>();
