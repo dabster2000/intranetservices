@@ -8,6 +8,7 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseReviewDecisionService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -26,6 +27,7 @@ public class ExpenseReviewDecisionResource {
 
     @Inject ExpenseDecisionLogService logs;
     @Inject ExpenseReviewDecisionService decisions;
+    @Inject ExpenseService expenseService;
     @Inject RequestHeaderHolder header;
 
     @POST
@@ -67,6 +69,8 @@ public class ExpenseReviewDecisionResource {
         e.setAttentionOwner(ExpenseStateDeriver.OWNER_EMPLOYEE);
         e.setAttentionKind(ExpenseStateDeriver.KIND_JUSTIFICATION);
         e.setDatemodified(LocalDate.now());
+        // Tell the employee. After-commit, so a rolled-back send-back sends nothing.
+        expenseService.queueEmployeeAttentionNotification(e.getUuid());
         return Response.noContent().build();
     }
 

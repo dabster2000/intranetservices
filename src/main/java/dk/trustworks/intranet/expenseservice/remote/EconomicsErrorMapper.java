@@ -20,8 +20,11 @@ public class EconomicsErrorMapper implements ResponseExceptionMapper<RuntimeExce
             body = response.readEntity(String.class);
         } catch (Exception ignore) { }
 
-        // Only HTTP 429 becomes the typed exception; every other status keeps the
-        // exact previous message (byte-identical) via the status gate below.
+        // HTTP 429 keeps its own type so the read-path retry executor can back off on it;
+        // every other status becomes EconomicsApiException. Both messages are byte-identical
+        // to what callers saw before, so message-matching callers are unaffected — the only
+        // difference is that status and body are now readable as fields instead of having to
+        // be parsed back out of the message.
         // readEntity(...) is called before getHeaderString(...) only because the
         // body must be consumed while the response stream is open — header access
         // order is irrelevant.
@@ -31,7 +34,8 @@ public class EconomicsErrorMapper implements ResponseExceptionMapper<RuntimeExce
                     "HTTP 429 from Economics: " + (body != null ? body : ""),
                     retryAfterSeconds);
         }
-        return new RuntimeException("HTTP " + status + " from Economics: " + (body != null ? body : ""));
+        return new EconomicsApiException(
+                "HTTP " + status + " from Economics: " + (body != null ? body : ""), status, body);
     }
 
     /**

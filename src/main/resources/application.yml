@@ -462,6 +462,17 @@ openai:
 dk:
   trustworks:
     expense:
+      # Slack DM to the employee when an expense lands on them (AI block or
+      # accounting send-back), plus the Monday reminder digest.
+      #
+      # Defaults to FALSE — this ships dark and is enabled per environment.
+      # It cannot work on staging by construction: sp_sync_prod_to_staging nulls
+      # slackusername for every user but one admin, and staging's Slack token is
+      # byte-identical to production's, so anything that did send would land in
+      # the real Trustworks workspace. Enable in PRODUCTION only, and only once
+      # the frontend deeplink (/profile?tab=expenses&expense=...) is deployed.
+      employee-notifier:
+        enabled: ${EXPENSE_EMPLOYEE_NOTIFIER_ENABLED:false}
       economics-upload:
         enabled: ${EXPENSE_ECONOMICS_UPLOAD_ENABLED:true}
       # Read-side e-conomic sync (expense-sync + expense-orphan-detection).

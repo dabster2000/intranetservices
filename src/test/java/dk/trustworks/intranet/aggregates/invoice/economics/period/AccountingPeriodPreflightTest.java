@@ -248,6 +248,88 @@ class AccountingPeriodPreflightTest {
         verifyNoInteractions(periodsApi, agreements);
     }
 
+    // ── the expense voucher's view: is walking the date forward pointless? ───────────────────
+
+    /** The eight entry dates EconomicsService.sendVoucher would try, starting 2026-08-30. */
+    private static final List<LocalDate> AUG_30_PLUS_7 = List.of(
+            LocalDate.of(2026, 8, 30), LocalDate.of(2026, 8, 31),
+            LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 2), LocalDate.of(2026, 9, 3),
+            LocalDate.of(2026, 9, 4), LocalDate.of(2026, 9, 5), LocalDate.of(2026, 9, 6));
+
+    /** The live TWC case: every period of FY 2026/27 barred, so no shift can escape it. */
+    @Test
+    void allDatesBlocked_is_true_when_every_date_lands_in_a_barred_period() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(
+                barred("2026/2027", "2026-08-01", "2026-08-31"),
+                barred("2026/2027", "2026-09-01", "2026-09-30"));
+
+        assertTrue(preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7),
+                "a wholly barred year makes all eight POSTs pointless");
+    }
+
+    /**
+     * The case that must never be swallowed. A barred August inside an open September is exactly
+     * what the auto-shift loop exists to escape: refusing here on the strength of the first date
+     * would delete the loop's only working outcome and strand an expense that would have posted.
+     */
+    @Test
+    void allDatesBlocked_is_false_when_a_later_date_escapes_into_an_open_period() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(
+                barred("2026/2027", "2026-08-01", "2026-08-31"),
+                period("2026/2027", "2026-09-01", "2026-09-30", false, false));
+
+        assertFalse(preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7),
+                "the shift into September clears the bar — the loop must still run");
+    }
+
+    /** An unreadable period is not a blocked one; UNKNOWN anywhere in the range falls open. */
+    @Test
+    void allDatesBlocked_is_false_when_any_date_is_covered_by_no_period() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(barred("2026/2027", "2026-08-01", "2026-08-31"));
+
+        assertFalse(preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7),
+                "September is covered by no period at all — that is UNKNOWN, not BLOCKED");
+    }
+
+    /** A vendor outage must not stop expenses e-conomic would have accepted. */
+    @Test
+    void allDatesBlocked_is_false_when_the_vendor_cannot_be_reached() {
+        preflight.preflightEnabled = true;
+        whenPeriodsThrow(new WebApplicationException("e-conomic unavailable",
+                Response.status(503).build()));
+
+        assertFalse(preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7));
+    }
+
+    @Test
+    void allDatesBlocked_is_false_on_the_kill_switch_and_on_empty_input() {
+        preflight.preflightEnabled = false;
+        assertFalse(preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7));
+
+        preflight.preflightEnabled = true;
+        assertFalse(preflight.allDatesBlocked("company-uuid", List.of()));
+        assertFalse(preflight.allDatesBlocked("company-uuid", null));
+        assertFalse(preflight.allDatesBlocked(null, AUG_30_PLUS_7));
+
+        verifyNoInteractions(periodsApi, agreements);
+    }
+
+    /** The point of the whole exercise: eight dates must still cost one vendor read, not eight. */
+    @Test
+    void allDatesBlocked_reads_the_agreement_once_however_many_dates_it_is_given() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(
+                barred("2026/2027", "2026-08-01", "2026-08-31"),
+                barred("2026/2027", "2026-09-01", "2026-09-30"));
+
+        preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7);
+
+        verify(periodsApi, times(1)).listPeriods(anyString(), anyString(), anyInt(), anyInt());
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────────────────────
 
     private static PeriodState stateOf(List<EconomicsAccountingPeriod> periods, LocalDate date) {

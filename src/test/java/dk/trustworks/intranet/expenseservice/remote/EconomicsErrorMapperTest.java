@@ -14,10 +14,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 /**
- * Pins the typed-429 contract: only HTTP 429 maps to EconomicsRateLimitException
- * (carrying the optional Retry-After in seconds); every other status keeps the
- * plain RuntimeException with the existing "HTTP <n> from Economics:" message so
- * the three rest clients that share this mapper behave exactly as before.
+ * Pins the mapper's typed contract: HTTP 429 maps to EconomicsRateLimitException
+ * (carrying the optional Retry-After in seconds); every other status maps to
+ * EconomicsApiException, which carries the status and raw body as fields. Both keep
+ * the "HTTP &lt;n&gt; from Economics:" message byte-identical, so the three rest clients
+ * that share this mapper — and the callers that match on that message — behave exactly
+ * as before.
  */
 @ExtendWith(MockitoExtension.class)
 class EconomicsErrorMapperTest {
@@ -62,13 +64,46 @@ class EconomicsErrorMapperTest {
     }
 
     @Test
-    void maps_non_429_to_plain_runtime_exception() {
+    void maps_non_429_to_economics_api_exception() {
         when(response.getStatus()).thenReturn(500);
         when(response.readEntity(String.class)).thenReturn("boom");
 
         RuntimeException ex = new EconomicsErrorMapper().toThrowable(response);
 
         assertFalse(ex instanceof EconomicsRateLimitException);
+        assertInstanceOf(EconomicsApiException.class, ex);
         assertTrue(ex.getMessage().contains("HTTP 500 from Economics: boom"));
+    }
+
+    /**
+     * The status and body must survive as fields, not only inside the message. This is the
+     * whole point of the type: the mapper is registered on EconomicsAPI, so a rejected call
+     * throws instead of returning the Response its signature promises, and a caller that
+     * needs to branch on the vendor's status or error body has nowhere else to read them.
+     */
+    @Test
+    void non_429_carries_the_status_and_raw_body_as_fields() {
+        when(response.getStatus()).thenReturn(400);
+        when(response.readEntity(String.class)).thenReturn("{\"errorCode\":\"E04300\"}");
+
+        EconomicsApiException ex =
+                assertInstanceOf(EconomicsApiException.class, new EconomicsErrorMapper().toThrowable(response));
+
+        assertEquals(400, ex.getStatus());
+        assertEquals("{\"errorCode\":\"E04300\"}", ex.getBody());
+    }
+
+    /** An unreadable body must not become the string "null" or blow up the mapper. */
+    @Test
+    void unreadable_body_maps_to_null_body_not_the_string_null() {
+        when(response.getStatus()).thenReturn(502);
+        when(response.readEntity(String.class)).thenThrow(new IllegalStateException("stream closed"));
+
+        EconomicsApiException ex =
+                assertInstanceOf(EconomicsApiException.class, new EconomicsErrorMapper().toThrowable(response));
+
+        assertEquals(502, ex.getStatus());
+        assertNull(ex.getBody());
+        assertTrue(ex.getMessage().contains("HTTP 502 from Economics: "));
     }
 }

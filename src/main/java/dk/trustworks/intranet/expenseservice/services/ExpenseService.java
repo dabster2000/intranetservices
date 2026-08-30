@@ -95,6 +95,23 @@ public class ExpenseService {
         publishAfterCommit("expense.justification.review", expenseUuid);
     }
 
+    /**
+     * Queue the after-commit "your expense needs you" Slack DM. Called from the
+     * two — and only two — statements that hand an expense to the employee:
+     * {@code ExpenseCreatedConsumer}'s AI-block branch and
+     * {@code ExpenseReviewDecisionResource#sendBack}.
+     *
+     * <p>After-commit is load-bearing, not tidiness: both call sites are
+     * {@code @Transactional}, so publishing inline would hold the JTA transaction
+     * open across a Slack round trip and would DM the employee even when the
+     * decision is subsequently rolled back.
+     *
+     * @see ExpenseEmployeeNotifier
+     */
+    public void queueEmployeeAttentionNotification(String expenseUuid) {
+        publishAfterCommit(ExpenseEmployeeNotifier.EVENT_ADDRESS, expenseUuid);
+    }
+
     private void publishAfterCommit(String address, String expenseUuid) {
         try {
             txSyncRegistry.registerInterposedSynchronization(new Synchronization() {
