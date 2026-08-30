@@ -84,7 +84,12 @@ public class OpexDistributionRefreshService {
         ec.put("Salgsfremmende omkostninger",          "SALES_MARKETING");
         ec.put("Lokaleomkostninger",                   "OFFICE_FACILITIES");
         ec.put("Variable omkostninger",                "TOOLS_SOFTWARE");
-        ec.put("Øvrige administrationsomk. i alt", "OTHER_OPEX");  // Øvrige administrationsomk. i alt
+        // The DB groupname is "Øvrige administrationsomk" — the ". i alt" suffix this key
+        // used to carry never existed in accounting_categories, so the entry was dead and
+        // every administration account fell through to the getOrDefault fallback below.
+        // Inert here (the fallback is also OTHER_OPEX) but corrected so the two maps stay
+        // symmetric; the cost-centre map below is where it actually mattered. See V543.
+        ec.put("Øvrige administrationsomk",            "OTHER_OPEX");
         GROUPNAME_TO_EXPENSE_CATEGORY = Collections.unmodifiableMap(ec);
 
         Map<String, String> cc = new HashMap<>();
@@ -92,7 +97,12 @@ public class OpexDistributionRefreshService {
         cc.put("Salgsfremmende omkostninger",          "SALES");
         cc.put("Lokaleomkostninger",                   "FACILITIES");
         cc.put("Variable omkostninger",                "INTERNAL_IT");
-        cc.put("Øvrige administrationsomk. i alt", "ADMIN");       // Øvrige administrationsomk. i alt
+        // Same dead key as above, and here it was NOT inert: administration OPEX was
+        // labelled GENERAL instead of ADMIN in fact_opex_distribution_mat, which is the
+        // table CxoFinanceService.getExpenseMixByCostCenter actually reads. Fixed in
+        // lockstep with the fact_opex view (Flyway V543) — shipping one without the other
+        // makes the two mats disagree.
+        cc.put("Øvrige administrationsomk",            "ADMIN");
         GROUPNAME_TO_COST_CENTER = Collections.unmodifiableMap(cc);
     }
 
@@ -325,7 +335,9 @@ public class OpexDistributionRefreshService {
      *
      * <p>Defaults to "OTHER_OPEX" for unknown groupnames, matching V125 ELSE clause.
      */
-    private static String resolveExpenseCategory(String groupname) {
+    // Package-private, not private, so the groupname keys can be asserted against the real
+    // accounting_categories values without a datasource — see OpexDistributionCostCenterMappingTest.
+    static String resolveExpenseCategory(String groupname) {
         return GROUPNAME_TO_EXPENSE_CATEGORY.getOrDefault(groupname, "OTHER_OPEX");
     }
 
@@ -334,7 +346,8 @@ public class OpexDistributionRefreshService {
      *
      * <p>Defaults to "GENERAL" for unknown groupnames, matching V125 ELSE clause.
      */
-    private static String resolveCostCenter(String groupname) {
+    // Package-private for the same reason as resolveExpenseCategory above.
+    static String resolveCostCenter(String groupname) {
         return GROUPNAME_TO_COST_CENTER.getOrDefault(groupname, "GENERAL");
     }
 

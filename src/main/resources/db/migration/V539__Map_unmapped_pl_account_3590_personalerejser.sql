@@ -1,0 +1,191 @@
+-- =============================================================================
+-- Migration V539: Map Trustworks A/S GL account 3590 "Personalerejser"
+--
+-- Triggered by the UnmappedGlAccountCheck WARNING in production on 2026-08-29
+-- 04:15:01Z (first firing of this signature):
+--
+--   unmapped-gl-account: company=d8894494-2fb4-4f72-9e05-e6032e6dd691
+--   account=3590 amount=19483.74 entries=1 — present in finance_details for
+--   FY 2026/2027 but absent from accounting_accounts
+--   (silently dropped from fact_opex/EBITDA)
+--
+-- ROOT CAUSE: DATA GAP, not a code gap. Account 3590 was opened in e-conomic and
+--   first posted to on 2026-07-01, the opening day of FY2026/2027; nobody added
+--   the corresponding accounting_accounts classification row. This is the fourth
+--   instance of the same class of gap (V382 F18, V390, V507) — a newly opened GL
+--   account with no classification. The check itself behaved correctly: 3590 sits
+--   inside A/S's mapped [2101..6160] band, so the alarm fired on the first
+--   nightly run after the posting was imported.
+--
+-- WHY AN UNMAPPED ACCOUNT DISAPPEARS (two independent mechanisms, both verified):
+--   1. View `fact_opex` -> table `fact_opex_mat`. The live definition is V409's
+--      (V125 -> V205 -> V211 -> V354 -> V383 -> V408 -> V409; V409 is last):
+--        INNER JOIN accounting_accounts aa
+--          ON fd.accountnumber = aa.account_code AND fd.companyuuid = aa.companyuuid
+--        WHERE aa.cost_type IN ('OPEX','SALARIES')
+--      There is no fallback classification, so an unmapped account is not
+--      miscategorised — the INNER JOIN drops the row entirely.
+--      Readers: ConsultantInsightsService (Executive Dashboard chart 3.5
+--      "Unprofitable Consultants"), CostAnalyticsResource (ebitda-forecast),
+--      CxoFinanceService (cost-to-revenue).
+--   2. Java `OpexDistributionRefreshService` -> `fact_opex_distribution_mat`,
+--      the source for the Annual P&L EBITDA chart. It iterates
+--      AccountingCategory.listAll() -> getAccounts() and therefore never visits
+--      an account with no accounting_accounts row at all.
+--
+--   EBITDA is computed as revenue - directCost - salaries - opex, and
+--   finance_details.amount is POSITIVE for costs, so a dropped positive cost
+--   lowers OPEX and OVERSTATES EBITDA.
+--
+-- WHAT 3590 IS (verified against e-conomic, agreement d8894494, 2026-08-30):
+--   accountNumber 3590, name "Personalerejser" (staff travel),
+--   accountType = profitAndLoss.
+--   It sits inside the P&L block  3501 [heading] "Lønninger" .. 3599 [totalFrom]
+--   "Lønninger i alt", i.e. ABOVE  6199 [sumInterval] "Resultat før renter" —
+--   an operating cost, inside EBITDA. Not balance sheet, not financial,
+--   not depreciation.
+--   The single finance_details row corroborates it: entrynumber 157019,
+--   voucher 147, expensedate 2026-07-01, amount 19483.74, postingstatus BOOKED,
+--   text "Ud.tur - rejsek." (staff outing — travel account).
+--   3590 has no finance_details row in any earlier fiscal year — this posting is
+--   the account's first and, so far, only one — so no prior year is restated.
+--
+-- CLASSIFICATION. The house pattern in V382/V390/V507 is to mirror the nearest
+--   already-mapped sibling in the SAME company. The A/S 3501..3599 block holds 33
+--   mapped accounts:
+--     cost_type   : 32 of 33 are OPEX. The sole SALARIES row is 3502
+--                   "Løn AM-grundlag" (the payroll base itself, salary=1).
+--                   3590 is a staff-cost tail account, not payroll -> OPEX.
+--     categoryuuid: 33 of 33 use 732fb626-fd28-49e5-87ce-b0739557a75c
+--                   ("Delte services"), which fact_opex maps to
+--                   cost_center HR_ADMIN / expense_category PEOPLE_NON_BILLABLE.
+--     salary      : 0 (only 3502 and 3510 carry salary=1).
+--   Those three fields are uniform across the block and carry no judgement.
+--
+--   shared = 1 IS A JUDGEMENT CALL, recorded here as such.
+--     `shared` is the cross-company ALLOCATION switch, not a "belongs to one
+--     entity" label: V197 gates its gl_shared CTE on `WHERE aa.shared = 1` and
+--     redistributes those GL amounts pro-rata by consultant headcount
+--     (see also IntercompanyCalcService; AccountingResource forces
+--     dist.shared = (isShared || isSalary), so salary rows are shared regardless).
+--     Within the block it splits 25x shared=1 / 8x shared=0, and the 8 zeros
+--     (3530, 3570, 3578, 3583, 3586, 3587, 3593, 3597) follow no documented rule —
+--     several have shared=1 twins for the same concept (3578 Atp vs 3580 Samlet
+--     ATP; 3593 Sundhedsforsikring vs 3531 Sundhedsforsikring */*; 3595
+--     Sygeforsikring vs 3597 Lønrefusion sygeforsikring). They are best read as
+--     legacy values inherited by mirroring.
+--     shared=1 is chosen because both immediate neighbours are shared=1 — 3589
+--     "Personale / Arrangementer uden moms" and 3591 "Restaurationsbesøg overarb.
+--     mv." — as is the whole collective-staff-cost family (3585, 3588, 3589,
+--     3591), and the posting behind this alert is a staff outing, a collective
+--     cost. COUNTER-PRESSURE, stated for the record: 3570 "KM penge", the closest
+--     travel-reimbursement analogue in the same category, is shared=0 (while
+--     3572 "Diæter" is shared=1). If this call is wrong it does not move GROUP
+--     EBITDA — redistribution only reallocates between companies — but it does
+--     move per-company OPEX and the team dashboard.
+--
+--   account_description uses e-conomic's own name, matching V382/V390/V507.
+--
+-- EBITDA IMPACT (FY2026/2027 — the only fiscal year affected):
+--   GROUP: +19,483.74 DKK of OPEX restored -> group EBITDA falls by 19,483.74.
+--   PER COMPANY: because the row is shared=1, the amount is redistributed across
+--   the three entities by that month's consultant ratio, so a company-scoped
+--   Trustworks A/S view absorbs less than the full amount and Technology/Cyber
+--   absorb the remainder. The split varies by month; the group total does not.
+--   For scale: FY2026/2027 fact_opex_mat OPEX is currently 3,278,260.27 DKK
+--   (2 of 12 months loaded — expensedate stamps 2026-07-01 and 2026-08-01),
+--   so this is +0.59%.
+--
+-- TOTAL FY2026/2027 EXPOSURE — 3590 is the whole of it. Cross-checking every
+--   unmapped (company, account) pair with FY2026/2027 activity (98 pairs) against
+--   e-conomic's authoritative accountType and P&L block structure:
+--     * 96 pairs are `status` (balance sheet) accounts — correctly excluded.
+--     * A/S 6875 "Gebyr og renter off. Myndigheder" (2,346.96 DKK) is
+--       profitAndLoss but sits in 6850 "Renteudgifter mv." .. 6899, BELOW
+--       6199 "Resultat før renter" — a financial item, correctly outside EBITDA.
+--       It is deliberately NOT mapped here; see the note below.
+--     * A/S 3590 (19,483.74 DKK) is the only genuine operating-cost drop.
+--
+-- WHY 6875 IS LEFT UNMAPPED (a decision, not an omission):
+--   Mapping it would lift A/S's UnmappedGlAccountCheck band ceiling from 6160 to
+--   6875 and pull the interest block (6806 Renteindtægt banker, 6856 Renteudgift
+--   banker, 6860, 6861) into the alarm's scope. Those accounts post routinely —
+--   FY2025/2026 carried 411,223.01 DKK across six A/S financial accounts — so the
+--   check would start reporting recurring false positives as FY2026/2027 fills
+--   up. A/S's current band top of 6160 happens to end exactly at the last
+--   pre-EBITDA account (6199 is "Resultat før renter"), which is the correct
+--   scope. Closing this properly means scoping the check to each company's EBITDA
+--   account span rather than to the derived MIN..MAX band; that is a code change,
+--   tracked separately, not a mapping row.
+--
+-- BAND SIDE EFFECT OF THIS MIGRATION: none. 3590 is inside the existing
+--   [2101..6160] A/S band, so the band bounds do not move and the check's
+--   visibility is unchanged.
+--
+-- KNOWN, DELIBERATELY OUT OF SCOPE (recorded so it is not lost): FY2025/2026
+--   still carries 8 unmapped profitAndLoss accounts INSIDE their companies' bands
+--   worth 68,630.43 DKK net — A/S 2186 (-2,178.00), 3592 (+2,688.87),
+--   5269 (+55,000.00); Cyber 1070 (-81,842.59), 1080 (-1,787.50),
+--   1370 (+90,749.76), 2248 (+4,946.89), 2270 (+1,053.00). The gate cannot ever
+--   flag them: it scans only DateUtils.getCurrentFiscalStartDate()'s fiscal year,
+--   which moved to FY2026/2027 on 2026-07-01. Cyber 1070/1370 are intercompany
+--   administration accounts and must not be mapped without checking
+--   intercompany_account_mapping for double-counting, so this needs a decision
+--   rather than a copy of this migration.
+--
+-- Effect after the next fact-table refresh: the 19,483.74 lands in the
+--   FY2026/2027 OPEX cost side and the 04:15 UTC alarm goes quiet. NOTE the two
+--   mats are rebuilt by DIFFERENT jobs at different times (observed 2026-08-30:
+--   fact_opex_distribution_mat 03:30, fact_opex_mat 04:03), so verify BOTH —
+--   re-running only the OpexDistributionRefresh batchlet updates
+--   fact_opex_distribution_mat but leaves fact_opex_mat stale.
+--
+-- Idempotency: there is no unique index on (companyuuid, account_code), so the
+--   INSERT is guarded by NOT EXISTS — matching V382/V390/V507. Safe to re-run,
+--   and safe if the account was added manually via the admin UI first.
+--
+-- Rollback:
+--   DELETE FROM accounting_accounts
+--    WHERE companyuuid = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+--      AND account_code = '3590';
+-- =============================================================================
+
+SET @company            := 'd8894494-2fb4-4f72-9e05-e6032e6dd691';  -- Trustworks A/S
+SET @cat_delte_services := '732fb626-fd28-49e5-87ce-b0739557a75c';  -- Delte services
+
+-- 3590 Personalerejser -> OPEX (mirrors 3589 / 3591, same block, same category)
+INSERT INTO accounting_accounts (uuid, companyuuid, categoryuuid, account_code, account_description, shared, salary, cost_type)
+SELECT UUID(), @company, @cat_delte_services, '3590', 'Personalerejser', 1, 0, 'OPEX'
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM accounting_accounts WHERE companyuuid = @company AND account_code = '3590');
+
+-- Verification (READ-ONLY, run after deploy):
+--   SELECT account_code, account_description, cost_type, shared, salary
+--     FROM accounting_accounts
+--    WHERE companyuuid = 'd8894494-2fb4-4f72-9e05-e6032e6dd691' AND account_code = '3590';
+--   -- Expect: 1 row — 3590 / Personalerejser / OPEX / shared=1 / salary=0.
+--
+--   -- UnmappedGlAccountCheck.detect() for FY2026/2027, verbatim:
+--   SELECT fd.companyuuid, fd.accountnumber, SUM(fd.amount), COUNT(*)
+--     FROM finance_details fd
+--     JOIN (SELECT companyuuid, MIN(CAST(account_code AS UNSIGNED)) lo,
+--                  MAX(CAST(account_code AS UNSIGNED)) hi
+--             FROM accounting_accounts GROUP BY companyuuid) band
+--       ON band.companyuuid = fd.companyuuid
+--      AND fd.accountnumber BETWEEN band.lo AND band.hi
+--     LEFT JOIN accounting_accounts aa
+--            ON aa.account_code = fd.accountnumber AND aa.companyuuid = fd.companyuuid
+--    WHERE fd.expensedate >= '2026-07-01' AND fd.expensedate <= '2027-06-30'
+--      AND aa.account_code IS NULL
+--    GROUP BY 1, 2;
+--   -- Expect: zero rows. Before this migration it returned exactly one —
+--   --         A/S 3590, 19,483.74 over 1 entry.
+--
+--   -- BOTH mats must show the cost after their next refresh:
+--   SELECT ROUND(SUM(opex_amount_dkk),2) FROM fact_opex_mat
+--    WHERE month_key = '202607' AND company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+--      AND cost_type = 'OPEX';
+--   -- Expect: 3,145,723.14 + 19,483.74 = 3,165,206.88 (BOOKED share).
+--   SELECT ROUND(SUM(opex_amount_dkk),2) FROM fact_opex_distribution_mat
+--    WHERE month_key = '202607';
+--   -- Expect: prior total + 19,483.74 across the three payer companies.
