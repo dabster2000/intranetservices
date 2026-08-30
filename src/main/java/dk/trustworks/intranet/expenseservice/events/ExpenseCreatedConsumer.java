@@ -185,6 +185,10 @@ public class ExpenseCreatedConsumer {
                 managedExpense.setAiRuleIdsJson(serializeRuleIds(firedRuleIds));
                 log.infof("Expense %s BLOCKED → NEEDS_ATTENTION %s/%s (rule=%s). Reason: %s",
                         expense.getUuid(), owner, kind, primaryRuleId, result.reason());
+                if (ExpenseStateDeriver.OWNER_EMPLOYEE.equals(owner)) {
+                    // Tell the employee. After-commit — never inside this transaction.
+                    expenseService.queueEmployeeAttentionNotification(managedExpense.getUuid());
+                }
             }
             default -> log.warnf("Expense %s: unexpected AI outcome=%s — leaving for retry.",
                     expense.getUuid(), result.outcome());
