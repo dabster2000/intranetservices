@@ -188,8 +188,7 @@ public class GrowthAnalyticsService {
         }
         Double conversion = measureCashConversion(bankFlows, ebitdaByMonth, COST_DATA_FROM_KEY, ttmToKey);
         List<Double> seasonal = seasonalFlowPattern(bankFlows);
-        int lastCompleteFy = fiscalYearOf(asOf) - 1;
-        Double lastFyDividend = lastFiscalYearDividend(bankFlows, lastCompleteFy);
+        Double dividendTtm = dividendOverWindow(bankFlows, ttmFromKey, ttmToKey);
         Integer dividendMonth = dominantDividendMonth(bankFlows);
 
         return new GrowthBaselineDTO(
@@ -213,7 +212,7 @@ public class GrowthAnalyticsService {
                 bankBalanceBooked,
                 conversion,
                 seasonal,
-                lastFyDividend,
+                dividendTtm,
                 dividendMonth,
                 payrollTtm / 12d);
     }
@@ -448,11 +447,15 @@ public class GrowthAnalyticsService {
         return result;
     }
 
-    /** Absolute dividend outflow total in the given fiscal year; null when zero/none. */
-    static Double lastFiscalYearDividend(List<GroupFlowMonth> flows, int fiscalYear) {
+    /**
+     * Absolute dividend outflow total over {@code [fromKey..toKey]} inclusive —
+     * the trailing-12-month window in production, so the dividend default keeps
+     * the same basis as every other measured assumption. Null when zero/none.
+     */
+    static Double dividendOverWindow(List<GroupFlowMonth> flows, String fromKey, String toKey) {
         double sum = 0;
         for (GroupFlowMonth flow : flows) {
-            if (fiscalYearOf(parseMonthKey(flow.monthKey())) == fiscalYear) {
+            if (flow.monthKey().compareTo(fromKey) >= 0 && flow.monthKey().compareTo(toKey) <= 0) {
                 sum += flow.dividendFlow();
             }
         }

@@ -50,8 +50,8 @@ package dk.trustworks.intranet.aggregates.finance.dto.growth;
  *                                month, measured on non-dividend flows across complete
  *                                fiscal years — VAT, corporate tax and vacation-pay
  *                                rhythms live here. Empty until bank data exists
- * @param lastFiscalYearDividendDkk  absolute sum of dividend-matched outflows in the
- *                                last complete fiscal year; null when none found
+ * @param dividendTtmDkk          absolute sum of dividend-matched outflows over the
+ *                                trailing 12 complete months; null when none found
  * @param dividendMonth           calendar month (1–12) historically carrying the
  *                                largest dividend outflows; null when none found
  * @param payrollMonthly          average monthly GL payroll cost, DKK (TTM) — the
@@ -78,7 +78,7 @@ public record GrowthBaselineDTO(
         Double bankBalanceBooked,
         Double cashConversionRatio,
         java.util.List<Double> seasonalFlowDkk,
-        Double lastFiscalYearDividendDkk,
+        Double dividendTtmDkk,
         Integer dividendMonth,
         double payrollMonthly) {
 }

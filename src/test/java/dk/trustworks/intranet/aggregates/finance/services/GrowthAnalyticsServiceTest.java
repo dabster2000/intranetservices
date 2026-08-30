@@ -285,13 +285,15 @@ class GrowthAnalyticsServiceTest {
     }
 
     @Test
-    void dividendHelpersMeasureLastFyAndDominantMonth() {
+    void dividendHelpersMeasureTrailingWindowAndDominantMonth() {
         var flows = List.of(
-                flow("202511", -3_000_000, -2_000_000),  // Nov, FY2025
-                flow("202604", -1_500_000, -1_500_000),  // Apr, FY2025
-                flow("202411", -900_000, -900_000));     // Nov, FY2024
-        assertEquals(3_500_000.0, GrowthAnalyticsService.lastFiscalYearDividend(flows, 2025));
-        assertNull(GrowthAnalyticsService.lastFiscalYearDividend(flows, 2020));
+                flow("202511", -3_000_000, -2_000_000),
+                flow("202604", -1_500_000, -1_500_000),
+                flow("202411", -900_000, -900_000));
+        // Trailing-12M window Jul 2025 – Jun 2026 catches Nov 2025 + Apr 2026.
+        assertEquals(3_500_000.0, GrowthAnalyticsService.dividendOverWindow(flows, "202507", "202606"));
+        // A window with no dividend outflows yields null, not 0.
+        assertNull(GrowthAnalyticsService.dividendOverWindow(flows, "202001", "202012"));
         assertEquals(11, GrowthAnalyticsService.dominantDividendMonth(flows));
         assertNull(GrowthAnalyticsService.dominantDividendMonth(List.of(flow("202601", 5.0, 0))));
     }
