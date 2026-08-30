@@ -107,6 +107,7 @@ jobs:
               {"name":"JOURNALNUMBER","value":"7"},
               {"name":"EXPENSEJOURNALNUMBER","value":"16"},
               {"name":"EXPENSE_ECONOMICS_UPLOAD_ENABLED","value":"true"},
+              {"name":"EXPENSE_EMPLOYEE_NOTIFIER_ENABLED","value":"true"},
               {"name":"INVOICE_ECONOMICS_UPLOAD_ENABLED","value":"true"},
               {"name":"EXPENSE_ECONOMICS_SYNC_ENABLED","value":"true"},
               {"name":"INVOICE_ECONOMICS_SYNC_ENABLED","value":"true"},
