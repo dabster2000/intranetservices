@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.exceptions.ExpenseUploadException;
@@ -9,6 +10,7 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsApiException;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsJournalsAPI;
 import dk.trustworks.intranet.expenseservice.remote.JournalEntryResponse;
 import dk.trustworks.intranet.expenseservice.remote.DraftEntryDeleteRequest;
@@ -36,6 +38,7 @@ import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.IntStream;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
 
@@ -45,6 +48,16 @@ public class  EconomicsService {
 
     @Inject
     UserService userService;
+
+    /**
+     * Asked once before the voucher POST whether every entry date the auto-shift loop would try
+     * is closed or barred, so a barred accounting year costs one GET instead of eight doomed
+     * POSTs. Shared with the invoice path, which uses it for the same vendor state
+     * ({@code InvoiceFinalizationOrchestrator}); it is fail-open, so it can only ever save work,
+     * never refuse an expense e-conomic would have accepted.
+     */
+    @Inject
+    AccountingPeriodPreflight periodPreflight;
 
     /**
      * Environment prefix on the idempotency key — prevents the same expense UUID
@@ -129,6 +142,56 @@ public class  EconomicsService {
     }
 
     /**
+     * Whether a rejected voucher POST should be retried with the entry date shifted forward.
+     *
+     * <p>The one rule, shared by both ways a rejection reaches the loop: as a returned
+     * {@code Response}, and — the path that actually occurs in production — as the exception
+     * {@link dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper} throws in place
+     * of one. Keeping it in a single method is what stops the two from drifting apart again.
+     *
+     * <p>Shifting is worth trying because e-conomic bars <em>periods</em>, not only whole years:
+     * when the current month is barred and the next is open, a few days forward clears it. When
+     * the whole accounting year is barred, no shift within {@link #MAX_PERIOD_SHIFT_DAYS} can
+     * escape it and the loop ends at {@link #barredPeriodMessage} instead.
+     */
+    boolean shouldShiftVoucherDate(int status, String body) {
+        return status == 400 && isPeriodClosedError(body);
+    }
+
+    /** How a rejected attachment POST can be recovered, if at all. */
+    enum AttachmentRecovery {
+        /** e-conomic refused the idempotency key ("URLChanged"); re-POST under a fresh one. */
+        RETRY_NEW_IDEMPOTENCY_KEY,
+        /** The voucher already carries an attachment; PATCH it instead of POSTing a second. */
+        FALL_BACK_TO_PATCH,
+        /** Nothing to recover from — the caller reports the failure. */
+        NONE
+    }
+
+    /**
+     * Reads e-conomic's rejection of an attachment POST and says which of the two recovery
+     * paths applies.
+     *
+     * <p>Both keys off the 400 body, which is why this takes a status and a body rather than a
+     * {@code Response}: {@link dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper}
+     * is registered on {@link EconomicsAPI} and throws in place of returning one, so in practice
+     * the pair arrives on an
+     * {@link dk.trustworks.intranet.expenseservice.remote.EconomicsApiException}. Reading them
+     * off a returned {@code Response} is what left both paths unreachable.
+     */
+    static AttachmentRecovery attachmentRecoveryFor(int status, String body) {
+        if (status != 400 || body == null) return AttachmentRecovery.NONE;
+        if (body.contains("URLChanged")) return AttachmentRecovery.RETRY_NEW_IDEMPOTENCY_KEY;
+        if (body.contains("Voucher already has attachment")) return AttachmentRecovery.FALL_BACK_TO_PATCH;
+        return AttachmentRecovery.NONE;
+    }
+
+    private static void closeQuietly(Response r) {
+        if (r == null) return;
+        try { r.close(); } catch (Exception ignore) { /* nothing useful to do */ }
+    }
+
+    /**
      * The error-bearing strings anywhere in an e-conomic problem body. The voucher endpoint buries
      * the real cause under {@code errors[].entries.items[].date.errors[]}, and that shape differs
      * per endpoint and per API generation, so this walks the tree instead of assuming one path.
@@ -210,6 +273,35 @@ public class  EconomicsService {
         }
         String defaultVatCode = resolveDefaultVatCode(result, Integer.parseInt(expense.getAccount()));
 
+        // One clock read for the whole method, so the dates the pre-flight is asked about are
+        // exactly the ones the loop below will try.
+        LocalDate today = LocalDate.now();
+        List<LocalDate> shiftDates = IntStream.rangeClosed(0, MAX_PERIOD_SHIFT_DAYS)
+                .mapToObj(today::plusDays)
+                .toList();
+
+        // Ask before walking. The loop escapes a barred PERIOD by moving into the next one, but
+        // nothing it can do escapes a barred YEAR: fiscalYearStart steps only on July 1, so on 358
+        // days of the year all eight dates carry the same accounting year and the eight POSTs are
+        // identical but for the entry date. Firing them anyway is an unpaced burst against an
+        // endpoint with no 429 backoff on this path, and a throttle it provokes would park the
+        // expense with a rate-limit message instead of the barred-period one — destroying the
+        // explanation this whole branch exists to give.
+        //
+        // Fail-open: allDatesBlocked is false unless a covering period was READ for every one of
+        // those dates and every one refuses postings. A vendor hiccup, an unknown period or the
+        // kill switch all fall through to the POST and let e-conomic decide, as before.
+        if (periodPreflight.allDatesBlocked(company.getUuid(), shiftDates)) {
+            String barredYear = DateUtils.getFiscalYearName(DateUtils.fiscalYearStart(today), company.getUuid());
+            log.errorf("Period pre-flight REFUSED expense %s before any POST — company: %s, "
+                            + "accountingYear: %s, every entry date %s..%s is closed or barred",
+                    expense.getUuid(), company.getName(), barredYear,
+                    shiftDates.get(0), shiftDates.get(shiftDates.size() - 1));
+            throw new ExpenseUploadException(
+                    barredPeriodMessage(company.getName(), barredYear, MAX_PERIOD_SHIFT_DAYS),
+                    null, null, null);
+        }
+
         try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
             Voucher voucher = null;
             Response response = null;
@@ -219,7 +311,7 @@ public class  EconomicsService {
             // Period-closed auto-shift: each retry advances the voucher entry date by 1 day
             // and uses a fresh idempotency key so e-conomic's cache treats it as new.
             for (int shift = 0; shift <= MAX_PERIOD_SHIFT_DAYS; shift++) {
-                LocalDate voucherDate = LocalDate.now().plusDays(shift);
+                LocalDate voucherDate = shiftDates.get(shift);
                 voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate, defaultVatCode);
                 String json = new ObjectMapper().writeValueAsString(voucher);
                 String idempotencyKey = (shift == 0)
@@ -236,6 +328,19 @@ public class  EconomicsService {
 
                 try {
                     response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
+                } catch (EconomicsApiException e) {
+                    // EconomicsErrorMapper is registered on EconomicsAPI and turns every non-2xx
+                    // except 404 into a thrown exception, so a rejected voucher never arrives as a
+                    // returned Response — the status inspection below cannot see it. Before this
+                    // branch existed, a barred-period 400 fell straight through to catch (Exception)
+                    // and failed the expense outright, which is why the shift loop never ran in
+                    // production (2026-08-30, expenses a84274cb… and ab414c17…, both TWC FY2026/27).
+                    lastStatus = e.getStatus();
+                    lastBody = e.getBody();
+                    response = null;
+                    if (shouldShiftVoucherDate(lastStatus, lastBody)) continue;
+                    log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + lastStatus + ", details: " + lastBody, e);
+                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, lastStatus, lastBody);
                 } catch (WebApplicationException e) {
                     String errorDetails = safeRead(e.getResponse());
                     log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails, e);
@@ -251,7 +356,7 @@ public class  EconomicsService {
                 lastBody = safeRead(response);
                 try { response.close(); } catch (Exception ignore) {}
                 response = null;
-                if (status != 400 || !isPeriodClosedError(lastBody)) {
+                if (!shouldShiftVoucherDate(status, lastBody)) {
                     log.error("voucher not posted successfully to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + status + ", details: " + lastBody);
                     throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, status, lastBody);
                 }
@@ -366,51 +471,71 @@ public class  EconomicsService {
                 if (!hasAttachment) {
                     log.debug("POST file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
                         "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
-                    r = api.postExpenseFile(
-                            voucher.getJournal().getJournalNumber(),
-                            urlYear,
-                            expense.getVouchernumber(),
-                            idemp,
-                            form
-                    );
-                    if (r.getStatus() == 400) {
-                        String body = safeRead(r);
+                    // EconomicsErrorMapper is registered on EconomicsAPI and turns every status
+                    // >= 400 except 404 into a thrown exception, so e-conomic's rejection never
+                    // arrives as a Response — a returned one here is 2xx, 3xx or 404, never the
+                    // 400 both recovery paths key on. Reading the status off `r` is what left
+                    // them unreachable, so take the pair from whichever the call produced.
+                    int status;
+                    String body;
+                    try {
+                        r = api.postExpenseFile(
+                                voucher.getJournal().getJournalNumber(),
+                                urlYear,
+                                expense.getVouchernumber(),
+                                idemp,
+                                form
+                        );
+                        status = r.getStatus();
+                        body = null;
+                    } catch (EconomicsApiException e) {
+                        r = null;
+                        status = e.getStatus();
+                        body = e.getBody();
+                    }
 
-                        // Check for idempotency key collision (URLChanged error)
-                        if (body != null && body.contains("URLChanged")) {
-                            log.warnf("Idempotency key conflict detected for expense %s - retrying with incremented version. Error: %s",
-                                     expense.getUuid(), body);
-                            // Close the failed response before retrying
-                            try { r.close(); } catch (Exception ignore) {}
-                            // Increment retry count for new idempotency version
-                            expense.incrementRetryCount();
-                            String retryIdemp = String.format("attach-%s-POST-v%d",
-                                expense.getUuid(), expense.getSafeRetryCount());
-                            r = api.postExpenseFile(
-                                    voucher.getJournal().getJournalNumber(),
-                                    urlYear,
-                                    expense.getVouchernumber(),
-                                    retryIdemp,
-                                    form
-                            );
-                            log.info("Retry with new idempotency key completed, status: " + r.getStatus());
-                        }
-                        // Existing fallback for "Voucher already has attachment"
-                        else if (body != null && body.contains("Voucher already has attachment")) {
-                            log.infof("Voucher already has attachment, switching to PATCH for expense %s", expense.getUuid());
-                            // Close the failed response before retrying
-                            try { r.close(); } catch (Exception ignore) {}
-                            // fallback til PATCH with deterministic idempotency key
-                            String patchIdemp = String.format("attach-%s-PATCH-v%d",
-                                expense.getUuid(), expense.getSafeRetryCount());
-                            r = api.patchFile(
-                                    voucher.getJournal().getJournalNumber(),
-                                    urlYear,
-                                    expense.getVouchernumber(),
-                                    patchIdemp,
-                                    form
-                            );
-                        }
+                    AttachmentRecovery recovery = attachmentRecoveryFor(status, body);
+                    // Check for idempotency key collision (URLChanged error)
+                    if (recovery == AttachmentRecovery.RETRY_NEW_IDEMPOTENCY_KEY) {
+                        log.warnf("Idempotency key conflict detected for expense %s - retrying with incremented version. Error: %s",
+                                 expense.getUuid(), body);
+                        // Close the failed response before retrying
+                        closeQuietly(r);
+                        // Increment retry count for new idempotency version
+                        expense.incrementRetryCount();
+                        String retryIdemp = String.format("attach-%s-POST-v%d",
+                            expense.getUuid(), expense.getSafeRetryCount());
+                        r = api.postExpenseFile(
+                                voucher.getJournal().getJournalNumber(),
+                                urlYear,
+                                expense.getVouchernumber(),
+                                retryIdemp,
+                                form
+                        );
+                        log.info("Retry with new idempotency key completed, status: " + r.getStatus());
+                    }
+                    // Existing fallback for "Voucher already has attachment"
+                    else if (recovery == AttachmentRecovery.FALL_BACK_TO_PATCH) {
+                        log.infof("Voucher already has attachment, switching to PATCH for expense %s", expense.getUuid());
+                        // Close the failed response before retrying
+                        closeQuietly(r);
+                        // fallback til PATCH with deterministic idempotency key
+                        String patchIdemp = String.format("attach-%s-PATCH-v%d",
+                            expense.getUuid(), expense.getSafeRetryCount());
+                        r = api.patchFile(
+                                voucher.getJournal().getJournalNumber(),
+                                urlYear,
+                                expense.getVouchernumber(),
+                                patchIdemp,
+                                form
+                        );
+                    }
+                    // The mapper threw and neither recovery applies: there is no Response to fall
+                    // through to, and the vendor's own status says more than the "unexpected"
+                    // 502 this used to surface as.
+                    else if (r == null) {
+                        log.error("File upload failed for expense " + expense.getUuid() + ", status: " + status + ", details: " + body);
+                        throw new ExpenseUploadException("File upload to e-conomics failed", null, status, body);
                     }
                 } else {
                     log.debug("PATCH file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
@@ -432,6 +557,13 @@ public class  EconomicsService {
                 }
 
                 return r;
+            } catch (EconomicsApiException e) {
+                // Covers the retry POST, the PATCH fallback and the PATCH-only branch above.
+                // Without this the mapper's exception fell through to catch (Exception) below,
+                // and every attachment rejection reached operators as a 502 gateway fault
+                // instead of the status and body e-conomic actually sent.
+                log.error("File upload failed for expense " + expense.getUuid() + ", status: " + e.getStatus() + ", details: " + e.getBody(), e);
+                throw new ExpenseUploadException("File upload to e-conomics failed", e, e.getStatus(), e.getBody());
             } catch (WebApplicationException wae) {
                 String errorDetails = safeRead(wae.getResponse());
                 log.error("WebApplicationException during file upload for expense " + expense.getUuid() + ", status: " + wae.getResponse().getStatus() + ", details: " + errorDetails);

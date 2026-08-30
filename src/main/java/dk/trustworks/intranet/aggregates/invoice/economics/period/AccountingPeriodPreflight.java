@@ -11,6 +11,7 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -100,6 +101,39 @@ public class AccountingPeriodPreflight {
     public boolean isKnownOpen(String companyUuid, LocalDate date) {
         if (!preflightEnabled || companyUuid == null || date == null) return false;
         return verdictFor(companyUuid, date).state() == PeriodState.OPEN;
+    }
+
+    /**
+     * True only when a covering period was read for <em>every</em> supplied date and all of them
+     * refuse postings.
+     *
+     * <p>For a caller that would otherwise try several dates in turn — the expense voucher POST
+     * walks its entry date forward a day at a time to get out from under a barred period. Asking
+     * about one date is not enough there: e-conomic bars <em>periods</em>, so a barred August
+     * inside an open FY 2026/27 is exactly the case that walk is built to escape, and refusing on
+     * the strength of today's period alone would delete its only working outcome. Only when every
+     * date it would try is provably blocked is the walk pointless.
+     *
+     * <p>The agreement's periods are read once, so the answer costs the same single vendor call
+     * regardless of how many dates are asked about.
+     *
+     * <p>Fail-open like the rest of this class, and for the same reason: a single UNKNOWN or OPEN
+     * date returns {@code false}, and so do a vendor failure and the kill switch. The caller then
+     * proceeds and lets e-conomic decide, exactly as it did before this method existed.
+     */
+    public boolean allDatesBlocked(String companyUuid, Collection<LocalDate> dates) {
+        if (!preflightEnabled || companyUuid == null || dates == null || dates.isEmpty()) return false;
+
+        List<EconomicsAccountingPeriod> periods;
+        try {
+            periods = fetchPeriods(companyUuid);
+        } catch (Exception e) {
+            log.warnf("Period pre-flight unavailable for company=%s (%s: %s) — treating the dates "
+                            + "as UNKNOWN; e-conomic remains the authority",
+                    companyUuid, e.getClass().getSimpleName(), e.getMessage());
+            return false;
+        }
+        return dates.stream().allMatch(d -> classify(periods, d).state() == PeriodState.BLOCKED);
     }
 
     /**

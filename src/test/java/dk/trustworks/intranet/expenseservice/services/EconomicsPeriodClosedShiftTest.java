@@ -1,11 +1,17 @@
 package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsApiException;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
+import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Pins the closed-period auto-shift contract: the detector recognises e-conomic's
@@ -162,5 +168,75 @@ class EconomicsPeriodClosedShiftTest {
 
         assertTrue(msg.contains("2026/2027"), msg);
         assertFalse(msg.contains("null"), "no null leaking into operator text: " + msg);
+    }
+
+    /**
+     * The HTTP 400 body e-conomic returned in production on 2026-08-30T00:35:42Z for expense
+     * a84274cb-b75f-4bd3-9bd1-432717e046cd (Jacob Boeskov, TWC, accounting year 2026/2027
+     * barred), copied verbatim from the CloudWatch line — nesting, empty {@code entries.errors}
+     * array, echoed {@code inputValue} and all. Expense ab414c17-fce1-48d2-ad9a-c22cb588f8ed
+     * failed 11 seconds later with the same shape.
+     */
+    private static final String PRODUCTION_400_BODY_2026_08_30 =
+            "{\"message\":\"Validation failed. 1 error found.\",\"errorCode\":\"E04300\","
+                    + "\"developerHint\":\"Inspect validation errors and correct your request.\","
+                    + "\"logId\":\"a32fb78ed83c0ccb-DUB\",\"httpStatusCode\":400,"
+                    + "\"errors\":[{\"arrayIndex\":0,\"entries\":{\"errors\":[],\"items\":[{"
+                    + "\"arrayIndex\":0,\"date\":{\"errors\":[{\"propertyName\":\"Date\","
+                    + "\"errorMessage\":\"Perioden er spærret.\",\"errorCode\":\"E04041\","
+                    + "\"inputValue\":{\"voucherAccountingYear\":\"2026/2027\","
+                    + "\"entryDate\":\"2026-08-30\"},"
+                    + "\"developerHint\":\"You cannot create an entry with a date that is barred "
+                    + "in the accounting year.\"}]}}]}}],"
+                    + "\"logTime\":\"2026-08-30T02:35:42\",\"errorCount\":1}";
+
+    @Test
+    void the_2026_08_30_production_400_is_recognised_as_a_barred_period() {
+        assertTrue(serviceFor("production").isPeriodClosedError(PRODUCTION_400_BODY_2026_08_30),
+                "E04041 is nested under errors[].entries.items[].date.errors[]; the top-level "
+                        + "errorCode is only E04300 \"Validation failed\"");
+    }
+
+    /**
+     * The regression that actually mattered. {@code isPeriodClosedError} was already correct and
+     * already live in production (commit 766c1462, image 1766df41) when these two expenses failed
+     * — and they still failed on the first attempt, because {@code EconomicsErrorMapper} is
+     * registered on {@code EconomicsAPI} and converts the 400 into a thrown exception, so
+     * {@code postVoucher} never returns the {@code Response} whose status {@code sendVoucher}
+     * was inspecting. The detector was reachable only from a branch that could not execute.
+     *
+     * <p>This walks the real chain — vendor response → mapper → exception → shift decision —
+     * rather than handing the body to the detector directly, which is precisely the step the
+     * old tests took for granted.
+     */
+    @Test
+    void production_400_survives_the_error_mapper_and_still_triggers_the_date_shift() {
+        Response vendorResponse = mock(Response.class);
+        when(vendorResponse.getStatus()).thenReturn(400);
+        when(vendorResponse.readEntity(String.class)).thenReturn(PRODUCTION_400_BODY_2026_08_30);
+
+        RuntimeException thrown = new EconomicsErrorMapper().toThrowable(vendorResponse);
+
+        EconomicsApiException mapped = assertInstanceOf(EconomicsApiException.class, thrown,
+                "the mapper must hand the caller a status and a body, not just a message");
+        assertEquals(400, mapped.getStatus());
+        assertEquals(PRODUCTION_400_BODY_2026_08_30, mapped.getBody());
+
+        assertTrue(serviceFor("production").shouldShiftVoucherDate(mapped.getStatus(), mapped.getBody()),
+                "the barred-period 400 must engage the auto-shift retry after passing through "
+                        + "the rest-client error mapper");
+    }
+
+    @Test
+    void non_period_400s_and_non_400_statuses_do_not_trigger_the_date_shift() {
+        EconomicsService s = serviceFor("production");
+
+        assertFalse(s.shouldShiftVoucherDate(400, "{\"errorCode\":\"URLChanged\"}"),
+                "an idempotency-key collision is not a barred period");
+        assertFalse(s.shouldShiftVoucherDate(500, PRODUCTION_400_BODY_2026_08_30),
+                "only a 400 means the vendor rejected the date; a 5xx is a transport failure");
+        assertFalse(s.shouldShiftVoucherDate(429, PRODUCTION_400_BODY_2026_08_30),
+                "throttling must not be mistaken for a barred period");
+        assertFalse(s.shouldShiftVoucherDate(400, null));
     }
 }
