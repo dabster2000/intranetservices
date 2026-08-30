@@ -714,6 +714,29 @@ finance:
   # first to validate against a fully-closed fiscal year before promoting to prod.
   internal-cost-timing-alignment:
     enabled: ${FINANCE_INTERNAL_COST_TIMING_ALIGNMENT_ENABLED:false}
+  # UnmappedGlAccountCheck (04:15 UTC) — the GL-mapping completeness gate.
+  unmapped-gl:
+    # Per-company EBITDA account span, "<companyuuid>:<lo>-<hi>", comma separated.
+    # Read off e-conomic's own P&L structure: everything ABOVE the entity's
+    # "Resultat før renter" subtotal, which is where EBITDA is struck.
+    #   Trustworks A/S                 2000-6198  (6199 = "Resultat før renter")
+    #   Trustworks Technology ApS      1001-3999  (4000 = "Resultat før renter")
+    #   Trustworks Cyber Security ApS  1001-3999  (4000 = "Resultat før renter")
+    # This replaces the old derived [MIN(account_code)..MAX(account_code)] band,
+    # which made the gate's reach an accident of what was already mapped: an
+    # account opened above a company's current maximum was invisible, and mapping
+    # one high account silently widened the alarm. A company omitted here falls
+    # back to that derived band, so a bad value degrades rather than breaks.
+    # NOTE: filtering on e-conomic accountType='profitAndLoss' instead would NOT
+    # work — the interest accounts (A/S 6806/6856/6860/6861/6875/6890) are
+    # profitAndLoss too and belong BELOW the EBITDA line.
+    ebitda-spans: ${FINANCE_UNMAPPED_GL_EBITDA_SPANS:d8894494-2fb4-4f72-9e05-e6032e6dd691:2000-6198,44592d3b-2be5-4b29-bfaf-4fafc60b0fa3:1001-3999,e4b0a2a4-0963-4153-b0a2-a409637153a2:1001-3999}
+    # How many fiscal years to scan, counting back from the current one. Scanning
+    # only the current FY stranded findings on every 1 July rollover: late and
+    # year-end postings to the year just closed became permanently invisible (on
+    # 2026-08-30 that had left 68,630.43 DKK net across eight accounts behind in
+    # FY2025/2026, including a 55,000 DKK audit-fee accrual). 2 = current + prior.
+    fiscal-year-lookback: ${FINANCE_UNMAPPED_GL_FISCAL_YEAR_LOOKBACK:2}
 pricingEngine:
   enabled: true
 cvtool:
