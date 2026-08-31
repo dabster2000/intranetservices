@@ -1164,7 +1164,9 @@ public class  EconomicsService {
     /**
      * Checks whether the expense's stored voucher (journal/year/number triple) exists
      * as a draft in e-conomic. Missing triple counts as {@code NOT_FOUND} (there is
-     * nothing to look up).
+     * nothing to look up) — a draft is addressable only through its journal, so an
+     * incomplete triple genuinely cannot be resolved here. Rows in that state are
+     * covered by {@link #checkVoucherBooked(Expense)}, which needs no journal.
      */
     public VoucherLookupResult checkVoucherExists(Expense expense) {
         if (expense.getVouchernumber() <= 0 ||
@@ -1243,7 +1245,7 @@ public class  EconomicsService {
      * {@code NOT_FOUND}; a failed lookup is {@code UNKNOWN}, never absence.
      */
     public VoucherLookupResult checkVoucherBooked(Expense expense) {
-        if (expense.getVouchernumber() <= 0 || expense.getJournalnumber() == null || expense.getAccountingyear() == null) {
+        if (expense.getVouchernumber() <= 0) {
             return VoucherLookupResult.NOT_FOUND;
         }
         try (EconomicsAPI api = getApiForExpense(expense)) {
@@ -1254,9 +1256,25 @@ public class  EconomicsService {
         }
     }
 
-    /** Lookup body of {@link #checkVoucherBooked(Expense)}; package-private so tests can inject the API. */
+    /**
+     * Lookup body of {@link #checkVoucherBooked(Expense)}; package-private so tests can inject the API.
+     * <p>
+     * Deliberately does NOT require {@code journalnumber}: the booked ledger lives under
+     * {@code /accounting-years/{year}/entries} and knows nothing about journals. Requiring it
+     * used to short-circuit whole classes of row to NOT_FOUND without ever calling e-conomic
+     * (2026-08-07: legacy rows carrying a voucher number but no journal/year precheck'ed as
+     * "MISSING", so the accountant re-sent 93 already-booked expenses with no duplicate warning).
+     */
     VoucherLookupResult checkVoucherBooked(Expense expense, EconomicsAPI api) {
-        String yearId = DateUtils.toEconomicsUrlYear(expense.getAccountingyear());
+        String stored = expense.getAccountingyear();
+        if (stored != null && !stored.isBlank()) {
+            return checkVoucherBookedInYear(expense, api, DateUtils.toEconomicsUrlYear(stored));
+        }
+        return checkVoucherBookedInAnyYear(expense, api);
+    }
+
+    /** Booked-ledger lookup scoped to one accounting year. */
+    private VoucherLookupResult checkVoucherBookedInYear(Expense expense, EconomicsAPI api, String yearId) {
         String filter = "voucherNumber$eq:" + expense.getVouchernumber();
         try {
             Response yr = api.getYearEntries(yearId, filter, 1000, 0);
@@ -1277,6 +1295,89 @@ public class  EconomicsService {
         } catch (Exception e) {
             log.warn("Booked-ledger lookup failed for expense " + expense.getUuid() + ": " + e);
             return VoucherLookupResult.UNKNOWN;
+        }
+    }
+
+    /**
+     * No stored accounting year (legacy rows never got the triple): resolve the candidate years
+     * from e-conomic and check each. A voucher can only be booked in a year that was still open
+     * when the expense was posted, so years ending before the expense date are skipped — that
+     * keeps the sweep at two or three GETs, not one per year of the agreement's history.
+     * <p>
+     * Deliberately uncapped beyond that filter: truncating the candidate list would hand back a
+     * NOT_FOUND for a voucher booked in the year we chose not to look at, which is precisely the
+     * silent false "MISSING" this method exists to remove. The batch endpoints bound the volume
+     * instead ({@code @Size(max = 500)} on the request), and only rows with no stored year — and
+     * no draft hit — reach this path at all.
+     * <p>
+     * Fails closed: a failed listing, or a year whose lookup errored while no other year proved
+     * a hit, is UNKNOWN — never absence.
+     */
+    private VoucherLookupResult checkVoucherBookedInAnyYear(Expense expense, EconomicsAPI api) {
+        String body;
+        try {
+            Response yr = api.getAccountingYears(50);
+            int status = yr != null ? yr.getStatus() : -1;
+            try { body = yr != null ? yr.readEntity(String.class) : null; }
+            finally { if (yr != null) yr.close(); }
+            if (status < 200 || status >= 300) {
+                log.warn("Accounting-years listing failed for expense " + expense.getUuid()
+                        + " (status=" + status + "); booked state cannot be determined");
+                return VoucherLookupResult.UNKNOWN;
+            }
+        } catch (Exception e) {
+            log.warn("Accounting-years listing failed for expense " + expense.getUuid() + ": " + e);
+            return VoucherLookupResult.UNKNOWN;
+        }
+
+        List<String> candidates = candidateBookedYears(body, expense.getExpensedate());
+        if (candidates.isEmpty()) {
+            log.warn("No candidate accounting years for expense " + expense.getUuid()
+                    + "; booked state cannot be determined");
+            return VoucherLookupResult.UNKNOWN;
+        }
+        boolean indeterminate = false;
+        for (String year : candidates) {
+            VoucherLookupResult r = checkVoucherBookedInYear(expense, api, DateUtils.toEconomicsUrlYear(year));
+            if (r == VoucherLookupResult.FOUND) return VoucherLookupResult.FOUND;
+            if (r == VoucherLookupResult.UNKNOWN) indeterminate = true;
+        }
+        return indeterminate ? VoucherLookupResult.UNKNOWN : VoucherLookupResult.NOT_FOUND;
+    }
+
+    /**
+     * Accounting-year labels from a {@code GET /accounting-years} body that could still hold the
+     * voucher: those whose {@code toDate} is on or after {@code onOrAfter}. A null/unparseable
+     * {@code toDate} keeps the year (better an extra GET than a missed booking), and a null
+     * {@code onOrAfter} keeps them all. Pure + static so it is testable without an API.
+     */
+    static List<String> candidateBookedYears(String json, LocalDate onOrAfter) {
+        List<String> result = new ArrayList<>();
+        if (json == null || json.isBlank()) return result;
+        try {
+            JsonNode root = new ObjectMapper().readTree(json);
+            JsonNode coll = root.get("collection");
+            JsonNode arr = (coll != null && coll.isArray()) ? coll : (root.isArray() ? root : null);
+            if (arr == null) return result;
+            for (JsonNode item : arr) {
+                JsonNode yearNode = item.get("year");
+                if (yearNode == null || yearNode.asText().isBlank()) continue;
+                if (onOrAfter != null && !endsOnOrAfter(item.get("toDate"), onOrAfter)) continue;
+                result.add(yearNode.asText());
+            }
+        } catch (Exception e) {
+            return result;
+        }
+        return result;
+    }
+
+    /** True when the year's {@code toDate} is missing, unparseable, or on/after {@code date}. */
+    private static boolean endsOnOrAfter(JsonNode toDate, LocalDate date) {
+        if (toDate == null || toDate.asText().isBlank()) return true;
+        try {
+            return !LocalDate.parse(toDate.asText().substring(0, 10)).isBefore(date);
+        } catch (Exception e) {
+            return true;
         }
     }
 

@@ -44,7 +44,7 @@ class ExpenseEconomicResendKillSwitchTest {
         QuarkusTransaction.requiringNew().run(e::persist);
 
         BadRequestException ex = assertThrows(BadRequestException.class,
-            () -> service.resendOne(e.getUuid(), "accountant-1"));
+            () -> service.resendOne(e.getUuid(), "accountant-1", false));
         assertEquals("e-conomic upload disabled in this environment", ex.getMessage());
         verify(economicsService, never()).sendVoucher(any(), any(), any());
     }

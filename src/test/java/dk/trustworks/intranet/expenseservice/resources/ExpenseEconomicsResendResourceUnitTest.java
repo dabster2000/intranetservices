@@ -39,7 +39,7 @@ class ExpenseEconomicsResendResourceUnitTest {
     void resendDoesNotExposeProviderErrorDetails() {
         when(header.getUserUuid()).thenReturn("accountant");
         doThrow(new RuntimeException("arn:aws:sts::123456789012:assumed-role/example cannot s3:GetObject"))
-                .when(resendService).resendOne(UUID, "accountant");
+                .when(resendService).resendOne(UUID, "accountant", false);
 
         var result = resource.resend(new ExpenseResendRequestDTO(List.of(UUID)));
 

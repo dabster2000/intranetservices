@@ -53,11 +53,18 @@ class ExpenseEconomicResendServiceTest {
         });
     }
 
+    /** Voucher proven gone in both places — the only state a re-send needs no confirmation for. */
+    private void stubVoucherGone() {
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+    }
+
     @Test
     void resendPostsFreshVoucherWithoutChangingStatus() throws Exception {
         String user = "user-" + UUID.randomUUID();
         Expense e = seedPosted(user);
         seedUserAccount(user);
+        stubVoucherGone();
         when(expenseFileService.getFileById(e.getUuid())).thenReturn(new ExpenseFile(e.getUuid(), "BASE64"));
         // Assert isOrphaned is TRUE at call time (proves a fresh idempotency key) + simulate the new voucher.
         when(economicsService.sendVoucher(any(), any(), any())).thenAnswer(inv -> {
@@ -68,7 +75,7 @@ class ExpenseEconomicResendServiceTest {
             return Response.ok().build();
         });
 
-        service.resendOne(e.getUuid(), "accountant-1");
+        service.resendOne(e.getUuid(), "accountant-1", false);
 
         Expense after = QuarkusTransaction.requiringNew().call(() -> Expense.findById(e.getUuid()));
         assertEquals("VERIFIED_UNBOOKED", after.getStatus(), "status unchanged");
@@ -96,13 +103,85 @@ class ExpenseEconomicResendServiceTest {
         QuarkusTransaction.requiringNew().run(e::persist);
 
         BadRequestException ex = assertThrows(BadRequestException.class,
-            () -> service.resendOne(e.getUuid(), "accountant-1"));
+            () -> service.resendOne(e.getUuid(), "accountant-1", false));
         assertEquals("not posted yet", ex.getMessage());
         verify(economicsService, never()).sendVoucher(any(), any(), any());
     }
 
     @Test
     void throwsNotFoundForUnknownUuid() {
-        assertThrows(NotFoundException.class, () -> service.resendOne("does-not-exist", "accountant-1"));
+        assertThrows(NotFoundException.class, () -> service.resendOne("does-not-exist", "accountant-1", false));
+    }
+
+    // --- duplicate confirmation gate (2026-08-07: 93 already-booked expenses re-sent in one
+    //     bulk action, minting duplicate vouchers for costs e-conomic already carried) ---
+
+    @Test
+    void refusesBookedVoucherWhenDuplicateNotConfirmed() throws Exception {
+        String user = "user-" + UUID.randomUUID();
+        Expense e = seedPosted(user);
+        seedUserAccount(user);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.FOUND);
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+            () -> service.resendOne(e.getUuid(), "accountant-1", false));
+        assertEquals("voucher still in e-conomic (BOOKED) — re-sending creates a duplicate; confirm to proceed",
+                ex.getMessage());
+        verify(economicsService, never()).sendVoucher(any(), any(), any());
+    }
+
+    @Test
+    void refusesDraftVoucherWhenDuplicateNotConfirmed() throws Exception {
+        String user = "user-" + UUID.randomUUID();
+        Expense e = seedPosted(user);
+        seedUserAccount(user);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.FOUND);
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+            () -> service.resendOne(e.getUuid(), "accountant-1", false));
+        assertEquals("voucher still in e-conomic (DRAFT) — re-sending creates a duplicate; confirm to proceed",
+                ex.getMessage());
+        verify(economicsService, never()).sendVoucher(any(), any(), any());
+        // A draft cannot also sit in the booked ledger — no second round trip per row.
+        verify(economicsService, never()).checkVoucherBooked(any());
+    }
+
+    @Test
+    void resendsBookedVoucherWhenDuplicateIsConfirmed() throws Exception {
+        String user = "user-" + UUID.randomUUID();
+        Expense e = seedPosted(user);
+        seedUserAccount(user);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.FOUND);
+        when(expenseFileService.getFileById(e.getUuid())).thenReturn(new ExpenseFile(e.getUuid(), "BASE64"));
+        when(economicsService.sendVoucher(any(), any(), any())).thenAnswer(inv -> {
+            ((Expense) inv.getArgument(0)).setVouchernumber(5043);
+            return Response.ok().build();
+        });
+
+        service.resendOne(e.getUuid(), "accountant-1", true);
+
+        Expense after = QuarkusTransaction.requiringNew().call(() -> Expense.findById(e.getUuid()));
+        assertEquals(5043, after.getVouchernumber(), "deliberate duplicate went through");
+        ExpenseDecisionLog row = QuarkusTransaction.requiringNew().call(() ->
+            ExpenseDecisionLog.find("expenseUuid = ?1 and action = ?2", e.getUuid(), "ECONOMIC_RESEND").firstResult());
+        assertNotNull(row, "the duplicate is audited like any other re-send");
+    }
+
+    @Test
+    void failsClosedWhenBookedLookupIsIndeterminate() throws Exception {
+        // A 5xx on the booked check is not absence: proceeding would risk the duplicate the
+        // confirmation gate exists to prevent, and the caller was never warned.
+        String user = "user-" + UUID.randomUUID();
+        Expense e = seedPosted(user);
+        seedUserAccount(user);
+        when(economicsService.checkVoucherExists(any())).thenReturn(EconomicsService.VoucherLookupResult.NOT_FOUND);
+        when(economicsService.checkVoucherBooked(any())).thenReturn(EconomicsService.VoucherLookupResult.UNKNOWN);
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+            () -> service.resendOne(e.getUuid(), "accountant-1", true));
+        assertEquals("e-conomic unavailable — cannot verify voucher state, try again later", ex.getMessage());
+        verify(economicsService, never()).sendVoucher(any(), any(), any());
     }
 }

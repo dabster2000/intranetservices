@@ -51,17 +51,23 @@ public class ExpenseEconomicsResendResource {
         return out;
     }
 
+    /**
+     * Rows whose voucher is still in e-conomic are re-sent only when the request carries
+     * {@code confirmDuplicates}; without it they come back as {@code skipped} with the reason,
+     * so an unconfirmed bulk re-send cannot duplicate a booked voucher.
+     */
     @POST
     @Path("/resend")
     @RolesAllowed({"expenses:review"})
     public ExpenseResendResultDTO resend(@Valid ExpenseResendRequestDTO body) {
         String actor = header.getUserUuid();
+        boolean confirmDuplicates = body.duplicatesConfirmed();
         int updated = 0;
         List<ExpenseResendResultDTO.Skipped> skipped = new ArrayList<>();
         List<ExpenseResendResultDTO.Failed> failed = new ArrayList<>();
         for (String uuid : body.uuids()) {
             try {
-                resend.resendOne(uuid, actor);
+                resend.resendOne(uuid, actor, confirmDuplicates);
                 updated++;
             } catch (NotFoundException ex) {
                 skipped.add(new ExpenseResendResultDTO.Skipped(uuid, "not found"));
