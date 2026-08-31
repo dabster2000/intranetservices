@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.communicationsservice.services.SlackConfigurationException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The P24 DPO exception digest (Slack spec §5.10, plan §P24): one weekly
@@ -102,6 +104,15 @@ public class RecruitmentDpoDigestService {
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
+
+    /**
+     * One ERROR per JVM for a permanently misconfigured drift check; every later
+     * run drops to WARN. A missing Slack scope answers identically on every run,
+     * so without this latch a weekly ERROR would either be ignored as noise or,
+     * on a daily batchlet, drown the signal it is supposed to raise. Mirrors
+     * {@code SlackService.homeTabDisabledReported}.
+     */
+    private final AtomicBoolean driftMisconfigurationReported = new AtomicBoolean();
 
     @ConfigProperty(name = "dk.trustworks.recruitment.slack.base-url",
             defaultValue = "https://intra.trustworks.dk")
@@ -259,7 +270,28 @@ public class RecruitmentDpoDigestService {
     record ChannelDrift(String positionTitle, List<String> unexpectedMembers) {
     }
 
-    record DriftReport(boolean checked, List<ChannelDrift> drifts) {
+    /**
+     * Why a drift report holds no drifts. {@link #UNAVAILABLE} and
+     * {@link #MISCONFIGURED} both mean "nothing was verified", but they are not
+     * the same news for a DPO: the first is a blip the next run repairs, the
+     * second is a standing hole in a GDPR access-control review that no amount
+     * of waiting fixes.
+     */
+    enum DriftStatus {
+        /** The check ran against live Slack membership. */
+        CHECKED,
+        /** A transient Slack failure — the next run is expected to succeed. */
+        UNAVAILABLE,
+        /** A permanent Slack app/token fault — every run fails until an admin fixes it. */
+        MISCONFIGURED
+    }
+
+    record DriftReport(DriftStatus status, List<ChannelDrift> drifts) {
+
+        /** True only when membership was actually verified against Slack. */
+        boolean checked() {
+            return status == DriftStatus.CHECKED;
+        }
 
         int totalDriftMembers() {
             return drifts.stream().mapToInt(d -> d.unexpectedMembers().size()).sum();
@@ -288,10 +320,24 @@ public class RecruitmentDpoDigestService {
                     drifts.add(new ChannelDrift(title, unexpected));
                 }
             }
-            return new DriftReport(true, drifts);
+            return new DriftReport(DriftStatus.CHECKED, drifts);
+        } catch (SlackConfigurationException e) {
+            // Permanent: a missing scope or dead token. Every run fails the same
+            // way until the Slack app is changed and reinstalled, so this is the
+            // one drift-check failure that must not be filed away as a blip.
+            if (driftMisconfigurationReported.compareAndSet(false, true)) {
+                log.errorf(e, "DPO digest: channel drift check is DISABLED by a Slack app "
+                        + "misconfiguration — the GDPR access-control review is NOT running and "
+                        + "cannot recover on its own. Grant the missing scope to the admin bot "
+                        + "app and reinstall it. %s", e.getMessage());
+            } else {
+                log.warnf("DPO digest: channel drift check still disabled by the same Slack app "
+                        + "misconfiguration: %s", e.getMessage());
+            }
+            return new DriftReport(DriftStatus.MISCONFIGURED, List.of());
         } catch (Exception e) {
             log.warnf(e, "DPO digest: channel drift check failed — reporting it as unavailable");
-            return new DriftReport(false, List.of());
+            return new DriftReport(DriftStatus.UNAVAILABLE, List.of());
         }
     }
 
@@ -388,7 +434,12 @@ public class RecruitmentDpoDigestService {
                                         .collect(java.util.stream.Collectors.joining(", "))).toList());
             }
         }
-        if (!drift.checked()) {
+        if (drift.status() == DriftStatus.MISCONFIGURED) {
+            addSection(blocks, ":rotating_light: The partner-channel membership check is "
+                    + "*disabled by a Slack app misconfiguration* — memberships have NOT been "
+                    + "verified, and this will not fix itself on the next run. IT has to grant "
+                    + "the missing Slack scope before this control reports anything.");
+        } else if (!drift.checked()) {
             addSection(blocks, ":warning: The partner-channel membership check could not run "
                     + "this week (Slack lookup failed) — memberships were NOT verified.");
         }
