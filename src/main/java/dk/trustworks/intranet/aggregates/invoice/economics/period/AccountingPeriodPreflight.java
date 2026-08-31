@@ -12,7 +12,9 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -122,7 +124,34 @@ public class AccountingPeriodPreflight {
      * proceeds and lets e-conomic decide, exactly as it did before this method existed.
      */
     public boolean allDatesBlocked(String companyUuid, Collection<LocalDate> dates) {
-        if (!preflightEnabled || companyUuid == null || dates == null || dates.isEmpty()) return false;
+        Map<LocalDate, PeriodState> states = classifyDates(companyUuid, dates);
+        return !states.isEmpty() && states.values().stream().allMatch(s -> s == PeriodState.BLOCKED);
+    }
+
+    /**
+     * Classifies every supplied date against the agreement's periods, in the order given, using a
+     * single vendor read.
+     *
+     * <p>For a caller that must both <em>choose</em> a date and know when there is nothing to
+     * choose from — the expense voucher POST picks the earliest open period on or after the expense
+     * date, and gives up when every candidate is blocked. Asking those two questions through
+     * {@link #isKnownOpen} and {@link #allDatesBlocked} would read the agreement once per date plus
+     * once more; this reads it once for both.
+     *
+     * <p>Fail-open like the rest of this class: the kill switch, a null company, a vendor failure
+     * and a date no period covers all come back {@link PeriodState#UNKNOWN}, which every caller
+     * must read as "let e-conomic decide". An empty or null input returns an empty map.
+     *
+     * @return an insertion-ordered map, one entry per distinct date, never null
+     */
+    public Map<LocalDate, PeriodState> classifyDates(String companyUuid, Collection<LocalDate> dates) {
+        if (dates == null || dates.isEmpty()) return Map.of();
+
+        LinkedHashMap<LocalDate, PeriodState> out = new LinkedHashMap<>();
+        if (!preflightEnabled || companyUuid == null) {
+            dates.forEach(d -> out.put(d, PeriodState.UNKNOWN));
+            return out;
+        }
 
         List<EconomicsAccountingPeriod> periods;
         try {
@@ -131,9 +160,11 @@ public class AccountingPeriodPreflight {
             log.warnf("Period pre-flight unavailable for company=%s (%s: %s) — treating the dates "
                             + "as UNKNOWN; e-conomic remains the authority",
                     companyUuid, e.getClass().getSimpleName(), e.getMessage());
-            return false;
+            dates.forEach(d -> out.put(d, PeriodState.UNKNOWN));
+            return out;
         }
-        return dates.stream().allMatch(d -> classify(periods, d).state() == PeriodState.BLOCKED);
+        dates.forEach(d -> out.put(d, classify(periods, d).state()));
+        return out;
     }
 
     /**

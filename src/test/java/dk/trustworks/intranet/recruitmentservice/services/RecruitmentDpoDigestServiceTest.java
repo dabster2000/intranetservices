@@ -288,7 +288,8 @@ class RecruitmentDpoDigestServiceTest {
                 new GdprQueueResponse.Kpis(0, 0, 0, 0),
                 List.of(), List.of(), List.of(), List.of(), List.of());
         RecruitmentDpoDigestService.DriftReport cleanDrift =
-                new RecruitmentDpoDigestService.DriftReport(true, List.of());
+                new RecruitmentDpoDigestService.DriftReport(
+                        RecruitmentDpoDigestService.DriftStatus.CHECKED, List.of());
 
         String text = service.digestText(emptyQueue, List.of(), cleanDrift, "2026-W30");
         assertTrue(text.contains("Nothing needs you this week"));

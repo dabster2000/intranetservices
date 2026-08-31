@@ -15,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -328,6 +329,79 @@ class AccountingPeriodPreflightTest {
         preflight.allDatesBlocked("company-uuid", AUG_30_PLUS_7);
 
         verify(periodsApi, times(1)).listPeriods(anyString(), anyString(), anyInt(), anyInt());
+    }
+
+    // ── choosing a date, not just validating one ────────────────────────────────────────────
+
+    /**
+     * What the expense voucher actually needs: the earliest candidate e-conomic reports open, so
+     * the cost lands in the period it was incurred in rather than the one the batch ran in. The
+     * order of the returned map is the order asked for, because that order IS the policy.
+     */
+    @Test
+    void classifyDates_marks_the_earliest_open_candidate_open_and_the_barred_ones_blocked() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(
+                barred("2025/2026", "2026-06-01", "2026-06-30"),
+                period("2026/2027", "2026-07-01", "2026-07-31", false, false),
+                period("2026/2027", "2026-08-01", "2026-08-31", false, false));
+
+        List<LocalDate> candidates = List.of(
+                LocalDate.of(2026, 6, 11), LocalDate.of(2026, 7, 1), LocalDate.of(2026, 8, 1));
+
+        Map<LocalDate, PeriodState> states = preflight.classifyDates("company-uuid", candidates);
+
+        assertEquals(candidates, List.copyOf(states.keySet()), "must keep the caller's order");
+        assertEquals(PeriodState.BLOCKED, states.get(LocalDate.of(2026, 6, 11)));
+        assertEquals(PeriodState.OPEN, states.get(LocalDate.of(2026, 7, 1)));
+        assertEquals(PeriodState.OPEN, states.get(LocalDate.of(2026, 8, 1)));
+    }
+
+    /** Same single-read guarantee as allDatesBlocked — the caller now asks about a dozen dates. */
+    @Test
+    void classifyDates_reads_the_agreement_once_however_many_dates_it_is_given() {
+        preflight.preflightEnabled = true;
+        whenPeriodsReturn(period("2026/2027", "2026-08-01", "2026-08-31", false, false));
+
+        preflight.classifyDates("company-uuid", AUG_30_PLUS_7);
+
+        verify(periodsApi, times(1)).listPeriods(anyString(), anyString(), anyInt(), anyInt());
+    }
+
+    /**
+     * Fail-open in the direction that matters for a date chooser: UNKNOWN must not read as OPEN,
+     * or a vendor outage would back-date an expense into a period nobody confirmed.
+     */
+    @Test
+    void classifyDates_reports_unknown_rather_than_open_when_it_cannot_tell() {
+        preflight.preflightEnabled = true;
+        whenPeriodsThrow(new WebApplicationException("e-conomic unavailable",
+                Response.status(503).build()));
+
+        assertTrue(preflight.classifyDates("company-uuid", AUG_30_PLUS_7).values().stream()
+                .allMatch(s -> s == PeriodState.UNKNOWN));
+
+        // A date no period covers is equally unknown, not open.
+        reset(periodsApi, agreements);
+        whenPeriodsReturn(period("2026/2027", "2026-08-01", "2026-08-31", false, false));
+        assertEquals(PeriodState.UNKNOWN,
+                preflight.classifyDates("company-uuid", List.of(LocalDate.of(2031, 1, 1)))
+                        .get(LocalDate.of(2031, 1, 1)));
+    }
+
+    @Test
+    void classifyDates_is_all_unknown_on_the_kill_switch_and_empty_on_no_dates() {
+        preflight.preflightEnabled = false;
+        assertTrue(preflight.classifyDates("company-uuid", AUG_30_PLUS_7).values().stream()
+                .allMatch(s -> s == PeriodState.UNKNOWN));
+
+        preflight.preflightEnabled = true;
+        assertTrue(preflight.classifyDates("company-uuid", List.of()).isEmpty());
+        assertTrue(preflight.classifyDates("company-uuid", null).isEmpty());
+        assertTrue(preflight.classifyDates(null, AUG_30_PLUS_7).values().stream()
+                .allMatch(s -> s == PeriodState.UNKNOWN));
+
+        verifyNoInteractions(periodsApi, agreements);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────

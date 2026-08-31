@@ -17,6 +17,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * idempotency path ({@code markAsOrphaned + incrementRetryCount}) so e-conomic creates a NEW
  * voucher, then {@link EconomicsService#sendVoucher} persists the new triple + re-attaches the
  * receipt. The expense's status/state are never changed.
+ * <p>
+ * "Lost" is the whole point: the voucher must be gone. When it is still in e-conomic — draft or
+ * booked — {@link #resendOne} refuses unless the caller passes {@code confirmDuplicate}, so a
+ * duplicate is always a deliberate, audited choice rather than a side effect of a bulk select.
  */
 @JBossLog
 @ApplicationScoped
@@ -47,6 +51,43 @@ public class ExpenseEconomicResendService {
         return e;
     }
 
+    /**
+     * Where the expense's stored voucher currently sits in e-conomic. {@code DRAFT} and
+     * {@code BOOKED} both mean "re-sending duplicates it"; {@code UNKNOWN} means the lookup
+     * could not tell and must never be read as absence.
+     */
+    record VoucherState(EconomicsService.VoucherLookupResult draft,
+                        EconomicsService.VoucherLookupResult booked) {
+
+        private static final EconomicsService.VoucherLookupResult FOUND = EconomicsService.VoucherLookupResult.FOUND;
+        private static final EconomicsService.VoucherLookupResult UNKNOWN = EconomicsService.VoucherLookupResult.UNKNOWN;
+
+        /** The voucher is still in e-conomic — a re-send mints a second one for the same cost. */
+        boolean exists() { return draft == FOUND || booked == FOUND; }
+
+        /** At least one lookup failed, so absence is NOT proven. */
+        boolean indeterminate() { return draft == UNKNOWN || booked == UNKNOWN; }
+
+        String location() {
+            if (draft == FOUND) return "DRAFT";
+            if (booked == FOUND) return "BOOKED";
+            return indeterminate() ? "UNKNOWN" : "MISSING";
+        }
+    }
+
+    /**
+     * Both lookups, run once. The booked check is skipped when the draft check already proved a
+     * hit — a draft voucher cannot simultaneously be in the booked ledger, so the second call
+     * would only cost an e-conomic round trip per row of a 500-row batch.
+     */
+    VoucherState lookupVoucherState(Expense e) {
+        EconomicsService.VoucherLookupResult draft = economicsService.checkVoucherExists(e);
+        if (draft == EconomicsService.VoucherLookupResult.FOUND) {
+            return new VoucherState(draft, EconomicsService.VoucherLookupResult.NOT_FOUND);
+        }
+        return new VoucherState(draft, economicsService.checkVoucherBooked(e));
+    }
+
     @Transactional
     public ExpenseResendPrecheckDTO precheckOne(String uuid) {
         Expense e = Expense.findById(uuid);
@@ -56,22 +97,24 @@ public class ExpenseEconomicResendService {
         if (UserAccount.findById(e.getUseruuid()) == null)
             return new ExpenseResendPrecheckDTO(uuid, false, "no e-conomic account", false, "MISSING");
 
-        EconomicsService.VoucherLookupResult draft = economicsService.checkVoucherExists(e);
-        if (draft == EconomicsService.VoucherLookupResult.FOUND)
-            return new ExpenseResendPrecheckDTO(uuid, true, null, true, "DRAFT");
-        EconomicsService.VoucherLookupResult booked = economicsService.checkVoucherBooked(e);
-        if (booked == EconomicsService.VoucherLookupResult.FOUND)
-            return new ExpenseResendPrecheckDTO(uuid, true, null, true, "BOOKED");
-        if (draft == EconomicsService.VoucherLookupResult.UNKNOWN
-                || booked == EconomicsService.VoucherLookupResult.UNKNOWN)
+        VoucherState state = lookupVoucherState(e);
+        // Eligible, but voucherExists=true: the caller MUST confirm before resendOne will run
+        // (see the confirmDuplicate gate below) — DRAFT and BOOKED both duplicate the cost.
+        if (state.exists()) return new ExpenseResendPrecheckDTO(uuid, true, null, true, state.location());
+        if (state.indeterminate())
             // e-conomic lookup failed — "MISSING" here would invite a duplicate re-send
             // (2026-08-12: 503 outage made a booked voucher precheck as MISSING).
             return new ExpenseResendPrecheckDTO(uuid, false, "e-conomic unavailable — voucher state unknown", false, "UNKNOWN");
         return new ExpenseResendPrecheckDTO(uuid, true, null, false, "MISSING");
     }
 
+    /**
+     * @param confirmDuplicate the caller has seen the precheck's duplicate warning and still wants
+     *                         a second voucher. Without it a voucher that is still in e-conomic is
+     *                         refused outright — no confirmation, no duplicate.
+     */
     @Transactional
-    public void resendOne(String uuid, String actorUuid) {
+    public void resendOne(String uuid, String actorUuid, boolean confirmDuplicate) {
         if (!economicsUploadEnabled) {
             // Validate existence first so unknown uuids still report "not found".
             if (Expense.findById(uuid) == null) throw new NotFoundException();
@@ -80,13 +123,23 @@ public class ExpenseEconomicResendService {
         Expense e = requireResendable(uuid);
         UserAccount ua = UserAccount.findById(e.getUseruuid());
 
-        // Fail closed on an indeterminate voucher state: when the draft lookup itself
-        // errors (5xx/network), the voucher may well still exist, and re-sending would
-        // create a duplicate. A proven absence — or a FOUND the user knowingly
-        // duplicates (precheck warned) — proceeds as before.
-        if (economicsService.checkVoucherExists(e) == EconomicsService.VoucherLookupResult.UNKNOWN
-                && economicsService.checkVoucherBooked(e) != EconomicsService.VoucherLookupResult.FOUND) {
+        VoucherState state = lookupVoucherState(e);
+
+        // Fail closed on an indeterminate voucher state: when a lookup errors (5xx/network),
+        // the voucher may well still exist, and re-sending would create a duplicate. Matches
+        // precheckOne, so the precheck can never say UNKNOWN while a re-send sails through.
+        if (state.indeterminate() && !state.exists()) {
             throw new BadRequestException("e-conomic unavailable — cannot verify voucher state, try again later");
+        }
+
+        // The voucher is still there. Re-sending mints a SECOND voucher for a cost e-conomic
+        // already carries — and if the expense was booked, booking the duplicate credits the
+        // employee's clearing account again (2026-08-07: 93 already-booked expenses re-sent in
+        // one batch, 849,50 kr left sitting as an unbooked duplicate draft). Server-side gate,
+        // not a UI dialog: an unconfirmed request must never be able to create one.
+        if (state.exists() && !confirmDuplicate) {
+            throw new BadRequestException("voucher still in e-conomic (" + state.location()
+                    + ") — re-sending creates a duplicate; confirm to proceed");
         }
 
         ExpenseFile file;

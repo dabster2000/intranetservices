@@ -2,6 +2,7 @@ package dk.trustworks.intranet.communicationsservice.services;
 
 import com.slack.api.Slack;
 import com.slack.api.methods.SlackApiException;
+import com.slack.api.methods.SlackApiTextResponse;
 import com.slack.api.methods.response.auth.AuthTestResponse;
 import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 import com.slack.api.methods.response.conversations.*;
@@ -25,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -52,11 +54,69 @@ public class SlackService {
     private static final String HOME_TAB_NOT_ENABLED = "not_enabled";
 
     /**
+     * Slack's {@code users.lookupByEmail} answer when no workspace member uses
+     * the address. A negative answer, not a fault — see {@link #findUserIdByEmail}.
+     * Slack checks scopes before it checks the address, so this code can never
+     * be a disguised {@code missing_scope}.
+     */
+    static final String USERS_NOT_FOUND = "users_not_found";
+
+    /**
      * One actionable INFO per JVM for {@link #HOME_TAB_NOT_ENABLED}; every later hit
      * drops to DEBUG, so a permanently disabled Home tab cannot grow into log volume
      * that scales with recruitment activity.
      */
     private final AtomicBoolean homeTabDisabledReported = new AtomicBoolean();
+
+    /**
+     * Slack error codes that mean the Slack APP is misconfigured, not that the
+     * call hit a blip. Every one of these answers identically on every retry
+     * until a workspace admin changes the app at api.slack.com/apps and
+     * reinstalls it, so they must be distinguishable from {@code rate_limited},
+     * a socket timeout, or a Slack outage — those a later scheduled run fixes
+     * by itself. Kept deliberately tight: only codes that are unambiguously
+     * about the token or its granted scopes belong here. A code such as
+     * {@code channel_not_found} is NOT permanent in this sense — it also
+     * appears when the bot has simply not been invited yet.
+     *
+     * @see #slackFailure(String, SlackApiTextResponse)
+     */
+    private static final Set<String> PERMANENT_CONFIG_ERRORS = Set.of(
+            "missing_scope", "invalid_auth", "not_authed", "account_inactive", "token_revoked");
+
+    /**
+     * Turns a not-ok Slack response into the exception its error code deserves:
+     * a {@link SlackConfigurationException} for a permanent app/token fault,
+     * a plain {@link IOException} for everything else.
+     * <p>
+     * The message keeps the caller's existing {@code "<what>: <error>"} shape so
+     * log searches and alarms written against it keep matching, and appends
+     * Slack's own {@code needed}/{@code provided} fields when present. Those two
+     * fields are the whole diagnosis for {@code missing_scope} — Slack names the
+     * exact scope the call wanted and lists what the token actually has — and
+     * they were previously discarded, which is why a scope fault could only be
+     * guessed at from the outside. They are scope NAMES, never token material,
+     * so they are safe to log.
+     * <p>
+     * Static and package-private so the severity rule is unit-testable without
+     * mocking Slack's static client, exactly as {@link #reportPublishFailure} is.
+     */
+    static IOException slackFailure(String what, SlackApiTextResponse response) {
+        String error = response.getError();
+        StringBuilder message = new StringBuilder(what).append(": ").append(error);
+        String needed = response.getNeeded();
+        String provided = response.getProvided();
+        if (StringUtils.isNotBlank(needed)) {
+            message.append(" (needed=").append(needed).append(')');
+        }
+        if (StringUtils.isNotBlank(provided)) {
+            message.append(" (provided=").append(provided).append(')');
+        }
+        if (error != null && PERMANENT_CONFIG_ERRORS.contains(error)) {
+            return new SlackConfigurationException(message.toString(), error, needed, provided);
+        }
+        return new IOException(message.toString());
+    }
 
     /**
      * The mother bot's own Slack user id, resolved once per JVM by
@@ -394,8 +454,13 @@ public class SlackService {
      * {@code conversations.members} and filters bot users (incl. Slackbot)
      * via {@code users.info}, so the mother/admin bots — members of every
      * channel they post to — never appear as "drift". Throws on transport
-     * failure or a not-ok API response; the drift check treats that as
-     * "check unavailable", never as an empty channel.
+     * failure or a not-ok API response, never returning an empty channel.
+     * <p>
+     * The throw is classified by {@link #slackFailure}: a permanent scope or
+     * token fault arrives as a {@link SlackConfigurationException} so the drift
+     * check can report itself misconfigured rather than merely "unavailable".
+     * The partner channels are private, so this needs {@code groups:read} on the
+     * admin bot app, plus {@code users:read} for the bot filtering below.
      */
     public List<String> listHumanChannelMembers(String channelId) throws IOException, SlackApiException {
         List<String> members = new ArrayList<>();
@@ -405,7 +470,7 @@ public class SlackService {
             ConversationsMembersResponse response = Slack.getInstance().methods(adminSlackBotToken)
                     .conversationsMembers(req -> req.channel(channelId).limit(200).cursor(pageCursor));
             if (!response.isOk()) {
-                throw new IOException("Slack channel member listing failed: " + response.getError());
+                throw slackFailure("Slack channel member listing failed", response);
             }
             if (response.getMembers() != null) {
                 members.addAll(response.getMembers());
@@ -422,7 +487,7 @@ public class SlackService {
             var info = Slack.getInstance().methods(adminSlackBotToken)
                     .usersInfo(req -> req.user(memberId));
             if (!info.isOk()) {
-                throw new IOException("Slack user info lookup failed: " + info.getError());
+                throw slackFailure("Slack user info lookup failed", info);
             }
             if (info.getUser() != null && !Boolean.TRUE.equals(info.getUser().isBot())) {
                 humans.add(memberId);
@@ -755,14 +820,38 @@ public class SlackService {
         return response.isOk();
     }
 
+    /**
+     * Resolves a Slack member id from an e-mail address, or {@code null} when
+     * the workspace has nobody at that address.
+     *
+     * <p>The three outcomes are deliberately distinct, because the nightly
+     * {@code slack-user-sync} job has to tell them apart:
+     * <ul>
+     *   <li>an id — linked;</li>
+     *   <li>{@code null} — Slack answered {@link #USERS_NOT_FOUND}. That is a
+     *       normal negative answer, not a failure, and it is logged at DEBUG:
+     *       25 unresolvable users used to produce 25 identical WARNs every
+     *       night, none of which was individually actionable, and the six real
+     *       problems in that list were invisible among them;</li>
+     *   <li>an exception — everything else. A {@link SlackConfigurationException}
+     *       for a permanent token/scope fault, a plain {@link IOException} for a
+     *       transient one such as {@code ratelimited}. Both previously returned
+     *       {@code null}, i.e. were indistinguishable from "this person has no
+     *       Slack account" — which is how a throttled run would have reported
+     *       perfectly reachable employees as unreachable.</li>
+     * </ul>
+     */
     public String findUserIdByEmail(String email) throws IOException, SlackApiException {
         Slack slack = Slack.getInstance();
-        log.info("Looking up Slack user for email " + email);
+        log.debugf("Looking up Slack user for email %s", email);
         UsersLookupByEmailResponse response = slack.methods(adminSlackBotToken)
                 .usersLookupByEmail(r -> r.email(email));
         if (!response.isOk()) {
-            log.warn("Slack lookup failed for " + email + ": " + response.getError());
-            return null;
+            if (USERS_NOT_FOUND.equals(response.getError())) {
+                log.debugf("No Slack member uses %s", email);
+                return null;
+            }
+            throw slackFailure("Slack user lookup failed for " + email, response);
         }
         return response.getUser() != null ? response.getUser().getId() : null;
     }
