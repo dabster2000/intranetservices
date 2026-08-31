@@ -36,9 +36,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.stream.IntStream;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
 
@@ -74,6 +74,13 @@ public class  EconomicsService {
     private static final int MAX_PERIOD_SHIFT_DAYS = 7;
 
     /**
+     * Ceiling on the back-dated candidates, so a nonsense expense date cannot turn one voucher POST
+     * into an unbounded walk. Production's worst real submission lag is 442 days — about fifteen
+     * month-firsts — so this leaves headroom over anything genuine while capping the absurd.
+     */
+    private static final int MAX_CANDIDATE_DATES = 24;
+
+    /**
      * Builds the e-conomics Idempotency-Key header value for a voucher POST.
      * <p>Scoped to the target journal (URL = {@code /journals/{journalNumber}/vouchers}). e-conomic
      * rejects a reused key against a different URL with HTTP 400 "URLChanged" — which happens when an
@@ -93,50 +100,131 @@ public class  EconomicsService {
      * Idempotency key used when retrying after a closed-period rejection. Distinct from
      * the standard and orphan keys so e-conomics' cache treats the shifted-date POST as a
      * fresh request.
+     *
+     * <p>Keyed on the entry date rather than on the attempt's position in the loop. The candidate
+     * dates now depend on the expense date and on which periods e-conomic reports open, so the same
+     * position means a different date on a different day — and reusing a key across two different
+     * payloads is exactly what e-conomic's cache is entitled to collapse.
      */
-    String buildPeriodShiftIdempotencyKey(Expense expense, int shiftDays) {
-        return String.format("%s-expense-%s-period-shift-%d",
-                environmentId, expense.getUuid(), shiftDays);
+    String buildPeriodShiftIdempotencyKey(Expense expense, LocalDate voucherDate) {
+        return String.format("%s-expense-%s-period-shift-%s",
+                environmentId, expense.getUuid(), voucherDate);
     }
 
     /**
-     * e-conomic's code for "entry date is barred in the accounting year" — what the voucher
-     * endpoint actually returns. Production 2026-08-29: expense
-     * ab4db6b7-a441-4689-be6a-57cbcdd8b237 failed permanently because none of the older
-     * name-style tokens below appear anywhere in that body, so the auto-shift never engaged.
+     * e-conomic's code for "not found or barred" — <strong>ambiguous on its own</strong>.
+     *
+     * <p>The voucher endpoint returns E04041 for two unrelated conditions, told apart only by the
+     * {@code propertyName} of the error node carrying it:
+     * <ul>
+     *   <li>{@code "Date"} → {@code "Perioden er spærret."} — the entry date is in a barred period,
+     *       which shifting the date can escape;</li>
+     *   <li>{@code "account"} → {@code "Account(s) is not found or barred."} — the chart-of-accounts
+     *       account does not exist in that agreement, which no date can ever fix.</li>
+     * </ul>
+     *
+     * <p>Matching the bare code cost us both. Production 2026-08-31: expense
+     * 6258a643-fb69-4e41-894e-426cb7768ecc (Trustworks Technology ApS) was rejected because account
+     * 3562 does not exist in TWT's e-conomic — verified against {@code /accounts/3562}, HTTP 404,
+     * while TWT's FY2026/27 is open on all twelve periods. It still burned eight date-shifted POSTs
+     * and then told Accounting to unbar a period that was never barred. Four more rows carry the
+     * same misdiagnosis, three of them on the employee's <em>contra</em> account 9780.
      */
     static final String BARRED_ENTRY_DATE_CODE = "E04041";
 
+    /** e-conomic's unambiguous "that account number does not exist" code. */
+    private static final String ACCOUNT_NOT_FOUND_CODE = "E07150";
+
     /**
-     * Markers meaning "this date is refused because its period is closed or barred".
+     * Markers meaning "this date is refused because its period is closed or barred", each of which
+     * is unambiguous wherever it appears in the body.
      *
      * <p>Note e-conomic's two locks are independent: a period can be <em>Åben</em> with
      * <em>Spærret</em> ticked and still refuse postings, so "closed" tokens alone are not enough.
+     *
+     * <p>{@link #BARRED_ENTRY_DATE_CODE} is deliberately NOT in this list — it is ambiguous and is
+     * only read as a barred period when {@code propertyName} says the offending property is a date.
      */
     private static final List<String> PERIOD_CLOSED_MARKERS = List.of(
             // Legacy name-style codes, kept so bodies that already matched still match.
             "AccountingYearClosed", "EntryDateInClosedPeriod", "DateInClosedPeriod",
             "PeriodClosed", "ClosedAccountingYear",
-            // What the voucher endpoint returns: numeric code, Danish message, English hint.
-            BARRED_ENTRY_DATE_CODE, "Perioden er spærret", "barred in the accounting",
+            // What the voucher endpoint says in prose, in both languages it uses.
+            "Perioden er spærret", "barred in the accounting",
             // The invoice endpoint's equivalent (see InvoiceFinalizationOrchestrator): a
             // different code for the same condition, with the same remedy.
             "E04870", "barred period");
+
+    /** {@code propertyName} values naming an account rather than a date. */
+    private static final Set<String> ACCOUNT_PROPERTY_NAMES =
+            Set.of("account", "contraaccount", "vataccount");
 
     /** JSON fields carrying an error signal, as opposed to the request input e-conomic echoes back. */
     private static final Set<String> ERROR_SIGNAL_FIELDS =
             Set.of("errorCode", "errorMessage", "developerHint", "message");
 
     /**
+     * Why e-conomic refused a voucher, to the extent the body says.
+     *
+     * <p>The distinction is the whole point: only {@link #BARRED_PERIOD} is worth retrying on
+     * another date, and only {@link #ACCOUNT_NOT_FOUND} should send anyone to the chart of accounts.
+     */
+    enum VoucherRejection {
+        /** The entry date lies in a closed or barred period — a different date may work. */
+        BARRED_PERIOD,
+        /** An account in the payload does not exist in this agreement — no date will help. */
+        ACCOUNT_NOT_FOUND,
+        /** Anything else; the caller reports the vendor body as-is. */
+        OTHER
+    }
+
+    /**
+     * Classifies an e-conomic rejection body.
+     *
+     * <p>Walks the error tree and reads each error node together with its {@code propertyName},
+     * because that pairing is the only thing separating a barred period from a missing account when
+     * both arrive as {@link #BARRED_ENTRY_DATE_CODE}. A body carrying both is reported as
+     * {@code ACCOUNT_NOT_FOUND}: the account is the blocker that no retry can clear.
+     */
+    static VoucherRejection classifyRejection(String body) {
+        if (body == null || body.isBlank()) return VoucherRejection.OTHER;
+
+        List<PropertyError> errors = propertyErrors(body);
+        boolean barred = false;
+        for (PropertyError e : errors) {
+            if (e.isAccountNotFound()) return VoucherRejection.ACCOUNT_NOT_FOUND;
+            if (e.isBarredPeriod()) barred = true;
+        }
+        if (barred) return VoucherRejection.BARRED_PERIOD;
+
+        // Legacy name-style codes and the invoice endpoint's E04870: unambiguous wherever they sit.
+        for (String signal : errorSignals(body)) {
+            if (matchesAnyMarker(signal)) return VoucherRejection.BARRED_PERIOD;
+        }
+
+        // A body that names no property at all cannot be telling us it means an account, so the
+        // ambiguity that forced the propertyName check above does not arise and the pre-2026-08-31
+        // reading of a bare E04041 stands. Every shape production has actually produced carries a
+        // propertyName and is decided before reaching here; this covers the shapes it has not.
+        if (errors.isEmpty()) {
+            for (String signal : errorSignals(body)) {
+                if (signal.contains(BARRED_ENTRY_DATE_CODE)) return VoucherRejection.BARRED_PERIOD;
+            }
+        }
+        return VoucherRejection.OTHER;
+    }
+
+    /**
      * Detects e-conomic error responses indicating the voucher's entry date falls in a closed or
      * barred accounting period.
      */
     boolean isPeriodClosedError(String body) {
-        if (body == null || body.isBlank()) return false;
-        for (String signal : errorSignals(body)) {
-            for (String marker : PERIOD_CLOSED_MARKERS) {
-                if (signal.contains(marker)) return true;
-            }
+        return classifyRejection(body) == VoucherRejection.BARRED_PERIOD;
+    }
+
+    private static boolean matchesAnyMarker(String signal) {
+        for (String marker : PERIOD_CLOSED_MARKERS) {
+            if (signal.contains(marker)) return true;
         }
         return false;
     }
@@ -153,9 +241,12 @@ public class  EconomicsService {
      * when the current month is barred and the next is open, a few days forward clears it. When
      * the whole accounting year is barred, no shift within {@link #MAX_PERIOD_SHIFT_DAYS} can
      * escape it and the loop ends at {@link #barredPeriodMessage} instead.
+     *
+     * <p>A missing account is explicitly NOT shiftable, however similar its error code looks —
+     * see {@link #BARRED_ENTRY_DATE_CODE}.
      */
     boolean shouldShiftVoucherDate(int status, String body) {
-        return status == 400 && isPeriodClosedError(body);
+        return status == 400 && classifyRejection(body) == VoucherRejection.BARRED_PERIOD;
     }
 
     /** How a rejected attachment POST can be recovered, if at all. */
@@ -186,6 +277,36 @@ public class  EconomicsService {
         return AttachmentRecovery.NONE;
     }
 
+    /**
+     * Builds the exception for a rejection the date loop cannot retry, choosing the message by what
+     * e-conomic actually objected to.
+     *
+     * <p>Reached when {@link #missingAccounts} could not prove the account missing — a vendor
+     * hiccup, the account endpoint throttled — and the voucher POST then found out the hard way.
+     * The pre-flight is a courtesy; this is the backstop that keeps the operator-facing message
+     * right even when the courtesy is unavailable.
+     */
+    private ExpenseUploadException nonShiftableRejection(Expense expense, Company company,
+                                                        UserAccount userAccount, Integer status,
+                                                        String body, Exception cause,
+                                                        String fallbackMessage) {
+        if (classifyRejection(body) == VoucherRejection.ACCOUNT_NOT_FOUND) {
+            log.errorf("Voucher rejected: account not found in %s's e-conomic. Expense uuid: %s, "
+                            + "expense account: %s, contra account: %s, status: %s, body: %s",
+                    company.getName(), expense.getUuid(), expense.getAccount(),
+                    userAccount.getEconomics(), status, body);
+            // errorDetails stays null for the same reason as the barred-period message: the row an
+            // operator reads should carry the instruction, not the vendor's JSON.
+            return new ExpenseUploadException(
+                    accountNotFoundMessage(company.getName(), Integer.valueOf(expense.getAccount()),
+                            userAccount.getEconomics(), List.of()),
+                    cause, status, null);
+        }
+        log.error(fallbackMessage + ". Expense uuid: " + expense.getUuid()
+                + ", status: " + status + ", details: " + body, cause);
+        return new ExpenseUploadException(fallbackMessage, cause, status, body);
+    }
+
     private static void closeQuietly(Response r) {
         if (r == null) return;
         try { r.close(); } catch (Exception ignore) { /* nothing useful to do */ }
@@ -209,6 +330,65 @@ public class  EconomicsService {
             return List.of(body);
         }
         return signals.isEmpty() ? List.of(body) : signals;
+    }
+
+    /**
+     * One of e-conomic's leaf error objects, kept together with the property it blames.
+     *
+     * <p>{@code propertyName} arrives with inconsistent casing for the same property — the voucher
+     * endpoint returns both {@code "account"} and {@code "Account"} in a single body — so every
+     * comparison here is case-insensitive.
+     */
+    private record PropertyError(String propertyName, String signals) {
+
+        boolean isBarredPeriod() {
+            if (matchesAnyMarker(signals)) return true;
+            return "date".equals(propertyName) && signals.contains(BARRED_ENTRY_DATE_CODE);
+        }
+
+        boolean isAccountNotFound() {
+            if (!ACCOUNT_PROPERTY_NAMES.contains(propertyName)) return false;
+            return signals.contains(ACCOUNT_NOT_FOUND_CODE)
+                    || signals.contains(BARRED_ENTRY_DATE_CODE)
+                    || signals.contains("not found");
+        }
+    }
+
+    /**
+     * Every error object in the body that names the property it blames, paired with its own error
+     * signals.
+     *
+     * <p>Kept separate from {@link #errorSignals(String)} on purpose: that method flattens the tree
+     * and throws the pairing away, which is exactly how a missing account came to be read as a
+     * barred period. Reading {@code inputValue} is still avoided — a voucher text containing
+     * "PeriodClosed" is not a closed period.
+     */
+    private static List<PropertyError> propertyErrors(String body) {
+        List<PropertyError> out = new ArrayList<>();
+        try {
+            collectPropertyErrors(new ObjectMapper().readTree(body), out);
+        } catch (Exception notJson) {
+            return List.of();
+        }
+        return out;
+    }
+
+    private static void collectPropertyErrors(JsonNode node, List<PropertyError> out) {
+        if (node == null) return;
+        if (node.isArray()) {
+            node.forEach(child -> collectPropertyErrors(child, out));
+            return;
+        }
+        if (!node.isObject()) return;
+
+        JsonNode propertyName = node.get("propertyName");
+        if (propertyName != null && propertyName.isTextual()) {
+            List<String> signals = new ArrayList<>();
+            collectErrorSignals(node, signals);
+            out.add(new PropertyError(
+                    propertyName.asText().toLowerCase(Locale.ROOT), String.join("\n", signals)));
+        }
+        node.fields().forEachRemaining(field -> collectPropertyErrors(field.getValue(), out));
     }
 
     private static void collectErrorSignals(JsonNode node, List<String> out) {
@@ -242,18 +422,137 @@ public class  EconomicsService {
      * {@code InvoiceFinalizationOrchestrator.asBarredPeriodError}.
      */
     // Package-private static so it is directly unit-testable without booting Quarkus.
-    static String barredPeriodMessage(String companyName, String accountingYear, int shiftDays) {
+    static String barredPeriodMessage(String companyName, String accountingYear,
+                                      LocalDate from, LocalDate to) {
         String company = (companyName == null || companyName.isBlank())
                 ? "the employee's company" : companyName;
         String year = (accountingYear == null || accountingYear.isBlank())
                 ? "the expense's accounting year" : accountingYear;
         return String.format(
-                "Accounting year %s is closed or barred in %s's e-conomic, so this expense cannot "
-                        + "be posted: every entry date from today through +%d days was refused. "
-                        + "Have the period unbarred in e-conomic (Indstillinger → Regnskabsår → "
-                        + "Perioder), then requeue the expense. Barring is per company, so the same "
-                        + "date may well post in another Trustworks entity. No voucher was created.",
-                year, company, shiftDays);
+                "Every accounting period from %s to %s is closed or barred in %s's e-conomic, so "
+                        + "this expense cannot be posted on any date it belongs in "
+                        + "(the current accounting year is %s). Have the periods unbarred in "
+                        + "e-conomic (Indstillinger → Regnskabsår → Perioder), then requeue "
+                        + "the expense. Barring is per company, so the same date may well post "
+                        + "in another Trustworks entity. No voucher was created.",
+                from, to, company, year);
+    }
+
+    /**
+     * Rewrites a missing-account rejection into the only instruction that can actually fix it.
+     *
+     * <p>Separate from {@link #barredPeriodMessage} because the remedies have nothing in common:
+     * one is a period setting, the other is the chart of accounts, and sending Accounting to the
+     * wrong one of the two costs a day. The contra account is worth naming separately — it is the
+     * employee's own e-conomic account from {@code UserAccount.economics}, so a miss there means a
+     * stale employee mapping rather than a missing expense category, and three of the five rows
+     * misdiagnosed in production were exactly that (account 9780).
+     */
+    static String accountNotFoundMessage(String companyName, Integer expenseAccount,
+                                         Integer contraAccount, Collection<Integer> missing) {
+        String company = (companyName == null || companyName.isBlank())
+                ? "the employee's company" : companyName;
+        StringBuilder which = new StringBuilder();
+        if (missing != null && !missing.isEmpty()) {
+            for (Integer account : missing) {
+                if (which.length() > 0) which.append(" and ");
+                which.append(account);
+                if (account.equals(contraAccount)) which.append(" (the employee's contra account)");
+                else if (account.equals(expenseAccount)) which.append(" (the expense account)");
+            }
+        } else {
+            which.append("the expense account ").append(expenseAccount)
+                 .append(" or the employee's contra account ").append(contraAccount);
+        }
+        return String.format(
+                "Account %s does not exist in %s's e-conomic chart of accounts, so this expense "
+                        + "cannot be posted on any date. Either create the account there or "
+                        + "re-map the expense (an employee contra account comes from the user's "
+                        + "e-conomic account number), then requeue the expense. Accounts are per "
+                        + "company, so the same number may well exist in another Trustworks "
+                        + "entity. No voucher was created.",
+                which, company);
+    }
+
+    /**
+     * The entry dates to try, earliest first: the expense's own date, then the first day of each
+     * later month up to this one, then today and the {@link #MAX_PERIOD_SHIFT_DAYS} days after it.
+     *
+     * <p>Dating the voucher on {@code expensedate} is the point — the cost belongs to the period it
+     * was incurred in, not to the night the batch happened to run. e-conomic then refuses anything
+     * in a period finance has closed, which is precisely the control finance closes periods to
+     * exert, and the candidates after it are the fallback: the earliest period that will still
+     * accept the cost. Month-firsts rather than every intervening day because e-conomic bars whole
+     * <em>periods</em> and periods are months — walking day by day asks the same question thirty
+     * times. Production carries submissions up to 442 days late, so the walk has to be able to
+     * cross a year, and roughly a dozen candidates is enough to do it.
+     *
+     * <p>The tail is capped at today + {@value #MAX_PERIOD_SHIFT_DAYS} deliberately. Without it,
+     * "the first open period" for Trustworks Cyber Security ApS on 2026-08-31 is 2027-06-01 — ten
+     * months of future-dated postings for costs already incurred. Beyond that cap there is no
+     * defensible date left and the expense is parked for a human instead.
+     */
+    static List<LocalDate> candidateEntryDates(LocalDate expenseDate, LocalDate today) {
+        LinkedHashSet<LocalDate> dates = new LinkedHashSet<>();
+        if (expenseDate != null && expenseDate.isBefore(today)) {
+            dates.add(expenseDate);
+            YearMonth current = YearMonth.from(today);
+            for (YearMonth m = YearMonth.from(expenseDate).plusMonths(1);
+                 !m.isAfter(current) && dates.size() < MAX_CANDIDATE_DATES;
+                 m = m.plusMonths(1)) {
+                LocalDate first = m.atDay(1);
+                if (first.isBefore(today)) dates.add(first);
+            }
+        }
+        for (int shift = 0; shift <= MAX_PERIOD_SHIFT_DAYS; shift++) dates.add(today.plusDays(shift));
+        return List.copyOf(dates);
+    }
+
+    /**
+     * Refuses, before any POST, an expense naming an account that does not exist in the company's
+     * e-conomic.
+     *
+     * <p>The fact is already free: {@link #resolveDefaultVatCode} GETs the expense account one line
+     * earlier and logs a WARN when it 404s, then posts anyway. This asks about the contra account
+     * too and treats a definite 404 as the terminal condition it is.
+     *
+     * <p>Fail-open on everything else, for the same reason as the period pre-flight: only an actual
+     * {@code 404} proves the account is missing. A timeout, a 5xx, a throttle or a thrown mapper
+     * exception all fall through to the POST and let e-conomic decide. {@link EconomicsAPIAccount}
+     * is the one client whose error mapper lets 404 through as a {@code Response} rather than
+     * throwing, which is what makes the check possible at all.
+     *
+     * @return the account numbers proven missing, in payload order; empty when nothing is proven
+     */
+    List<Integer> missingAccounts(IntegrationKey.IntegrationKeyValue result,
+                                  Integer expenseAccount, Integer contraAccount) {
+        List<Integer> missing = new ArrayList<>();
+        try (EconomicsAPIAccount accountApi = getEconomicsAccountAPI(result)) {
+            for (Integer account : distinctAccounts(expenseAccount, contraAccount)) {
+                if (accountIsProvenMissing(accountApi, account)) missing.add(account);
+            }
+        } catch (Exception e) {
+            log.warnf("Account pre-flight unavailable (%s: %s) — letting e-conomic decide",
+                    e.getClass().getSimpleName(), e.getMessage());
+            return List.of();
+        }
+        return missing;
+    }
+
+    private static List<Integer> distinctAccounts(Integer expenseAccount, Integer contraAccount) {
+        LinkedHashSet<Integer> accounts = new LinkedHashSet<>();
+        if (expenseAccount != null) accounts.add(expenseAccount);
+        if (contraAccount != null) accounts.add(contraAccount);
+        return List.copyOf(accounts);
+    }
+
+    private static boolean accountIsProvenMissing(EconomicsAPIAccount accountApi, int account) {
+        try (Response r = accountApi.getAccount(account)) {
+            return r.getStatus() == 404;
+        } catch (Exception e) {
+            // Any other rejection reaches us as a thrown mapper exception; not proof of absence.
+            return false;
+        }
     }
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws Exception {
@@ -273,33 +572,66 @@ public class  EconomicsService {
         }
         String defaultVatCode = resolveDefaultVatCode(result, Integer.parseInt(expense.getAccount()));
 
+        // Refuse an account that provably is not there before spending any POST on a date. A
+        // missing account is not a period problem and no entry date can rescue it; posting anyway
+        // is what produced eight doomed POSTs and an instruction to unbar a period that was open
+        // (production 2026-08-31, TWT expense 6258a643…, account 3562).
+        List<Integer> missingAccounts =
+                missingAccounts(result, Integer.valueOf(expense.getAccount()), userAccount.getEconomics());
+        if (!missingAccounts.isEmpty()) {
+            log.errorf("Account pre-flight REFUSED expense %s before any POST — company: %s, "
+                            + "missing account(s): %s (expense account %s, contra account %s)",
+                    expense.getUuid(), company.getName(), missingAccounts,
+                    expense.getAccount(), userAccount.getEconomics());
+            throw new ExpenseUploadException(
+                    accountNotFoundMessage(company.getName(), Integer.valueOf(expense.getAccount()),
+                            userAccount.getEconomics(), missingAccounts),
+                    null, null, null);
+        }
+
         // One clock read for the whole method, so the dates the pre-flight is asked about are
         // exactly the ones the loop below will try.
         LocalDate today = LocalDate.now();
-        List<LocalDate> shiftDates = IntStream.rangeClosed(0, MAX_PERIOD_SHIFT_DAYS)
-                .mapToObj(today::plusDays)
-                .toList();
+        List<LocalDate> candidateDates = candidateEntryDates(expense.getExpensedate(), today);
 
-        // Ask before walking. The loop escapes a barred PERIOD by moving into the next one, but
-        // nothing it can do escapes a barred YEAR: fiscalYearStart steps only on July 1, so on 358
-        // days of the year all eight dates carry the same accounting year and the eight POSTs are
-        // identical but for the entry date. Firing them anyway is an unpaced burst against an
-        // endpoint with no 429 backoff on this path, and a throttle it provokes would park the
-        // expense with a rate-limit message instead of the barred-period one — destroying the
-        // explanation this whole branch exists to give.
+        // Ask before walking, and use the answer to CHOOSE rather than only to refuse. One read of
+        // the agreement's periods gives both: which candidates e-conomic positively reports open,
+        // and whether every one of them is blocked.
         //
-        // Fail-open: allDatesBlocked is false unless a covering period was READ for every one of
-        // those dates and every one refuses postings. A vendor hiccup, an unknown period or the
-        // kill switch all fall through to the POST and let e-conomic decide, as before.
-        if (periodPreflight.allDatesBlocked(company.getUuid(), shiftDates)) {
+        // Choosing matters because the candidates are ordered by accounting correctness, not by
+        // convenience — expensedate first, then the earliest month that will still take the cost.
+        // Posting the first KNOWN-OPEN one puts the expense in the period it belongs to and skips
+        // the doomed POSTs in between.
+        //
+        // Fail-open is unchanged and load-bearing in both directions: UNKNOWN (a vendor hiccup, an
+        // uncovered date, the kill switch) is neither open nor blocked, so it neither wins the
+        // choice nor triggers the refusal, and we fall back to trying every candidate in order and
+        // letting e-conomic decide — exactly the pre-existing behaviour.
+        Map<LocalDate, AccountingPeriodPreflight.PeriodState> periodStates =
+                periodPreflight.classifyDates(company.getUuid(), candidateDates);
+        List<LocalDate> knownOpen = periodStates.entrySet().stream()
+                .filter(e -> e.getValue() == AccountingPeriodPreflight.PeriodState.OPEN)
+                .map(Map.Entry::getKey)
+                .toList();
+        List<LocalDate> attemptDates = knownOpen.isEmpty() ? candidateDates : knownOpen;
+
+        if (knownOpen.isEmpty() && !periodStates.isEmpty()
+                && periodStates.values().stream()
+                        .allMatch(s -> s == AccountingPeriodPreflight.PeriodState.BLOCKED)) {
             String barredYear = DateUtils.getFiscalYearName(DateUtils.fiscalYearStart(today), company.getUuid());
             log.errorf("Period pre-flight REFUSED expense %s before any POST — company: %s, "
                             + "accountingYear: %s, every entry date %s..%s is closed or barred",
                     expense.getUuid(), company.getName(), barredYear,
-                    shiftDates.get(0), shiftDates.get(shiftDates.size() - 1));
+                    candidateDates.get(0), candidateDates.get(candidateDates.size() - 1));
             throw new ExpenseUploadException(
-                    barredPeriodMessage(company.getName(), barredYear, MAX_PERIOD_SHIFT_DAYS),
+                    barredPeriodMessage(company.getName(), barredYear,
+                            candidateDates.get(0), candidateDates.get(candidateDates.size() - 1)),
                     null, null, null);
+        }
+        if (!knownOpen.isEmpty() && !knownOpen.get(0).equals(today)) {
+            log.infof("Dating expense %s on %s — the earliest period e-conomic reports open at or "
+                            + "after its expense date %s (company: %s)",
+                    expense.getUuid(), knownOpen.get(0), expense.getExpensedate(), company.getName());
         }
 
         try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
@@ -308,22 +640,23 @@ public class  EconomicsService {
             String lastBody = null;
             int lastStatus = 0;
 
-            // Period-closed auto-shift: each retry advances the voucher entry date by 1 day
-            // and uses a fresh idempotency key so e-conomic's cache treats it as new.
-            for (int shift = 0; shift <= MAX_PERIOD_SHIFT_DAYS; shift++) {
-                LocalDate voucherDate = shiftDates.get(shift);
+            // Period-closed auto-shift: each retry moves the voucher entry date to the next
+            // candidate period and uses a fresh idempotency key so e-conomic's cache treats it as
+            // new. The first attempt is the accounting-correct one; the rest are the fallback.
+            for (int attempt = 0; attempt < attemptDates.size(); attempt++) {
+                LocalDate voucherDate = attemptDates.get(attempt);
                 voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate, defaultVatCode);
                 String json = new ObjectMapper().writeValueAsString(voucher);
-                String idempotencyKey = (shift == 0)
+                String idempotencyKey = (attempt == 0)
                         ? buildIdempotencyKey(expense, journal.getJournalNumber())
-                        : buildPeriodShiftIdempotencyKey(expense, shift);
+                        : buildPeriodShiftIdempotencyKey(expense, voucherDate);
 
-                if (shift == 0) {
+                if (attempt == 0) {
                     log.debugf("Posting voucher for expense %s with idempotency key %s", expense.getUuid(), idempotencyKey);
                     log.info("Voucher payload = " + json);
                 } else {
-                    log.warnf("Closed period on previous attempt — retrying expense %s with voucher date %s (shift +%d days, key %s)",
-                            expense.getUuid(), voucherDate, shift, idempotencyKey);
+                    log.warnf("Closed period on previous attempt — retrying expense %s with voucher date %s (attempt %d of %d, key %s)",
+                            expense.getUuid(), voucherDate, attempt + 1, attemptDates.size(), idempotencyKey);
                 }
 
                 try {
@@ -339,8 +672,8 @@ public class  EconomicsService {
                     lastBody = e.getBody();
                     response = null;
                     if (shouldShiftVoucherDate(lastStatus, lastBody)) continue;
-                    log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + lastStatus + ", details: " + lastBody, e);
-                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, lastStatus, lastBody);
+                    throw nonShiftableRejection(expense, company, userAccount, lastStatus, lastBody, e,
+                            "Failed to post voucher to e-conomics");
                 } catch (WebApplicationException e) {
                     String errorDetails = safeRead(e.getResponse());
                     log.error("Failed to post voucher to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails, e);
@@ -357,8 +690,8 @@ public class  EconomicsService {
                 try { response.close(); } catch (Exception ignore) {}
                 response = null;
                 if (!shouldShiftVoucherDate(status, lastBody)) {
-                    log.error("voucher not posted successfully to e-conomics. Expense uuid: " + expense.getUuid() + ", status: " + status + ", details: " + lastBody);
-                    throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, status, lastBody);
+                    throw nonShiftableRejection(expense, company, userAccount, status, lastBody, null,
+                            "Voucher not posted successfully to e-conomics");
                 }
             }
             if (response == null) {
@@ -370,11 +703,14 @@ public class  EconomicsService {
                 // getDetailedMessage() into the row an operator reads, and a wall of vendor JSON
                 // told them neither which company had barred the year nor what to do about it.
                 log.errorf("Voucher post failed after %d period-shift attempts. Expense uuid: %s, "
-                                + "company: %s, accountingYear: %s, lastStatus: %d, lastBody: %s",
-                        MAX_PERIOD_SHIFT_DAYS + 1, expense.getUuid(), company.getName(),
-                        barredYear, lastStatus, lastBody);
+                                + "company: %s, accountingYear: %s, entry dates %s..%s, "
+                                + "lastStatus: %d, lastBody: %s",
+                        attemptDates.size(), expense.getUuid(), company.getName(), barredYear,
+                        attemptDates.get(0), attemptDates.get(attemptDates.size() - 1),
+                        lastStatus, lastBody);
                 throw new ExpenseUploadException(
-                        barredPeriodMessage(company.getName(), barredYear, MAX_PERIOD_SHIFT_DAYS),
+                        barredPeriodMessage(company.getName(), barredYear,
+                                attemptDates.get(0), attemptDates.get(attemptDates.size() - 1)),
                         null, lastStatus, null);
             }
 

@@ -6,6 +6,8 @@ import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -54,12 +56,12 @@ class EconomicsPeriodClosedShiftTest {
         e.setUuid("abc-123");
 
         String standard = s.buildIdempotencyKey(e, 9);
-        String shift1 = s.buildPeriodShiftIdempotencyKey(e, 1);
-        String shift7 = s.buildPeriodShiftIdempotencyKey(e, 7);
+        String shift1 = s.buildPeriodShiftIdempotencyKey(e, LocalDate.of(2026, 9, 1));
+        String shift7 = s.buildPeriodShiftIdempotencyKey(e, LocalDate.of(2026, 9, 7));
 
         assertEquals("production-expense-abc-123-j9", standard);
-        assertEquals("production-expense-abc-123-period-shift-1", shift1);
-        assertEquals("production-expense-abc-123-period-shift-7", shift7);
+        assertEquals("production-expense-abc-123-period-shift-2026-09-01", shift1);
+        assertEquals("production-expense-abc-123-period-shift-2026-09-07", shift7);
     }
 
     @Test
@@ -67,10 +69,10 @@ class EconomicsPeriodClosedShiftTest {
         Expense e = new Expense();
         e.setUuid("abc-123");
 
-        assertEquals("staging-expense-abc-123-period-shift-3",
-                serviceFor("staging").buildPeriodShiftIdempotencyKey(e, 3));
-        assertEquals("production-expense-abc-123-period-shift-3",
-                serviceFor("production").buildPeriodShiftIdempotencyKey(e, 3));
+        assertEquals("staging-expense-abc-123-period-shift-2026-09-03",
+                serviceFor("staging").buildPeriodShiftIdempotencyKey(e, LocalDate.of(2026, 9, 3)));
+        assertEquals("production-expense-abc-123-period-shift-2026-09-03",
+                serviceFor("production").buildPeriodShiftIdempotencyKey(e, LocalDate.of(2026, 9, 3)));
     }
 
     /**
@@ -122,7 +124,9 @@ class EconomicsPeriodClosedShiftTest {
         EconomicsService s = serviceFor("production");
 
         assertTrue(s.isPeriodClosedError("{\"errors\":[{\"errorCode\":\"E04041\"}]}"),
-                "numeric errorCode variant");
+                "numeric errorCode variant, in a body that names no property — nothing there can "
+                        + "mean 'account', so the pre-2026-08-31 reading stands. See "
+                        + "EconomicsVoucherEntryDateTest for the ambiguity when a property IS named");
         assertTrue(s.isPeriodClosedError("{\"errors\":[{\"errorMessage\":\"Perioden er spærret.\"}]}"),
                 "danish errorMessage variant");
         assertTrue(s.isPeriodClosedError("{\"errors\":[{\"developerHint\":"
@@ -145,7 +149,8 @@ class EconomicsPeriodClosedShiftTest {
     @Test
     void barred_period_message_names_the_company_and_the_accounting_year() {
         String msg = EconomicsService.barredPeriodMessage(
-                "Trustworks Cyber Security ApS", "2026/2027", 7);
+                "Trustworks Cyber Security ApS", "2026/2027",
+                LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 7));
 
         assertTrue(msg.contains("Trustworks Cyber Security ApS"), msg);
         assertTrue(msg.contains("2026/2027"), msg);
@@ -154,7 +159,8 @@ class EconomicsPeriodClosedShiftTest {
 
     @Test
     void barred_period_message_carries_no_vendor_json() {
-        String msg = EconomicsService.barredPeriodMessage("Trustworks A/S", "2026/2027", 7);
+        String msg = EconomicsService.barredPeriodMessage("Trustworks A/S", "2026/2027",
+                LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 7));
 
         // The whole point: the expense record must stop carrying the raw 400.
         assertFalse(msg.contains("errorCode"), msg);
@@ -164,7 +170,8 @@ class EconomicsPeriodClosedShiftTest {
 
     @Test
     void barred_period_message_stays_actionable_without_a_company_name() {
-        String msg = EconomicsService.barredPeriodMessage(null, "2026/2027", 7);
+        String msg = EconomicsService.barredPeriodMessage(null, "2026/2027",
+                LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 7));
 
         assertTrue(msg.contains("2026/2027"), msg);
         assertFalse(msg.contains("null"), "no null leaking into operator text: " + msg);
