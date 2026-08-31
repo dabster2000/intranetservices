@@ -54,6 +54,14 @@ public class SlackService {
     private static final String HOME_TAB_NOT_ENABLED = "not_enabled";
 
     /**
+     * Slack's {@code users.lookupByEmail} answer when no workspace member uses
+     * the address. A negative answer, not a fault — see {@link #findUserIdByEmail}.
+     * Slack checks scopes before it checks the address, so this code can never
+     * be a disguised {@code missing_scope}.
+     */
+    static final String USERS_NOT_FOUND = "users_not_found";
+
+    /**
      * One actionable INFO per JVM for {@link #HOME_TAB_NOT_ENABLED}; every later hit
      * drops to DEBUG, so a permanently disabled Home tab cannot grow into log volume
      * that scales with recruitment activity.
@@ -812,14 +820,38 @@ public class SlackService {
         return response.isOk();
     }
 
+    /**
+     * Resolves a Slack member id from an e-mail address, or {@code null} when
+     * the workspace has nobody at that address.
+     *
+     * <p>The three outcomes are deliberately distinct, because the nightly
+     * {@code slack-user-sync} job has to tell them apart:
+     * <ul>
+     *   <li>an id — linked;</li>
+     *   <li>{@code null} — Slack answered {@link #USERS_NOT_FOUND}. That is a
+     *       normal negative answer, not a failure, and it is logged at DEBUG:
+     *       25 unresolvable users used to produce 25 identical WARNs every
+     *       night, none of which was individually actionable, and the six real
+     *       problems in that list were invisible among them;</li>
+     *   <li>an exception — everything else. A {@link SlackConfigurationException}
+     *       for a permanent token/scope fault, a plain {@link IOException} for a
+     *       transient one such as {@code ratelimited}. Both previously returned
+     *       {@code null}, i.e. were indistinguishable from "this person has no
+     *       Slack account" — which is how a throttled run would have reported
+     *       perfectly reachable employees as unreachable.</li>
+     * </ul>
+     */
     public String findUserIdByEmail(String email) throws IOException, SlackApiException {
         Slack slack = Slack.getInstance();
-        log.info("Looking up Slack user for email " + email);
+        log.debugf("Looking up Slack user for email %s", email);
         UsersLookupByEmailResponse response = slack.methods(adminSlackBotToken)
                 .usersLookupByEmail(r -> r.email(email));
         if (!response.isOk()) {
-            log.warn("Slack lookup failed for " + email + ": " + response.getError());
-            return null;
+            if (USERS_NOT_FOUND.equals(response.getError())) {
+                log.debugf("No Slack member uses %s", email);
+                return null;
+            }
+            throw slackFailure("Slack user lookup failed for " + email, response);
         }
         return response.getUser() != null ? response.getUser().getId() : null;
     }
