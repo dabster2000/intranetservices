@@ -86,4 +86,32 @@ public class EmployeeDocumentAudit extends PanacheEntityBase {
         return list("documentUuid = ?1 and action in ?2 ORDER BY createdAt ASC",
                 documentUuid, LIFECYCLE_ACTIONS);
     }
+
+    /**
+     * The ways a document leaves the store on purpose: HR's hard delete,
+     * a DPO erasure, and the nightly retention job. All three are
+     * decisions, which is what distinguishes a missing row from a lost
+     * one — see {@link #wasDeletedOnPurpose(String)}.
+     */
+    public static final List<EmployeeDocumentAuditAction> DELETION_ACTIONS = List.of(
+            EmployeeDocumentAuditAction.DELETE,
+            EmployeeDocumentAuditAction.ERASE_ALL,
+            EmployeeDocumentAuditAction.RETENTION_DELETE);
+
+    /**
+     * True when this document was deliberately removed from the store.
+     *
+     * <p>The migration verifier needs this to tell the two reasons a
+     * document can be absent apart. A row that never arrived is a
+     * migration failure; a row HR deleted in the duplicate clean-up is
+     * the system working. Without the distinction every deletion of a
+     * migrated document turns its inventory item into a permanent
+     * {@code FAILED}, which blocks the item's folder from ever reaching
+     * {@code VERIFIED} and puts the migration's completion gate out of
+     * reach for good.</p>
+     */
+    public static boolean wasDeletedOnPurpose(String documentUuid) {
+        if (documentUuid == null) return false;
+        return count("documentUuid = ?1 and action in ?2", documentUuid, DELETION_ACTIONS) > 0;
+    }
 }

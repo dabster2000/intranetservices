@@ -25,6 +25,11 @@ import java.util.Optional;
  *       (spec §11), gating the P11 interviews surfaces and scheduling
  *       affordances ({@link #isInterviewsEnabled()}). Seeded {@code false}
  *       by V433.</li>
+ *   <li>{@code recruitment.apply.referrer-claim.enabled} — the public
+ *       form's "do you know anyone at Trustworks?" question, the
+ *       directory matching behind it and the notice to the named
+ *       employee ({@link #isApplyReferrerClaimEnabled()}). Seeded
+ *       {@code false} by V552; a GDPR launch gate (see the method).</li>
  *   <li>{@code recruitment.gdpr.enabled} — ATS expansion core flag 3
  *       (spec §11), gating the P19 GDPR engine ({@link #isGdprEnabled()}).
  *       Seeded {@code false} by V433. <b>Enabling this flag is the moment
@@ -42,6 +47,7 @@ public class RecruitmentFeatureFlag {
     static final String PIPELINE_SETTING_KEY = "recruitment.pipeline.enabled";
     static final String INTERVIEWS_SETTING_KEY = "recruitment.interviews.enabled";
     static final String GDPR_SETTING_KEY = "recruitment.gdpr.enabled";
+    static final String APPLY_REFERRER_CLAIM_KEY = "recruitment.apply.referrer-claim.enabled";
 
     @Inject
     AppSettingService appSettingService;
@@ -102,6 +108,30 @@ public class RecruitmentFeatureFlag {
      */
     public boolean isInterviewRoomEnabled() {
         return readFlag(INTERVIEW_ROOM_SETTING_KEY);
+    }
+
+    /**
+     * @return true iff {@code recruitment.apply.referrer-claim.enabled}
+     *         parses to true — the single gate for change request (e),
+     *         "do you know anyone at Trustworks?" (2026-09-01). Seeded
+     *         {@code false} by V552.
+     *         <p>
+     *         <b>This is a legal launch gate, not a rollout knob.</b> The
+     *         public privacy policy currently scopes processing to
+     *         "oplysninger, du selv giver os" — data the applicant gives
+     *         about THEMSELVES. The question asks for a colleague's name,
+     *         which is personal data about a third party who was never
+     *         informed (Art. 14) and who becomes the subject of an
+     *         unverified assertion. Do not enable in production until the
+     *         rewritten policy is live and the DPO has signed off.
+     *         <p>
+     *         Off ⇒ the question is not published on the form, an
+     *         {@code answer_KNOWS_SOMEONE} posted anyway is dropped, no
+     *         referrer column is written, no name reaches the matcher or
+     *         OpenAI, and the notification reactor returns silently.
+     */
+    public boolean isApplyReferrerClaimEnabled() {
+        return readFlag(APPLY_REFERRER_CLAIM_KEY);
     }
 
     private boolean readFlag(String key) {

@@ -22,12 +22,14 @@ import jakarta.persistence.EntityManager;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.PATCH;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -148,6 +150,44 @@ public class EmployeeDocumentResource {
                         a.getActorUuid() == null ? null
                                 : nameCache.computeIfAbsent(a.getActorUuid(),
                                         UserEmployeeDocumentResource::resolveName)))
+                .toList();
+    }
+
+    /**
+     * The documents archived for one signing case, {@code document_index}
+     * order — what the signing UIs link to now that SharePoint is gone
+     * (spec §6.5.5). A case whose archival has not run yet returns an empty
+     * list, which is the honest answer: PENDING means no bytes are filed.
+     *
+     * <p>Authorization mirrors {@link #get(String)} rather than the signing
+     * case's own gate, and that difference is deliberate. A signing case is
+     * readable by the subject's team lead; a document is not (spec §6.9
+     * excludes team leads from the document surface). Resolving a case key
+     * must therefore not become a side door into the file: every distinct
+     * owner among the rows is put through the same subject reach check the
+     * per-document endpoints use, so a caller who may see the case but not
+     * the file gets 403 here and an empty section in the dialog.</p>
+     *
+     * <p>{@code includeHrOnly} is the BFF-set trust flag, exactly as on
+     * {@code /users/{uuid}/employee-documents} — self-view never sets it.</p>
+     */
+    @GET
+    @Path("/by-signing-case/{caseKey}")
+    public List<EmployeeDocumentDTO> bySigningCase(
+            @PathParam("caseKey") String caseKey,
+            @QueryParam("includeHrOnly") @DefaultValue("false") boolean includeHrOnly,
+            @QueryParam("includeArchived") @DefaultValue("false") boolean includeArchived) {
+        List<EmployeeDocument> docs = employeeDocumentService.findBySigningCase(caseKey);
+        docs.stream()
+                .map(EmployeeDocument::getUserUuid)
+                .distinct()
+                .forEach(owner -> scope.requireSubjectWhenActor(READ_SCOPE, owner,
+                        "Employee documents outside your reach"));
+        return docs.stream()
+                .filter(d -> includeHrOnly || !d.isHrOnly())
+                .filter(d -> includeArchived || !d.isArchived())
+                .map(d -> EmployeeDocumentDTO.from(d,
+                        UserEmployeeDocumentResource.resolveName(d.getUploadedBy())))
                 .toList();
     }
 

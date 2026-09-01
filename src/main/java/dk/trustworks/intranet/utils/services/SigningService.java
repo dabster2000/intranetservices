@@ -37,7 +37,9 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Service for managing document signing workflows.
@@ -306,12 +308,21 @@ public class SigningService {
             // NextSign as a literal recipient name/email.
             List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
 
+            // A merged template carries every company's documents, so the set
+            // the client submitted is narrowed server-side to the derived
+            // company: documents marked for every company plus that company's
+            // own. Enforced here rather than trusting the request, and refused
+            // outright when nothing resolves — an empty envelope reaching
+            // NextSign is worse than a blocked send.
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> effectiveDocuments =
+                    documentsForDerivedCompany(templateDocuments, templateUuid, company);
+
             // Generate PDF for each template document. With a clause plan the
             // base document renders through the composition path (INLINE merge
             // at the anchor); without one the pre-clause path runs unchanged.
             // Template documents always require signature (signObligated: true)
             boolean composing = clausePlan != null && !clausePlan.isEmpty();
-            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
+            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : effectiveDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
                 if (fileUuid == null || fileUuid.isBlank()) {
                     throw new IllegalArgumentException(
@@ -651,6 +662,7 @@ public class SigningService {
         String spUploadStatus = null;
         String spUploadError = null;
         String spFileUrl = null;
+        String archiveStatus = null;
         LocalDateTime createdAt = liveStatus.createdAt();
 
         if (dbCaseOpt.isPresent()) {
@@ -661,6 +673,7 @@ public class SigningService {
             spUploadStatus = dbCase.getSharepointUploadStatus();
             spUploadError = dbCase.getSharepointUploadError();
             spFileUrl = dbCase.getSharepointFileUrl();
+            archiveStatus = dbCase.getArchiveStatus();
 
             // Use DB createdAt if live data doesn't have it
             if (createdAt == null && dbCase.getCreatedAt() != null) {
@@ -699,7 +712,8 @@ public class SigningService {
             sharepointLocationUuid,
             spUploadStatus,
             spUploadError,
-            spFileUrl
+            spFileUrl,
+            archiveStatus
         );
     }
 
@@ -900,7 +914,8 @@ public class SigningService {
                 null, // sharepointLocationUuid
                 null, // sharepointUploadStatus
                 null, // sharepointUploadError
-                null  // sharepointFileUrl
+                null, // sharepointFileUrl
+                null  // archiveStatus - no DB row consulted here
             );
         }
 
@@ -951,7 +966,8 @@ public class SigningService {
             null, // sharepointLocationUuid - not returned by NextSign API
             null, // sharepointUploadStatus - not returned by NextSign API
             null, // sharepointUploadError - not returned by NextSign API
-            null  // sharepointFileUrl - not returned by NextSign API
+            null, // sharepointFileUrl - not returned by NextSign API
+            null  // archiveStatus - not a NextSign concept; merged in by getStatus()
         );
     }
 
@@ -1451,7 +1467,8 @@ public class SigningService {
             entity.getSharepointLocationUuid(),
             entity.getSharepointUploadStatus(),
             entity.getSharepointUploadError(),
-            entity.getSharepointFileUrl()
+            entity.getSharepointFileUrl(),
+            entity.getArchiveStatus()
         );
     }
 
@@ -1705,4 +1722,43 @@ public class SigningService {
             super(message, cause);
         }
     }
+
+    /**
+     * Narrow the submitted template documents to the derived company, using the
+     * stored {@code company_uuid} rather than whatever the client sent.
+     * <p>
+     * When no company can be derived, only company-agnostic documents survive —
+     * never every document, which would put another legal entity's contract in
+     * the envelope. A template with no documents for the company is refused.
+     */
+    private List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> documentsForDerivedCompany(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> requested,
+            String templateUuid,
+            java.util.Optional<dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.CompanyContext> company) {
+        if (requested == null || requested.isEmpty() || templateUuid == null || templateUuid.isBlank()) {
+            return requested;
+        }
+        String companyUuid = company.map(c -> c.companyUuid()).orElse(null);
+        Set<String> allowedFileUuids = TemplateDocumentEntity
+                .findByTemplateUuidForCompany(templateUuid, companyUuid).stream()
+                .map(TemplateDocumentEntity::getFileUuid)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> effective = requested.stream()
+                .filter(d -> d.getFileUuid() != null && allowedFileUuids.contains(d.getFileUuid()))
+                .collect(Collectors.toList());
+
+        if (effective.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Template has no documents for this company — add a document for the company,"
+                            + " or mark one as applying to all companies.");
+        }
+        if (effective.size() < requested.size()) {
+            log.infof("Dropped %d template document(s) not scoped to company %s",
+                    requested.size() - effective.size(), companyUuid);
+        }
+        return effective;
+    }
+
 }

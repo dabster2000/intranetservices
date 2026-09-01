@@ -107,6 +107,16 @@ class RecruitmentEventTypeCatalogTest {
         // unsolicited submissions and repeat submissions onto an open
         // process — previously produced no event at all, so the candidate
         // mailer had nothing to acknowledge and the applicant heard nothing.
+        // APPLICANT_REFERRER_CLAIMED / APPLICANT_REFERRER_NOTIFIED are the
+        // change-request-(e) additions (2026-09-01): the public form now
+        // asks "Kender du nogen hos Trustworks?", and an applicant naming a
+        // colleague is a claim about a THIRD party that no existing type
+        // covered. The CLAIMED event is what tells the referrer cadence to
+        // stay quiet (the named employee referred nobody, so a "your
+        // referral" DM would be a lie) and what the honest one-off notice
+        // dedupes against via NOTIFIED — the same "reactors' own side
+        // effects are recorded as events" rule that added
+        // REFERRAL_OUTCOME_NOTIFIED.
         // FACT_REDACTED is the fact-retraction addition (change request
         // 2026-08-28): withdrawing a fact-bearing NOTE_ADDED is a mutating
         // command per spec §6.2, and the append-only ledger had no way to
@@ -129,6 +139,8 @@ class RecruitmentEventTypeCatalogTest {
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
                 "UNSOLICITED_APPLICATION_RECEIVED", "DUPLICATE_APPLICATION_RECEIVED",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
+                "APPLICANT_REFERRER_CLAIMED", "APPLICANT_REFERRER_NOTIFIED",
+                "APPLICANT_REFERRER_BACKFILLED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "INTERVIEW_CANDIDATE_INVITE_SENT", "INTERVIEW_CANDIDATE_INVITE_FAILED",
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
@@ -174,8 +186,15 @@ class RecruitmentEventTypeCatalogTest {
                         + "and the V519 INTERVIEW_DECISION_* pair exactly, plus the "
                         + "Interview Room's AI_NOTES_TIDIED (room spec 2026-08-26 \u00a73.4: "
                         + "the structural Tidy log the AI Act obligation reads) "
-                        + "and FACT_REDACTED (the append-only ledger's retraction)");
-        assertEquals(88, RecruitmentEventType.values().length);
+                        + "and FACT_REDACTED (the append-only ledger's retraction), plus "
+                        + "DOSSIER_TEMPLATE_CHANGED (the misclick escape that swaps a "
+                        + "never-sent dossier's template) and the "
+                        + "change-request-(e) APPLICANT_REFERRER_* trio (the applicant's "
+                        + "unverified claim that they know a colleague, the notice "
+                        + "sent to that colleague, and the BACKFILLED type the "
+                        + "one-off sweep over already-collected names uses so it "
+                        + "structurally cannot trigger that notice)");
+        assertEquals(91, RecruitmentEventType.values().length);
     }
 
     @Test

@@ -29,7 +29,15 @@ import java.util.Map;
  * @param sourceFollowUp      optional free-text follow-up, ≤200; mapped to
  *                            a source-detail key by the service
  * @param answers             non-blank answers keyed by question code, in
- *                            question order; each ≤10 000 chars
+ *                            question order; each ≤10 000 chars, EXCEPT
+ *                            {@code KNOWS_SOMEONE} ("Kender du nogen hos
+ *                            Trustworks?") which is capped at 200 — it holds
+ *                            a name, is preserved in a {@code VARCHAR(200)}
+ *                            column and is fed to the directory matcher. The
+ *                            key is absent entirely unless
+ *                            {@code recruitment.apply.referrer-claim.enabled}
+ *                            is on; the resource drops it when the flag is
+ *                            off, even if it was posted directly
  * @param poolConsent         true iff the talent-pool checkbox was ticked
  * @param gdprConsent         always true here — the resource rejects a
  *                            submission without the mandatory

@@ -42,6 +42,11 @@ import static org.mockito.Mockito.when;
  */
 class RecruitmentCalendarEventShapingTest {
 
+    /** The pre-(a)+(h) shape: no panel names, no address. The added lines
+     * are pinned by RecruitmentCandidateInvitationContentTest. */
+    private static final RecruitmentCalendarService.InvitationDetails NO_DETAILS =
+            RecruitmentCalendarService.InvitationDetails.NONE;
+
     private RecruitmentCalendarService service;
     private GraphApiClient graph;
 
@@ -311,7 +316,7 @@ class RecruitmentCalendarEventShapingTest {
         RecruitmentCalendarService.CandidateInvitation invitation =
                 RecruitmentCalendarService.candidateInvitation(
                         interviewWithLocation("HQ meeting room 2"), candidate(), position(),
-                        null, template);
+                        null, template, NO_DETAILS);
 
         assertEquals("Samtale hos Trustworks", invitation.subject());
         assertTrue(invitation.htmlBody().contains("Kære Anna"));
@@ -330,7 +335,7 @@ class RecruitmentCalendarEventShapingTest {
         RecruitmentCalendarService.CandidateInvitation invitation =
                 RecruitmentCalendarService.candidateInvitation(
                         interviewWithLocation(null), candidate(), position(),
-                        "https://teams.microsoft.com/l/meetup-join/x", template);
+                        "https://teams.microsoft.com/l/meetup-join/x", template, NO_DETAILS);
 
         assertTrue(!invitation.htmlBody().contains("<script"),
                 "the sanitizer is mandatory — stored HTML goes straight to Outlook");
@@ -343,7 +348,8 @@ class RecruitmentCalendarEventShapingTest {
     void candidateInvitation_withoutTemplate_fallsBackToTheBuiltInDanishBody() {
         RecruitmentCalendarService.CandidateInvitation invitation =
                 RecruitmentCalendarService.candidateInvitation(
-                        interviewWithLocation(null), candidate(), position(), null, null);
+                        interviewWithLocation(null), candidate(), position(), null, null,
+                        NO_DETAILS);
 
         assertEquals("Samtale hos Trustworks", invitation.subject());
         assertTrue(invitation.htmlBody().contains("Kære Anna"));

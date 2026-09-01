@@ -208,8 +208,15 @@ public class ReferralService {
      * milestone DMs — {@code ReferrerNotificationReactor} has always keyed on
      * (2) — both showed the link. Source (2) is now the same truth here.
      * <p>
-     * Derivation stays batched: at most three queries regardless of row count
-     * — referral rows, candidates, then those candidates' applications.
+     * Source (2) is now filtered, though: since change request (e)
+     * (2026-09-01) a public applicant can put their own typed guess into
+     * {@code referred_by_user_uuid}, and an unverified claim by a stranger is
+     * not "my referral" — the named employee gets one honest disclosure DM
+     * instead ({@code ApplicantReferrerNotificationReactor}).
+     * <p>
+     * Derivation stays batched: at most four queries regardless of row count
+     * — referral rows, candidates, the applicant-claim events, then those
+     * candidates' applications.
      */
     public MyReferralsResponse listMine(UUID referrer) {
         Objects.requireNonNull(referrer, "referrer must not be null");
@@ -217,8 +224,9 @@ public class ReferralService {
 
         List<RecruitmentReferral> referrals = RecruitmentReferral.list(
                 "referrerUuid = ?1 order by submittedAt desc", referrerUuid);
-        List<RecruitmentCandidate> recordedOnCandidate = RecruitmentCandidate.list(
-                "referredByUserUuid = ?1", referrerUuid);
+        List<RecruitmentCandidate> recordedOnCandidate = withoutApplicantClaims(
+                RecruitmentCandidate.list("referredByUserUuid = ?1", referrerUuid),
+                referrerUuid);
 
         // One candidate map for both sources: start from the directly-recorded
         // ones, then fetch only the referral-linked candidates still missing.
@@ -243,6 +251,53 @@ public class ReferralService {
 
         List<MyReferralRow> rows = mergeMyReferrals(referrals, recordedOnCandidate, candidates, applications);
         return new MyReferralsResponse(rows, rows.size());
+    }
+
+    /**
+     * Drop candidates whose {@code referred_by_user_uuid} was written by a
+     * public applicant naming this employee rather than by the employee
+     * referring anyone (change request (e), 2026-09-01). Event-derived state
+     * (the P9 idiom — no new column): {@code APPLICANT_REFERRER_CLAIMED}
+     * carries the uuid its directory match resolved to. One query for the
+     * whole page; an empty input short-circuits it entirely, so the ordinary
+     * "I have referred nobody" read is unchanged.
+     */
+    private List<RecruitmentCandidate> withoutApplicantClaims(
+            List<RecruitmentCandidate> recordedOnCandidate, String referrerUuid) {
+        if (recordedOnCandidate.isEmpty()) {
+            return recordedOnCandidate;
+        }
+        List<String> candidateUuids = recordedOnCandidate.stream()
+                .map(RecruitmentCandidate::getUuid)
+                .toList();
+        Set<String> claimed = RecruitmentEvent
+                .<RecruitmentEvent>list("candidateUuid in ?1 and eventType = ?2",
+                        candidateUuids, RecruitmentEventType.APPLICANT_REFERRER_CLAIMED)
+                .stream()
+                .filter(event -> referrerUuid.equals(
+                        payloadString(event.getPayload(), "matched_user_uuid")))
+                .map(RecruitmentEvent::getCandidateUuid)
+                .collect(Collectors.toSet());
+        if (claimed.isEmpty()) {
+            return recordedOnCandidate;
+        }
+        return recordedOnCandidate.stream()
+                .filter(candidate -> !claimed.contains(candidate.getUuid()))
+                .toList();
+    }
+
+    /** One string value out of an event payload; null on anything unparseable. */
+    private String payloadString(String payload, String key) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node =
+                    objectMapper.readTree(payload).get(key);
+            return node == null || node.isNull() ? null : node.asText();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

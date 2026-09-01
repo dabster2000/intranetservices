@@ -195,6 +195,42 @@ class ReferrerNotificationReactorTest {
     // ---- Guards --------------------------------------------------------------------
 
     @Test
+    void applicantClaimedReferrer_getsNoMilestoneDMs() throws Exception {
+        // Change request (e), 2026-09-01: the public apply form can now write
+        // referred_by_user_uuid from a name the APPLICANT typed. This reactor
+        // has always keyed on that column alone, so without the guard Rasmus
+        // would be told "Your referral Jens Hansen has entered screening"
+        // about a candidate he has never heard of.
+        event("APPLICANT_REFERRER_CLAIMED", candidateUuid, null,
+                "{\"origin\":\"public_form\",\"match_method\":\"name\","
+                        + "\"matched_user_uuid\":\"" + referrerUuid + "\"}");
+        event("APPLICATION_CREATED", candidateUuid, applicationUuid,
+                "{\"initial_stage\":\"SCREENING\",\"origin\":\"public_form\"}");
+        stageMove("INTERVIEW_1");
+        reactor.catchUp();
+
+        verifyNoInteractions(slackService);
+        assertTrue(bookkeepingEvents().isEmpty(),
+                "a suppressed cadence must leave no REFERRAL_OUTCOME_NOTIFIED bookkeeping");
+    }
+
+    @Test
+    void applicantClaimNamingSomeoneElse_stillNotifiesTheRealReferrer() throws Exception {
+        // The guard is scoped to the uuid the claim resolved to: a candidate
+        // who once claimed to know a DIFFERENT colleague, and whose
+        // referred_by_user_uuid was later set by a recruiter or by referral
+        // triage, must still produce the ordinary milestone cadence.
+        event("APPLICANT_REFERRER_CLAIMED", candidateUuid, null,
+                "{\"origin\":\"public_form\",\"match_method\":\"name\","
+                        + "\"matched_user_uuid\":\"" + UUID.randomUUID() + "\"}");
+        event("APPLICATION_CREATED", candidateUuid, applicationUuid,
+                "{\"initial_stage\":\"SCREENING\",\"origin\":\"manual\"}");
+        reactor.catchUp();
+
+        assertTrue(dms(1).get(0).contains("entered screening"));
+    }
+
+    @Test
     void nonReferredCandidate_getsNoDM() {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery("UPDATE recruitment_candidates SET referred_by_user_uuid = NULL "

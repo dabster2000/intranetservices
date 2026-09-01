@@ -1,0 +1,45 @@
+-- ===================================================================
+-- V552 — "Kender du nogen hos Trustworks?" feature flag
+--
+-- Purpose: seed the single app_settings row that gates change request
+--   (e) (2026-09-01): the public application form's optional
+--   KNOWS_SOMEONE question, the server-side matching of the typed name
+--   against the employee directory, the write of
+--   recruitment_candidates.referred_by_user_uuid /
+--   external_referrer_name, and the disclosure DM to the named
+--   employee. Read fresh on every call by RecruitmentFeatureFlag (the
+--   no-cache contract), so a toggle takes effect immediately.
+--
+-- No DDL. The two candidate columns this feature writes have existed
+--   since V435 and are already covered by the P19 anonymiser; there is
+--   nothing to migrate. This file exists only so the row is present in
+--   the recruitment settings screen, where a human can turn the
+--   feature on — a missing row reads as false but cannot be toggled.
+--
+-- Seeded 'false', and it must STAY false in production until:
+--   1. the rewritten public privacy policy is live (today it scopes
+--      processing to "oplysninger, du selv giver os" — data the
+--      applicant gives about THEMSELVES; the question asks for a
+--      colleague's name), and
+--   2. the DPO has signed off on the Art. 14 position of the named
+--      employee, who is the subject of an unverified assertion and
+--      whose name is forwarded to OpenAI by the AI candidate brief.
+--   Enabling this flag is the moment that processing starts.
+--
+-- GDPR impact: none while off. On, it starts processing personal data
+--   about a third party — see above.
+--
+-- Idempotency: INSERT IGNORE only; raw re-run safe (repair-at-start
+--   re-runs migrations across checkouts). NOTE the staging nightly
+--   refresh from production reverts this seed.
+--
+-- Rollback:
+--   DELETE FROM app_settings
+--    WHERE setting_key = 'recruitment.apply.referrer-claim.enabled';
+--
+-- Author: recruitment change requests, September 2026
+-- Date:   2026-09-01
+-- ===================================================================
+
+INSERT IGNORE INTO app_settings (setting_key, setting_value, category)
+VALUES ('recruitment.apply.referrer-claim.enabled', 'false', 'recruitment');
