@@ -51,6 +51,12 @@ public class TemplateDocumentDTO {
     private Integer displayOrder;
 
     /**
+     * Company this document belongs to, or null for "Alle selskaber".
+     * Lets one merged template carry every company's documents at once.
+     */
+    private String companyUuid;
+
+    /**
      * Timestamp when the document was created.
      */
     private LocalDateTime createdAt;
