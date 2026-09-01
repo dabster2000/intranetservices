@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
+import dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,6 +15,7 @@ public record DossierResponse(
         List<SignerConfigDto> signersConfig,
         DossierStatus status,
         List<AppendixDto> appendices,
+        List<SelectedClauseDTO> clauses,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
