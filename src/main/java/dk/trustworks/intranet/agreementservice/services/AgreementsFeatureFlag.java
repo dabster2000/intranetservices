@@ -37,7 +37,7 @@ public class AgreementsFeatureFlag {
     }
 
     /**
-     * Phase-4 AI backfill (spec §10). Seeded OFF by V548; gates the
+     * Phase-4 AI backfill (spec §10). Seeded OFF by V549; gates the
      * console UI and, unlike the registry recorder, also the run-start
      * endpoint — a corpus walk downloads employee documents and spends
      * AI tokens, so it must never fire while the feature is dark.
