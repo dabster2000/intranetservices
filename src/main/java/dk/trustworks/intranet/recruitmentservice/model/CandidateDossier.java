@@ -73,6 +73,15 @@ public class CandidateDossier extends PanacheEntityBase {
     @Column(name = "appendices_json", columnDefinition = "JSON")
     private String appendicesJson;
 
+    /**
+     * JSON: ordered array of {@code SelectedClauseDTO} entries — the clause
+     * selection currently toggled on the draft (template-clauses Phase 2).
+     * Nullable; null/empty keeps the pre-clause behavior.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "clauses_json", columnDefinition = "JSON")
+    private String clausesJson;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 20, nullable = false)
     private DossierStatus status = DossierStatus.OPEN;
