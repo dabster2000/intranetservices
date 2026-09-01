@@ -5,6 +5,7 @@ import dk.trustworks.intranet.documentservice.migration.model.SharePointMigratio
 import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationItem;
 import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationItem.ItemStatus;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocumentAudit;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentStorageAdapter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -37,6 +38,8 @@ public class SharePointMigrationVerifierService {
             int itemsChecked,
             int verified,
             int failed,
+            /** Items whose document was deliberately deleted after migration — terminal, not a failure. */
+            int deletedOnPurpose,
             int sha256Recomputed,
             int foldersVerified,
             List<String> errors) { }
@@ -48,6 +51,7 @@ public class SharePointMigrationVerifierService {
 
         int verified = 0;
         int failed = 0;
+        int deletedOnPurpose = 0;
         int shaRecomputed = 0;
         List<String> errors = new ArrayList<>();
 
@@ -67,6 +71,22 @@ public class SharePointMigrationVerifierService {
                     return d == null ? null : new DocFacts(d.getS3Key(), d.getSha256(), d.getFileSizeBytes());
                 });
                 if (doc == null) {
+                    // A document can be absent for two very different reasons.
+                    // If the audit trail shows it was deleted on purpose — HR's
+                    // duplicate clean-up, a DPO erasure, the retention job —
+                    // then nothing is wrong and the item is done. Treating that
+                    // as a failure is what put the migration's completion gate
+                    // permanently out of reach: a failed item blocks its folder
+                    // for ever, so every deletion of a migrated document
+                    // re-opened the green board.
+                    boolean intentional = QuarkusTransaction.requiringNew().call(() ->
+                            EmployeeDocumentAudit.wasDeletedOnPurpose(facts.docUuid()));
+                    if (intentional) {
+                        retire(itemId, "document deleted from the store after migration ("
+                                + facts.docUuid() + ")");
+                        deletedOnPurpose++;
+                        continue;
+                    }
                     fail(itemId, "employee_document row missing (" + facts.docUuid() + ")");
                     failed++;
                     continue;
@@ -111,9 +131,27 @@ public class SharePointMigrationVerifierService {
         }
 
         int foldersVerified = promoteVerifiedFolders();
-        log.infof("Verify done: %d checked, %d verified, %d failed, %d sha256 recomputed, %d folders green",
-                itemIds.size(), verified, failed, shaRecomputed, foldersVerified);
-        return new VerifySummary(itemIds.size(), verified, failed, shaRecomputed, foldersVerified, errors);
+        log.infof("Verify done: %d checked, %d verified, %d failed, %d deleted-on-purpose, "
+                        + "%d sha256 recomputed, %d folders green",
+                itemIds.size(), verified, failed, deletedOnPurpose, shaRecomputed, foldersVerified);
+        return new VerifySummary(itemIds.size(), verified, failed, deletedOnPurpose,
+                shaRecomputed, foldersVerified, errors);
+    }
+
+    /**
+     * Terminal, expected outcome: the item did migrate, and its document was
+     * later removed on purpose. SKIPPED is already the state
+     * {@link #promoteVerifiedFolders()} accepts alongside VERIFIED, so the
+     * folder can still go green; the note keeps the reason legible.
+     */
+    private void retire(Long itemId, String note) {
+        QuarkusTransaction.requiringNew().run(() -> {
+            SharePointMigrationItem managed = SharePointMigrationItem.findById(itemId);
+            if (managed == null) return;
+            managed.setStatus(ItemStatus.SKIPPED);
+            managed.setError(note);
+            managed.persist();
+        });
     }
 
     private void fail(Long itemId, String error) {

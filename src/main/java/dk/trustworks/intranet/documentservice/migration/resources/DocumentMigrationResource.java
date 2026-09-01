@@ -209,6 +209,23 @@ public class DocumentMigrationResource {
                 () -> ownershipRepairService.repair(dryRun, allItems));
     }
 
+    /**
+     * M4's signing linkage, on its own.
+     *
+     * <p>The same deterministic pass {@code /categorize} runs at the end, but
+     * reachable without it. Linking is seconds of string matching; running it
+     * only as the tail of an AI categorization pass meant an interrupted pass
+     * linked nothing at all, which is how production ended up with 24 linked
+     * rows against 69 completed cases. Idempotent: an already-linked case is
+     * counted and left alone.</p>
+     */
+    @POST
+    @Path("/link-signing-cases")
+    @RolesAllowed({"documents:write"})
+    public JobStatus linkSigningCases() {
+        return jobRunner.start(JobType.LINK_SIGNING_CASES, categorizerService::linkSigningCases);
+    }
+
     /** M5 — size + sha256 verification, folder promotion. */
     @POST
     @Path("/verify")

@@ -297,9 +297,27 @@ public class EmployeeDocumentService {
 
         EmployeeDocument existing = EmployeeDocument.findByProvenance(trimTo(cmd.migratedFrom(), 1024));
         if (existing != null) {
-            log.debugf("storeMigrated: source %s already migrated as %s — skipping",
-                    cmd.migratedFrom(), existing.getUuid());
-            return new MigrationStoreResult(existing, false, false);
+            // Provenance is the SharePoint webUrl, and editing a file in
+            // SharePoint does not change its URL. Returning the existing row
+            // unconditionally therefore made the delta path a no-op for the
+            // one case it exists to handle: the crawler resets an item to
+            // DISCOVERED on an eTag change, the copier re-downloads the new
+            // bytes, and they were then dropped on the floor while the item
+            // flipped to COPIED still pointing at the stale document. The
+            // delta crawl reported success and kept the old content.
+            //
+            // So compare content, not identity. Same bytes ⇒ the cheap
+            // idempotent re-run this guard was written for. Different bytes ⇒
+            // the source was edited, and the document is refreshed in place:
+            // the S3 key and uuid are kept, so HR's category, display name and
+            // flags survive, and bucket versioning keeps the previous bytes.
+            String incomingSha = sha256Hex(cmd.bytes());
+            if (isSameContent(existing, incomingSha, cmd.bytes().length)) {
+                log.debugf("storeMigrated: source %s already migrated as %s — skipping",
+                        cmd.migratedFrom(), existing.getUuid());
+                return new MigrationStoreResult(existing, false, false);
+            }
+            return refreshMigrated(existing, cmd, incomingSha);
         }
 
         String contentType = normalizeContentType(cmd.contentTypeHint());
@@ -345,6 +363,62 @@ public class EmployeeDocumentService {
         log.infof("Employee document migrated uuid=%s user=%s size=%d sniffed=%s",
                 docUuid, cmd.userUuid(), cmd.bytes().length, typeSniffed);
         return new MigrationStoreResult(doc, true, typeSniffed);
+    }
+
+    /**
+     * Whether a re-copied source still holds the bytes we already have.
+     *
+     * <p>Half the migrated corpus has no {@code sha256} — it was written by
+     * server-side copies that never saw the bytes — so a hash-only test would
+     * treat every un-hashed row as changed and rewrite the whole corpus on the
+     * next delta. Where the hash is missing, exact size is the available
+     * signal; it can miss a same-size edit, which is a far smaller error than
+     * rewriting everything, and the row gets its hash backfilled either way.</p>
+     */
+    static boolean isSameContent(EmployeeDocument existing, String incomingSha, int incomingSize) {
+        if (existing.getSha256() != null) {
+            return existing.getSha256().equals(incomingSha);
+        }
+        return existing.getFileSizeBytes() == incomingSize;
+    }
+
+    /**
+     * The source file changed: put the new bytes on the existing key and bring
+     * the row's size, hash and content type up to date. Identity, category,
+     * display name, flags and audit history are all preserved — this is the
+     * same document, in a newer revision.
+     */
+    private MigrationStoreResult refreshMigrated(EmployeeDocument existing,
+                                                 MigrationStoreCommand cmd,
+                                                 String incomingSha) {
+        String contentType = normalizeContentType(cmd.contentTypeHint());
+        boolean typeSniffed = false;
+        if (!ALLOWED_MIME_TYPES.contains(contentType) || !magicMatches(contentType, cmd.bytes())) {
+            contentType = sniffContentType(cmd.bytes(), cmd.filename());
+            typeSniffed = true;
+        }
+
+        storage.put(existing.getS3Key(), cmd.bytes(), contentType, objectMetadata(existing));
+        updateMigratedContent(existing.getUuid(), contentType, cmd.bytes().length, incomingSha,
+                new EmployeeDocumentAudit(existing.getUuid(), existing.getUserUuid(), null,
+                        EmployeeDocumentAuditAction.UPDATE,
+                        "re-migrated after source change from " + trimTo(cmd.migratedFrom(), 500)));
+
+        log.infof("Employee document re-migrated uuid=%s user=%s size=%d (source changed)",
+                existing.getUuid(), existing.getUserUuid(), cmd.bytes().length);
+        return new MigrationStoreResult(existing, false, typeSniffed);
+    }
+
+    @Transactional
+    void updateMigratedContent(String docUuid, String contentType, long size, String sha256,
+                               EmployeeDocumentAudit auditRow) {
+        EmployeeDocument managed = EmployeeDocument.findById(docUuid);
+        if (managed == null) return;
+        managed.setContentType(contentType);
+        managed.setFileSizeBytes(size);
+        managed.setSha256(sha256);
+        managed.persist();
+        auditRow.persist();
     }
 
     @Transactional

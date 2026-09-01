@@ -549,6 +549,26 @@ public class SharePointMigrationCategorizerService {
 
     // ── Signing linkage (decision A4 — deterministic only) ─────────────────
 
+    /**
+     * Run the deterministic signing linkage on its own.
+     *
+     * <p>{@link #categorize} calls this as its final step, which is where it
+     * used to live exclusively — and that coupling is why production had only
+     * 24 linked rows across 14 cases. The linkage is pure string matching and
+     * finishes in seconds, but it sat behind a full AI categorization pass, so
+     * every run that was interrupted by a deploy, a restart or an operator
+     * giving up completed none of it. It is worth being able to ask for by
+     * itself.</p>
+     */
+    public LinkSummary linkSigningCases() {
+        List<String> errors = new ArrayList<>();
+        LinkSummary summary = linkSigningCases(errors);
+        log.infof("Signing linkage: %d/%d linked, %d already linked, %d unmatched, %d ambiguous",
+                summary.linked(), summary.casesExamined(), summary.alreadyLinked(),
+                summary.unmatched(), summary.ambiguous());
+        return summary;
+    }
+
     LinkSummary linkSigningCases(List<String> errors) {
         List<String> caseKeys = QuarkusTransaction.requiringNew().call(() ->
                 signingCaseRepository.findBySharepointUploadStatus("UPLOADED").stream()
