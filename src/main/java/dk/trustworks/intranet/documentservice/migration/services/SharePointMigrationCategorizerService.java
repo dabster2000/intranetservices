@@ -58,7 +58,25 @@ import java.util.zip.ZipInputStream;
 @ApplicationScoped
 public class SharePointMigrationCategorizerService {
 
-    static final int BATCH_SIZE = 50;
+    /**
+     * Documents per AI name-pass call, shared with the rename pass.
+     *
+     * <p>Sized to finish inside the OpenAI client's 110-second read timeout
+     * (`quarkus.rest-client.openai-api.read-timeout`), which exists to beat
+     * the BFF's own 118-second budget and is not something a background job
+     * can raise for itself. At 50 it did not: the production categorize run of
+     * 2026-09-01 timed out on <em>every</em> batch —
+     * {@code SocketTimeoutException (Read timed out)} — and each timeout was
+     * expensive twice over, because a batch with no verdicts leaves every
+     * document "inconclusive" and so triggers the per-document excerpt pass,
+     * the most costly path there is. The run degraded to roughly three
+     * documents a minute against a corpus of 1,777.</p>
+     *
+     * <p>The output is one structured verdict per document, so latency scales
+     * with the batch; 20 keeps a call well inside the budget. Fewer documents
+     * per call is much cheaper than a call that fails.</p>
+     */
+    static final int BATCH_SIZE = 20;
     static final int EXCERPT_CHAR_CAP = 1500;
 
     @Inject

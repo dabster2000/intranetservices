@@ -273,7 +273,15 @@ public class EmployeeDocumentService {
             java.time.LocalDateTime originalTimestamp) { }
 
     /** Result: the row plus whether the type had to be sniffed (⇒ needs_review). */
-    public record MigrationStoreResult(EmployeeDocument document, boolean created, boolean typeSniffed) { }
+    /**
+     * @param created   a brand-new document row was written
+     * @param refreshed the document already existed and its bytes were replaced
+     *                  because the SharePoint source had changed. Neither
+     *                  created nor a no-op skip — reported separately so a
+     *                  delta run's counts say what actually happened.
+     */
+    public record MigrationStoreResult(EmployeeDocument document, boolean created,
+                                       boolean refreshed, boolean typeSniffed) { }
 
     /**
      * Migration write path (spec §9.4a): same S3-then-narrow-TX shape as
@@ -315,7 +323,7 @@ public class EmployeeDocumentService {
             if (isSameContent(existing, incomingSha, cmd.bytes().length)) {
                 log.debugf("storeMigrated: source %s already migrated as %s — skipping",
                         cmd.migratedFrom(), existing.getUuid());
-                return new MigrationStoreResult(existing, false, false);
+                return new MigrationStoreResult(existing, false, false, false);
             }
             return refreshMigrated(existing, cmd, incomingSha);
         }
@@ -362,7 +370,7 @@ public class EmployeeDocumentService {
 
         log.infof("Employee document migrated uuid=%s user=%s size=%d sniffed=%s",
                 docUuid, cmd.userUuid(), cmd.bytes().length, typeSniffed);
-        return new MigrationStoreResult(doc, true, typeSniffed);
+        return new MigrationStoreResult(doc, true, false, typeSniffed);
     }
 
     /**
@@ -406,7 +414,7 @@ public class EmployeeDocumentService {
 
         log.infof("Employee document re-migrated uuid=%s user=%s size=%d (source changed)",
                 existing.getUuid(), existing.getUserUuid(), cmd.bytes().length);
-        return new MigrationStoreResult(existing, false, typeSniffed);
+        return new MigrationStoreResult(existing, false, true, typeSniffed);
     }
 
     @Transactional
