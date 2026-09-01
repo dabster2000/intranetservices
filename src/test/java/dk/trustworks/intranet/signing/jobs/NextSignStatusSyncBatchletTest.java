@@ -2,8 +2,8 @@ package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.agreementservice.services.AgreementRecorder;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
-import dk.trustworks.intranet.sharepoint.service.SharePointService;
+import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
+import dk.trustworks.intranet.signing.services.EmployeeSigningArchivalService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
@@ -17,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,9 +31,9 @@ class NextSignStatusSyncBatchletTest {
 
     private SigningCaseRepository signingCaseRepository;
     private SigningService signingService;
-    private SharePointService sharePointService;
+    private EmployeeSigningArchivalService employeeSigningArchivalService;
+    private S3EmployeePromotionService s3EmployeePromotionService;
     private SlackService slackService;
-    private EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
     private AgreementRecorder agreementRecorder;
     private NextSignStatusSyncBatchlet batchlet;
 
@@ -40,13 +41,13 @@ class NextSignStatusSyncBatchletTest {
     void setUp() {
         signingCaseRepository = mock(SigningCaseRepository.class);
         signingService = mock(SigningService.class);
-        sharePointService = mock(SharePointService.class);
+        employeeSigningArchivalService = mock(EmployeeSigningArchivalService.class);
+        s3EmployeePromotionService = mock(S3EmployeePromotionService.class);
         slackService = mock(SlackService.class);
-        // Employee-documents writer toggles OFF -> legacy SharePoint path
-        // and both post-loop sweeps are no-ops (spec §6.5).
-        employeeDocumentsFeatureFlag = mock(EmployeeDocumentsFeatureFlag.class);
-        when(employeeDocumentsFeatureFlag.isSigningWriterEnabled()).thenReturn(false);
-        when(employeeDocumentsFeatureFlag.isPromotionWriterEnabled()).thenReturn(false);
+        // The catch-up sweeps read the repository / a static Panache finder;
+        // the mocked repository returns an empty page, and no case in these
+        // tests reaches completion, so neither writer is ever invoked.
+        when(signingCaseRepository.find(anyString())).thenReturn(mock(io.quarkus.hibernate.orm.panache.PanacheQuery.class, RETURNS_DEEP_STUBS));
 
         // Mockito's int default (0) makes both recorder paths no-ops.
         agreementRecorder = mock(AgreementRecorder.class);
@@ -54,9 +55,9 @@ class NextSignStatusSyncBatchletTest {
         batchlet = new NextSignStatusSyncBatchlet();
         batchlet.signingCaseRepository = signingCaseRepository;
         batchlet.signingService = signingService;
-        batchlet.sharePointService = sharePointService;
+        batchlet.employeeSigningArchivalService = employeeSigningArchivalService;
+        batchlet.s3EmployeePromotionService = s3EmployeePromotionService;
         batchlet.slackService = slackService;
-        batchlet.employeeDocumentsFeatureFlag = employeeDocumentsFeatureFlag;
         batchlet.agreementRecorder = agreementRecorder;
     }
 
@@ -75,11 +76,11 @@ class NextSignStatusSyncBatchletTest {
         assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         assertEquals("SKIPPED", signingCase.getProcessingStatus());
         verify(signingService, never()).getStatus(anyString());
-        verifyNoInteractions(sharePointService, slackService);
+        verifyNoInteractions(employeeSigningArchivalService, slackService);
     }
 
     @Test
-    void remoteTerminalStatus_isCountedAsSkippedAndBypassesSharePoint() throws Exception {
+    void remoteTerminalStatus_isCountedAsSkippedAndBypassesArchival() throws Exception {
         SigningCase signingCase = signingCase("pending", "COMPLETED", 4);
         SigningCaseStatus expired = signingStatus("expired");
         when(signingCaseRepository.findCasesNeedingStatusFetch(5, 15))
@@ -95,7 +96,7 @@ class NextSignStatusSyncBatchletTest {
 
         assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         verify(signingService).getStatus(signingCase.getCaseKey());
-        verifyNoInteractions(sharePointService, slackService);
+        verifyNoInteractions(employeeSigningArchivalService, slackService);
     }
 
     @Test
@@ -124,7 +125,7 @@ class NextSignStatusSyncBatchletTest {
         // Transient errors must NOT be abandoned — the repository's slow
         // retry lane re-drives them after the backoff.
         verify(signingService, never()).markCaseMissingInNextsign(signingCase);
-        verifyNoInteractions(sharePointService, slackService);
+        verifyNoInteractions(employeeSigningArchivalService, slackService);
     }
 
     @Test
@@ -150,7 +151,7 @@ class NextSignStatusSyncBatchletTest {
         // exists in NextSign — it must be permanently abandoned, not left
         // to drip through the slow retry lane forever.
         verify(signingService).markCaseMissingInNextsign(signingCase);
-        verifyNoInteractions(sharePointService, slackService);
+        verifyNoInteractions(employeeSigningArchivalService, slackService);
     }
 
     @Test
@@ -178,7 +179,7 @@ class NextSignStatusSyncBatchletTest {
 
         assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         verify(signingService).markCaseMissingInNextsign(signingCase);
-        verifyNoInteractions(sharePointService, slackService);
+        verifyNoInteractions(employeeSigningArchivalService, slackService);
     }
 
     private static SigningCase signingCase(String status, String processingStatus, int retryCount) {
@@ -189,8 +190,6 @@ class NextSignStatusSyncBatchletTest {
             .status(status)
             .processingStatus(processingStatus)
             .retryCount(retryCount)
-            .sharepointLocationUuid("22222222-2222-2222-2222-222222222222")
-            .sharepointUploadStatus("PENDING")
             .build();
     }
 
@@ -203,10 +202,6 @@ class NextSignStatusSyncBatchletTest {
             List.of(),
             1,
             0,
-            "22222222-2222-2222-2222-222222222222",
-            "PENDING",
-            null,
-            null,
             "PENDING"
         );
     }

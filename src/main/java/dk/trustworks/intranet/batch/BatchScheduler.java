@@ -758,7 +758,7 @@ public class BatchScheduler {
 
     /**
      * Fan out HR notifications when a dossier-linked NextSign signing case
-     * completes and its signed documents have been uploaded to SharePoint.
+     * completes.
      * Joins signing_cases to candidate_dossier_revisions to detect dossier-
      * linked completions, then queues mails per configured recipient under
      * {@code recruitment.completion-notification.{company-uuid}}.
