@@ -114,6 +114,13 @@ class RecruitmentEventTypeCatalogTest {
         // does nothing when the recorded fact was never said at all. It
         // became load-bearing when the room's AI sweep started RECORDING
         // its reads rather than proposing them (2026-08-27).
+        // DOSSIER_TEMPLATE_CHANGED is the misclick-escape addition
+        // (2026-09-01): the create picker has no default, and a wrong pick
+        // used to lock the candidate onto the wrong contract forever —
+        // DOSSIER_EXISTS blocks a second dossier and reopen only matches
+        // the SAME template. Swapping the template of an OPEN, never-sent
+        // dossier is a mutating command per spec §6.2; the change is
+        // refused once the first revision exists (branch instead).
         Set<String> expected = Set.of(
                 "CANDIDATE_CREATED", "CANDIDATE_UPDATED", "CANDIDATE_POOLED", "CANDIDATE_UNPOOLED",
                 "CANDIDATE_MERGED",
@@ -131,7 +138,8 @@ class RecruitmentEventTypeCatalogTest {
                 "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "FACT_REDACTED",
                 "DOCUMENT_UPLOADED", "DOCUMENT_KIND_CHANGED",
-                "OFFER_OPENED", "DOSSIER_CREATED", "SIGNING_COMPLETED", "CANDIDATE_HIRED",
+                "OFFER_OPENED", "DOSSIER_CREATED", "DOSSIER_TEMPLATE_CHANGED",
+                "SIGNING_COMPLETED", "CANDIDATE_HIRED",
                 "TEAM_ASSIGNED",
                 "RECORD_CHECK_DRAWN", "RECORD_CHECK_OUTCOME_RECORDED",
                 "CONSENT_REQUESTED", "CONSENT_GRANTED", "CONSENT_WITHDRAWN", "CONSENT_EXPIRED",
@@ -167,7 +175,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "Interview Room's AI_NOTES_TIDIED (room spec 2026-08-26 \u00a73.4: "
                         + "the structural Tidy log the AI Act obligation reads) "
                         + "and FACT_REDACTED (the append-only ledger's retraction)");
-        assertEquals(87, RecruitmentEventType.values().length);
+        assertEquals(88, RecruitmentEventType.values().length);
     }
 
     @Test
