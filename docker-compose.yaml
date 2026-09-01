@@ -4,6 +4,8 @@ services:
     container_name: intranet2.0
     image: trustworks/intranet2.0:test
     env_file:
+      # Copy src/main/docker/docker-env-intranet.env.example here as
+      # docker-env-intranet.env and fill in real values. Never committed (.gitignore).
       - docker-env-intranet.env
     ports:
       - "8085:8085"
@@ -16,6 +18,9 @@ services:
     container_name: twservices
     image: trustworks/twservices:test
     env_file:
+      # Copy docker-env-twservices.env.example to docker-env-twservices.env and
+      # src/main/docker/userpass.env.example here as userpass.env; fill in real
+      # values. Never committed (.gitignore).
       - docker-env-twservices.env
       - userpass.env
       # Optional: copy aws.env.example to aws.env and fill in short-lived

@@ -41,6 +41,20 @@ nb-configuration.xml
 # AWS credentials for the local compose harness (see aws.env.example)
 config/aws.env
 src/main/docker/aws.env
+# Compose env files carry real credentials (DB, Slack, SES, Dropbox, e-conomic,
+# the system JWT). Copy the .example next to each and fill it in; never commit.
+/docker-env-intranet.env
+/docker-env-twservices.env
+/userpass.env
+config/docker-env-communicationservice.env
+config/docker-env-intranet.env
+config/docker-env-slackservice.env
+config/docker-env-timereminderservice.env
+config/docker-env-twservices.env
+config/userpass.env
+src/main/docker/docker-env-intranet.env
+src/main/docker/docker-env-twservices.env
+src/main/docker/userpass.env
 .run/
 /.run/
 

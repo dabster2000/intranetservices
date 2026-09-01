@@ -32,8 +32,10 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 API_URL="${API_URL:-http://localhost:9093}"
-CLIENT_ID="test"
-CLIENT_SECRET="AeKQwFZgcCJHkD9Cwz0jqmsar-QDZe1uWy-Hjh1N4Hw"
+# The client-credentials pair comes from the environment; a real secret
+# must never sit in this file (it is tracked).
+CLIENT_ID="${CLIENT_ID:-test}"
+CLIENT_SECRET="${CLIENT_SECRET:?set CLIENT_SECRET to the api client secret for CLIENT_ID}"
 COMPANY_UUID="40c94f77-b62c-46a5-8eb1-4e9c0a6b0e11"
 USER_UUID=""
 TOKEN=""
