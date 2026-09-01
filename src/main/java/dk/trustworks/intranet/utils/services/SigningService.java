@@ -299,11 +299,11 @@ public class SigningService {
                     clauseCompositionService.companyFactTokensFor(company));
             }
 
-            // Counter-signer fields may reference company facts via
-            // ${COMPANY_*} tokens (e.g. ${COMPANY_SIGNATORY_NAME}); resolve
-            // them against the same derived company and refuse the send if a
-            // token survives — an unresolved token would reach NextSign as a
-            // literal recipient name/email.
+            // Signer fields may reference company facts via ${COMPANY_*}
+            // tokens (e.g. ${COMPANY_LEGAL_NAME} in a signer's display name);
+            // resolve them against the same derived company and refuse the
+            // send if a token survives — an unresolved token would reach
+            // NextSign as a literal recipient name/email.
             List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
 
             // Generate PDF for each template document. With a clause plan the

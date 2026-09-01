@@ -1561,8 +1561,8 @@ public class RecruitmentResource {
         // into signing_case_clauses after NextSign accepts.
         var clausePlan = pdfGenerationService.resolveClausePlan(dossier.getTemplateUuid(), clauses);
 
-        // Counter-signer fields may reference company facts via ${COMPANY_*}
-        // tokens (e.g. ${COMPANY_SIGNATORY_NAME}); resolve them from the
+        // Signer fields may reference company facts via ${COMPANY_*}
+        // tokens (e.g. ${COMPANY_LEGAL_NAME}); resolve them from the
         // candidate's target company and refuse the send if a token survives —
         // an unresolved token would reach NextSign as a literal recipient.
         var derivedCompany = companyPlaceholderResolver.deriveForCompanyUuid(candidate.getTargetCompanyUuid());

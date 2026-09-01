@@ -32,9 +32,14 @@ public enum CompanyFactKey {
     PENSION_COMPANY_PCT("Pension, arbejdsgiverandel (%)"),
     PENSION_EMPLOYEE_PCT("Pension, egetbidrag (%)"),
     HEALTH_INSURANCE_PROVIDER("Sundhedsforsikring"),
-    LUNCH_PRICE("Frokostordning, pris"),
-    SIGNATORY_NAME("Underskriver, navn"),
-    SIGNATORY_EMAIL("Underskriver, e-mail");
+    LUNCH_PRICE("Frokostordning, pris");
+    // Deliberately NOT a fact: the company-side signatory. Counter-signers live in
+    // `template_default_signers`, which carries group, order, role and signer-vs-CC
+    // per template — and the set varies by template within one company (TW's standard
+    // contract is countersigned by the CEO + COO, its junior-consultant contract by the
+    // COO + CCuO). A single company-scoped name/e-mail pair cannot express that
+    // cardinality, the differing role label, or TWT's non-signing HR recipient.
+    // Making the counter-signer company-aware belongs on that table, not here.
 
     /** Uppercase key shape shared with placeholder keys. */
     public static final Pattern KEY_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]{0,49}$");
