@@ -7,6 +7,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.RoomDraftRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomFactRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomLandRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomLandResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomPresenceResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestRequest;
@@ -265,17 +266,27 @@ public class RecruitmentInterviewRoomResource {
                 aiFlags.isInterviewRoomAlignmentEnabled());
     }
 
-    /** The prep pack: catalogue probes specialised to this candidate (§9). */
+    /**
+     * The prep pack: catalogue probes specialised to this candidate (§9).
+     * <p>
+     * The body is OPTIONAL and carries the interviewer's notes as they stand.
+     * With no body this is the pack built before the sitting from the CV and
+     * the form answers; with notes it is a mid-interview re-run whose
+     * questions follow up on what has actually been said. Re-running is the
+     * trigger — the same control, pressed again — so there is nothing to poll
+     * and nothing to stream. The subject set still comes from the position's
+     * template, never from the body.
+     */
     @POST
     @Path("/interviews/{uuid}/room/prep")
-    public RoomPrepResponse prep(@PathParam("uuid") UUID interviewUuid) {
+    public RoomPrepResponse prep(@PathParam("uuid") UUID interviewUuid, RoomPrepRequest request) {
         enforceRoomFlag();
         if (!aiFlags.isInterviewRoomPrepEnabled()) {
             throw new NotFoundException("Resource not found");
         }
         RoomAccess access = resolveAccess(interviewUuid, currentActor(), true);
         return roomAiService.prep(access.interview, access.candidate,
-                subjectCodesOf(access.position), access.viewer);
+                subjectCodesOf(access.position), request, access.viewer);
     }
 
     // ---- Helpers ---------------------------------------------------------------------

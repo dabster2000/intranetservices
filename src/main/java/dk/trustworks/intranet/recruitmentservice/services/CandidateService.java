@@ -232,7 +232,7 @@ public class CandidateService {
             dossier.setCandidateUuid(candidate.getUuid());
             dossier.setTemplateUuid(template.getUuid());
             dossier.setStatus(DossierStatus.OPEN);
-            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid()));
+            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid(), candidate.getTargetCompanyUuid()));
             CandidateDossier.persist(dossier);
         }
 

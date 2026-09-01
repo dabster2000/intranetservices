@@ -41,9 +41,15 @@ class PermissionsCatalogueTest {
      * and {@code recruitment:settings} (2026-08-23) — the Inbox and Settings
      * surfaces both hung off {@code recruitment:write}, which every team lead
      * holds, so the two tabs could not diverge and team leads saw surfaces
-     * whose every request 403s (recruitment-access-model-target §5.2).
+     * whose every request 403s (recruitment-access-model-target §5.2);
+     * 94 since the agreement registry added {@code agreements:read} and
+     * {@code agreements:write} (2026-09-01, template-clauses Phase 3) —
+     * registry rows are salary-adjacent and deliberately not under
+     * {@code documents:*}, which every template-admin surface already
+     * holds, so registry visibility can stay narrower than document
+     * administration.
      */
-    private static final int EXPECTED_PERMISSIONS = 92;
+    private static final int EXPECTED_PERMISSIONS = 94;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {

@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.documentservice.resources;
 
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
+import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource;
+import dk.trustworks.intranet.documentservice.dto.EmployeeDocumentDTO;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
 import dk.trustworks.intranet.security.AuthorizationService;
 import dk.trustworks.intranet.security.DataScope;
@@ -16,6 +19,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -164,5 +168,81 @@ class EmployeeDocumentResourceScopeTest {
             assertFalse(m.isAnnotationPresent(ScopeEnforced.class),
                     name + " must NOT be @ScopeEnforced — it has a per-document subject");
         }
+    }
+
+    // ---- by-signing-case: the case key must not become a side door ----------
+
+    private EmployeeDocument docOwnedBy(String owner, String uuid, boolean hrOnly, boolean archived) {
+        EmployeeDocument doc = new EmployeeDocument();
+        doc.setUuid(uuid);
+        doc.setUserUuid(owner);
+        doc.setHrOnly(hrOnly);
+        doc.setArchived(archived);
+        // NOT NULL in the schema, and EmployeeDocumentDTO.from dereferences both.
+        doc.setCategory(EmployeeDocumentCategory.CONTRACT);
+        doc.setSource(EmployeeDocumentSource.SIGNING);
+        doc.setOriginalFilename(uuid + ".pdf");
+        return doc;
+    }
+
+    @Test
+    void bySigningCaseIs403WhenTheCaseBelongsToSomeoneOutsideTheActorsReach() {
+        actorIs(ACTOR);
+        when(documentService.findBySigningCase("case-1"))
+                .thenReturn(List.of(docOwnedBy(OTHER, "d1", false, false)));
+        subjectDecision("documents:read", OTHER, false);
+
+        assertThrows(ForbiddenException.class,
+                () -> resource.bySigningCase("case-1", false, false));
+    }
+
+    @Test
+    void bySigningCaseChecksEveryDistinctOwnerNotJustTheFirst() {
+        actorIs(ACTOR);
+        // A case key whose rows span two people must not pass because the
+        // first row happens to be reachable.
+        when(documentService.findBySigningCase("case-1")).thenReturn(List.of(
+                docOwnedBy(ACTOR, "mine", false, false),
+                docOwnedBy(OTHER, "theirs", false, false)));
+        subjectDecision("documents:read", ACTOR, true);
+        subjectDecision("documents:read", OTHER, false);
+
+        assertThrows(ForbiddenException.class,
+                () -> resource.bySigningCase("case-1", false, false));
+    }
+
+    @Test
+    void bySigningCaseReturnsTheCasesDocumentsForAReachableSubject() {
+        actorIs(ACTOR);
+        when(documentService.findBySigningCase("case-1"))
+                .thenReturn(List.of(docOwnedBy(ACTOR, "d1", false, false)));
+        subjectDecision("documents:read", ACTOR, true);
+
+        assertEquals(1, resource.bySigningCase("case-1", false, false).size());
+    }
+
+    @Test
+    void bySigningCaseHidesHrOnlyAndArchivedUnlessAskedFor() {
+        actorIs(ACTOR);
+        when(documentService.findBySigningCase("case-1")).thenReturn(List.of(
+                docOwnedBy(ACTOR, "plain", false, false),
+                docOwnedBy(ACTOR, "hronly", true, false),
+                docOwnedBy(ACTOR, "archived", false, true)));
+        subjectDecision("documents:read", ACTOR, true);
+
+        assertEquals(List.of("plain"),
+                resource.bySigningCase("case-1", false, false).stream().map(EmployeeDocumentDTO::uuid).toList());
+        assertEquals(List.of("plain", "hronly"),
+                resource.bySigningCase("case-1", true, false).stream().map(EmployeeDocumentDTO::uuid).toList());
+        assertEquals(List.of("plain", "archived"),
+                resource.bySigningCase("case-1", false, true).stream().map(EmployeeDocumentDTO::uuid).toList());
+    }
+
+    @Test
+    void bySigningCaseOnAnUnarchivedCaseIsAnEmptyListNotAnError() {
+        actorIs(ACTOR);
+        when(documentService.findBySigningCase("case-none")).thenReturn(List.of());
+
+        assertTrue(resource.bySigningCase("case-none", false, false).isEmpty());
     }
 }

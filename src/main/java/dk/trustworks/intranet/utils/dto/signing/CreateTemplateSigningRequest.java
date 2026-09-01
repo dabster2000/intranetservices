@@ -34,6 +34,9 @@ import java.util.Map;
  *                            Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
  * @param additionalDocuments Optional list of pre-generated PDF documents to include in the signing case.
  *                            Each document has a signObligated flag: true = requires signature, false = attachment only.
+ * @param clauses             Optional clause selection (template-clauses spec §5): library clauses with their
+ *                            parameter values and/or free-text Individuel aftale entries. Null/empty keeps the
+ *                            pre-clause behavior byte-identical.
  */
 public record CreateTemplateSigningRequest(
     String documentName,
@@ -43,7 +46,8 @@ public record CreateTemplateSigningRequest(
     String referenceId,
     List<String> signingSchemas,
     String templateUuid,
-    List<UploadedDocument> additionalDocuments
+    List<UploadedDocument> additionalDocuments,
+    List<SelectedClauseDTO> clauses
 ) {
     /**
      * Validates that required fields are present and valid.

@@ -37,7 +37,9 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Service for managing document signing workflows.
@@ -68,6 +70,15 @@ public class SigningService {
 
     @Inject
     PlaceholderFormattingService placeholderFormattingService;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver companyPlaceholderResolver;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService placeholderPrefillService;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.ClauseCompositionService clauseCompositionService;
 
     @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
@@ -216,6 +227,9 @@ public class SigningService {
      * @param signingSchemas      Optional signing schema URNs
      * @param templateUuid        Optional UUID of the parent template for placeholder type lookup
      * @param additionalDocuments Optional list of pre-generated PDFs to include (each with signObligated flag)
+     * @param targetUserUuid      The employee the documents are for — the COMPANY
+     *                            placeholder source resolves facts from this
+     *                            person's derived company (spec §4.9)
      * @return Response containing the case key and initial status
      * @throws SigningException if PDF generation or case creation fails
      */
@@ -227,7 +241,30 @@ public class SigningService {
             String referenceId,
             List<String> signingSchemas,
             String templateUuid,
-            List<UploadedDocument> additionalDocuments) {
+            List<UploadedDocument> additionalDocuments,
+            String targetUserUuid) {
+        return createMultiDocumentCaseFromTemplate(templateDocuments, formValues, documentName, signers,
+                referenceId, signingSchemas, templateUuid, additionalDocuments, targetUserUuid, null);
+    }
+
+    /**
+     * Clause-composing variant (template-clauses spec §5): a non-empty
+     * {@code clausePlan} merges INLINE clauses into the base document at
+     * the {@code {{CLAUSES}}} anchor and appends one combined tillæg for
+     * ADDENDUM clauses + Individuel aftale entries. A null/empty plan is
+     * byte-identical to the pre-clause path.
+     */
+    public SigningCaseResponse createMultiDocumentCaseFromTemplate(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String documentName,
+            List<SignerInfo> signers,
+            String referenceId,
+            List<String> signingSchemas,
+            String templateUuid,
+            List<UploadedDocument> additionalDocuments,
+            String targetUserUuid,
+            dk.trustworks.intranet.documentservice.services.ClauseCompositionService.CompositionPlan clausePlan) {
 
         int additionalCount = additionalDocuments != null ? additionalDocuments.size() : 0;
         log.infof("Creating multi-document signing case from template. Template docs: %d, Additional docs: %d, Signers: %d, TemplateUuid: %s",
@@ -244,14 +281,48 @@ public class SigningService {
 
             List<DocumentInfo> documents = new java.util.ArrayList<>();
 
-            // Apply type-aware formatting if templateUuid is provided
-            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            // Company facts + server-resolved person fields, then type-aware
+            // formatting. The derived company's facts are authoritative for
+            // COMPANY-sourced placeholders (spec §4.9, fail-closed), and CPR /
+            // current-salary values are injected server-side so they never
+            // depend on a browser round-trip (spec §5.1).
+            Map<String, String> rawFormValues = new HashMap<>(formValues != null ? formValues : Map.of());
+            var company = companyPlaceholderResolver.deriveForUser(targetUserUuid);
+            companyPlaceholderResolver.applyCompanyFacts(templateUuid, rawFormValues, company);
+            placeholderPrefillService.applyServerResolvedPersonFields(templateUuid, rawFormValues, targetUserUuid);
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
 
-            // Generate PDF for each template document via NextSign convert API
+            // Clause fragments may reference {{COMPANY_*}} tags the base
+            // template does not declare — carry the derived company's facts
+            // into the composition as render tokens.
+            if (clausePlan != null && !clausePlan.isEmpty()) {
+                clausePlan = clausePlan.withCompanyFactTokens(
+                    clauseCompositionService.companyFactTokensFor(company));
+            }
+
+            // Signer fields may reference company facts via ${COMPANY_*}
+            // tokens (e.g. ${COMPANY_LEGAL_NAME} in a signer's display name);
+            // resolve them against the same derived company and refuse the
+            // send if a token survives — an unresolved token would reach
+            // NextSign as a literal recipient name/email.
+            List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
+
+            // A merged template carries every company's documents, so the set
+            // the client submitted is narrowed server-side to the derived
+            // company: documents marked for every company plus that company's
+            // own. Enforced here rather than trusting the request, and refused
+            // outright when nothing resolves — an empty envelope reaching
+            // NextSign is worse than a blocked send.
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> effectiveDocuments =
+                    documentsForDerivedCompany(templateDocuments, templateUuid, company);
+
+            // Generate PDF for each template document. With a clause plan the
+            // base document renders through the composition path (INLINE merge
+            // at the anchor); without one the pre-clause path runs unchanged.
             // Template documents always require signature (signObligated: true)
-            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
+            boolean composing = clausePlan != null && !clausePlan.isEmpty();
+            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : effectiveDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
                 if (fileUuid == null || fileUuid.isBlank()) {
                     throw new IllegalArgumentException(
@@ -263,13 +334,36 @@ public class SigningService {
                     docName = docName + ".pdf";
                 }
 
-                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid,
-                    effectiveFormValues,
-                    docName
-                );
+                byte[] pdfBytes;
+                if (composing) {
+                    byte[] baseDocx = wordDocumentService.getWordTemplate(fileUuid);
+                    Map<String, Object> renderValues = clauseCompositionService
+                        .renderValuesForBaseDocument(clausePlan, fileUuid, effectiveFormValues);
+                    pdfBytes = wordDocumentService.generatePdfFromDocxBytes(baseDocx, renderValues, docName);
+                } else {
+                    pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                        fileUuid,
+                        effectiveFormValues,
+                        docName
+                    );
+                }
                 documents.add(new DocumentInfo(docName, pdfBytes, true)); // Template docs always require signature
                 log.debugf("Generated PDF for template document '%s': %d bytes (signObligated: true)", docName, pdfBytes.length);
+            }
+
+            // One combined tillæg for ADDENDUM clauses + Individuel aftale
+            // entries, appended after the base documents (spec §5 step 3).
+            if (composing) {
+                byte[] addendumDocx = clauseCompositionService.buildAddendumDocx(clausePlan, effectiveFormValues);
+                if (addendumDocx != null) {
+                    String addendumName =
+                        dk.trustworks.intranet.documentservice.services.ClauseCompositionService.ADDENDUM_DOCUMENT_NAME
+                            + ".pdf";
+                    byte[] addendumPdf = wordDocumentService.generatePdfFromDocxBytes(
+                        addendumDocx, new HashMap<>(), addendumName);
+                    documents.add(new DocumentInfo(addendumName, addendumPdf, true));
+                    log.infof("Generated combined tillæg with %d point(s)", clausePlan.addendumItems().size());
+                }
             }
 
             // Add any additional pre-generated PDF documents
@@ -292,7 +386,7 @@ public class SigningService {
             // Create signing case with all documents
             String caseKey = nextsignService.createMultiDocumentSigningCase(
                 documents,
-                signers,
+                effectiveSigners,
                 referenceId,
                 signingSchemas
             );
@@ -309,10 +403,45 @@ public class SigningService {
             log.errorf(e, "NextSign API error creating multi-document case: %s", e.getMessage());
             throw new SigningException("Failed to create multi-document signing case: " + e.getMessage(), e);
 
+        } catch (IllegalArgumentException e) {
+            // Validation failures (incl. missing company facts) must surface
+            // as 400s in the resource layer, not be wrapped into a 500.
+            log.warnf("Template signing validation failed: %s", e.getMessage());
+            throw e;
+
         } catch (Exception e) {
             log.errorf(e, "Unexpected error creating multi-document signing case from template: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Resolve {@code ${COMPANY_*}} tokens in signer names/emails from the
+     * derived company's facts, failing closed when a token survives.
+     */
+    private List<SignerInfo> resolveSignerCompanyTokens(
+            List<SignerInfo> signers,
+            java.util.Optional<dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.CompanyContext> company) {
+        if (signers == null || signers.isEmpty()) {
+            return signers;
+        }
+        List<SignerInfo> resolved = new ArrayList<>(signers.size());
+        for (SignerInfo signer : signers) {
+            resolved.add(new SignerInfo(
+                signer.group(),
+                companyPlaceholderResolver.resolveCompanyTokens(signer.name(), company),
+                companyPlaceholderResolver.resolveCompanyTokens(signer.email(), company),
+                signer.role(),
+                signer.signing(),
+                signer.needsCpr()));
+        }
+        List<String> signerFields = new ArrayList<>();
+        for (SignerInfo signer : resolved) {
+            signerFields.add(signer.name());
+            signerFields.add(signer.email());
+        }
+        companyPlaceholderResolver.requireNoUnresolvedCompanyTokens(signerFields, company);
+        return resolved;
     }
 
     /**
@@ -333,6 +462,36 @@ public class SigningService {
             List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
             Map<String, String> formValues,
             String templateUuid) {
+        return generatePreviewDocuments(templateDocuments, formValues, templateUuid, null);
+    }
+
+    /**
+     * Preview variant carrying the target person: when {@code targetUserUuid}
+     * is present, COMPANY-sourced placeholders resolve from that person's
+     * derived company (fail-closed, spec §4.9) and sensitive USER fields
+     * (CPR, current salary) are injected server-side — the preview must show
+     * exactly what the signed document will contain.
+     */
+    public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String templateUuid,
+            String targetUserUuid) {
+        return generatePreviewDocuments(templateDocuments, formValues, templateUuid, targetUserUuid, null);
+    }
+
+    /**
+     * Clause-composing preview variant: the returned bundle is exactly
+     * what the send produces — base documents with INLINE clauses merged
+     * plus the combined tillæg — each document individually (PDFBOX-3931
+     * no-merge rule).
+     */
+    public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String templateUuid,
+            String targetUserUuid,
+            dk.trustworks.intranet.documentservice.services.ClauseCompositionService.CompositionPlan clausePlan) {
 
         log.infof("Generating preview documents from %d template documents (templateUuid: %s)",
             templateDocuments != null ? templateDocuments.size() : 0,
@@ -356,13 +515,26 @@ public class SigningService {
                 throw new IllegalArgumentException("At least one document is required for preview");
             }
 
-            // Apply type-aware formatting if templateUuid is provided
-            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            // Same value pipeline as the send path: company facts + server
+            // resolved person fields (when a target person is known), then
+            // type-aware formatting — the preview must match the sent document.
+            Map<String, String> rawFormValues = new HashMap<>(formValues != null ? formValues : Map.of());
+            if (targetUserUuid != null && !targetUserUuid.isBlank()) {
+                var company = companyPlaceholderResolver.deriveForUser(targetUserUuid);
+                companyPlaceholderResolver.applyCompanyFacts(templateUuid, rawFormValues, company);
+                placeholderPrefillService.applyServerResolvedPersonFields(templateUuid, rawFormValues, targetUserUuid);
+                if (clausePlan != null && !clausePlan.isEmpty()) {
+                    clausePlan = clausePlan.withCompanyFactTokens(
+                        clauseCompositionService.companyFactTokensFor(company));
+                }
+            }
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
             List<PreviewTemplateResponse.PreviewDocumentDTO> previewDocuments = new java.util.ArrayList<>();
 
-            // Generate PDF for each template document
+            // Generate PDF for each template document (composition path when
+            // a clause plan is present — the preview must match the send).
+            boolean composing = clausePlan != null && !clausePlan.isEmpty();
             int displayOrder = 0;
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
@@ -376,11 +548,19 @@ public class SigningService {
                     docName = docName + ".pdf";
                 }
 
-                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid,
-                    effectiveFormValues,
-                    docName
-                );
+                byte[] pdfBytes;
+                if (composing) {
+                    byte[] baseDocx = wordDocumentService.getWordTemplate(fileUuid);
+                    Map<String, Object> renderValues = clauseCompositionService
+                        .renderValuesForBaseDocument(clausePlan, fileUuid, effectiveFormValues);
+                    pdfBytes = wordDocumentService.generatePdfFromDocxBytes(baseDocx, renderValues, docName);
+                } else {
+                    pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                        fileUuid,
+                        effectiveFormValues,
+                        docName
+                    );
+                }
 
                 // Encode PDF as base64
                 String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
@@ -392,6 +572,22 @@ public class SigningService {
                 ));
 
                 log.debugf("Generated preview PDF for document '%s': %d bytes", docName, pdfBytes.length);
+            }
+
+            if (composing) {
+                byte[] addendumDocx = clauseCompositionService.buildAddendumDocx(clausePlan, effectiveFormValues);
+                if (addendumDocx != null) {
+                    String addendumName =
+                        dk.trustworks.intranet.documentservice.services.ClauseCompositionService.ADDENDUM_DOCUMENT_NAME
+                            + ".pdf";
+                    byte[] addendumPdf = wordDocumentService.generatePdfFromDocxBytes(
+                        addendumDocx, new HashMap<>(), addendumName);
+                    previewDocuments.add(new PreviewTemplateResponse.PreviewDocumentDTO(
+                        addendumName,
+                        Base64.getEncoder().encodeToString(addendumPdf),
+                        displayOrder++
+                    ));
+                }
             }
 
             log.infof("Generated %d preview documents", previewDocuments.size());
@@ -466,6 +662,7 @@ public class SigningService {
         String spUploadStatus = null;
         String spUploadError = null;
         String spFileUrl = null;
+        String archiveStatus = null;
         LocalDateTime createdAt = liveStatus.createdAt();
 
         if (dbCaseOpt.isPresent()) {
@@ -476,6 +673,7 @@ public class SigningService {
             spUploadStatus = dbCase.getSharepointUploadStatus();
             spUploadError = dbCase.getSharepointUploadError();
             spFileUrl = dbCase.getSharepointFileUrl();
+            archiveStatus = dbCase.getArchiveStatus();
 
             // Use DB createdAt if live data doesn't have it
             if (createdAt == null && dbCase.getCreatedAt() != null) {
@@ -514,7 +712,8 @@ public class SigningService {
             sharepointLocationUuid,
             spUploadStatus,
             spUploadError,
-            spFileUrl
+            spFileUrl,
+            archiveStatus
         );
     }
 
@@ -715,7 +914,8 @@ public class SigningService {
                 null, // sharepointLocationUuid
                 null, // sharepointUploadStatus
                 null, // sharepointUploadError
-                null  // sharepointFileUrl
+                null, // sharepointFileUrl
+                null  // archiveStatus - no DB row consulted here
             );
         }
 
@@ -766,7 +966,8 @@ public class SigningService {
             null, // sharepointLocationUuid - not returned by NextSign API
             null, // sharepointUploadStatus - not returned by NextSign API
             null, // sharepointUploadError - not returned by NextSign API
-            null  // sharepointFileUrl - not returned by NextSign API
+            null, // sharepointFileUrl - not returned by NextSign API
+            null  // archiveStatus - not a NextSign concept; merged in by getStatus()
         );
     }
 
@@ -1266,7 +1467,8 @@ public class SigningService {
             entity.getSharepointLocationUuid(),
             entity.getSharepointUploadStatus(),
             entity.getSharepointUploadError(),
-            entity.getSharepointFileUrl()
+            entity.getSharepointFileUrl(),
+            entity.getArchiveStatus()
         );
     }
 
@@ -1520,4 +1722,43 @@ public class SigningService {
             super(message, cause);
         }
     }
+
+    /**
+     * Narrow the submitted template documents to the derived company, using the
+     * stored {@code company_uuid} rather than whatever the client sent.
+     * <p>
+     * When no company can be derived, only company-agnostic documents survive —
+     * never every document, which would put another legal entity's contract in
+     * the envelope. A template with no documents for the company is refused.
+     */
+    private List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> documentsForDerivedCompany(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> requested,
+            String templateUuid,
+            java.util.Optional<dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.CompanyContext> company) {
+        if (requested == null || requested.isEmpty() || templateUuid == null || templateUuid.isBlank()) {
+            return requested;
+        }
+        String companyUuid = company.map(c -> c.companyUuid()).orElse(null);
+        Set<String> allowedFileUuids = TemplateDocumentEntity
+                .findByTemplateUuidForCompany(templateUuid, companyUuid).stream()
+                .map(TemplateDocumentEntity::getFileUuid)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> effective = requested.stream()
+                .filter(d -> d.getFileUuid() != null && allowedFileUuids.contains(d.getFileUuid()))
+                .collect(Collectors.toList());
+
+        if (effective.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Template has no documents for this company — add a document for the company,"
+                            + " or mark one as applying to all companies.");
+        }
+        if (effective.size() < requested.size()) {
+            log.infof("Dropped %d template document(s) not scoped to company %s",
+                    requested.size() - effective.size(), companyUuid);
+        }
+        return effective;
+    }
+
 }

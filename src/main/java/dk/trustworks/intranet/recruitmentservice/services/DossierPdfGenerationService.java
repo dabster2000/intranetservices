@@ -4,6 +4,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
+import dk.trustworks.intranet.documentservice.services.ClauseCompositionService;
+import dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver;
+import dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.MissingCompanyFactException;
+import dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse.PdfArtifactRef;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
@@ -11,6 +15,8 @@ import dk.trustworks.intranet.utils.services.PlaceholderFormattingService;
 import dk.trustworks.intranet.utils.services.WordDocumentService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
@@ -44,6 +50,12 @@ public class DossierPdfGenerationService {
 
     @Inject
     PlaceholderFormattingService placeholderFormattingService;
+
+    @Inject
+    CompanyPlaceholderResolver companyPlaceholderResolver;
+
+    @Inject
+    ClauseCompositionService clauseCompositionService;
 
     @Inject
     ObjectMapper objectMapper;
@@ -85,41 +97,125 @@ public class DossierPdfGenerationService {
      *         first in template's {@code displayOrder}, followed by
      *         appendices in their stored order
      */
-    public List<GeneratedPdf> generatePdfsFor(CandidateDossierRevision revision, String templateUuid) {
+    public List<GeneratedPdf> generatePdfsFor(CandidateDossierRevision revision, String templateUuid,
+                                              String targetCompanyUuid) {
         Objects.requireNonNull(revision, "revision must not be null");
         return generatePdfsFromValues(
                 templateUuid,
                 readPlaceholderSnapshot(revision),
-                readAppendicesSnapshot(revision));
+                readAppendicesSnapshot(revision),
+                readClausesSnapshot(revision),
+                targetCompanyUuid);
     }
 
     /**
      * Pre-resolved variant: caller supplies placeholder values and appendices
      * directly. Used by the signature-send flow so the external NextSign call
      * can run outside the snapshot transaction.
+     *
+     * @param targetCompanyUuid the candidate's target company — COMPANY-sourced
+     *                          placeholders resolve from its facts (spec §4.9);
+     *                          null skips fact resolution unless the template
+     *                          explicitly references facts, in which case the
+     *                          generation fails closed
      */
     public List<GeneratedPdf> generatePdfsFromValues(
             String templateUuid,
             Map<String, String> placeholders,
-            List<AppendixDto> appendices) {
+            List<AppendixDto> appendices,
+            String targetCompanyUuid) {
+        return generatePdfsFromValues(templateUuid, placeholders, appendices, List.of(), targetCompanyUuid);
+    }
+
+    /**
+     * Clause-composing variant (template-clauses spec §5): a non-empty
+     * clause selection merges INLINE clauses into the base document at the
+     * {@code {{CLAUSES}}} anchor and appends one combined tillæg for
+     * ADDENDUM clauses + Individuel aftale entries. Empty keeps the
+     * pre-clause path byte-identical.
+     */
+    public List<GeneratedPdf> generatePdfsFromValues(
+            String templateUuid,
+            Map<String, String> placeholders,
+            List<AppendixDto> appendices,
+            List<SelectedClauseDTO> clauses,
+            String targetCompanyUuid) {
+        return generatePdfsFromValues(templateUuid, placeholders, appendices,
+                resolveClausePlan(templateUuid, clauses), targetCompanyUuid);
+    }
+
+    /**
+     * Resolve a clause selection with the dossier dialogs' {@code {error,
+     * message}} 400 shape on an invalid selection (retired clause, missing
+     * required parameter, key collision).
+     */
+    public ClauseCompositionService.CompositionPlan resolveClausePlan(String templateUuid,
+                                                                      List<SelectedClauseDTO> clauses) {
+        try {
+            return clauseCompositionService.resolveForTemplateDocuments(
+                    templateUuid, clauses == null ? List.of() : clauses);
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "INVALID_CLAUSE_SELECTION", "message", e.getMessage()))
+                    .build());
+        }
+    }
+
+    /**
+     * Pre-resolved plan variant — the signature-send flow resolves once,
+     * renders with the plan, and records the same plan into
+     * {@code signing_case_clauses} after the case is accepted.
+     */
+    public List<GeneratedPdf> generatePdfsFromValues(
+            String templateUuid,
+            Map<String, String> placeholders,
+            List<AppendixDto> appendices,
+            ClauseCompositionService.CompositionPlan clausePlan,
+            String targetCompanyUuid) {
         Objects.requireNonNull(templateUuid, "templateUuid must not be null");
         Objects.requireNonNull(placeholders, "placeholders must not be null");
         Objects.requireNonNull(appendices, "appendices must not be null");
 
+        // Narrowed to the candidate's target company: a merged template carries
+        // every company's documents, so an unfiltered read would put another
+        // company's contract in the dossier.
         List<TemplateDocumentEntity> templateDocs =
-                TemplateDocumentEntity.findByTemplateUuid(templateUuid);
+                TemplateDocumentEntity.findByTemplateUuidForCompany(templateUuid, targetCompanyUuid);
+        requireDocumentsForCompany(templateDocs, templateUuid, targetCompanyUuid);
 
-        // Apply type-aware formatting (CURRENCY → "kr. 40.000,00", DECIMAL →
-        // "40.000,00") so the substituted strings render the same way as in
-        // the signing wizard. Mirrors SigningService.createMultiDocumentCaseFromTemplate.
+        // Company facts first (authoritative for COMPANY-sourced placeholders,
+        // fail-closed on explicitly mapped facts), then type-aware formatting
+        // (CURRENCY → "kr. 40.000,00") so the substituted strings render the
+        // same way as in the signing wizard. Mirrors
+        // SigningService.createMultiDocumentCaseFromTemplate.
+        Map<String, String> withFacts = new HashMap<>(placeholders);
+        var derivedCompany = companyPlaceholderResolver.deriveForCompanyUuid(targetCompanyUuid);
+        try {
+            companyPlaceholderResolver.applyCompanyFacts(templateUuid, withFacts, derivedCompany);
+        } catch (MissingCompanyFactException e) {
+            // The dossier dialogs render {error, message} bodies verbatim —
+            // the message names the facts and points at Settings → Selskaber.
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "MISSING_COMPANY_FACT", "message", e.getMessage()))
+                    .build());
+        }
         Map<String, String> effectiveValues = placeholderFormattingService
-                .formatPlaceholderValues(templateUuid, placeholders);
+                .formatPlaceholderValues(templateUuid, withFacts);
         long nonBlank = effectiveValues.values().stream()
                 .filter(v -> v != null && !v.isBlank())
                 .count();
         log.infof("Effective placeholder keys for template %s: %s (non-blank=%d/%d)",
                 templateUuid, effectiveValues.keySet(), nonBlank, effectiveValues.size());
         assertKeysMatchTemplate(templateUuid, effectiveValues.keySet());
+
+        boolean composing = clausePlan != null && !clausePlan.isEmpty();
+        if (composing) {
+            // Clause fragments may reference {{COMPANY_*}} tags the base
+            // template does not declare — carry the derived company's facts
+            // into the composition as render tokens.
+            clausePlan = clausePlan.withCompanyFactTokens(
+                    clauseCompositionService.companyFactTokensFor(derivedCompany));
+        }
 
         List<GeneratedPdf> out = new ArrayList<>(templateDocs.size());
         for (TemplateDocumentEntity doc : templateDocs) {
@@ -129,9 +225,27 @@ public class DossierPdfGenerationService {
                 continue;
             }
             String filename = ensurePdfSuffix(safeDocName(doc.getDocumentName()));
-            byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid, effectiveValues, filename);
+            byte[] pdfBytes;
+            if (composing) {
+                byte[] baseDocx = wordDocumentService.getWordTemplate(fileUuid);
+                Map<String, Object> renderValues = clauseCompositionService
+                        .renderValuesForBaseDocument(clausePlan, fileUuid, effectiveValues);
+                pdfBytes = wordDocumentService.generatePdfFromDocxBytes(baseDocx, renderValues, filename);
+            } else {
+                pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                        fileUuid, effectiveValues, filename);
+            }
             out.add(new GeneratedPdf(filename, null, pdfBytes, true, true));
+        }
+
+        if (composing) {
+            byte[] addendumDocx = clauseCompositionService.buildAddendumDocx(clausePlan, effectiveValues);
+            if (addendumDocx != null) {
+                String addendumName = ClauseCompositionService.ADDENDUM_DOCUMENT_NAME + ".pdf";
+                byte[] addendumPdf = wordDocumentService.generatePdfFromDocxBytes(
+                        addendumDocx, new HashMap<>(), addendumName);
+                out.add(new GeneratedPdf(addendumName, null, addendumPdf, true, true));
+            }
         }
 
         for (AppendixDto appendix : appendices) {
@@ -149,8 +263,9 @@ public class DossierPdfGenerationService {
      * Generate only the template-derived PDFs (no appendices). Used by the
      * "Generate review PDF" download endpoint.
      */
-    public List<GeneratedPdf> generateTemplatePdfsFor(CandidateDossierRevision revision, String templateUuid) {
-        return generatePdfsFor(revision, templateUuid).stream()
+    public List<GeneratedPdf> generateTemplatePdfsFor(CandidateDossierRevision revision, String templateUuid,
+                                                      String targetCompanyUuid) {
+        return generatePdfsFor(revision, templateUuid, targetCompanyUuid).stream()
                 .filter(GeneratedPdf::fromTemplate)
                 .toList();
     }
@@ -229,6 +344,21 @@ public class DossierPdfGenerationService {
         }
     }
 
+    private List<SelectedClauseDTO> readClausesSnapshot(CandidateDossierRevision revision) {
+        if (revision.getClausesSnapshot() == null || revision.getClausesSnapshot().isBlank()) {
+            return List.of();
+        }
+        try {
+            List<SelectedClauseDTO> v = objectMapper.readValue(
+                    revision.getClausesSnapshot(), new TypeReference<>() {
+                    });
+            return v == null ? List.of() : v;
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Could not parse clauses snapshot for revision=" + revision.getUuid(), e);
+        }
+    }
+
     private List<AppendixDto> readAppendicesSnapshot(CandidateDossierRevision revision) {
         if (revision.getAppendicesSnapshot() == null
                 || revision.getAppendicesSnapshot().isBlank()) {
@@ -258,4 +388,24 @@ public class DossierPdfGenerationService {
         }
         return name + ".pdf";
     }
+
+    /**
+     * A merged template must still produce documents for the company at hand.
+     * If every document on it is scoped to other companies, the dossier would
+     * otherwise be generated with nothing in it — refuse instead, naming the
+     * company, the same way a missing company fact does.
+     */
+    static void requireDocumentsForCompany(List<TemplateDocumentEntity> docs,
+                                           String templateUuid, String companyUuid) {
+        if (docs != null && !docs.isEmpty()) {
+            return;
+        }
+        throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", "NO_DOCUMENTS_FOR_COMPANY",
+                        "message", "Skabelonen har ingen dokumenter for dette selskab."
+                                + " Tilføj et dokument til selskabet, eller marker et dokument"
+                                + " som gældende for alle selskaber."))
+                .build());
+    }
+
 }

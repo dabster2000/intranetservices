@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.recruitmentservice.dto.FormAnswer;
+import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomPrepResponse.PrepSubject;
 import dk.trustworks.intranet.recruitmentservice.dto.RoomSuggestRequest;
@@ -32,6 +33,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,6 +70,16 @@ public class InterviewRoomAiService {
     static final int MAX_EVIDENCE_CHARS = 200;
     static final int MAX_INPUT_LINES = 200;
     static final int MAX_PROSE_CHARS = 2000;
+
+    /**
+     * The prep pack's budget for live notes, alongside the CV's 8,000 chars.
+     * A notepad grows all sitting and would otherwise push the CV and the
+     * standard probes out of the model's attention halfway through the hour.
+     * The <em>newest</em> lines survive the budget: a follow-up question is
+     * asked about what was just said.
+     */
+    static final int MAX_PREP_NOTE_LINES = 60;
+    static final int MAX_PREP_NOTE_CHARS = 4000;
 
     private static final ObjectMapper STRICT_JSON = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -177,11 +189,7 @@ public class InterviewRoomAiService {
         if (inputSubjects.isEmpty()) {
             return new RoomTidyResponse(List.of(), List.of());
         }
-        List<String> promptLines = lines.stream()
-                .filter(line -> line.text() != null && !line.text().isBlank())
-                .map(line -> "[" + (line.subjectCode() == null ? "loose" : line.subjectCode())
-                        + (line.verbatim() ? ", verbatim" : "") + "] " + line.text().strip())
-                .toList();
+        List<String> promptLines = notePromptLines(lines);
 
         long startedAt = System.nanoTime();
         String raw = callUntransacted(() -> openAIService.askQuestionWithSchema(
@@ -224,10 +232,25 @@ public class InterviewRoomAiService {
      * answers. Questions, never conclusions: entries that do not end in a
      * question mark are dropped. Appends {@code AI_SUGGESTIONS_GENERATED}
      * with {@code origin=INTERVIEW_ROOM_PREP}.
+     * <p>
+     * When {@code request} carries the interviewer's live notes the same call
+     * becomes a mid-interview re-run: the model additionally sees what has
+     * actually been said and answers with follow-ups rather than a second
+     * reading of the CV. The re-run is human-triggered — the interviewer
+     * presses the prep control again — because a pack costs an OpenAI
+     * round-trip; there is no polling and no stream. Everything else is
+     * unchanged: the same subject guard, the same questions-only contract,
+     * the same event, the same untransacted call.
+     * <p>
+     * The event distinguishes the two: {@code notes_informed} /
+     * {@code notes_lines} on the payload say whether this pack read notes and
+     * how many lines it read, so the AI Act trail can tell a CV-only pack from
+     * a re-run without inspecting the questions.
      */
     public RoomPrepResponse prep(RecruitmentInterview interview,
                                  RecruitmentCandidate candidate,
                                  List<String> subjectCodes,
+                                 RoomPrepRequest request,
                                  UUID actor) {
         Set<String> allowedSubjects = new LinkedHashSet<>(subjectCodes);
         StringBuilder user = new StringBuilder("Standard probes per subject:\n");
@@ -250,9 +273,17 @@ public class InterviewRoomAiService {
             user.append("\nCV extract:\n")
                     .append(text, 0, Math.min(text.length(), 8000)).append('\n');
         }
+        // Last, and closest to the question: mid-sitting the notes are the
+        // freshest thing the model has, and the CV is the background.
+        List<String> notes = boundedPrepNotes(request == null ? null : request.notes());
+        if (!notes.isEmpty()) {
+            user.append("\nInterviewer's live notes (oldest first):\n");
+            notes.forEach(line -> user.append("  ").append(line).append('\n'));
+        }
 
+        boolean withNotes = !notes.isEmpty();
         String raw = callUntransacted(() -> openAIService.askQuestionWithSchema(
-                InterviewRoomPrompts.prepSystem(), user.toString(),
+                InterviewRoomPrompts.prepSystem(withNotes), user.toString(),
                 InterviewRoomPrompts.prepSchema(), "RoomPrepPack",
                 "{\"probes\":[]}", extractionModel, MAX_OUTPUT_TOKENS, false, "low"));
 
@@ -260,9 +291,54 @@ public class InterviewRoomAiService {
         if (!probes.isEmpty()) {
             recordGenerated(interview, candidate, actor, "INTERVIEW_ROOM_PREP",
                     probes.stream().mapToInt(p -> p.questions().size()).sum(),
-                    probesPii(probes));
+                    probesPii(probes), notes.size());
         }
         return new RoomPrepResponse(List.copyOf(probes));
+    }
+
+    /**
+     * The newest note lines that fit the prep budget, in reading order.
+     * <p>
+     * Walked from the end because a mid-interview pack has to react to what
+     * was just said; an hour-old line losing its slot to a fresh one is the
+     * intended trade. Rendering runs over the tail only, so an oversized body
+     * cannot make the caller pay for lines that were never going to be sent.
+     */
+    static List<String> boundedPrepNotes(List<RoomTidyRequest.TidyLine> notes) {
+        if (notes == null || notes.isEmpty()) {
+            return List.of();
+        }
+        List<String> rendered = notePromptLines(notes.stream()
+                .skip(Math.max(0, notes.size() - MAX_INPUT_LINES))
+                .toList());
+        List<String> kept = new ArrayList<>();
+        int chars = 0;
+        for (int i = rendered.size() - 1; i >= 0 && kept.size() < MAX_PREP_NOTE_LINES; i--) {
+            String line = rendered.get(i);
+            if (chars + line.length() > MAX_PREP_NOTE_CHARS) {
+                break;
+            }
+            chars += line.length();
+            kept.add(line);
+        }
+        Collections.reverse(kept);
+        return List.copyOf(kept);
+    }
+
+    /**
+     * The one note-line representation the room's AI paths share:
+     * {@code "[CODE] text"}, {@code "[CODE, verbatim] text"} for the
+     * candidate's own words, {@code "[loose] text"} for an untagged line.
+     * Tidy and the prep pack must render the same notepad identically — two
+     * shapes for one line would be two things to keep in step and two things
+     * for the model to learn.
+     */
+    private static List<String> notePromptLines(List<RoomTidyRequest.TidyLine> lines) {
+        return lines.stream()
+                .filter(line -> line != null && line.text() != null && !line.text().isBlank())
+                .map(line -> "[" + (line.subjectCode() == null ? "loose" : line.subjectCode())
+                        + (line.verbatim() ? ", verbatim" : "") + "] " + line.text().strip())
+                .toList();
     }
 
     // ------------------------------------------------------------------
@@ -408,16 +484,36 @@ public class InterviewRoomAiService {
 
     private void recordGenerated(RecruitmentInterview interview, RecruitmentCandidate candidate,
                                  UUID actor, String origin, int count, String piiJson) {
-        QuarkusTransaction.requiringNew().run(() -> eventRecorder.record(
-                RecruitmentEventBuilder.event(RecruitmentEventType.AI_SUGGESTIONS_GENERATED)
-                        .candidate(candidate.getUuid())
-                        .actorUser(actor.toString())
-                        .payload("origin", origin)
-                        .payload("interview_uuid", interview.getUuid())
-                        .payload("count", count)
-                        .payload("model", extractionModel)
-                        .payload("prompt_version", InterviewRoomPrompts.PROMPT_VERSION)
-                        .pii("suggestions", piiJson)));
+        recordGenerated(interview, candidate, actor, origin, count, piiJson, null);
+    }
+
+    /**
+     * @param notesLines how many live note lines went into the prompt, or
+     *                   {@code null} on a path where notes are not an input.
+     *                   Structural only — the note text itself never reaches
+     *                   the payload (spec §3.3), just the count.
+     */
+    private void recordGenerated(RecruitmentInterview interview, RecruitmentCandidate candidate,
+                                 UUID actor, String origin, int count, String piiJson,
+                                 Integer notesLines) {
+        QuarkusTransaction.requiringNew().run(() -> {
+            RecruitmentEventBuilder builder =
+                    RecruitmentEventBuilder.event(RecruitmentEventType.AI_SUGGESTIONS_GENERATED)
+                            .candidate(candidate.getUuid())
+                            .actorUser(actor.toString())
+                            .payload("origin", origin)
+                            .payload("interview_uuid", interview.getUuid())
+                            .payload("count", count)
+                            .payload("model", extractionModel)
+                            .payload("prompt_version", InterviewRoomPrompts.PROMPT_VERSION);
+            if (notesLines != null) {
+                // What separates a mid-interview re-run from the pack built
+                // off the CV before the sitting — same origin, different input.
+                builder.payload("notes_informed", notesLines > 0)
+                        .payload("notes_lines", notesLines);
+            }
+            eventRecorder.record(builder.pii("suggestions", piiJson));
+        });
     }
 
     private static String suggestionsPii(List<RoomFactSuggestion> suggestions) {

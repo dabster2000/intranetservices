@@ -79,6 +79,15 @@ public class TemplateDocumentEntity extends PanacheEntityBase {
         updatedAt = LocalDateTime.now();
     }
 
+    /**
+     * The company this document belongs to, or {@code null} for "every
+     * company". Lets one merged template carry a shared contract alongside
+     * each company's own appendix — the same rule as
+     * {@code template_default_signers.company_uuid}.
+     */
+    @Column(name = "company_uuid", length = 36)
+    private String companyUuid;
+
     // --- Panache finder methods ---
 
     /**
@@ -89,6 +98,23 @@ public class TemplateDocumentEntity extends PanacheEntityBase {
      */
     public static List<TemplateDocumentEntity> findByTemplateUuid(String templateUuid) {
         return find("template.uuid = ?1 ORDER BY displayOrder, documentName", templateUuid).list();
+    }
+
+    /**
+     * The documents one company actually receives: those marked for every
+     * company ({@code companyUuid IS NULL}) plus that company's own.
+     * <p>
+     * A {@code null} {@code companyUuid} argument means "no company could be
+     * derived" and yields only the company-agnostic documents — never
+     * another company's contract.
+     *
+     * @param templateUuid the template
+     * @param companyUuid  the derived company, or {@code null} if unknown
+     * @return documents sorted by displayOrder then documentName
+     */
+    public static List<TemplateDocumentEntity> findByTemplateUuidForCompany(String templateUuid, String companyUuid) {
+        return find("template.uuid = ?1 AND (companyUuid IS NULL OR companyUuid = ?2)"
+                + " ORDER BY displayOrder, documentName", templateUuid, companyUuid).list();
     }
 
     /**

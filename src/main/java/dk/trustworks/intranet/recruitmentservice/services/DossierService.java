@@ -161,7 +161,7 @@ public class DossierService {
             // always points at a template that exists.
             dossier.setTemplateUuid(template.getUuid());
             dossier.setStatus(DossierStatus.OPEN);
-            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid()));
+            dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(template.getUuid(), candidate.getTargetCompanyUuid()));
             CandidateDossier.persist(dossier);
         }
 
@@ -278,6 +278,144 @@ public class DossierService {
     }
 
     /**
+     * Swap the template of an OPEN dossier that has never been sent — the
+     * misclick escape hatch: the create dialog's template picker has no
+     * default and a wrong pick previously locked the candidate onto the
+     * wrong contract forever ({@code DOSSIER_EXISTS} blocks a second
+     * dossier, and reopen only matches the SAME template).
+     *
+     * <p>Only allowed while the dossier has ZERO revisions: the first send
+     * snapshots the template into a revision, and after that the honest
+     * correction is branching. What happens on a change:</p>
+     * <ul>
+     *   <li>signers re-seed from the new template's defaults (the old
+     *       config referenced the old template's {@code ${...}} signer
+     *       fields);</li>
+     *   <li>clause selections clear (offers are per-template links);</li>
+     *   <li>placeholder values and appendices are KEPT — shared keys
+     *       (employee name, dates) carry over, template-specific keys the
+     *       new template does not declare are simply never rendered.</li>
+     * </ul>
+     *
+     * @throws BusinessRuleViolation   if the dossier is CLOSED
+     * @throws WebApplicationException 400/409 per
+     *                                 {@link #resolveTemplateChange}
+     */
+    @Transactional
+    public DossierResponse changeTemplate(UUID candidateUuid, String templateUuid, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+
+        String trimmed = templateUuid == null ? null : templateUuid.trim();
+        DocumentTemplateEntity template = trimmed == null || trimmed.isEmpty()
+                ? null
+                : DocumentTemplateEntity.findById(trimmed);
+        RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        CandidateDossier dossier = CandidateDossier
+                .<CandidateDossier>find("candidateUuid = ?1", candidate.getUuid())
+                .firstResultOptional()
+                .orElseThrow(() -> new NotFoundException(
+                        "Dossier not found for candidate: " + candidateUuid));
+        guardOpen(dossier, "change template of");
+
+        long revisionCount = CandidateDossierRevision.count("dossierUuid", dossier.getUuid());
+        // uk_dossier_candidate_template would turn a swap onto a template a
+        // CLOSED dossier already sits on into a duplicate-key 500.
+        boolean targetTaken = template != null && CandidateDossier.count(
+                "candidateUuid = ?1 AND templateUuid = ?2 AND uuid <> ?3",
+                candidate.getUuid(), template.getUuid(), dossier.getUuid()) > 0;
+
+        DocumentTemplateEntity usable =
+                resolveTemplateChange(trimmed, template, revisionCount, targetTaken);
+        if (usable.getUuid().equals(dossier.getTemplateUuid())) {
+            // Idempotent no-op: picking the template the dossier is already on
+            // changes nothing and records nothing.
+            return toResponse(dossier);
+        }
+
+        String oldTemplateUuid = dossier.getTemplateUuid();
+        dossier.setTemplateUuid(usable.getUuid());
+        dossier.setSignersConfigJson(templateResolver.seedSignersFromTemplate(
+                usable.getUuid(), candidate.getTargetCompanyUuid()));
+        dossier.setClausesJson(null);
+
+        RecruitmentApplication application =
+                RecruitmentApplicationService.openApplicationOf(candidate.getUuid());
+        RecruitmentPosition position = application == null
+                ? null
+                : RecruitmentPosition.findById(application.getPositionUuid());
+        eventRecorder.record(dossierTemplateChangedEvent(
+                candidate, dossier, oldTemplateUuid, application, position, actor));
+
+        log.infof("DOSSIER_TEMPLATE_CHANGED candidate=%s dossier=%s template=%s->%s by actor=%s",
+                candidate.getUuid(), dossier.getUuid(), oldTemplateUuid, usable.getUuid(), actor);
+        return toResponse(dossier);
+    }
+
+    /**
+     * The change-template guard chain, pure so every branch is reachable on
+     * the DB-free tier (the {@link #resolveReopenTarget} pattern). Ordering:
+     * template validity first (a broken reference is a 400 whatever the
+     * dossier's history), then the revision lock, then the unique-pair
+     * collision.
+     *
+     * @param templateUuid  the (trimmed) template reference the caller supplied
+     * @param template      what it resolved to, or {@code null}
+     * @param revisionCount how many revisions the dossier already has
+     * @param targetTaken   whether ANOTHER dossier of this candidate already
+     *                      sits on the target template
+     * @return the resolved, active target template
+     */
+    static DocumentTemplateEntity resolveTemplateChange(String templateUuid,
+                                                        DocumentTemplateEntity template,
+                                                        long revisionCount,
+                                                        boolean targetTaken) {
+        DocumentTemplateEntity usable = DossierTemplateResolver.requireUsable(templateUuid, template);
+        if (revisionCount > 0) {
+            throw dossierConflict("DOSSIER_HAS_REVISIONS",
+                    "This dossier has already been sent — the template is locked into its "
+                            + "revision history. Branch from a revision instead.");
+        }
+        if (targetTaken) {
+            throw dossierConflict("DOSSIER_EXISTS",
+                    "This candidate already has a closed dossier on that template — "
+                            + "reopen that one instead of re-pointing this dossier at it.");
+        }
+        return usable;
+    }
+
+    /**
+     * The {@code DOSSIER_TEMPLATE_CHANGED} event. Structural payload only —
+     * old and new template + dossier — with the same application context and
+     * PARTNER-track CIRCLE pairing as {@link #dossierCreatedEvent}: both
+     * stamps stay load-bearing for CIRCLE readers, and the secrecy of a
+     * partner search must not depend on which dossier command ran last.
+     */
+    static RecruitmentEventBuilder dossierTemplateChangedEvent(RecruitmentCandidate candidate,
+                                                               CandidateDossier dossier,
+                                                               String oldTemplateUuid,
+                                                               RecruitmentApplication application,
+                                                               RecruitmentPosition position,
+                                                               UUID actor) {
+        RecruitmentEventBuilder event = RecruitmentEventBuilder
+                .event(RecruitmentEventType.DOSSIER_TEMPLATE_CHANGED)
+                .candidate(candidate.getUuid())
+                .actorUser(actor.toString())
+                .payload("dossier_uuid", dossier.getUuid())
+                .payload("old_template_uuid", oldTemplateUuid)
+                .payload("template_uuid", dossier.getTemplateUuid());
+        if (application != null) {
+            event.application(application.getUuid())
+                    .position(application.getPositionUuid())
+                    .payload("application_uuid", application.getUuid());
+        }
+        if (position != null && position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            event.position(position.getUuid())
+                    .visibility(RecruitmentEventVisibility.CIRCLE);
+        }
+        return event;
+    }
+
+    /**
      * Apply autosave updates to the dossier's JSON draft state. The request
      * payload is partial — only non-null fields on {@code req} are written;
      * the others are left as-is on the entity.
@@ -298,6 +436,9 @@ public class DossierService {
         }
         if (req.signersConfig() != null) {
             dossier.setSignersConfigJson(writeJson(req.signersConfig()));
+        }
+        if (req.clauses() != null) {
+            dossier.setClausesJson(writeJson(req.clauses()));
         }
         log.debugf("Autosaved dossier uuid=%s by actor=%s", dossier.getUuid(), actor);
         return toResponse(dossier);
@@ -400,9 +541,10 @@ public class DossierService {
                     "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
         }
 
-        // 1) Overwrite placeholder + signer drafts.
+        // 1) Overwrite placeholder + signer + clause drafts.
         dossier.setPlaceholderValuesJson(rev.getPlaceholderValuesSnapshot());
         dossier.setSignersConfigJson(rev.getSignersConfigSnapshot());
+        dossier.setClausesJson(rev.getClausesSnapshot());
 
         // 2) Replace appendix rows with what the snapshot recorded.
         CandidateDossierAppendix.delete("dossierUuid", dossier.getUuid());
@@ -535,6 +677,10 @@ public class DossierService {
                 .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(),
                         a.getDisplayOrder(), a.isSignObligated()))
                 .toList();
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses = readJson(
+                dossier.getClausesJson(),
+                new TypeReference<>() {
+                });
         return new DossierResponse(
                 dossier.getUuid(),
                 dossier.getCandidateUuid(),
@@ -543,6 +689,7 @@ public class DossierService {
                 signersConfig != null ? signersConfig : List.of(),
                 dossier.getStatus(),
                 appendices,
+                clauses != null ? clauses : List.of(),
                 dossier.getCreatedAt(),
                 dossier.getUpdatedAt()
         );
@@ -588,6 +735,14 @@ public class DossierService {
     public List<SignerConfigDto> currentSignersConfig(CandidateDossier dossier) {
         List<SignerConfigDto> v = readJson(dossier.getSignersConfigJson(), new TypeReference<>() {
         });
+        return v == null ? List.of() : v;
+    }
+
+    /** The draft's clause selection (template-clauses Phase 2); empty when none. */
+    public List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> currentClauses(CandidateDossier dossier) {
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> v =
+                readJson(dossier.getClausesJson(), new TypeReference<>() {
+                });
         return v == null ? List.of() : v;
     }
 

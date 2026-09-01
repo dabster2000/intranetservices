@@ -25,6 +25,12 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('admin:write', 'Admin — write', NULL, 'Admin', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('agreements:read', 'Agreements — read', NULL, 'Agreements', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('agreements:write', 'Agreements — write', NULL, 'Agreements', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('availability:read', 'Availability — read', NULL, 'Revenue & utilization', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)

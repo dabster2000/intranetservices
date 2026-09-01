@@ -18,7 +18,15 @@ import java.util.List;
  */
 final class InterviewRoomPrompts {
 
-    static final String PROMPT_VERSION = "room-v1";
+    /**
+     * Bumped to {@code room-v2} on 2026-09-01: the prep pack now writes its
+     * questions in Danish unconditionally (it used to mirror the language of
+     * the material and came out mixed) and may be re-run mid-interview with
+     * the interviewer's live notes. Both change what the model is asked for,
+     * so the AI Act event store must be able to tell the two generations
+     * apart — every room event records this constant.
+     */
+    static final String PROMPT_VERSION = "room-v2";
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
@@ -170,14 +178,54 @@ final class InterviewRoomPrompts {
     // Prep pack (§9)
     // ------------------------------------------------------------------
 
-    static String prepSystem() {
-        return """
+    /**
+     * The prep-pack contract. Two things are deliberately unconditional:
+     * <ul>
+     *   <li><b>Danish.</b> The sitting is held in Danish, but the input is
+     *       mixed — the catalogue probes are Danish, a CV or a form answer
+     *       often is not. The old wording ("Danish is fine where the material
+     *       is Danish") let the output language follow the source, so a pack
+     *       came back half English. The language is now an instruction, not a
+     *       permission.</li>
+     *   <li><b>Questions only.</b> Unchanged, and still enforced server-side
+     *       in {@code validatePrep} rather than trusted.</li>
+     * </ul>
+     *
+     * @param withNotes the interviewer's live notes are in the user message —
+     *                  the pack is a mid-interview re-run, not the CV-only
+     *                  pack built before the sitting
+     */
+    static String prepSystem(boolean withNotes) {
+        String base = """
                 You specialise interview probes to one candidate. You are given the standard
                 probes per scorecard subject and the candidate's material (CV extract, form
                 answers). For each subject, rewrite two or three probes so they anchor in
                 THIS candidate's concrete experience. Produce QUESTIONS ONLY — every entry
                 must end with a question mark. Never a conclusion, never an assessment,
-                never advice on what to score. Danish is fine where the material is Danish.
+                never advice on what to score.""";
+        if (withNotes) {
+            base += """
+
+
+                    The interview is ALREADY UNDERWAY and you also have the interviewer's live
+                    notes: one line per observation, prefixed with the scorecard subject it was
+                    tagged to — "[CODE]", "[CODE, verbatim]" when the line is the candidate's own
+                    words, "[loose]" when it is untagged. Oldest first, newest last.
+                    Use them: ask the follow-up the conversation has actually earned — a claim
+                    that needs one more layer, a gap the notes expose, a verbatim line worth
+                    returning to. Do not re-ask what the notes show is already covered.
+                    The notes are the interviewer's own shorthand, not a record of the candidate:
+                    never restate a line back as a finding, never conclude from one, never say or
+                    imply what it should score. Questions only, exactly as above.""";
+        }
+        return base + """
+
+
+                LANGUAGE: write every question in Danish. The interview is held in Danish, so
+                Danish is the only acceptable output language — no matter what language the
+                standard probes, the CV, the form answers or the notes are in, and even when all
+                of the material you are given is English. Leave proper nouns, product and
+                company names, job titles and established English technical terms as they are.
                 Answer with exactly one JSON document matching the schema.""";
     }
 

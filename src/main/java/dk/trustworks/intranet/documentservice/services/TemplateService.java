@@ -14,6 +14,7 @@ import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
@@ -30,6 +31,9 @@ import java.util.stream.Collectors;
 @RequestScoped
 public class TemplateService {
 
+    @Inject
+    CompanyPlaceholderResolver companyPlaceholderResolver;
+
     /**
      * Find all templates with their placeholder counts.
      *
@@ -41,6 +45,63 @@ public class TemplateService {
         return entities.stream()
                 .map(this::toDTOWithPlaceholders)  // Include placeholders for count display
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * As {@link #findAll(boolean)}, but with each template's default signers
+     * <em>and documents</em> narrowed to one person's company: the rows marked
+     * for every company plus that company's own.
+     * <p>
+     * A merged template (one shared template instead of the TW/TWC/TWT copies)
+     * carries every company's counter-signers and every company's documents at
+     * once, so the signing wizard must be told whom it is preparing for —
+     * otherwise it would offer another company's executives, and another
+     * company's contract. Everything else about the template is unchanged.
+     *
+     * @param includeInactive whether to include inactive templates
+     * @param forUserUuid     the person the documents are being prepared for;
+     *                        when null or when no company can be derived, only
+     *                        company-agnostic signers are returned
+     */
+    public List<DocumentTemplateDTO> findAllForUser(boolean includeInactive, String forUserUuid) {
+        String companyUuid = companyPlaceholderResolver.deriveForUser(forUserUuid)
+                .map(CompanyPlaceholderResolver.CompanyContext::companyUuid)
+                .orElse(null);
+        return findAll(includeInactive).stream()
+                .map(dto -> narrowToCompany(dto, companyUuid))
+                .collect(Collectors.toList());
+    }
+
+    private DocumentTemplateDTO narrowToCompany(DocumentTemplateDTO dto, String companyUuid) {
+        if (dto.getDefaultSigners() != null && !dto.getDefaultSigners().isEmpty()) {
+            dto.setDefaultSigners(signersForCompany(dto.getDefaultSigners(), companyUuid));
+        }
+        if (dto.getDocuments() != null && !dto.getDocuments().isEmpty()) {
+            dto.setDocuments(documentsForCompany(dto.getDocuments(), companyUuid));
+        }
+        return dto;
+    }
+
+    /**
+     * The signers that apply to one company: rows marked for every company
+     * ({@code companyUuid == null}) plus that company's own.
+     * <p>
+     * Pure and package-private on purpose — the DB-free tier is the deploy
+     * gate, so the decision lives here rather than in the Panache query.
+     * A null {@code companyUuid} (no company could be derived) keeps only the
+     * company-agnostic rows; it must never fall back to "all signers", which
+     * would put another company's executives on the contract.
+     */
+    static List<TemplateDefaultSignerDTO> signersForCompany(
+            List<TemplateDefaultSignerDTO> signers, String companyUuid) {
+        return signers.stream()
+                .filter(s -> s.getCompanyUuid() == null || s.getCompanyUuid().equals(companyUuid))
+                .collect(Collectors.toList());
+    }
+
+    /** Blank means "Alle selskaber"; normalise to null so the filter behaves. */
+    static String normalizeCompanyUuid(String companyUuid) {
+        return companyUuid == null || companyUuid.isBlank() ? null : companyUuid;
     }
 
     /**
@@ -291,6 +352,18 @@ public class TemplateService {
         }
     }
 
+    /**
+     * Source fields are uppercase key names (NAME_GENITIVE, CPR, …);
+     * blank collapses to null so "no explicit field" is one state, not two.
+     */
+    private static String normalizeSourceField(String sourceField) {
+        if (sourceField == null) {
+            return null;
+        }
+        String trimmed = sourceField.trim().toUpperCase(java.util.Locale.ROOT);
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
     // --- DTO/Entity Mapping ---
 
     /**
@@ -359,6 +432,7 @@ public class TemplateService {
                 .defaultValue(entity.getDefaultValue())
                 .helpText(entity.getHelpText())
                 .source(entity.getSource())
+                .sourceField(entity.getSourceField())
                 .fieldGroup(entity.getFieldGroup())
                 .validationRules(entity.getValidationRules())
                 .selectOptions(entity.getSelectOptions())
@@ -383,6 +457,7 @@ public class TemplateService {
         entity.setDefaultValue(dto.getDefaultValue());
         entity.setHelpText(dto.getHelpText());
         entity.setSource(dto.getSource());
+        entity.setSourceField(normalizeSourceField(dto.getSourceField()));
         entity.setFieldGroup(dto.getFieldGroup());
         entity.setValidationRules(dto.getValidationRules());
         entity.setSelectOptions(dto.getSelectOptions());
@@ -401,6 +476,7 @@ public class TemplateService {
                 .role(entity.getRole())
                 .signing(entity.isSigning())
                 .displayOrder(entity.getDisplayOrder())
+                .companyUuid(entity.getCompanyUuid())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -420,6 +496,7 @@ public class TemplateService {
         entity.setRole(dto.getRole());
         entity.setSigning(dto.isSigning());
         entity.setDisplayOrder(dto.getDisplayOrder());
+        entity.setCompanyUuid(normalizeCompanyUuid(dto.getCompanyUuid()));
         return entity;
     }
 
@@ -458,6 +535,7 @@ public class TemplateService {
                 .fileUuid(entity.getFileUuid())
                 .originalFilename(entity.getOriginalFilename())
                 .displayOrder(entity.getDisplayOrder())
+                .companyUuid(entity.getCompanyUuid())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -475,6 +553,25 @@ public class TemplateService {
         entity.setFileUuid(dto.getFileUuid());
         entity.setOriginalFilename(dto.getOriginalFilename());
         entity.setDisplayOrder(dto.getDisplayOrder() != null ? dto.getDisplayOrder() : 1);
+        entity.setCompanyUuid(normalizeCompanyUuid(dto.getCompanyUuid()));
         return entity;
+    }
+
+    /**
+     * The documents one company actually receives: those marked for every
+     * company ({@code companyUuid == null}) plus that company's own.
+     * <p>
+     * Pure and package-private for the same reason as
+     * {@link #signersForCompany}: the DB-free tier is the deploy gate, so
+     * the decision lives here rather than in the Panache query. A null
+     * {@code companyUuid} keeps only the company-agnostic documents — it
+     * must never widen to "every document", which would put another
+     * company's contract in the envelope.
+     */
+    static List<TemplateDocumentDTO> documentsForCompany(
+            List<TemplateDocumentDTO> documents, String companyUuid) {
+        return documents.stream()
+                .filter(d -> d.getCompanyUuid() == null || d.getCompanyUuid().equals(companyUuid))
+                .collect(Collectors.toList());
     }
 }

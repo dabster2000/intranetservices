@@ -94,6 +94,48 @@ public enum RecruitmentEventType {
      */
     REFERRAL_TRIAGED,
     REFERRAL_OUTCOME_NOTIFIED,
+    /**
+     * A public-form applicant typed a name into "Kender du nogen hos
+     * Trustworks?" (change request (e), 2026-09-01). Catalog addition:
+     * the claim is a fact about a THIRD party that no existing type
+     * covers, and every downstream decision keys off it —
+     * {@code ReferrerNotificationReactor} suppresses its "your referral"
+     * milestone DMs for these links (the employee referred nobody), and
+     * {@code ApplicantReferrerNotificationReactor} sends the one honest
+     * notice instead. Payload: {@code origin=public_form},
+     * {@code match_method=name|ai_extraction|none},
+     * {@code matched_user_uuid} when the directory match was confident;
+     * the applicant's raw text is pii ({@code claimed_name}).
+     * <p>
+     * Recorded ONLY when {@code recruitment.apply.referrer-claim.enabled}
+     * is on, which is why no historic rows exist.
+     */
+    APPLICANT_REFERRER_CLAIMED,
+    /**
+     * The employee an applicant named was DM'ed about it — the durable
+     * per-candidate idempotency key for
+     * {@code ApplicantReferrerNotificationReactor}, exactly as
+     * {@link #REFERRAL_OUTCOME_NOTIFIED} is for the referrer cadence
+     * ("reactors' own side effects are recorded as events", spec §3.4).
+     * Payload: {@code notified_user_uuid}, {@code trigger_seq}.
+     */
+    APPLICANT_REFERRER_NOTIFIED,
+    /**
+     * A referrer name that had been sitting unread in {@code source_detail}
+     * was matched to an employee and written to
+     * {@code referred_by_user_uuid} by the one-off backfill
+     * ({@code PublicApplyReferrerBackfillService}, 2026-09-01).
+     * <p>
+     * A SEPARATE type from {@link #APPLICANT_REFERRER_CLAIMED} on purpose,
+     * and that separation is the whole notification suppression: the honest
+     * notice reactor acts only on CLAIMED, so a historical sweep structurally
+     * cannot DM a colleague about an application from months ago. It also
+     * keeps the two apart in the audit trail — the applicant asserted this at
+     * apply time, but WE made the link later, from data we already held.
+     * Payload: {@code matched_user_uuid}, {@code match_method},
+     * {@code origin=BACKFILL}; the typed text is pii ({@code claimed_name}).
+     */
+    APPLICANT_REFERRER_BACKFILLED,
 
     // --- Interviews & scorecards (P11) ----------------------------------
     INTERVIEW_SCHEDULED,
@@ -268,6 +310,20 @@ public enum RecruitmentEventType {
      * offer-flow act the timeline could not show.
      */
     DOSSIER_CREATED,
+    /**
+     * HR swapped the template of an OPEN, never-sent dossier — the
+     * misclick escape hatch (the create picker has no default, and a
+     * wrong pick used to lock the candidate onto the wrong contract:
+     * {@code DOSSIER_EXISTS} blocks a second dossier and reopen only
+     * matches the SAME template). Refused once the first revision
+     * exists. Payload is structural only: {@code dossier_uuid},
+     * {@code old_template_uuid}, {@code template_uuid} and, when the
+     * candidate has an open application, {@code application_uuid}; the
+     * PARTNER-track CIRCLE pairing matches {@code DOSSIER_CREATED}.
+     * Catalog addition per spec §6.2 ("every mutating endpoint = one
+     * command = ≥1 event").
+     */
+    DOSSIER_TEMPLATE_CHANGED,
     SIGNING_COMPLETED,
     CANDIDATE_HIRED,
     TEAM_ASSIGNED,

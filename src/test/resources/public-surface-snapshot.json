@@ -30,6 +30,7 @@
           "helpText": "java.lang.String",
           "key": "java.lang.String",
           "label": "java.lang.String",
+          "maxLength": "int",
           "required": "boolean"
         }
       }
@@ -51,6 +52,7 @@
           "helpText": "java.lang.String",
           "key": "java.lang.String",
           "label": "java.lang.String",
+          "maxLength": "int",
           "required": "boolean"
         }
       }

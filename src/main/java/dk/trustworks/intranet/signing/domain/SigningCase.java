@@ -245,6 +245,21 @@ public class SigningCase {
     private String archiveError;
 
     /**
+     * Failed S3 archival attempts (V551). The catch-up sweep selects on
+     * {@code archive_status='PENDING'} alone, and a failure leaves the row
+     * PENDING, so without this counter a case whose NextSign envelope has
+     * expired would be retried every 5-minute pass forever. At
+     * {@code EmployeeSigningArchivalService.MAX_ARCHIVE_ATTEMPTS} the case
+     * goes terminal as SKIPPED with its last {@code archive_error} kept.
+     *
+     * <p>Distinct from {@link #retryCount}, which counts NextSign
+     * <em>status-fetch</em> failures and is never read by archival.</p>
+     */
+    @Column(name = "archive_attempts")
+    @Builder.Default
+    private Integer archiveAttempts = 0;
+
+    /**
      * {@code document_templates.uuid} the case was created from (null for
      * template-less cases). Set at creation time; drives the archival
      * category mapping (TemplateCategory → EmployeeDocumentCategory).

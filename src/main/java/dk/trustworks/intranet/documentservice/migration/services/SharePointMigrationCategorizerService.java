@@ -58,7 +58,25 @@ import java.util.zip.ZipInputStream;
 @ApplicationScoped
 public class SharePointMigrationCategorizerService {
 
-    static final int BATCH_SIZE = 50;
+    /**
+     * Documents per AI name-pass call, shared with the rename pass.
+     *
+     * <p>Sized to finish inside the OpenAI client's 110-second read timeout
+     * (`quarkus.rest-client.openai-api.read-timeout`), which exists to beat
+     * the BFF's own 118-second budget and is not something a background job
+     * can raise for itself. At 50 it did not: the production categorize run of
+     * 2026-09-01 timed out on <em>every</em> batch —
+     * {@code SocketTimeoutException (Read timed out)} — and each timeout was
+     * expensive twice over, because a batch with no verdicts leaves every
+     * document "inconclusive" and so triggers the per-document excerpt pass,
+     * the most costly path there is. The run degraded to roughly three
+     * documents a minute against a corpus of 1,777.</p>
+     *
+     * <p>The output is one structured verdict per document, so latency scales
+     * with the batch; 20 keeps a call well inside the budget. Fewer documents
+     * per call is much cheaper than a call that fails.</p>
+     */
+    static final int BATCH_SIZE = 20;
     static final int EXCERPT_CHAR_CAP = 1500;
 
     @Inject
@@ -549,6 +567,26 @@ public class SharePointMigrationCategorizerService {
 
     // ── Signing linkage (decision A4 — deterministic only) ─────────────────
 
+    /**
+     * Run the deterministic signing linkage on its own.
+     *
+     * <p>{@link #categorize} calls this as its final step, which is where it
+     * used to live exclusively — and that coupling is why production had only
+     * 24 linked rows across 14 cases. The linkage is pure string matching and
+     * finishes in seconds, but it sat behind a full AI categorization pass, so
+     * every run that was interrupted by a deploy, a restart or an operator
+     * giving up completed none of it. It is worth being able to ask for by
+     * itself.</p>
+     */
+    public LinkSummary linkSigningCases() {
+        List<String> errors = new ArrayList<>();
+        LinkSummary summary = linkSigningCases(errors);
+        log.infof("Signing linkage: %d/%d linked, %d already linked, %d unmatched, %d ambiguous",
+                summary.linked(), summary.casesExamined(), summary.alreadyLinked(),
+                summary.unmatched(), summary.ambiguous());
+        return summary;
+    }
+
     LinkSummary linkSigningCases(List<String> errors) {
         List<String> caseKeys = QuarkusTransaction.requiringNew().call(() ->
                 signingCaseRepository.findBySharepointUploadStatus("UPLOADED").stream()
@@ -609,14 +647,77 @@ public class SharePointMigrationCategorizerService {
                 .toList();
 
         if (candidates.isEmpty()) return LinkOutcome.UNMATCHED;
-        if (candidates.size() > 1) return LinkOutcome.AMBIGUOUS;
+        if (candidates.size() == 1) {
+            link(signingCase, candidates, caseKey);
+            return LinkOutcome.LINKED;
+        }
 
-        EmployeeDocument doc = candidates.get(0);
-        doc.setSigningCaseKey(caseKey);
-        doc.setDocumentIndex(0);
-        doc.persist();
+        // More than one hit has two legitimate shapes, and refusing both alike
+        // stranded a third of the linkable cases in production.
+        //
+        // (a) One signing batch produced SEVERAL documents. The legacy writer
+        //     stamped every document of a case with the same
+        //     {@code _signed_{timestamp}}, so an identical timestamp across the
+        //     candidates is proof they belong to the same envelope — a contract
+        //     plus its Loyalitetsprogram or Kundeklausul. Link them all.
+        // (b) The SAME document was filed more than once, minutes or a day
+        //     apart, so the timestamps differ. Here SharePoint's own
+        //     {@code sharepoint_file_url} is the tiebreak: it names the file the
+        //     case actually points at.
+        List<EmployeeDocument> sameBatch = candidates.stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        d -> signedTimestamp(d.getOriginalFilename())))
+                .values().stream()
+                .filter(group -> group.size() == candidates.size())
+                .findFirst()
+                .orElse(null);
+        if (sameBatch != null) {
+            link(signingCase, sameBatch, caseKey);
+            return LinkOutcome.LINKED;
+        }
+
+        List<EmployeeDocument> urlNamed = candidates.stream()
+                .filter(d -> urlFilename != null
+                        && urlFilename.equalsIgnoreCase(d.getOriginalFilename()))
+                .toList();
+        if (urlNamed.size() == 1) {
+            link(signingCase, urlNamed, caseKey);
+            return LinkOutcome.LINKED;
+        }
+        return LinkOutcome.AMBIGUOUS;
+    }
+
+    /**
+     * Claim {@code document_index} 0..n-1 for one case, ordered by filename so
+     * a re-run assigns the same index to the same document.
+     */
+    private void link(SigningCase signingCase, List<EmployeeDocument> docs, String caseKey) {
+        List<EmployeeDocument> ordered = docs.stream()
+                .sorted(java.util.Comparator.comparing(
+                        EmployeeDocument::getOriginalFilename,
+                        java.util.Comparator.nullsLast(String::compareToIgnoreCase)))
+                .toList();
+        for (int i = 0; i < ordered.size(); i++) {
+            EmployeeDocument doc = ordered.get(i);
+            doc.setSigningCaseKey(caseKey);
+            doc.setDocumentIndex(i);
+            doc.persist();
+        }
         markCaseArchived(signingCase);
-        return LinkOutcome.LINKED;
+    }
+
+    /**
+     * The {@code {timestamp}} of a {@code …_signed_{timestamp}.pdf} filename,
+     * or the whole filename when there is no such marker (which makes two
+     * unmarked files group separately rather than being mistaken for a batch).
+     */
+    static String signedTimestamp(String filename) {
+        if (filename == null) return "";
+        int marker = filename.toLowerCase(Locale.ROOT).lastIndexOf("_signed_");
+        if (marker < 0) return filename;
+        String tail = filename.substring(marker + "_signed_".length());
+        int dot = tail.lastIndexOf('.');
+        return dot > 0 ? tail.substring(0, dot) : tail;
     }
 
     private void markCaseArchived(SigningCase signingCase) {
@@ -657,7 +758,18 @@ public class SharePointMigrationCategorizerService {
         return sanitized.isBlank() ? null : sanitized;
     }
 
-    /** {@code ^{sanitizedDocName}_signed_<anything>.pdf$}, case-insensitive. */
+    /**
+     * {@code ^{sanitizedDocName}_signed_<anything>.pdf$}, case-insensitive,
+     * with spaces and underscores treated as interchangeable.
+     *
+     * <p>That last part is not cosmetic. The legacy SharePoint upload path
+     * wrote spaces as underscores, so a case whose {@code document_name}
+     * contains a space — "Timelønskontrakt_Joao Almeida" — produced a stored
+     * file named "Timelønskontrakt_Joao_Almeida_signed_….pdf" that its own
+     * pattern could never match. Those cases fell through to the URL-equality
+     * branch, which only fires when the timestamp matches exactly too, and
+     * were reported UNMATCHED whenever it did not.</p>
+     */
     static Pattern signedPattern(String documentName) {
         if (documentName == null || documentName.isBlank()) return null;
         String base = documentName.toLowerCase(Locale.ROOT).endsWith(".pdf")
@@ -665,7 +777,11 @@ public class SharePointMigrationCategorizerService {
                 : documentName;
         String sanitized = EmployeeDocumentService.sanitizeFilename(base);
         if (sanitized.isBlank()) return null;
-        return Pattern.compile(Pattern.quote(sanitized) + "_signed_.+\\.pdf",
-                Pattern.CASE_INSENSITIVE);
+        String body = java.util.Arrays.stream(sanitized.split("[ _]+"))
+                .filter(part -> !part.isEmpty())
+                .map(Pattern::quote)
+                .collect(java.util.stream.Collectors.joining("[ _]+"));
+        if (body.isEmpty()) return null;
+        return Pattern.compile(body + "_signed_.+\\.pdf", Pattern.CASE_INSENSITIVE);
     }
 }

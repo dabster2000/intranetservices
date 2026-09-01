@@ -67,6 +67,15 @@ public class SigningResource {
     TemplateAccessPolicy templateAccessPolicy;
 
     @Inject
+    dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService placeholderPrefillService;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.ClauseCompositionService clauseCompositionService;
+
+    @Inject
+    dk.trustworks.intranet.signing.services.SigningCaseClauseRecorder signingCaseClauseRecorder;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     @Inject
@@ -218,11 +227,19 @@ public class SigningResource {
             request.validate();
             requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
+            // Resolve the clause selection before any external call: an
+            // invalid selection (retired clause, missing required parameter,
+            // key collision) answers 400 here instead of after NextSign has
+            // accepted a case (template-clauses spec §5).
+            var clausePlan = clauseCompositionService.resolveForTemplate(
+                request.templateUuid(), request.documents(), request.clauses());
+
             // Always use multi-document method (multi-document pattern is the only supported pattern)
             int additionalCount = request.additionalDocuments() != null ? request.additionalDocuments().size() : 0;
-            log.infof("Creating signing case from template with %d template docs, %d additional docs (templateUuid: %s)",
+            log.infof("Creating signing case from template with %d template docs, %d additional docs, %d clauses (templateUuid: %s)",
                 request.documents() != null ? request.documents().size() : 0,
                 additionalCount,
+                clausePlan.items().size(),
                 request.templateUuid());
             SigningCaseResponse response = signingService.createMultiDocumentCaseFromTemplate(
                 request.documents(),
@@ -232,7 +249,9 @@ public class SigningResource {
                 request.referenceId(),
                 request.signingSchemas(),
                 request.templateUuid(),
-                request.additionalDocuments()
+                request.additionalDocuments(),
+                targetUserUuid,
+                clausePlan
             );
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
@@ -254,6 +273,11 @@ public class SigningResource {
                     sharepointLocationUuid, request.templateUuid());
                 log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
                     response.caseKey(), totalSigners, sharepointLocationUuid);
+
+                // Immutable snapshot of what the case contained — the Phase 3
+                // registry's single source (spec §4.5). Failures are logged
+                // inside the recorder, never propagated: the case is sent.
+                signingCaseClauseRecorder.record(response.caseKey(), clausePlan);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -425,23 +449,34 @@ public class SigningResource {
         if (request == null) {
             return badRequest("REQUEST_NULL", "Request body is required");
         }
-        requireEmployeeWriteAccess(resolveTargetUserUuid(userUuid, securityContext));
+        String targetUserUuid = requireEmployeeWriteAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
 
         try {
             request.validate();
             requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
-            // Generate preview documents directly from the documents in the request
-            // Pass templateUuid for type-aware placeholder formatting (e.g., Danish currency)
+            // Same clause resolution as the send path — the preview must show
+            // exactly what will be sent, including the combined tillæg and any
+            // INLINE→ADDENDUM fallback notice.
+            var clausePlan = clauseCompositionService.resolveForTemplate(
+                request.templateUuid(), request.documents(), request.clauses());
+
+            // Generate preview documents directly from the documents in the request.
+            // templateUuid drives type-aware formatting; targetUserUuid drives the
+            // derived-company fact resolution + server-resolved person fields, so
+            // the preview matches the sent document exactly.
             var documents = signingService.generatePreviewDocuments(
                 request.documents(),
                 request.formValues(),
-                request.templateUuid()
+                request.templateUuid(),
+                targetUserUuid,
+                clausePlan
             );
 
             log.infof("Preview documents generated successfully. Count: %d", documents.size());
 
-            return Response.ok(new PreviewTemplateResponse(documents)).build();
+            return Response.ok(new PreviewTemplateResponse(documents, clausePlan.notices())).build();
 
         } catch (IllegalArgumentException e) {
             log.warnf("Preview request validation failed (templateUuid=%s, docCount=%d): %s",
@@ -453,6 +488,50 @@ public class SigningResource {
         } catch (Exception e) {
             log.errorf(e, "Preview generation failed (templateUuid=%s)", request != null ? request.templateUuid() : null);
             return serverError("PREVIEW_FAILED", e.getMessage());
+        }
+    }
+
+    /**
+     * Per-field prefill for the signing wizard (template-clauses spec §5.1):
+     * which fields resolve automatically (company facts, system dates), which
+     * prefill from the employee's profile (with provenance), which resolve
+     * server-side and render masked (CPR, current salary), and which the
+     * preparer actually has to type. Also carries the derived company for the
+     * read-only company chip and any missing company facts so the form can
+     * warn before the prepare call fails closed.
+     */
+    @GET
+    @Path("/prefill/{templateUuid}")
+    @RolesAllowed({"signing:read"})
+    @Operation(
+        summary = "Prefill decisions for a template + target employee",
+        description = "Returns per-placeholder prefill values with provenance, the derived company, " +
+                      "and any missing company facts. Sensitive fields (CPR, current salary) are masked " +
+                      "and resolve server-side at document generation."
+    )
+    public Response prefillTemplate(
+            @Parameter(description = "Template UUID") @PathParam("templateUuid") String templateUuid,
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
+        log.infof("GET /utils/signing/prefill/%s - Building prefill for target user", templateUuid);
+
+        // Same fail-closed employee gate as preview/create: the response is
+        // salary-adjacent (masked, but provenance leaks that values exist).
+        String targetUserUuid = requireEmployeeWriteAccess(
+                resolveTargetUserUuid(userUuid, securityContext));
+
+        try {
+            DocumentTemplateEntity template = DocumentTemplateEntity.findById(templateUuid);
+            if (template == null || templateAccessPolicy.isRecruitmentTemplate(template)) {
+                return badRequest("INVALID_REQUEST", "Template is not available for employee signing");
+            }
+            return Response.ok(placeholderPrefillService.prefillForEmployee(templateUuid, targetUserUuid)).build();
+        } catch (IllegalArgumentException e) {
+            log.warnf("Prefill request validation failed (templateUuid=%s): %s", templateUuid, e.getMessage());
+            return badRequest("INVALID_REQUEST", e.getMessage());
+        } catch (Exception e) {
+            log.errorf(e, "Prefill generation failed (templateUuid=%s)", templateUuid);
+            return serverError("PREFILL_FAILED", e.getMessage());
         }
     }
 

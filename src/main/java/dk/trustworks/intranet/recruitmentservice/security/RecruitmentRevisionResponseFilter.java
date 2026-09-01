@@ -74,6 +74,14 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
     private static final Pattern SENSITIVE_KEY_PATTERN = Pattern.compile(
             "(?iu).*(cpr|salary|salar|løn|lon|pension|wage|gehalt).*");
 
+    /**
+     * Additional money-shaped keys used by the clause parameter convention
+     * (template-clauses spec §4.3), applied to clause parameter values only
+     * so existing placeholder-snapshot redaction behavior is unchanged.
+     */
+    private static final Pattern SENSITIVE_CLAUSE_KEY_PATTERN = Pattern.compile(
+            "(?iu).*(amount|bonus|beløb|belob).*");
+
     private static final String SCOPE_USERS_READ = "users:read";
     private static final String REDACTED_VALUE = "[REDACTED]";
 
@@ -165,8 +173,38 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
      */
     private RevisionResponse redact(RevisionResponse revision) {
         Map<String, String> original = revision.placeholderValuesSnapshot();
-        if (original == null || original.isEmpty()) {
+        Map<String, String> redacted = redactValueMap(original);
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> redactedClauses =
+                redactClauses(revision.clausesSnapshot());
+        boolean changed = redacted != original || redactedClauses != revision.clausesSnapshot();
+        if (!changed) {
             return revision;
+        }
+        if (log.isDebugEnabled()) {
+            log.debugf("Redacted sensitive placeholder/clause value(s) from revision %s", revision.uuid());
+        }
+        return new RevisionResponse(
+                revision.uuid(),
+                revision.dossierUuid(),
+                revision.versionNumber(),
+                revision.kind(),
+                redacted,
+                revision.signersConfigSnapshot(),
+                revision.appendixFileUuidsSnapshot(),
+                redactedClauses,
+                revision.pdfArtifactsSnapshot(),
+                revision.signingCaseKey(),
+                revision.recipientEmail(),
+                revision.recipientName(),
+                revision.note(),
+                revision.createdByUserUuid(),
+                revision.createdAt());
+    }
+
+    /** Same reference back when nothing matched; a rebuilt map otherwise. */
+    private Map<String, String> redactValueMap(Map<String, String> original) {
+        if (original == null || original.isEmpty()) {
+            return original;
         }
         Map<String, String> redacted = new LinkedHashMap<>(original.size());
         boolean changed = false;
@@ -181,37 +219,58 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
                 redacted.put(key, value);
             }
         }
-        if (!changed) {
-            return revision;
-        }
-        if (log.isDebugEnabled()) {
-            log.debugf("Redacted %d sensitive placeholder(s) from revision %s",
-                    countSensitive(original), revision.uuid());
-        }
-        return new RevisionResponse(
-                revision.uuid(),
-                revision.dossierUuid(),
-                revision.versionNumber(),
-                revision.kind(),
-                redacted,
-                revision.signersConfigSnapshot(),
-                revision.appendixFileUuidsSnapshot(),
-                revision.pdfArtifactsSnapshot(),
-                revision.signingCaseKey(),
-                revision.recipientEmail(),
-                revision.recipientName(),
-                revision.note(),
-                revision.createdByUserUuid(),
-                revision.createdAt());
+        return changed ? redacted : original;
     }
 
-    private static int countSensitive(Map<String, String> map) {
-        int n = 0;
-        for (String key : map.keySet()) {
-            if (key != null && SENSITIVE_KEY_PATTERN.matcher(key).matches()) {
-                n++;
+    /**
+     * Clause snapshots carry negotiated compensation terms: parameter
+     * values are redacted by the same key pattern plus the money-shaped
+     * keys the clause convention uses ({@code *_AMOUNT}, {@code *BONUS*},
+     * {@code *BELØB*}), and an Individuel aftale's free text — which can
+     * say anything — is redacted wholesale.
+     */
+    private List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> redactClauses(
+            List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses) {
+        if (clauses == null || clauses.isEmpty()) {
+            return clauses;
+        }
+        boolean changed = false;
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> out =
+                new java.util.ArrayList<>(clauses.size());
+        for (var clause : clauses) {
+            Map<String, String> params = clause.parameterValues();
+            Map<String, String> redactedParams = params;
+            if (params != null && !params.isEmpty()) {
+                Map<String, String> rebuilt = new LinkedHashMap<>(params.size());
+                boolean paramChanged = false;
+                for (Map.Entry<String, String> e : params.entrySet()) {
+                    String key = e.getKey();
+                    String value = e.getValue();
+                    boolean sensitive = key != null && value != null && !value.isEmpty()
+                            && (SENSITIVE_KEY_PATTERN.matcher(key).matches()
+                                || SENSITIVE_CLAUSE_KEY_PATTERN.matcher(key).matches());
+                    if (sensitive) {
+                        rebuilt.put(key, REDACTED_VALUE);
+                        paramChanged = true;
+                    } else {
+                        rebuilt.put(key, value);
+                    }
+                }
+                if (paramChanged) {
+                    redactedParams = rebuilt;
+                }
+            }
+            String customText = clause.customText();
+            String redactedText = customText == null || customText.isEmpty() ? customText : REDACTED_VALUE;
+            if (redactedParams != params || !java.util.Objects.equals(redactedText, customText)) {
+                changed = true;
+                out.add(new dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO(
+                        clause.clauseUuid(), redactedParams, clause.customTitle(), redactedText,
+                        clause.displayOrder()));
+            } else {
+                out.add(clause);
             }
         }
-        return n;
+        return changed ? out : clauses;
     }
 }

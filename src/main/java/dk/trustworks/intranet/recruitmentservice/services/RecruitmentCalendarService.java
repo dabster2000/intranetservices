@@ -163,6 +163,15 @@ public class RecruitmentCalendarService {
     RecruitmentMeetingRoomPolicyService roomPolicyService;
 
     /**
+     * The HR-editable visiting address the candidate is told to turn up at
+     * (V553). Read through {@link #visitingAddress()}, never directly: the
+     * field is null in the unit tests that build this service with a bare
+     * {@code new}, exactly like {@link #configuredOrganizerValue}.
+     */
+    @Inject
+    RecruitmentVisitingAddress visitingAddressSetting;
+
+    /**
      * Rotates which mailbox anchors the {@code getSchedule} URL. Shared
      * across requests — the whole point is that two concurrent sweeps do
      * not pick the same anchor. Package-private so tests can pin it.
@@ -230,6 +239,16 @@ public class RecruitmentCalendarService {
             graphApiClient = graphApiClientInstance.get();
         }
         return graphApiClient;
+    }
+
+    /**
+     * The visiting address invitations should carry, or null when it is
+     * unconfigured or deliberately blanked. Null-tolerant on the FIELD too:
+     * unit tests build this service with bare {@code new}, where no
+     * injection ever ran.
+     */
+    private String visitingAddress() {
+        return visitingAddressSetting == null ? null : visitingAddressSetting.effectiveAddress();
     }
 
     public boolean isEnabled() {
@@ -1763,8 +1782,11 @@ public class RecruitmentCalendarService {
             subject = subject + " — " + position.getTitle();
         }
 
+        // Resolved once: the attendee list and the candidate-facing name list
+        // are the same roster read two ways, and each resolve is a DB hit.
+        List<Interviewer> roster = resolveInterviewers(interview.getInterviewerUuids());
         List<CalendarEventRequest.Attendee> attendees = new ArrayList<>(
-                interviewerAttendees(resolveInterviewers(interview.getInterviewerUuids()), organizer));
+                interviewerAttendees(roster, organizer));
         if (candidateInvited) {
             attendees.add(required(candidate.getEmail(), candidateName(candidate)));
         }
@@ -1778,7 +1800,8 @@ public class RecruitmentCalendarService {
         }
 
         String body = includeCandidate
-                ? invitationBody(interview, candidate, candidateInvited)
+                ? invitationBody(interview, candidate, candidateInvited,
+                        invitationDetails(interview, roster))
                 : internalBody(position, candidate, organizer);
 
         // Teams fields are one-way: TRUE turns the meeting online (works on
@@ -1830,12 +1853,22 @@ public class RecruitmentCalendarService {
      */
     java.util.function.Function<String, Interviewer> interviewerResolver = uuid -> {
         User user = User.findById(uuid);
-        String email = mailboxOf(user);
-        return email == null ? null : new Interviewer(email, displayName(user));
+        // A mailbox-less user still has a NAME, and since the invitation
+        // names the panel to the candidate (so they can type a host into
+        // the reception iPad) they must not be dropped this early. The
+        // attendee list narrows on the mailbox where it needs one.
+        return user == null ? null : new Interviewer(mailboxOf(user), displayName(user));
     };
 
-    /** Resolve assigned interviewer UUIDs to mailbox identities, in order,
-     * dropping any we cannot place (no user row, no usable email). */
+    /**
+     * Resolve assigned interviewer UUIDs to identities, in roster order,
+     * dropping only the ones we cannot place at all (no user row).
+     * <p>
+     * The result is deliberately NOT filtered on the mailbox: it feeds both
+     * the attendee list — which skips mailbox-less entries itself, see
+     * {@link #interviewerAttendees} — and the candidate-facing name list,
+     * which does not care whether we could email the person.
+     */
     private List<Interviewer> resolveInterviewers(List<String> interviewerUuids) {
         if (interviewerUuids == null) {
             return List.of();
@@ -1843,12 +1876,120 @@ public class RecruitmentCalendarService {
         List<Interviewer> resolved = new ArrayList<>();
         for (String uuid : interviewerUuids) {
             Interviewer interviewer = interviewerResolver.apply(uuid);
-            if (interviewer != null && interviewer.email() != null
-                    && !interviewer.email().isBlank()) {
+            if (interviewer != null) {
                 resolved.add(interviewer);
             }
         }
         return resolved;
+    }
+
+    /**
+     * The facts an invitation needs that are neither a calendar field nor
+     * part of the renderer's standard candidate/position vocabulary: who the
+     * candidate is meeting, and — for a PHYSICAL interview only — where to
+     * go and what to do on arrival.
+     * <p>
+     * Every component is a non-null string, empty when it does not apply.
+     * That is not tidiness: these values land in the extras map handed to
+     * {@link RecruitmentEmailRenderer}, and a null there used to mean an NPE
+     * inside {@code createEvent}'s catch-all — the candidate would get NO
+     * invitation at all and the only trace would be a WARN.
+     */
+    record InvitationDetails(String interviewerNames,
+                             String visitingAddress,
+                             String arrivalInstructions) {
+
+        /** Nothing to add — an online interview, or a caller with no roster. */
+        static final InvitationDetails NONE = new InvitationDetails("", "", "");
+
+        InvitationDetails {
+            interviewerNames = interviewerNames == null ? "" : interviewerNames;
+            visitingAddress = visitingAddress == null ? "" : visitingAddress;
+            arrivalInstructions = arrivalInstructions == null ? "" : arrivalInstructions;
+        }
+    }
+
+    /**
+     * Build the invitation details for one interview. Static and pure —
+     * the roster and the configured address are resolved by the caller, for
+     * the same reason {@link #interviewerResolver} is a field: Panache
+     * throws outside Quarkus and the DB-free tier gates deploys.
+     * <p>
+     * The physical/online split is taken from
+     * {@code RecruitmentInterview.onlineMeeting} (V492) and from nothing
+     * else. {@code location} is free text — "Microsoft Teams", a room name,
+     * or whatever a recruiter typed — so no string test on it can tell a
+     * hybrid from a Teams-only meeting.
+     */
+    static InvitationDetails invitationDetails(RecruitmentInterview interview,
+                                               List<Interviewer> roster,
+                                               String visitingAddress) {
+        String names = interviewerNames(roster);
+        boolean physical = interview != null && !interview.isOnlineMeeting();
+        String address = physical && visitingAddress != null && !visitingAddress.isBlank()
+                ? visitingAddress.trim()
+                : "";
+        return new InvitationDetails(names, address, arrivalInstructions(address));
+    }
+
+    /**
+     * The panel, named in roster order and joined the Danish way — "A",
+     * "A og B", "A, B og C". There is no lead interviewer in the data model
+     * and this does not invent one.
+     * <p>
+     * Null and blank names are skipped rather than rendered:
+     * {@link #displayName} returns null for a half-filled user row on
+     * purpose, and {@code String.join} over that list would print "null".
+     */
+    static String interviewerNames(List<Interviewer> roster) {
+        if (roster == null || roster.isEmpty()) {
+            return "";
+        }
+        List<String> names = new ArrayList<>();
+        for (Interviewer interviewer : roster) {
+            String name = interviewer == null || interviewer.name() == null
+                    ? null
+                    : interviewer.name().trim();
+            if (name != null && !name.isEmpty()) {
+                names.add(name);
+            }
+        }
+        if (names.isEmpty()) {
+            return "";
+        }
+        if (names.size() == 1) {
+            return names.get(0);
+        }
+        return String.join(", ", names.subList(0, names.size() - 1))
+                + " og " + names.get(names.size() - 1);
+    }
+
+    /**
+     * What to do on arrival, Danish, one sentence pair. It names the three
+     * things the reception iPad ({@code /guest}) asks for — the visitor's
+     * name, their company, and the employee they are meeting — because a
+     * candidate standing in front of it with no warning is exactly the
+     * situation this text exists to remove. The host name they need is the
+     * one {@link #interviewerNames} printed higher up in the same body.
+     * <p>
+     * Empty in, empty out: no address means no arrival instruction, which
+     * is what an online interview and the blanked-address opt-out both want.
+     */
+    static String arrivalInstructions(String visitingAddress) {
+        if (visitingAddress == null || visitingAddress.isBlank()) {
+            return "";
+        }
+        return "Du finder os på " + visitingAddress.trim()
+                + ". Når du ankommer, taster du dit navn, dit firma og navnet på den,"
+                + " du skal møde, ind på iPad'en i receptionen — så får vi besked om,"
+                + " at du er kommet.";
+    }
+
+    /** The invitation details for this interview, from the live roster and
+     * the configured visiting address. */
+    private InvitationDetails invitationDetails(RecruitmentInterview interview,
+                                                List<Interviewer> roster) {
+        return invitationDetails(interview, roster, visitingAddress());
     }
 
     /**
@@ -1975,8 +2116,9 @@ public class RecruitmentCalendarService {
                                                      String joinUrl,
                                                      boolean create) {
         Objects.requireNonNull(interview.getScheduledAt(), "scheduledAt must be set before calendar sync");
-        CandidateInvitation invitation =
-                candidateInvitation(interview, candidate, position, joinUrl, candidateTemplate());
+        CandidateInvitation invitation = candidateInvitation(
+                interview, candidate, position, joinUrl, candidateTemplate(),
+                invitationDetails(interview, resolveInterviewers(interview.getInterviewerUuids())));
         return new CalendarEventRequest(
                 invitation.subject(),
                 new CalendarEventRequest.ItemBody("html", invitation.htmlBody()),
@@ -2016,27 +2158,48 @@ public class RecruitmentCalendarService {
     record CandidateInvitation(String subject, String htmlBody) { }
 
     /**
-     * Render the candidate invitation — pure given the template row, so
-     * the DB-free tier pins it. Template path: merge fields (candidate,
-     * position, and the interview extras below), sanitizer-mandatory on
-     * the way out. Fallback path: the plain invitation text, HTML-ified.
-     * A known join link is appended as a link block either way.
+     * Render the candidate invitation — pure given the template row and the
+     * resolved {@code details}, so the DB-free tier pins it. Template path:
+     * merge fields (candidate, position, and the interview extras below),
+     * sanitizer-mandatory on the way out. Fallback path: the plain
+     * invitation text, HTML-ified. A known join link is appended as a link
+     * block either way.
+     *
+     * @param details who the candidate is meeting and, for a physical
+     *                interview, where and what to do on arrival — resolved
+     *                by the instance side because names come from Panache;
+     *                {@code null} is tolerated and means "nothing to add"
      */
     static CandidateInvitation candidateInvitation(RecruitmentInterview interview,
                                                    RecruitmentCandidate candidate,
                                                    RecruitmentPosition position,
                                                    String joinUrl,
-                                                   RecruitmentEmailTemplate template) {
+                                                   RecruitmentEmailTemplate template,
+                                                   InvitationDetails details) {
+        InvitationDetails resolved = details == null ? InvitationDetails.NONE : details;
         String subject;
         String html;
         if (template != null) {
-            Map<String, String> extras = Map.of(
-                    "interview_date", interview.getScheduledAt()
-                            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")),
-                    "interview_time", interview.getScheduledAt()
-                            .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
-                    "interview_location", interview.getLocation() != null
-                            ? interview.getLocation() : "Trustworks");
+            // A LinkedHashMap, NOT Map.of: Map.of throws NPE on a null value,
+            // and this runs inside createEvent's catch-all — one unnamed
+            // interviewer would have meant the candidate got no invitation
+            // at all, visible only as a WARN. Every value below is non-null
+            // by construction; the map type keeps it that way if one stops
+            // being.
+            Map<String, String> extras = new LinkedHashMap<>();
+            extras.put("interview_date", interview.getScheduledAt()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")));
+            extras.put("interview_time", interview.getScheduledAt()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")));
+            extras.put("interview_location", interview.getLocation() != null
+                    ? interview.getLocation() : "Trustworks");
+            // These three must be present on EVERY path, empty included: an
+            // unknown token is left verbatim by the renderer and the *_link
+            // send gate never runs here, so a missing key would mail the
+            // candidate a literal "{{interviewer_names}}".
+            extras.put("interviewer_names", resolved.interviewerNames());
+            extras.put("visiting_address", resolved.visitingAddress());
+            extras.put("arrival_instructions", resolved.arrivalInstructions());
             RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
                     template.getSubject(), template.getBody(), candidate, position, extras,
                     template.getBodyFormat());
@@ -2051,11 +2214,12 @@ public class RecruitmentCalendarService {
             subject = interview.getKind() == RecruitmentInterviewKind.INFORMAL
                     ? "Uformel snak hos Trustworks"
                     : "Samtale hos Trustworks";
-            html = escapeHtml(invitationBody(interview, candidate, true))
+            html = escapeHtml(invitationBody(interview, candidate, true, resolved))
                     .replace("\n", "<br>");
         }
         // The sanitizer is mandatory: stored HTML goes straight to Outlook.
         html = RecruitmentEmailHtmlSanitizer.clean(html);
+        html = dropEmptyParagraphs(html);
         if (joinUrl != null && !joinUrl.isBlank() && joinUrl.startsWith("https://")) {
             // Appended AFTER sanitizing: this block is ours, and the href
             // is attribute-escaped — the sanitizer would strip the anchor.
@@ -2063,6 +2227,27 @@ public class RecruitmentCalendarService {
                     + escapeHtml(joinUrl) + "\">Deltag i mødet</a></p>";
         }
         return new CandidateInvitation(subject, html);
+    }
+
+    /** A paragraph left holding nothing after the merge. */
+    private static final java.util.regex.Pattern EMPTY_PARAGRAPH =
+            java.util.regex.Pattern.compile("<p>(?:\\s|&nbsp;|<br\\s*/?>)*</p>");
+
+    /**
+     * Drop the paragraphs the merge left empty.
+     * <p>
+     * {@code {{arrival_instructions}}} and {@code {{visiting_address}}}
+     * resolve to an EMPTY STRING on an online interview — they must resolve,
+     * because an unresolved token reaches the candidate as literal braces —
+     * so a paragraph holding one survives the merge as {@code <p></p>} and
+     * Outlook renders it as a stray blank line on every Teams invitation.
+     * <p>
+     * Runs on our own sanitized output, after jsoup has balanced and
+     * normalised the markup, so the match is exact rather than a guess at
+     * whatever the template author typed.
+     */
+    static String dropEmptyParagraphs(String html) {
+        return html == null ? null : EMPTY_PARAGRAPH.matcher(html).replaceAll("");
     }
 
     private static String escapeHtml(String text) {
@@ -2084,7 +2269,14 @@ public class RecruitmentCalendarService {
         // Every interviewer, including whoever organizes: iCalendar lists the
         // ORGANIZER property and the ATTENDEE lines independently, so unlike a
         // Graph event there is nobody to exclude here.
-        for (Interviewer interviewer : resolveInterviewers(interview.getInterviewerUuids())) {
+        List<Interviewer> roster = resolveInterviewers(interview.getInterviewerUuids());
+        for (Interviewer interviewer : roster) {
+            // An iCalendar ATTENDEE line is a mailto: URI — someone we could
+            // name but not place has no line to write, so they ride on the
+            // body's name list instead of producing "MAILTO:null".
+            if (interviewer.email() == null || interviewer.email().isBlank()) {
+                continue;
+            }
             attendees.add(new InterviewIcsWriter.IcsAttendee(
                     interviewer.email(), interviewer.name()));
         }
@@ -2101,7 +2293,8 @@ public class RecruitmentCalendarService {
                 interview.getDurationMinutes(),
                 summary,
                 interview.getLocation(),
-                invitationBody(interview, candidate, candidateInvited),
+                invitationBody(interview, candidate, candidateInvited,
+                        invitationDetails(interview, roster)),
                 organizerMailbox(interview),
                 attendees,
                 LocalDateTime.now(java.time.ZoneOffset.UTC));
@@ -2130,13 +2323,20 @@ public class RecruitmentCalendarService {
      * Package-private on purpose: pure text, so it is covered by a plain
      * unit test in the DB-free tier that gates deploys, rather than only by
      * the ungated {@code @QuarkusTest} tier.
+     *
+     * @param details who the candidate is meeting and, for a physical
+     *                interview, where and what to do on arrival; each part
+     *                is omitted from the text when it is empty, and
+     *                {@code null} is tolerated as "nothing to add"
      */
     static String invitationBody(RecruitmentInterview interview,
                                  RecruitmentCandidate candidate,
-                                 boolean candidateInvited) {
+                                 boolean candidateInvited,
+                                 InvitationDetails details) {
         if (!candidateInvited) {
             return "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit.";
         }
+        InvitationDetails resolved = details == null ? InvitationDetails.NONE : details;
         // Danish addresses people by first name; without one, greet
         // namelessly rather than "Kære <surname>", which reads wrong.
         String first = candidate.getFirstName() == null ? "" : candidate.getFirstName().trim();
@@ -2147,18 +2347,25 @@ public class RecruitmentCalendarService {
         String occasion = interview.getKind() == RecruitmentInterviewKind.INFORMAL
                 ? "en uformel snak med dig"
                 : "at møde dig til samtale";
-        // Time, place and participants are the invitation's own fields —
-        // repeating them here only invites drift when the event is updated.
-        return """
-                %s
-
-                Vi glæder os til %s hos Trustworks.
-
-                Er du forhindret, eller har du spørgsmål inden vi ses, er du \
-                velkommen til at svare på denne invitation.
-
-                Med venlig hilsen
-                Trustworks""".formatted(greeting, occasion);
+        StringBuilder body = new StringBuilder(greeting)
+                .append("\n\nVi glæder os til ").append(occasion).append(" hos Trustworks.");
+        // Time and place ARE the invitation's own fields and are not
+        // repeated here — repeating them only invites drift when the event
+        // is updated. The participants are NOT: since the V493 split the
+        // candidate's event carries only the candidate (buildCandidateEvent
+        // invites List.of(candidate)), so there is no attendee list for them
+        // to read and this body is the only place the panel can be named.
+        // The reception iPad then asks them who they are visiting.
+        if (!resolved.interviewerNames().isEmpty()) {
+            body.append("\n\nDu skal møde ").append(resolved.interviewerNames()).append(".");
+        }
+        if (!resolved.arrivalInstructions().isEmpty()) {
+            body.append("\n\n").append(resolved.arrivalInstructions());
+        }
+        return body.append("\n\nEr du forhindret, eller har du spørgsmål inden vi ses,"
+                        + " er du velkommen til at svare på denne invitation.")
+                .append("\n\nMed venlig hilsen\nTrustworks")
+                .toString();
     }
 
     private static CalendarEventRequest.Attendee required(String email, String name) {
