@@ -33,7 +33,7 @@ import java.util.Optional;
  * <h3>Three states, on purpose</h3>
  * <ul>
  *   <li><b>Row absent</b> — never configured: {@link #DEFAULT_ADDRESS}
- *       applies. The row IS seeded (V550), but a missing row must still be a
+ *       applies. The row IS seeded (V553), but a missing row must still be a
  *       working feature: staging's nightly prod→staging {@code app_settings}
  *       copy can take the seed away again.</li>
  *   <li><b>Row with text</b> — the configured address applies.</li>

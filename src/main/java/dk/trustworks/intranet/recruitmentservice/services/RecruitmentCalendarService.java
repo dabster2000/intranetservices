@@ -164,7 +164,7 @@ public class RecruitmentCalendarService {
 
     /**
      * The HR-editable visiting address the candidate is told to turn up at
-     * (V550). Read through {@link #visitingAddress()}, never directly: the
+     * (V553). Read through {@link #visitingAddress()}, never directly: the
      * field is null in the unit tests that build this service with a bare
      * {@code new}, exactly like {@link #configuredOrganizerValue}.
      */

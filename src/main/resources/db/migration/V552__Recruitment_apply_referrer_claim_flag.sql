@@ -1,5 +1,5 @@
 -- ===================================================================
--- V549 — "Kender du nogen hos Trustworks?" feature flag
+-- V552 — "Kender du nogen hos Trustworks?" feature flag
 --
 -- Purpose: seed the single app_settings row that gates change request
 --   (e) (2026-09-01): the public application form's optional

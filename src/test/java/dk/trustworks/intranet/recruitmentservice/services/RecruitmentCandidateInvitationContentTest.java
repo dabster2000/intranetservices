@@ -351,7 +351,7 @@ class RecruitmentCandidateInvitationContentTest {
         return position;
     }
 
-    /** The body V550 seeds, so the tokens under test are the shipped ones. */
+    /** The body V553 seeds, so the tokens under test are the shipped ones. */
     private static RecruitmentEmailTemplate template() {
         RecruitmentEmailTemplate template = new RecruitmentEmailTemplate();
         template.setSubject("Samtale hos Trustworks");

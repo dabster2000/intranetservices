@@ -29,7 +29,7 @@ import java.util.Optional;
  *       form's "do you know anyone at Trustworks?" question, the
  *       directory matching behind it and the notice to the named
  *       employee ({@link #isApplyReferrerClaimEnabled()}). Seeded
- *       {@code false} by V549; a GDPR launch gate (see the method).</li>
+ *       {@code false} by V552; a GDPR launch gate (see the method).</li>
  *   <li>{@code recruitment.gdpr.enabled} — ATS expansion core flag 3
  *       (spec §11), gating the P19 GDPR engine ({@link #isGdprEnabled()}).
  *       Seeded {@code false} by V433. <b>Enabling this flag is the moment
@@ -114,7 +114,7 @@ public class RecruitmentFeatureFlag {
      * @return true iff {@code recruitment.apply.referrer-claim.enabled}
      *         parses to true — the single gate for change request (e),
      *         "do you know anyone at Trustworks?" (2026-09-01). Seeded
-     *         {@code false} by V549.
+     *         {@code false} by V552.
      *         <p>
      *         <b>This is a legal launch gate, not a rollout knob.</b> The
      *         public privacy policy currently scopes processing to
