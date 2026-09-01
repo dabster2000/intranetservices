@@ -17,8 +17,8 @@ class AgreementServiceCoreTest {
 
     @Test
     void validateDocumentUrl_acceptsWebUrls() {
-        assertEquals("https://sharepoint.example/doc.pdf",
-                AgreementService.validateDocumentUrl(" https://sharepoint.example/doc.pdf "));
+        assertEquals("https://docs.example/doc.pdf",
+                AgreementService.validateDocumentUrl(" https://docs.example/doc.pdf "));
         assertEquals("http://intra.trustworks.dk/x",
                 AgreementService.validateDocumentUrl("http://intra.trustworks.dk/x"));
     }

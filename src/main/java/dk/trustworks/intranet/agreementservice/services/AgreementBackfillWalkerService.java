@@ -10,24 +10,14 @@ import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentStorageAdapter;
 import dk.trustworks.intranet.domain.user.entity.User;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
-import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
-import dk.trustworks.intranet.sharepoint.dto.DriveItem;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
 
-import java.io.InputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.security.MessageDigest;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -42,13 +32,14 @@ import java.util.stream.Collectors;
 
 /**
  * The Phase-4 corpus walk over the S3 employee-documents store
- * (template-clauses spec §10, corpus reworked per the completed
- * SharePoint→S3 migration): every ACTIVE employee's
+ * (template-clauses spec §10, corpus reworked after the legacy
+ * document store was migrated into S3): every ACTIVE employee's
  * {@code employee_documents} rows in the configured categories are
  * fetched from S3 and put through one extraction call each. New
  * documents land ONLY in this store ({@code SIGNING}/{@code MANUAL_HR}/
  * {@code ONBOARDING} sources), so it is both complete and — unlike the
- * retired Graph walk — pre-categorized, pre-hashed and throttle-free.
+ * retired remote-folder walk — pre-categorized, pre-hashed and
+ * throttle-free.
  *
  * <p>Runs on the single-flight job-runner thread: narrow
  * {@code requiringNew} transactions per write, live counter updates so
@@ -58,14 +49,14 @@ import java.util.stream.Collectors;
  *
  * <p>Idempotency is unchanged: {@code (user_uuid, doc_sha256)} UNIQUE —
  * the migration copied bytes verbatim, so documents already itemized by
- * a V549-era SharePoint walk keep their review state and are skipped.
- * The Graph download path survives only to preview those legacy items.</p>
+ * a V549-era legacy walk keep their review state, are skipped, and
+ * are adopted onto their {@code employee_documents} row so the preview
+ * streams from S3.</p>
  */
 @JBossLog
 @ApplicationScoped
 public class AgreementBackfillWalkerService {
 
-    static final int MAX_RETRIES = 5;
     /** Contracts are a few MB; anything larger is not a signable document. */
     static final long MAX_FILE_BYTES = 40L * 1024 * 1024;
 
@@ -74,9 +65,6 @@ public class AgreementBackfillWalkerService {
 
     @Inject
     EmployeeDocumentStorageAdapter storageAdapter;
-
-    @RestClient
-    GraphApiClient graphClient;
 
     @Inject
     AgreementExtractionService extractionService;
@@ -94,11 +82,6 @@ public class AgreementBackfillWalkerService {
     @ConfigProperty(name = "dk.trustworks.agreements.ai.backfill-categories",
             defaultValue = "CONTRACT,ADDENDUM,DECLARATION")
     String backfillCategories;
-
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
 
     /** Console-facing summary; also folded into the run row. */
     public record WalkSummary(String runUuid, boolean dryRun, int employees, int employeesWithDocs,
@@ -126,7 +109,7 @@ public class AgreementBackfillWalkerService {
 
             // Corpus documents: the S3 store's rows for those employees in
             // the configured categories. Enumeration is a single DB read —
-            // no Graph paging, no politeness delays, no folder aggregates.
+            // no remote paging, no politeness delays, no folder aggregates.
             List<EmployeeDocumentCategory> categoryValues = categories.stream()
                     .map(EmployeeDocumentCategory::valueOf)
                     .toList();
@@ -224,8 +207,8 @@ public class AgreementBackfillWalkerService {
             boolean known = QuarkusTransaction.requiringNew().call(() -> {
                 var existing = AgreementBackfillItem.findByUserAndSha(userUuid, knownSha);
                 existing.ifPresent(item -> {
-                    // Adopt legacy SharePoint-walk items so their preview
-                    // upgrades to the S3 path.
+                    // Adopt legacy (V549-era) items so their preview
+                    // streams from the S3 store.
                     if (item.getEmployeeDocumentUuid() == null) {
                         item.setEmployeeDocumentUuid(doc.getUuid());
                     }
@@ -284,76 +267,7 @@ public class AgreementBackfillWalkerService {
         }
     }
 
-    // ── Legacy Graph download (V549-era items' PDF preview only) ────────────
-
-    /**
-     * Download a legacy SharePoint-walk item's document — the review
-     * console's PDF preview for items created before the S3 corpus
-     * (V554). S3-sourced items never reach this path.
-     */
-    public byte[] downloadItemBytes(String driveId, String itemId) throws Exception {
-        return downloadBytes(driveId, politeGetItem(driveId, itemId));
-    }
-
-    /**
-     * Prefer the pre-authenticated {@code @microsoft.graph.downloadUrl}
-     * from fresh metadata, fall back to the {@code /content} 302-follow
-     * (the migration copier's pattern).
-     */
-    byte[] downloadBytes(String driveId, DriveItem item) throws Exception {
-        if (item.downloadUrl() != null && !item.downloadUrl().isBlank()) {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(item.downloadUrl())).GET().build();
-            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            if (response.statusCode() / 100 == 2) {
-                return response.body();
-            }
-            throw new IllegalStateException("downloadUrl fetch failed with HTTP " + response.statusCode());
-        }
-        try (jakarta.ws.rs.core.Response response = graphClient.downloadContent(driveId, item.id())) {
-            String location = response.getHeaderString("Location");
-            if (location != null) {
-                HttpRequest request = HttpRequest.newBuilder(URI.create(location)).GET().build();
-                HttpResponse<byte[]> redirected = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-                if (redirected.statusCode() / 100 == 2) {
-                    return redirected.body();
-                }
-                throw new IllegalStateException("redirected download failed with HTTP " + redirected.statusCode());
-            }
-            if (response.hasEntity()) {
-                Object entity = response.getEntity();
-                if (entity instanceof byte[] bytes) {
-                    return bytes;
-                }
-                if (entity instanceof InputStream stream) {
-                    return stream.readAllBytes();
-                }
-            }
-            throw new IllegalStateException("Graph returned neither redirect nor content");
-        }
-    }
-
-    private DriveItem politeGetItem(String driveId, String itemId) {
-        int attempt = 0;
-        while (true) {
-            try {
-                return graphClient.getItem(driveId, itemId);
-            } catch (SharePointException e) {
-                attempt++;
-                if ((e.getStatusCode() == 429 || e.getStatusCode() == 503) && attempt <= MAX_RETRIES) {
-                    pause(5000L * (1L << (attempt - 1)));
-                    continue;
-                }
-                throw e;
-            }
-        }
-    }
-
     // ── Helpers ─────────────────────────────────────────────────────────────
-
-    /** A cut-off URL is a broken link — drop over-long ones instead. */
-    static String boundedUrl(String url) {
-        return url == null || url.length() > 1000 ? null : url;
-    }
 
     static String bounded(String text, int max) {
         if (text == null) {
@@ -367,15 +281,6 @@ public class AgreementBackfillWalkerService {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    private static void pause(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Backfill walk interrupted");
         }
     }
 

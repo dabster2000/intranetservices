@@ -14,8 +14,6 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
-import dk.trustworks.intranet.signing.domain.SigningCase;
-import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -43,8 +41,6 @@ public class AgreementService {
     @Inject
     StatusService statusService;
 
-    @Inject
-    SigningCaseRepository signingCaseRepository;
 
     // ── Requests ───────────────────────────────────────────────────────────
 
@@ -379,19 +375,12 @@ public class AgreementService {
         return builder.build();
     }
 
-    /** The row's own URL wins; else the case's archived SharePoint URL. */
+    /** The row's own URL, when manual entry supplied one; null otherwise. */
     private String resolveDocumentUrl(EmployeeAgreement row) {
         if (row.getDocumentUrl() != null && !row.getDocumentUrl().isBlank()) {
             return row.getDocumentUrl();
         }
-        if (row.getSigningCaseKey() == null) {
-            return null;
-        }
-        return signingCaseRepository.findByCaseKey(row.getSigningCaseKey())
-                .map(SigningCase::getSharepointFileUrl)
-                .filter(url -> url != null && !url.isBlank())
-                .map(url -> url.split(" \\| ")[0])
-                .orElse(null);
+        return null;
     }
 
     private Map<String, String> parseParameters(String json) {

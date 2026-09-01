@@ -18,7 +18,7 @@ import java.util.UUID;
 
 /**
  * One discovered PDF in the backfill corpus (template-clauses spec
- * §4.8/§10): where it lives in SharePoint, what the extraction proposed
+ * §4.8/§10): which employee document it is, what the extraction proposed
  * ({@code proposal_json} is an ARRAY — one call proposes zero-or-more
  * records) and the human review state. Nothing enters
  * {@code employee_agreements} without a confirm (D8).
@@ -26,8 +26,8 @@ import java.util.UUID;
  * <p>Idempotency: {@code (user_uuid, doc_sha256)} is UNIQUE — an
  * identical circular in two employees' folders yields one item per
  * employee, while a moved/copied file within one folder collapses to a
- * single item. The stored {@code sharepoint_item_id + e_tag} pair lets
- * re-runs skip unchanged files without re-downloading.</p>
+ * single item, and re-runs skip already-itemized documents by that
+ * hash without re-downloading.</p>
  */
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
@@ -49,30 +49,11 @@ public class AgreementBackfillItem extends PanacheEntityBase {
 
     /**
      * The {@code employee_documents.uuid} the item was extracted from
-     * (the S3 corpus, V554). NULL on legacy V549-era SharePoint-walk
-     * items, whose preview still streams from Graph.
+     * (the S3 corpus, V554). NULL on legacy V549-era items until their
+     * first preview adopts them by {@code (user_uuid, doc_sha256)}.
      */
     @Column(name = "employee_document_uuid", length = 36)
     private String employeeDocumentUuid;
-
-    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
-    @Column(name = "site_url", length = 500)
-    private String siteUrl;
-
-    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
-    @Column(name = "drive_id", length = 255)
-    private String driveId;
-
-    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
-    @Column(name = "sharepoint_item_id", length = 255)
-    private String sharepointItemId;
-
-    @Column(name = "e_tag", length = 255)
-    private String eTag;
-
-    /** SharePoint link; becomes {@code employee_agreements.document_url} on confirm. */
-    @Column(name = "web_url", length = 1000)
-    private String webUrl;
 
     @Column(name = "file_name", nullable = false, length = 500)
     private String fileName;
@@ -124,10 +105,5 @@ public class AgreementBackfillItem extends PanacheEntityBase {
 
     public static Optional<AgreementBackfillItem> findByUserAndSha(String userUuid, String docSha256) {
         return find("userUuid = ?1 AND docSha256 = ?2", userUuid, docSha256).firstResultOptional();
-    }
-
-    public static Optional<AgreementBackfillItem> findByUserAndItemId(String userUuid, String sharepointItemId) {
-        return find("userUuid = ?1 AND sharepointItemId = ?2 ORDER BY createdAt DESC",
-                userUuid, sharepointItemId).firstResultOptional();
     }
 }
