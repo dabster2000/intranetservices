@@ -91,8 +91,16 @@ public class AirtableReferrerMatcher {
     // Tiers 1–2 (pure)
     // ------------------------------------------------------------------
 
-    /** Exact normalized full-name match, then unique first+last token match. */
-    static String deterministicMatch(String name, List<DirectoryUser> directory) {
+    /**
+     * Exact normalized full-name match, then unique first+last token match.
+     * Returns null on no hit AND on ambiguity — never a guess.
+     * <p>
+     * Public since 2026-09-01 for the referrer backfill, which extracts
+     * several names from one historical answer and needs to match each in
+     * turn. Pure and directory-scoped: it decides nothing the caller has not
+     * already handed it, so widening it grants no new reach.
+     */
+    public static String deterministicMatch(String name, List<DirectoryUser> directory) {
         String normalized = normalize(name);
         if (normalized.isEmpty()) {
             return null;
@@ -138,7 +146,25 @@ public class AirtableReferrerMatcher {
     // Tier 3 — AI name extraction (names only, never directory access)
     // ------------------------------------------------------------------
 
-    private List<String> extractNames(String referenceText) {
+    /**
+     * Every person-name the model can find in the applicant's text.
+     * <p>
+     * Public since 2026-09-01 so the referrer backfill can decide for itself
+     * what a MULTI-name answer means. {@link #resolve} takes the first
+     * extracted name that matches, which is right on the live path — one
+     * applicant, one referrer, and the first name they wrote is the one they
+     * led with. It is wrong for a sweep over historical rows: an answer like
+     * "Kasper …, Simon …, Mia …" would link the candidate to whichever of
+     * three colleagues happened to come back first, silently dropping the
+     * other two and asserting a specific relationship the applicant never
+     * made. The backfill therefore matches every extracted name and refuses
+     * on more than one distinct hit.
+     * <p>
+     * The model never sees the directory and never returns a uuid — it reads
+     * names out of prose and nothing else, so a hallucination can only fail
+     * to match, never invent a colleague.
+     */
+    public List<String> extractNames(String referenceText) {
         try {
             ObjectNode schema = objectMapper.createObjectNode();
             schema.put("type", "object");
