@@ -242,6 +242,17 @@ public class CandidateConversionUseCase {
             }
         }
 
+        // (g2) Agreement registry re-key (template-clauses spec §8, Phase 3):
+        // candidate-scoped employee_agreements rows written while signing
+        // cases completed pre-hire now belong to the new user. One UPDATE
+        // inside this transaction keeps the XOR subject CHECK satisfied.
+        long rekeyed = dk.trustworks.intranet.agreementservice.model.EmployeeAgreement
+                .rekeyCandidateToUser(candidate.getUuid(), user.uuid);
+        if (rekeyed > 0) {
+            log.infof("Re-keyed %d agreement registry rows candidate=%s -> user=%s",
+                    rekeyed, candidate.getUuid(), user.uuid);
+        }
+
         // (h) Domain transition — guards re-checked inside the entity.
         candidate.markHired(UUID.fromString(user.uuid), actor);
 

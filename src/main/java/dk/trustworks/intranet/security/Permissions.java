@@ -110,6 +110,10 @@ public final class Permissions {
             new Permission("documents:write", "Documents — write", "Documents"),
             new Permission("documents:gdpr", "Documents — GDPR", "Documents"),
 
+            // Agreements (employee agreement registry — salary-adjacent, HR/ADMIN surfaces only)
+            new Permission("agreements:read", "Agreements — read", "Agreements"),
+            new Permission("agreements:write", "Agreements — write", "Agreements"),
+
             // Knowledge
             new Permission("knowledge:read", "Knowledge — read", "Knowledge"),
             new Permission("knowledge:write", "Knowledge — write", "Knowledge"),

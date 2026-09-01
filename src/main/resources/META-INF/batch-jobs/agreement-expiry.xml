@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="agreement-expiry" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Agreement registry expiry sweep (template-clauses spec §8, Phase 3)
+
+    Purpose:
+    1. Flip ACTIVE employee_agreements rows past valid_to to EXPIRED.
+    2. Post 60/14-day expiry alerts to the HR Slack channel configured in
+       app_settings agreements.slack.channel — idempotent via the
+       notified_60d_at / notified_14d_at stamps (stamped only after a
+       successful post, so a Slack outage retries the next night).
+
+    The status flip always runs (state hygiene); alerts additionally
+    require documents.agreements.enabled — dark feature, silent registry.
+
+    Schedule:
+    Daily at 06:10 UTC via BatchScheduler.scheduleAgreementExpiry(),
+    ShutdownGuard-belted.
+
+    Similar to:
+    recruitment-interview-note-sweep.xml (nightly state-derived sweep)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="sweep-agreement-expiry">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="agreementExpiryBatchlet"/>
+    </step>
+</job>

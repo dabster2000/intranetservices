@@ -1,13 +1,15 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 92,
+  "count": 94,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
     { "key": "admin:*", "displayName": "Admin — wildcard (all permissions)", "category": "Admin" },
     { "key": "admin:read", "displayName": "Admin — read", "category": "Admin" },
     { "key": "admin:write", "displayName": "Admin — write", "category": "Admin" },
+    { "key": "agreements:read", "displayName": "Agreements — read", "category": "Agreements" },
+    { "key": "agreements:write", "displayName": "Agreements — write", "category": "Agreements" },
     { "key": "availability:read", "displayName": "Availability — read", "category": "Revenue & utilization" },
     { "key": "bonus:read", "displayName": "Bonus — read", "category": "Bonuses" },
     { "key": "bonus:write", "displayName": "Bonus — write", "category": "Bonuses" },

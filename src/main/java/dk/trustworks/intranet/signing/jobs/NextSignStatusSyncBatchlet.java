@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.signing.jobs;
 
+import dk.trustworks.intranet.agreementservice.services.AgreementRecorder;
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
@@ -89,6 +90,9 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     @Inject
     S3EmployeePromotionService s3EmployeePromotionService;
 
+    @Inject
+    AgreementRecorder agreementRecorder;
+
     /** Bound per pass so a stuck case cannot monopolize the sweep. */
     private static final int ARCHIVAL_SWEEP_LIMIT = 25;
 
@@ -141,6 +145,13 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             log.errorf(e, "employee-documents sweeps failed (status fetch pass unaffected)");
         }
 
+        // Agreement registry catch-up (template-clauses spec §8, Phase 3):
+        // completed cases whose clause snapshots never became registry rows
+        // — covers completions that predate the Phase 3 deploy and any
+        // failed inline recording below. Bounded + idempotent; never
+        // fails the pass (the recorder swallows internally too).
+        int agreementsRecorded = agreementRecorder.runCatchupSweep();
+
         // Find cases needing status fetch
         List<SigningCase> pendingCases = signingCaseRepository.findCasesNeedingStatusFetch(
             MAX_RETRIES, RETRY_DELAY_MINUTES
@@ -148,8 +159,9 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
         if (pendingCases.isEmpty()) {
             log.info("No pending cases found. Skipping status fetch.");
-            return String.format("COMPLETED: 0 cases processed, archived=%d, promotionsRedriven=%d",
-                    archived, promotionsRedriven);
+            return String.format(
+                    "COMPLETED: 0 cases processed, archived=%d, promotionsRedriven=%d, agreementsRecorded=%d",
+                    archived, promotionsRedriven, agreementsRecorded);
         }
 
         log.infof("Found %d cases needing status fetch", pendingCases.size());
@@ -201,6 +213,11 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 // staging — spec §6.5.1-2); while OFF, the legacy SharePoint
                 // upload path runs unchanged (removed at the deletion release).
                 if (isSigningComplete(status)) {
+                    // Registry rows for the case's clauses (Phase 3) — same
+                    // transaction as the completion update; idempotent, and
+                    // the recorder never lets a failure roll the update back.
+                    agreementsRecorded += agreementRecorder.recordCompletedCase(signingCase);
+
                     if (employeeDocumentsFeatureFlag.isSigningWriterEnabled()) {
                         employeeSigningArchivalService.archiveCompletedCase(signingCase);
                     } else if (shouldUploadToSharePoint(signingCase)) {
@@ -251,8 +268,8 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
         // Build result summary
         String result = String.format(
-            "COMPLETED: total=%d, successful=%d, failed=%d, skipped=%d, archived=%d, promotionsRedriven=%d",
-            pendingCases.size(), successful, failed, skipped, archived, promotionsRedriven
+            "COMPLETED: total=%d, successful=%d, failed=%d, skipped=%d, archived=%d, promotionsRedriven=%d, agreementsRecorded=%d",
+            pendingCases.size(), successful, failed, skipped, archived, promotionsRedriven, agreementsRecorded
         );
 
         log.info("NextSignStatusSyncBatchlet finished: " + result);

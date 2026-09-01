@@ -815,6 +815,33 @@ public class BatchScheduler {
     }
 
     /**
+     * Agreement registry expiry sweep (template-clauses spec §8, Phase 3):
+     * flips ACTIVE employee_agreements past valid_to to EXPIRED and posts
+     * the 60/14-day Slack expiry alerts (idempotent via the notified_*_at
+     * stamps; alerts require documents.agreements.enabled + a configured
+     * agreements.slack.channel). A cheap no-op while the registry is empty.
+     * <p>
+     * Schedule: daily at 06:10 UTC — after the nightly refresh cluster,
+     * before the working day.
+     */
+    @Scheduled(cron = "0 10 6 * * ?",
+            skipExecutionIf = dk.trustworks.intranet.scheduling.SchedulerShutdownGuard.class)
+    void scheduleAgreementExpiry() {
+        try {
+            if (jobOperator.getJobNames().contains("agreement-expiry")) {
+                if (!jobOperator.getRunningExecutions("agreement-expiry").isEmpty()) {
+                    log.debug("agreement-expiry already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting agreement-expiry batch job");
+            jobOperator.start("agreement-expiry", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule agreement-expiry: " + e.getMessage());
+        }
+    }
+
+    /**
      * The employee half of "GDPR runs itself" (employee-documents spec
      * §6.10): hard-delete every stored document of ex-employees whose
      * termination is more than the configured retention period (default
