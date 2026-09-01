@@ -10,6 +10,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,7 +24,7 @@ import java.util.Map;
  * "create offer dossier" action on an existing candidate).
  *
  * <h3>Why the template check has to exist at all</h3>
- * {@link #seedSignersFromTemplate(String)} queries only the <em>child</em>
+ * {@link #seedSignersFromTemplate(String, String)} queries only the <em>child</em>
  * {@code template_default_signers} table, so a nonexistent template is
  * indistinguishable from a real one with no default signers — both yield
  * {@code "[]"}. Bean validation is inert in this backend (no
@@ -43,6 +44,7 @@ import java.util.Map;
  * {@link #requireUsable(String, DocumentTemplateEntity)} — is what lets the
  * DB-free tier, which is the deploy gate, exercise every guard branch.
  */
+@JBossLog
 @ApplicationScoped
 public class DossierTemplateResolver {
 
@@ -100,11 +102,31 @@ public class DossierTemplateResolver {
      * name/email are preserved as-is; revision snapshots resolve them at
      * send time. Returns "[]" when the template defines no defaults so the
      * not-null DB column always carries a valid JSON array.
+     * <p>
+     * Signers are filtered to the candidate's target company: rows marked for
+     * every company plus that company's own. A merged template (one contract
+     * instead of the TW/TWC/TWT copies) therefore seeds the right
+     * counter-signers and never another company's executives.
+     *
+     * @param templateUuid the resolved template
+     * @param companyUuid  the candidate's target company, or {@code null} when
+     *                     unknown — which seeds only company-agnostic signers
      */
-    public String seedSignersFromTemplate(String templateUuid) {
-        List<TemplateDefaultSignerEntity> defaults = TemplateDefaultSignerEntity
-                .find("template.uuid = ?1 ORDER BY signerGroup, displayOrder", templateUuid)
-                .list();
+    public String seedSignersFromTemplate(String templateUuid, String companyUuid) {
+        List<TemplateDefaultSignerEntity> defaults =
+                TemplateDefaultSignerEntity.findByTemplateForCompany(templateUuid, companyUuid);
+
+        // A merged template carries every company's counter-signers at once. If
+        // it declares company-scoped rows but none matched, this candidate's
+        // company has no counter-signer on that template — seed what applies and
+        // say so, rather than silently producing a one-sided signer list. The
+        // dossier shows the resolved list before anything is sent.
+        if (defaults.stream().allMatch(s -> s.getCompanyUuid() == null)
+                && TemplateDefaultSignerEntity.count("template.uuid = ?1 AND companyUuid IS NOT NULL", templateUuid) > 0) {
+            log.warnf("Template %s declares company-scoped default signers but none match company %s"
+                            + " — seeding only the company-agnostic signers",
+                    templateUuid, companyUuid);
+        }
 
         List<SignerConfigDto> signers = new ArrayList<>(defaults.size());
         for (TemplateDefaultSignerEntity s : defaults) {

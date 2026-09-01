@@ -29,6 +29,11 @@ public class TemplateDefaultSignerDTO {
     private boolean signing = true;
     private boolean needsCpr = false;
     private int displayOrder;
+    /**
+     * Company this signer applies to, or null for "every company" (Alle selskaber).
+     * Lets one merged template carry the TW / TWC / TWT counter-signers at once.
+     */
+    private String companyUuid;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
