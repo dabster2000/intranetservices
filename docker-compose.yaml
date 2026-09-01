@@ -18,7 +18,10 @@ services:
     env_file:
       - docker-env-twservices.env
       - userpass.env
-      - aws.env
+      # Optional: copy aws.env.example to aws.env and fill in short-lived
+      # credentials. Never committed (.gitignore).
+      - path: aws.env
+        required: false
     ports:
       - "9093:9093"
     networks:

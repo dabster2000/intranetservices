@@ -27,7 +27,6 @@ import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.services.ItExpenseService;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
-import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.model.Certification;
 import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
