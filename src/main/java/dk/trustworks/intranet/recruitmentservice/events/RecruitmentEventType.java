@@ -268,6 +268,20 @@ public enum RecruitmentEventType {
      * offer-flow act the timeline could not show.
      */
     DOSSIER_CREATED,
+    /**
+     * HR swapped the template of an OPEN, never-sent dossier — the
+     * misclick escape hatch (the create picker has no default, and a
+     * wrong pick used to lock the candidate onto the wrong contract:
+     * {@code DOSSIER_EXISTS} blocks a second dossier and reopen only
+     * matches the SAME template). Refused once the first revision
+     * exists. Payload is structural only: {@code dossier_uuid},
+     * {@code old_template_uuid}, {@code template_uuid} and, when the
+     * candidate has an open application, {@code application_uuid}; the
+     * PARTNER-track CIRCLE pairing matches {@code DOSSIER_CREATED}.
+     * Catalog addition per spec §6.2 ("every mutating endpoint = one
+     * command = ≥1 event").
+     */
+    DOSSIER_TEMPLATE_CHANGED,
     SIGNING_COMPLETED,
     CANDIDATE_HIRED,
     TEAM_ASSIGNED,

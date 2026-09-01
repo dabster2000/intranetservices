@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 
 import dk.trustworks.intranet.documentservice.dto.DocumentTemplateDTO;
 import dk.trustworks.intranet.documentservice.services.TemplateService;
+import dk.trustworks.intranet.recruitmentservice.dto.DossierCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
@@ -12,12 +13,17 @@ import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.validation.Valid;
+import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
 import java.util.UUID;
 
@@ -74,6 +80,48 @@ public class RecruitmentDossierTemplateResource {
         // A persisted candidate_dossiers reference is itself authoritative
         // recruitment classification, even if a stale row says otherwise.
         return templateService.findByUuid(dossier.templateUuid());
+    }
+
+    /**
+     * Swap the template of an OPEN, never-sent dossier (the misclick
+     * escape hatch — see {@link DossierService#changeTemplate}). This PUT
+     * lives HERE, not on {@code RecruitmentResource}: this class owns the
+     * literal {@code …/dossier/template} path, and JAX-RS selects the
+     * best-matching resource class before it looks at HTTP methods — a
+     * PUT declared on the other class would answer 405.
+     *
+     * <p>Gate order mirrors {@code RecruitmentResource.requireDossierWritable}:
+     * the read predicate answers 404 (no existence leak), then the write
+     * predicate answers 403.</p>
+     */
+    @PUT
+    @Consumes(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:write"})
+    public DossierResponse changeTemplate(@PathParam("candidateUuid") UUID candidateUuid,
+                                          @Valid DossierCreateRequest request) {
+        enforceFlag();
+        String viewer = requestHeaderHolder.getUserUuid();
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null
+                || viewer == null || viewer.isBlank()
+                || !visibility.canReadDossier(viewer, candidate)) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        if (!visibility.canWriteDossier(viewer)) {
+            throw new WebApplicationException(
+                    "The offer and contract are handled by HR — you can follow this "
+                            + "dossier but not change it.",
+                    Response.Status.FORBIDDEN);
+        }
+        UUID actor;
+        try {
+            actor = UUID.fromString(viewer);
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException(
+                    "X-Requested-By is not a valid UUID", Response.Status.BAD_REQUEST);
+        }
+        return dossierService.changeTemplate(candidateUuid,
+                request == null ? null : request.templateUuid(), actor);
     }
 
     private void enforceFlag() {
