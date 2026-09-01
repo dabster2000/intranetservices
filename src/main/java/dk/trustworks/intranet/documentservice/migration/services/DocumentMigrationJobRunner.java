@@ -27,7 +27,7 @@ import java.util.function.Supplier;
 public class DocumentMigrationJobRunner {
 
     public enum JobType {
-        CRAWL, MATCH, COPY_DRY_RUN, COPY, CATEGORIZE, RENAME_DRY_RUN, RENAME, VERIFY,
+        CRAWL, MATCH, COPY_DRY_RUN, COPY, CATEGORIZE, LINK_SIGNING_CASES, RENAME_DRY_RUN, RENAME, VERIFY,
         HASH_BACKFILL_DRY_RUN, HASH_BACKFILL,
         OWNERSHIP_REPAIR_DRY_RUN, OWNERSHIP_REPAIR
     }

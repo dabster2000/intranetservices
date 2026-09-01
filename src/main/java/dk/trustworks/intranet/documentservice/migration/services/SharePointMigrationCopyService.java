@@ -105,6 +105,8 @@ public class SharePointMigrationCopyService {
             boolean dryRun,
             int spCandidates,
             int spCopied,
+            /** Existing documents whose bytes were replaced because the source changed. */
+            int spRefreshed,
             int spSkippedProvenance,
             int spFailed,
             int spOversize,
@@ -225,7 +227,10 @@ public class SharePointMigrationCopyService {
                 managed.persist();
             });
 
-            if (!result.created()) {
+            if (result.refreshed()) {
+                counters.spRefreshed++;
+                counters.spBytes += bytes.length;
+            } else if (!result.created()) {
                 counters.spSkippedProvenance++;
             } else {
                 counters.spCopied++;
@@ -393,6 +398,7 @@ public class SharePointMigrationCopyService {
         final boolean dryRun;
         int spCandidates;
         int spCopied;
+        int spRefreshed;
         int spSkippedProvenance;
         int spFailed;
         int spOversize;
@@ -414,7 +420,7 @@ public class SharePointMigrationCopyService {
         }
 
         CopySummary toSummary() {
-            return new CopySummary(dryRun, spCandidates, spCopied, spSkippedProvenance, spFailed,
+            return new CopySummary(dryRun, spCandidates, spCopied, spRefreshed, spSkippedProvenance, spFailed,
                     spOversize, spTypeSniffed, spBytes, legacyCandidates, legacyCopied,
                     legacySkippedProvenance, legacyFailed, legacyRehomeDisabled, errors);
         }

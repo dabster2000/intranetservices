@@ -2,6 +2,7 @@ package dk.trustworks.intranet.documentservice.services;
 
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -243,5 +244,57 @@ class EmployeeDocumentValidationTest {
         assertEquals("abc", EmployeeDocumentService.trimTo("abc", 10));
         assertEquals("ab", EmployeeDocumentService.trimTo("abc", 2));
         assertEquals(null, EmployeeDocumentService.trimTo(null, 2));
+    }
+
+    // ── delta re-copy: has the source actually changed? ────────────────────
+    // Provenance is the SharePoint webUrl and an edit does not change it, so
+    // this comparison is the only thing standing between a delta crawl and
+    // silently keeping stale bytes.
+
+    private static EmployeeDocument stored(String sha256, long size) {
+        EmployeeDocument doc = new EmployeeDocument();
+        doc.setUuid("doc-1");
+        doc.setUserUuid("user-1");
+        doc.setSha256(sha256);
+        doc.setFileSizeBytes(size);
+        return doc;
+    }
+
+    @Test
+    void aHashedRowComparesByHash() {
+        String sha = EmployeeDocumentService.sha256Hex("hello".getBytes(StandardCharsets.UTF_8));
+        assertTrue(EmployeeDocumentService.isSameContent(stored(sha, 5), sha, 5));
+    }
+
+    @Test
+    void aHashedRowWhoseSourceChangedIsNotTheSameContent() {
+        String oldSha = EmployeeDocumentService.sha256Hex("hello".getBytes(StandardCharsets.UTF_8));
+        String newSha = EmployeeDocumentService.sha256Hex("hello!".getBytes(StandardCharsets.UTF_8));
+        assertFalse(EmployeeDocumentService.isSameContent(stored(oldSha, 5), newSha, 6));
+    }
+
+    @Test
+    void aHashedRowIgnoresSizeWhenTheHashMatches() {
+        // The hash is the authority; a stale recorded size must not force a
+        // needless rewrite of identical bytes.
+        String sha = EmployeeDocumentService.sha256Hex("hello".getBytes(StandardCharsets.UTF_8));
+        assertTrue(EmployeeDocumentService.isSameContent(stored(sha, 999), sha, 5));
+    }
+
+    @Test
+    void anUnhashedRowFallsBackToExactSize() {
+        // Half the migrated corpus has no sha256 (server-side copies never saw
+        // the bytes). Treating those as "changed" would rewrite the whole
+        // corpus on the first delta run.
+        assertTrue(EmployeeDocumentService.isSameContent(stored(null, 1234), "any-hash", 1234));
+        assertFalse(EmployeeDocumentService.isSameContent(stored(null, 1234), "any-hash", 1235));
+    }
+
+    @Test
+    void anUnhashedZeroByteRowStillComparesByItsRecordedSize() {
+        // 32 production rows are zero-byte legacy re-homes; a real file
+        // arriving for one of them must count as a change.
+        assertTrue(EmployeeDocumentService.isSameContent(stored(null, 0), "h", 0));
+        assertFalse(EmployeeDocumentService.isSameContent(stored(null, 0), "h", 4096));
     }
 }

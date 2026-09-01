@@ -662,6 +662,7 @@ public class SigningService {
         String spUploadStatus = null;
         String spUploadError = null;
         String spFileUrl = null;
+        String archiveStatus = null;
         LocalDateTime createdAt = liveStatus.createdAt();
 
         if (dbCaseOpt.isPresent()) {
@@ -672,6 +673,7 @@ public class SigningService {
             spUploadStatus = dbCase.getSharepointUploadStatus();
             spUploadError = dbCase.getSharepointUploadError();
             spFileUrl = dbCase.getSharepointFileUrl();
+            archiveStatus = dbCase.getArchiveStatus();
 
             // Use DB createdAt if live data doesn't have it
             if (createdAt == null && dbCase.getCreatedAt() != null) {
@@ -710,7 +712,8 @@ public class SigningService {
             sharepointLocationUuid,
             spUploadStatus,
             spUploadError,
-            spFileUrl
+            spFileUrl,
+            archiveStatus
         );
     }
 
@@ -911,7 +914,8 @@ public class SigningService {
                 null, // sharepointLocationUuid
                 null, // sharepointUploadStatus
                 null, // sharepointUploadError
-                null  // sharepointFileUrl
+                null, // sharepointFileUrl
+                null  // archiveStatus - no DB row consulted here
             );
         }
 
@@ -962,7 +966,8 @@ public class SigningService {
             null, // sharepointLocationUuid - not returned by NextSign API
             null, // sharepointUploadStatus - not returned by NextSign API
             null, // sharepointUploadError - not returned by NextSign API
-            null  // sharepointFileUrl - not returned by NextSign API
+            null, // sharepointFileUrl - not returned by NextSign API
+            null  // archiveStatus - not a NextSign concept; merged in by getStatus()
         );
     }
 
@@ -1462,7 +1467,8 @@ public class SigningService {
             entity.getSharepointLocationUuid(),
             entity.getSharepointUploadStatus(),
             entity.getSharepointUploadError(),
-            entity.getSharepointFileUrl()
+            entity.getSharepointFileUrl(),
+            entity.getArchiveStatus()
         );
     }
 

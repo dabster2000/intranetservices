@@ -10,6 +10,7 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -222,6 +223,57 @@ class SharePointMigrationCategorizerLogicTest {
         assertFalse(SharePointMigrationCategorizerService.matchesExactly(
                 "Kontrakt_signed_2024-01-01.pdf", null, null));
         assertFalse(SharePointMigrationCategorizerService.matchesExactly(null, "x.pdf", pattern));
+    }
+
+    @Test
+    void signedPatternTreatsSpacesAndUnderscoresAsInterchangeable() {
+        // The legacy SharePoint upload wrote spaces as underscores, so a
+        // document name carrying a space produced a stored file its own
+        // pattern could never match. Production case 6a16b54e:
+        //   document_name = "Timelønskontrakt_Joao Almeida"
+        //   stored file   = "Timelønskontrakt_Joao_Almeida_signed_2026-05-28_115036.pdf"
+        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Timelønskontrakt_Joao Almeida");
+        assertTrue(pattern.matcher("Timelønskontrakt_Joao_Almeida_signed_2026-05-28_115036.pdf").matches());
+        assertTrue(pattern.matcher("Timelønskontrakt Joao Almeida_signed_2026-05-28_115036.pdf").matches());
+
+        // Interchangeability must not soften the base: a different name
+        // still never matches.
+        assertFalse(pattern.matcher("Timelønskontrakt_Joao_Hansen_signed_2026-05-28_115036.pdf").matches());
+        assertFalse(pattern.matcher("Timelønskontrakt_Joao_Almeida.pdf").matches());
+    }
+
+    @Test
+    void signedPatternStillRequiresTheWholeName() {
+        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Kontrakt.pdf");
+        assertFalse(pattern.matcher("Tillæg Kontrakt_signed_2026-01-01.pdf").matches());
+        assertFalse(pattern.matcher("Kontrakt udvidet_signed_2026-01-01.pdf").matches());
+        assertNull(SharePointMigrationCategorizerService.signedPattern("   "));
+        assertNull(SharePointMigrationCategorizerService.signedPattern(null));
+    }
+
+    @Test
+    void signedTimestampIsolatesTheBatchStamp() {
+        // Every document of one signing envelope carries the same stamp —
+        // that is what tells a multi-document case apart from a re-filing.
+        assertEquals("2026-03-06_172620", SharePointMigrationCategorizerService.signedTimestamp(
+                "Ansættelseskontrakt_signed_2026-03-06_172620.pdf"));
+        assertEquals("2026-03-06_172620", SharePointMigrationCategorizerService.signedTimestamp(
+                "Din_del_af_Trustworks_-_Loyalitetsprogram_signed_2026-03-06_172620.pdf"));
+        // Different stamps must NOT group: a document filed twice is not a batch.
+        assertNotEquals(
+                SharePointMigrationCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103029.pdf"),
+                SharePointMigrationCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103527.pdf"));
+    }
+
+    @Test
+    void signedTimestampFallsBackToTheWholeNameWhenUnmarked() {
+        // No marker ⇒ the filename itself is the key, so two unmarked files
+        // group separately instead of being mistaken for one envelope.
+        assertEquals("Kontrakt.pdf", SharePointMigrationCategorizerService.signedTimestamp("Kontrakt.pdf"));
+        assertEquals("", SharePointMigrationCategorizerService.signedTimestamp(null));
+        assertNotEquals(
+                SharePointMigrationCategorizerService.signedTimestamp("A.pdf"),
+                SharePointMigrationCategorizerService.signedTimestamp("B.pdf"));
     }
 
     // ── DOCX text extraction helper ────────────────────────────────────────
