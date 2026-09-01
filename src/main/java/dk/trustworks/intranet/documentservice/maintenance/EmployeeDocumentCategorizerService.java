@@ -698,7 +698,7 @@ public class EmployeeDocumentCategorizerService {
      * or the whole filename when there is no such marker (which makes two
      * unmarked files group separately rather than being mistaken for a batch).
      */
-    static String signedTimestamp(String filename) {
+    public static String signedTimestamp(String filename) {
         if (filename == null) return "";
         int marker = filename.toLowerCase(Locale.ROOT).lastIndexOf("_signed_");
         if (marker < 0) return filename;
@@ -720,14 +720,18 @@ public class EmployeeDocumentCategorizerService {
      * match the exact {@code {sanitizedDocName}_signed_{timestamp}.pdf}
      * pattern.
      */
-    static boolean matchesExactly(String storedFilename, Pattern signedPattern) {
+    public static boolean matchesExactly(String storedFilename, Pattern signedPattern) {
         if (storedFilename == null) return false;
         return signedPattern != null && signedPattern.matcher(storedFilename).matches();
     }
 
     /**
      * {@code ^{sanitizedDocName}_signed_<anything>.pdf$}, case-insensitive,
-     * with spaces and underscores treated as interchangeable.
+     * with spaces and underscores treated as interchangeable. Public, with
+     * {@link #matchesExactly} and {@link #signedTimestamp}, because
+     * {@code EmployeeSigningArchivalService} applies the same test before
+     * re-downloading a case from NextSign — one definition of "this migrated
+     * file is that case's signed output", not two that drift apart.
      *
      * <p>That last part is not cosmetic. The legacy (pre-migration) upload
      * path wrote spaces as underscores, so a case whose {@code document_name}
@@ -737,7 +741,7 @@ public class EmployeeDocumentCategorizerService {
      * tiebreak of the day and were reported UNMATCHED whenever it did not
      * fire.</p>
      */
-    static Pattern signedPattern(String documentName) {
+    public static Pattern signedPattern(String documentName) {
         if (documentName == null || documentName.isBlank()) return null;
         String base = documentName.toLowerCase(Locale.ROOT).endsWith(".pdf")
                 ? documentName.substring(0, documentName.length() - 4)

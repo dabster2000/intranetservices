@@ -1,9 +1,14 @@
 package dk.trustworks.intranet.signing.services;
 
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
+import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import org.junit.jupiter.api.Test;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -22,6 +27,12 @@ import static org.mockito.Mockito.mock;
  * purely on {@code archive_status='PENDING'}, so the only thing standing
  * between an expired NextSign envelope and an unbounded 5-minute retry loop
  * is {@code markArchiveError}'s attempt counter.</p>
+ *
+ * <p>And the legacy guard of the SharePoint deletion release: with the
+ * {@code sharepoint_upload_status} predicate gone from the catch-up sweep,
+ * {@code legacyMigratedCopies} is what keeps a case whose signed PDFs
+ * arrived through the SharePoint→S3 migration from being downloaded and
+ * stored a second time.</p>
  */
 class EmployeeSigningArchivalServiceTest {
 
@@ -160,5 +171,117 @@ class EmployeeSigningArchivalServiceTest {
         service.markArchiveError(signingCase, "x".repeat(5000));
 
         assertEquals(2000, signingCase.getArchiveError().length());
+    }
+
+    // ── Legacy SharePoint-upload guard (SharePoint deletion release) ───────
+
+    private static EmployeeDocument migrated(String originalFilename) {
+        EmployeeDocument doc = new EmployeeDocument();
+        doc.setOriginalFilename(originalFilename);
+        doc.setSource(EmployeeDocumentSource.MIGRATION);
+        return doc;
+    }
+
+    private static SigningCase legacyCase(String documentName, LocalDateTime createdAt) {
+        SigningCase signingCase = new SigningCase();
+        signingCase.setCaseKey("case-legacy");
+        signingCase.setDocumentName(documentName);
+        signingCase.setCreatedAt(createdAt);
+        signingCase.setArchiveStatus("PENDING");
+        return signingCase;
+    }
+
+    @Test
+    void aMigratedCopyStampedAfterTheCaseIsRecognisedAsItsOwnOutput() {
+        SigningCase signingCase = legacyCase("Ansættelseskontrakt.pdf", LocalDateTime.of(2025, 3, 1, 9, 0));
+
+        List<EmployeeDocument> copies = EmployeeSigningArchivalService.legacyMigratedCopies(signingCase, List.of(
+                migrated("Ansættelseskontrakt_signed_2025-03-02_101500.pdf"),
+                migrated("Lønregulering_signed_2025-03-02_101500.pdf")));
+
+        assertEquals(1, copies.size(), "only the case's own document name counts");
+        assertEquals("Ansættelseskontrakt_signed_2025-03-02_101500.pdf", copies.get(0).getOriginalFilename());
+    }
+
+    @Test
+    void everyDocumentOfAMultiDocumentBatchIsRecognised() {
+        SigningCase signingCase = legacyCase("Kontrakt", LocalDateTime.of(2025, 3, 1, 9, 0));
+
+        List<EmployeeDocument> copies = EmployeeSigningArchivalService.legacyMigratedCopies(signingCase, List.of(
+                migrated("Kontrakt_signed_2025-03-02_101500.pdf"),
+                migrated("Kontrakt_signed_2025-03-09_080000.pdf")));
+
+        assertEquals(2, copies.size());
+    }
+
+    @Test
+    void aCopyStampedLongBeforeTheCaseBelongsToAnEarlierSigningOfTheSameName() {
+        // Re-signing "Lønregulering" two years later must archive the NEW
+        // PDF — the predecessor's migrated copy is not this case's output,
+        // and treating it as such would silently drop the new document.
+        SigningCase signingCase = legacyCase("Lønregulering", LocalDateTime.of(2026, 8, 10, 14, 0));
+
+        List<EmployeeDocument> copies = EmployeeSigningArchivalService.legacyMigratedCopies(signingCase,
+                List.of(migrated("Lønregulering_signed_2024-05-01_120000.pdf")));
+
+        assertTrue(copies.isEmpty());
+    }
+
+    @Test
+    void aZoneOffsetBetweenTheStampAndTheCaseIsTolerated() {
+        // The stamp was the uploading container's local clock; created_at is
+        // NextSign's. A document signed right after creation can carry a
+        // stamp a few hours "before" it.
+        SigningCase signingCase = legacyCase("Kontrakt", LocalDateTime.of(2025, 3, 1, 9, 0));
+
+        List<EmployeeDocument> copies = EmployeeSigningArchivalService.legacyMigratedCopies(signingCase,
+                List.of(migrated("Kontrakt_signed_2025-03-01_070000.pdf")));
+
+        assertEquals(1, copies.size());
+    }
+
+    @Test
+    void aNameWithoutAParseableStampIsNoEvidence() {
+        SigningCase signingCase = legacyCase("Kontrakt", LocalDateTime.of(2025, 3, 1, 9, 0));
+
+        assertTrue(EmployeeSigningArchivalService.legacyMigratedCopies(signingCase,
+                List.of(migrated("Kontrakt_signed_final.pdf"))).isEmpty(),
+                "matches the pattern but carries no stamp — do not guess");
+        assertTrue(EmployeeSigningArchivalService.legacyMigratedCopies(signingCase,
+                List.of(migrated("Kontrakt.pdf"))).isEmpty(),
+                "not a signed copy at all");
+    }
+
+    @Test
+    void aCaseWithoutACreationTimeAcceptsAnyStampedCopy() {
+        SigningCase signingCase = legacyCase("Kontrakt", null);
+
+        assertEquals(1, EmployeeSigningArchivalService.legacyMigratedCopies(signingCase,
+                List.of(migrated("Kontrakt_signed_2019-01-01_000000.pdf"))).size());
+    }
+
+    @Test
+    void aBlankDocumentNameOrNoMigratedDocumentsMatchesNothing() {
+        assertTrue(EmployeeSigningArchivalService.legacyMigratedCopies(legacyCase("  ", null),
+                List.of(migrated("x_signed_2025-01-01_000000.pdf"))).isEmpty());
+        assertTrue(EmployeeSigningArchivalService.legacyMigratedCopies(legacyCase("Kontrakt", null),
+                List.of()).isEmpty());
+        assertTrue(EmployeeSigningArchivalService.legacyMigratedCopies(legacyCase("Kontrakt", null),
+                null).isEmpty());
+    }
+
+    @Test
+    void skippingForALegacyCopyIsTerminalAndDoesNotBurnAnAttempt() {
+        EmployeeSigningArchivalService service = serviceWithStubRepository();
+        SigningCase signingCase = pendingCase();
+        signingCase.setArchiveAttempts(3);
+
+        service.markSkipped(signingCase,
+                "Legacy SharePoint upload; 2 migrated signed document(s) already in the S3 store");
+
+        assertEquals("SKIPPED", signingCase.getArchiveStatus(),
+                "must leave the sweep's PENDING selection for good");
+        assertEquals(3, signingCase.getArchiveAttempts(), "a structural skip is not a failed attempt");
+        assertTrue(signingCase.getArchiveError().startsWith("Legacy SharePoint upload"));
     }
 }

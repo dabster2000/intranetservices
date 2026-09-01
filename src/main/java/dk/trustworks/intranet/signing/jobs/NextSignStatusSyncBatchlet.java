@@ -264,6 +264,14 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
      * pass. Bounded per pass, and per case by the archive-attempt cap
      * (V551) inside the archival service.
      *
+     * <p>Cases the retired SharePoint auto-upload path already stored are
+     * out of this sweep's reach even though the {@code sharepoint_*}
+     * predicate that used to exclude them is gone with the entity mapping:
+     * V556 moved that population to SKIPPED (their bytes came in with the
+     * SharePoint→S3 migration), and the archival service refuses to
+     * re-download a case whose migrated {@code _signed_} copies are already
+     * in the store ({@code EmployeeSigningArchivalService#legacyMigratedCopies}).</p>
+     *
      * @return cases archived this pass
      */
     private int runArchivalCatchupSweep() {
