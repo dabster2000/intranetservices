@@ -253,6 +253,7 @@ class SigningResourceObjectAuthorizationTest {
                 null,
                 null,
                 null,
+                null,
                 null);
     }
 }

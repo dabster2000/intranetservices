@@ -17,6 +17,10 @@ import java.util.List;
  * @param sharepointUploadStatus SharePoint upload status: PENDING, UPLOADED, FAILED (nullable)
  * @param sharepointUploadError Error message if SharePoint upload failed (nullable)
  * @param sharepointFileUrl URL of the uploaded file in SharePoint (nullable)
+ * @param archiveStatus S3 archival state of the case: PENDING, ARCHIVED or
+ *        SKIPPED (nullable when the status was built from NextSign alone and
+ *        no database row was consulted). This is what the signing UIs render
+ *        now that the SharePoint link is gone — see spec §6.5.5/§6.8C.
  */
 public record SigningCaseStatus(
     String caseKey,
@@ -29,7 +33,8 @@ public record SigningCaseStatus(
     String sharepointLocationUuid,
     String sharepointUploadStatus,
     String sharepointUploadError,
-    String sharepointFileUrl
+    String sharepointFileUrl,
+    String archiveStatus
 ) {
     /**
      * Checks if all signers have completed signing.

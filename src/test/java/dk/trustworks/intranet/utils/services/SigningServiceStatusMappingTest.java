@@ -83,6 +83,7 @@ class SigningServiceStatusMappingTest {
             null,
             null,
             null,
+            null,
             null
         );
 

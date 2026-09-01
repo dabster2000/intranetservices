@@ -63,6 +63,18 @@ public class EmployeeSigningArchivalService {
     private static final DateTimeFormatter FILENAME_DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
 
+    /**
+     * Failed archival attempts after which a case is abandoned as SKIPPED
+     * (V549). At the sweep's 5-minute cadence this is roughly two hours of
+     * retrying, which comfortably outlasts a transient NextSign or S3 blip
+     * while still terminating on a permanently expired envelope.
+     *
+     * <p>Operational note: an admin who resets an abandoned case to PENDING
+     * must also zero {@code archive_attempts}, or the next single failure
+     * re-abandons it immediately.</p>
+     */
+    static final int MAX_ARCHIVE_ATTEMPTS = 24;
+
     @Inject
     SigningService signingService;
 
@@ -271,13 +283,45 @@ public class EmployeeSigningArchivalService {
     void markArchived(SigningCase signingCase) {
         signingCase.setArchiveStatus("ARCHIVED");
         signingCase.setArchiveError(null);
+        signingCase.setArchiveAttempts(0);
         signingCaseRepository.persist(signingCase);
     }
 
+    /**
+     * Record a failed archival attempt and, once the cap is reached, take the
+     * case out of the sweep's reach.
+     *
+     * <p>The catch-up sweep's only state predicate is
+     * {@code archive_status='PENDING'}, so leaving the row PENDING after a
+     * failure — which is what this method used to do unconditionally — means
+     * a case whose NextSign envelope has expired is re-attempted on every
+     * 5-minute pass for ever. Since the sweep is capped at
+     * {@code ARCHIVAL_SWEEP_LIMIT} rows ordered oldest-first, a few
+     * permanently-stuck cases would eventually starve every newer case out of
+     * the queue.</p>
+     *
+     * <p>At {@link #MAX_ARCHIVE_ATTEMPTS} the case moves to the existing
+     * terminal state SKIPPED rather than a new enum value (spec §14 proposes
+     * exactly this), keeping the last error so the reason stays legible in
+     * the case dialog and the migration report. Transient failures are
+     * generously accommodated: the cap is attempts, not wall-clock, and at
+     * one attempt per 5-minute pass it spans roughly two hours before a case
+     * is given up on.</p>
+     */
     @Transactional
     void markArchiveError(SigningCase signingCase, String error) {
-        signingCase.setArchiveError(error == null ? "unknown" :
-                (error.length() > 2000 ? error.substring(0, 2000) : error));
+        String message = error == null ? "unknown" :
+                (error.length() > 2000 ? error.substring(0, 2000) : error);
+        int attempts = (signingCase.getArchiveAttempts() == null ? 0 : signingCase.getArchiveAttempts()) + 1;
+        signingCase.setArchiveAttempts(attempts);
+        if (attempts >= MAX_ARCHIVE_ATTEMPTS) {
+            signingCase.setArchiveStatus("SKIPPED");
+            signingCase.setArchiveError("Gave up after " + attempts + " archival attempts. Last error: " + message);
+            log.warnf("S3 archival abandoned for case %s after %d attempts: %s",
+                    signingCase.getCaseKey(), attempts, message);
+        } else {
+            signingCase.setArchiveError(message);
+        }
         signingCaseRepository.persist(signingCase);
     }
 

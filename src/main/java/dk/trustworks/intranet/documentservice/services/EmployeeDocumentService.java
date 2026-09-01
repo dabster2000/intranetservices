@@ -468,6 +468,16 @@ public class EmployeeDocumentService {
                 .toList();
     }
 
+    /**
+     * Every document archived for one signing case, {@code document_index}
+     * order — unfiltered on purpose. The caller applies the subject reach
+     * check to the owners of the raw set before narrowing it, so a caller who
+     * may not read the file gets 403 rather than a silently empty list.
+     */
+    public List<EmployeeDocument> findBySigningCase(String signingCaseKey) {
+        return EmployeeDocument.findBySigningCase(signingCaseKey);
+    }
+
     /** All self-uploads pending HR categorization, oldest first (HR review queue). */
     public List<EmployeeDocument> reviewQueue() {
         return EmployeeDocument.findNeedingReview();
