@@ -120,7 +120,8 @@ public class RecruitmentCandidateDeleteCascade {
             "recruitment_referrals",
             "recruitment_pending_emails",
             "recruitment_record_checks",
-            "recruitment_discussion_threads");
+            "recruitment_discussion_threads",
+            "employee_agreements");
 
     /** What the cascade produced, for the response and the post-commit legs. */
     public record CascadeResult(String ledgerUuid, Map<String, Integer> deletedCounts,
@@ -321,6 +322,14 @@ public class RecruitmentCandidateDeleteCascade {
         // does not silently depend on a schema detail.
         counts.put("recruitment_discussion_threads",
                 (int) RecruitmentDiscussionThread.delete("candidateUuid = ?1", candidateUuid));
+        // Would CASCADE on its own too (V547). In practice always 0 here:
+        // recorder-written rows imply a completed signing case, which the
+        // hard delete refuses up front with SIGNED, and rows re-keyed at
+        // HIRED conversion no longer reference the candidate. Deleted
+        // explicitly for the same ledger/count reasons as above.
+        counts.put("employee_agreements",
+                (int) dk.trustworks.intranet.agreementservice.model.EmployeeAgreement
+                        .delete("candidateUuid = ?1", candidateUuid));
 
         // ---- Onboarding upload family (soft FKs, V322/V327) --------------------
         counts.put("onboarding_upload_submissions",

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.signing.jobs;
 
+import dk.trustworks.intranet.agreementservice.services.AgreementRecorder;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
@@ -32,6 +33,7 @@ class NextSignStatusSyncBatchletTest {
     private SharePointService sharePointService;
     private SlackService slackService;
     private EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
+    private AgreementRecorder agreementRecorder;
     private NextSignStatusSyncBatchlet batchlet;
 
     @BeforeEach
@@ -46,12 +48,16 @@ class NextSignStatusSyncBatchletTest {
         when(employeeDocumentsFeatureFlag.isSigningWriterEnabled()).thenReturn(false);
         when(employeeDocumentsFeatureFlag.isPromotionWriterEnabled()).thenReturn(false);
 
+        // Mockito's int default (0) makes both recorder paths no-ops.
+        agreementRecorder = mock(AgreementRecorder.class);
+
         batchlet = new NextSignStatusSyncBatchlet();
         batchlet.signingCaseRepository = signingCaseRepository;
         batchlet.signingService = signingService;
         batchlet.sharePointService = sharePointService;
         batchlet.slackService = slackService;
         batchlet.employeeDocumentsFeatureFlag = employeeDocumentsFeatureFlag;
+        batchlet.agreementRecorder = agreementRecorder;
     }
 
     @Test
@@ -66,7 +72,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         assertEquals("SKIPPED", signingCase.getProcessingStatus());
         verify(signingService, never()).getStatus(anyString());
         verifyNoInteractions(sharePointService, slackService);
@@ -87,7 +93,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=0, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         verify(signingService).getStatus(signingCase.getCaseKey());
         verifyNoInteractions(sharePointService, slackService);
     }
@@ -112,7 +118,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         assertEquals(5, signingCase.getRetryCount());
         verify(signingService).markCaseFetchFailed(signingCase, "Read timed out");
         // Transient errors must NOT be abandoned — the repository's slow
@@ -138,7 +144,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         assertEquals(5, signingCase.getRetryCount());
         // A case that 404s across the whole fast-retry window no longer
         // exists in NextSign — it must be permanently abandoned, not left
@@ -170,7 +176,7 @@ class NextSignStatusSyncBatchletTest {
 
         String result = batchlet.doProcess();
 
-        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0", result);
+        assertEquals("COMPLETED: total=1, successful=0, failed=1, skipped=1, archived=0, promotionsRedriven=0, agreementsRecorded=0", result);
         verify(signingService).markCaseMissingInNextsign(signingCase);
         verifyNoInteractions(sharePointService, slackService);
     }
