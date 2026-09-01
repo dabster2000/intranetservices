@@ -2,7 +2,7 @@ package dk.trustworks.intranet.signing.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
@@ -31,11 +31,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * S3 archival of completed signing cases — the replacement for the
- * SharePoint upload half of {@code NextSignStatusSyncBatchlet}
- * (employee-documents spec §6.5.1–2). Runs only while the
- * {@code employee_documents.writers.signing} toggle is ON; the caller
- * (the batchlet) owns the flag check and the legacy OFF-branch.
+ * S3 archival of completed signing cases (employee-documents spec
+ * §6.5.1–2), driven by {@code NextSignStatusSyncBatchlet} both inline at
+ * completion and from its bounded catch-up sweep.
  *
  * <p><b>Employee-flow cases</b> archive each signed PDF into the case
  * owner's employee document store ({@code source=SIGNING}, category
@@ -155,7 +153,7 @@ public class EmployeeSigningArchivalService {
             // reads "Lønregulering" and not "Lønregulering signed 2026 08 10
             // 143022": a machine-uniqueness suffix is not part of a title.
             String filename = stripPdfSuffix(baseName) + "_signed_" + timestamp + ".pdf";
-            String displayName = MigrationCategorizerRules.buildDisplayName(
+            String displayName = EmployeeDocumentCategorizerRules.buildDisplayName(
                     category, stripPdfSuffix(baseName) + ".pdf", null, null);
             try {
                 employeeDocumentService.store(new StoreCommand(
@@ -331,7 +329,7 @@ public class EmployeeSigningArchivalService {
                 snapshotJson, revisionUuid);
     }
 
-    /** Best-effort Slack DM to the case owner (same UX as the SharePoint path). */
+    /** Best-effort Slack DM to the case owner. */
     private void notifyOwner(SigningCase signingCase) {
         try {
             String userUuid = signingCase.getUserUuid();

@@ -247,7 +247,7 @@ class EmployeeDocumentValidationTest {
     }
 
     // ── delta re-copy: has the source actually changed? ────────────────────
-    // Provenance is the SharePoint webUrl and an edit does not change it, so
+    // Provenance (migrated_from) is fixed at copy time and an edit does not change it, so
     // this comparison is the only thing standing between a delta crawl and
     // silently keeping stale bytes.
 

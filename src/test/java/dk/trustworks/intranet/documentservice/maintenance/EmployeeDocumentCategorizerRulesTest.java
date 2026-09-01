@@ -1,6 +1,6 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules.RuleResult;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules.RuleResult;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import org.junit.jupiter.api.Test;
 
@@ -12,10 +12,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Every row of the §9.5 deterministic fallback table, ordering included
  * (runbook 2a-5 verify).
  */
-class MigrationCategorizerRulesTest {
+class EmployeeDocumentCategorizerRulesTest {
 
     private static RuleResult categorize(String path, String filename) {
-        return MigrationCategorizerRules.categorize(path, filename);
+        return EmployeeDocumentCategorizerRules.categorize(path, filename);
     }
 
     // ── Row by row ─────────────────────────────────────────────────────────

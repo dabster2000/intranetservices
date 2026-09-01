@@ -1,10 +1,10 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules.RuleResult;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules.RuleResult;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
@@ -22,7 +22,6 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.ByteArrayInputStream;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,15 +31,17 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * M4 — categorizer &amp; signing linker (runbook 2a-5 / spec §9.5,
- * decisions A3/A4).
+ * Employee-document categorizer &amp; signing linker (spec §9.5,
+ * decisions A3/A4). Born as step M4 of the completed migration into the
+ * S3 store; kept as an admin-triggered maintenance job because the
+ * store still accumulates uncategorized ({@code OTHER}) rows.
  *
  * <p><b>Categorization</b> is AI-first with a deterministic floor: pass 1
  * sends batches of ~50 {relative path, filename} pairs (never document
  * content); pass 2 sends a capped first-page text excerpt for the
  * PDF/DOCX tail pass 1 couldn't place — images never get pass 2. HIGH
  * confidence applies directly; anything less falls back to the
- * {@link MigrationCategorizerRules §9.5 rule table} <b>and</b> sets
+ * {@link EmployeeDocumentCategorizerRules §9.5 rule table} <b>and</b> sets
  * {@code needs_review=1}. With the kill switch OFF, or on any OpenAI
  * error, the rule table categorizes (per document — an OpenAI failure
  * never aborts the run). Re-runnable: only rows still at their defaults
@@ -48,15 +49,14 @@ import java.util.zip.ZipInputStream;
  * edits are never overwritten.</p>
  *
  * <p><b>Signing linkage stays 100% deterministic</b> (decision A4): for
- * each UPLOADED case, the migrated file must match the exact legacy
- * filename (parsed from {@code sharepoint_file_url}) or the exact
- * {@code {sanitizedDocName}_signed_{timestamp}.pdf} pattern — one
- * unambiguous hit or nothing. Ambiguous/unmatched cases go in the report
- * for human eyes.</p>
+ * each completed, not-yet-archived case, a migrated file must match the
+ * exact {@code {sanitizedDocName}_signed_{timestamp}.pdf} pattern — one
+ * unambiguous hit (or one same-timestamp batch) or nothing.
+ * Ambiguous/unmatched cases go in the summary for human eyes.</p>
  */
 @JBossLog
 @ApplicationScoped
-public class SharePointMigrationCategorizerService {
+public class EmployeeDocumentCategorizerService {
 
     /**
      * Documents per AI name-pass call, shared with the rename pass.
@@ -92,7 +92,7 @@ public class SharePointMigrationCategorizerService {
      * Read-only excerpt access for AI pass 2. Deliberately bypasses
      * {@link EmployeeDocumentService#download} — that path writes a
      * DOWNLOAD audit row per call, which would flood the art. 30 trail
-     * with machine reads during a migration pass.
+     * with machine reads during a categorization pass.
      */
     @Inject
     EmployeeDocumentStorageAdapter storage;
@@ -170,7 +170,7 @@ public class SharePointMigrationCategorizerService {
 
         // Job-runner worker thread: no request context — the settings read
         // needs its own transaction like every other DB access in this run.
-        boolean aiEnabled = QuarkusTransaction.requiringNew().call(featureFlag::isMigrationAiEnabled);
+        boolean aiEnabled = QuarkusTransaction.requiringNew().call(featureFlag::isAiCategorizationEnabled);
         List<String> errors = new ArrayList<>();
         int aiHigh = 0;
         int fallback = 0;
@@ -264,7 +264,7 @@ public class SharePointMigrationCategorizerService {
                          boolean aiEnabled, boolean includeFlagged) {
         boolean useAi = verdict != null && !verdict.inconclusive()
                 && "HIGH".equals(verdict.confidence()) && verdict.category() != null;
-        RuleResult rule = MigrationCategorizerRules.categorize(path, filename);
+        RuleResult rule = EmployeeDocumentCategorizerRules.categorize(path, filename);
 
         QuarkusTransaction.requiringNew().run(() -> {
             EmployeeDocument doc = EmployeeDocument.findById(docUuid);
@@ -288,7 +288,7 @@ public class SharePointMigrationCategorizerService {
                 // never overwritten.
                 applyDisplayName(doc, verdict.suggestedName() != null
                         ? verdict.suggestedName()
-                        : MigrationCategorizerRules.buildDisplayName(
+                        : EmployeeDocumentCategorizerRules.buildDisplayName(
                                 verdict.category(), doc.getOriginalFilename(), path, null));
             } else {
                 doc.setCategory(rule.category());
@@ -296,7 +296,7 @@ public class SharePointMigrationCategorizerService {
                 if (rule.label() != null && (doc.getLabel() == null || doc.getLabel().isBlank())) {
                     doc.setLabel(rule.label());
                 }
-                applyDisplayName(doc, MigrationCategorizerRules.buildDisplayName(
+                applyDisplayName(doc, EmployeeDocumentCategorizerRules.buildDisplayName(
                         rule.category(), doc.getOriginalFilename(), path, null));
                 if (aiEnabled) doc.setNeedsReview(true);
             }
@@ -589,7 +589,7 @@ public class SharePointMigrationCategorizerService {
 
     LinkSummary linkSigningCases(List<String> errors) {
         List<String> caseKeys = QuarkusTransaction.requiringNew().call(() ->
-                signingCaseRepository.findBySharepointUploadStatus("UPLOADED").stream()
+                signingCaseRepository.findCompletedNotArchived().stream()
                         .map(SigningCase::getCaseKey)
                         .toList());
 
@@ -635,7 +635,6 @@ public class SharePointMigrationCategorizerService {
             return LinkOutcome.ALREADY_LINKED;
         }
 
-        String urlFilename = filenameFromUrl(signingCase.getSharepointFileUrl());
         Pattern pattern = signedPattern(signingCase.getDocumentName());
 
         List<EmployeeDocument> candidates = EmployeeDocument.<EmployeeDocument>list(
@@ -643,7 +642,7 @@ public class SharePointMigrationCategorizerService {
                         signingCase.getUserUuid(),
                         dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.MIGRATION)
                 .stream()
-                .filter(doc -> matchesExactly(doc.getOriginalFilename(), urlFilename, pattern))
+                .filter(doc -> matchesExactly(doc.getOriginalFilename(), pattern))
                 .toList();
 
         if (candidates.isEmpty()) return LinkOutcome.UNMATCHED;
@@ -652,18 +651,15 @@ public class SharePointMigrationCategorizerService {
             return LinkOutcome.LINKED;
         }
 
-        // More than one hit has two legitimate shapes, and refusing both alike
-        // stranded a third of the linkable cases in production.
-        //
-        // (a) One signing batch produced SEVERAL documents. The legacy writer
-        //     stamped every document of a case with the same
-        //     {@code _signed_{timestamp}}, so an identical timestamp across the
-        //     candidates is proof they belong to the same envelope — a contract
-        //     plus its Loyalitetsprogram or Kundeklausul. Link them all.
-        // (b) The SAME document was filed more than once, minutes or a day
-        //     apart, so the timestamps differ. Here SharePoint's own
-        //     {@code sharepoint_file_url} is the tiebreak: it names the file the
-        //     case actually points at.
+        // More than one hit has one legitimate shape, and refusing it
+        // stranded a third of the linkable cases in production: one signing
+        // batch produced SEVERAL documents. The legacy writer stamped every
+        // document of a case with the same {@code _signed_{timestamp}}, so an
+        // identical timestamp across the candidates is proof they belong to
+        // the same envelope — a contract plus its Loyalitetsprogram or
+        // Kundeklausul. Link them all. The SAME document filed more than once
+        // (differing timestamps) stays AMBIGUOUS for human eyes — the legacy
+        // upload URL that used to break that tie is gone with the migration.
         List<EmployeeDocument> sameBatch = candidates.stream()
                 .collect(java.util.stream.Collectors.groupingBy(
                         d -> signedTimestamp(d.getOriginalFilename())))
@@ -673,15 +669,6 @@ public class SharePointMigrationCategorizerService {
                 .orElse(null);
         if (sameBatch != null) {
             link(signingCase, sameBatch, caseKey);
-            return LinkOutcome.LINKED;
-        }
-
-        List<EmployeeDocument> urlNamed = candidates.stream()
-                .filter(d -> urlFilename != null
-                        && urlFilename.equalsIgnoreCase(d.getOriginalFilename()))
-                .toList();
-        if (urlNamed.size() == 1) {
-            link(signingCase, urlNamed, caseKey);
             return LinkOutcome.LINKED;
         }
         return LinkOutcome.AMBIGUOUS;
@@ -730,45 +717,25 @@ public class SharePointMigrationCategorizerService {
 
     /**
      * Exact matching only (A4): the migrated file's stored filename must
-     * equal the legacy uploaded filename, or match the exact
-     * {@code {sanitizedDocName}_signed_{timestamp}.pdf} pattern.
+     * match the exact {@code {sanitizedDocName}_signed_{timestamp}.pdf}
+     * pattern.
      */
-    static boolean matchesExactly(String storedFilename, String urlFilename, Pattern signedPattern) {
+    static boolean matchesExactly(String storedFilename, Pattern signedPattern) {
         if (storedFilename == null) return false;
-        if (urlFilename != null && storedFilename.equalsIgnoreCase(urlFilename)) {
-            return storedFilename.toLowerCase(Locale.ROOT).contains("_signed_");
-        }
         return signedPattern != null && signedPattern.matcher(storedFilename).matches();
-    }
-
-    /** Last path segment of the SharePoint URL, decoded + store-sanitized. */
-    static String filenameFromUrl(String sharePointFileUrl) {
-        if (sharePointFileUrl == null || sharePointFileUrl.isBlank()) return null;
-        String path = sharePointFileUrl;
-        int query = path.indexOf('?');
-        if (query >= 0) path = path.substring(0, query);
-        int slash = path.lastIndexOf('/');
-        if (slash >= 0) path = path.substring(slash + 1);
-        try {
-            path = URLDecoder.decode(path, StandardCharsets.UTF_8);
-        } catch (Exception ignored) {
-            // keep the raw segment
-        }
-        String sanitized = EmployeeDocumentService.sanitizeFilename(path);
-        return sanitized.isBlank() ? null : sanitized;
     }
 
     /**
      * {@code ^{sanitizedDocName}_signed_<anything>.pdf$}, case-insensitive,
      * with spaces and underscores treated as interchangeable.
      *
-     * <p>That last part is not cosmetic. The legacy SharePoint upload path
-     * wrote spaces as underscores, so a case whose {@code document_name}
+     * <p>That last part is not cosmetic. The legacy (pre-migration) upload
+     * path wrote spaces as underscores, so a case whose {@code document_name}
      * contains a space — "Timelønskontrakt_Joao Almeida" — produced a stored
      * file named "Timelønskontrakt_Joao_Almeida_signed_….pdf" that its own
      * pattern could never match. Those cases fell through to the URL-equality
-     * branch, which only fires when the timestamp matches exactly too, and
-     * were reported UNMATCHED whenever it did not.</p>
+     * tiebreak of the day and were reported UNMATCHED whenever it did not
+     * fire.</p>
      */
     static Pattern signedPattern(String documentName) {
         if (documentName == null || documentName.isBlank()) return null;

@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 
 /**
  * The deterministic §9.5 fallback table — the sole categorization path
- * while the migration AI kill switch is OFF, and the landing spot for
+ * while the AI categorization switch is OFF, and the landing spot for
  * every MEDIUM/LOW/inconclusive AI result. Pure functions, first match
  * wins top-to-bottom (ordering matters: DECLARATION is checked before
  * CONTRACT so "Tro og love-erklæring" doesn't hit "aftale").
@@ -21,9 +21,9 @@ import java.util.regex.Pattern;
  * <p>Matching is case- and diacritic-insensitive: both the input and the
  * keywords are folded to the æ→ae / ø→oe / å→aa canonical form.</p>
  */
-public final class MigrationCategorizerRules {
+public final class EmployeeDocumentCategorizerRules {
 
-    private MigrationCategorizerRules() { }
+    private EmployeeDocumentCategorizerRules() { }
 
     record RuleResult(EmployeeDocumentCategory category, boolean archived, String label) { }
 
@@ -100,16 +100,16 @@ public final class MigrationCategorizerRules {
      *
      * <p>The date segment is <b>omitted entirely</b> unless a real date
      * is derivable from the filename (or handed in by the caller). It
-     * deliberately never falls back to {@code created_at}: that column
-     * carries SharePoint's {@code lastModifiedDateTime}, so a 2019
-     * contract re-filed in 2021 would be stamped 2021. A year-only hit
-     * renders as {@code 2021}.</p>
+     * deliberately never falls back to {@code created_at}: for migrated
+     * rows that column carries the legacy store's last-modified time, so
+     * a 2019 contract re-filed in 2021 would be stamped 2021. A year-only
+     * hit renders as {@code 2021}.</p>
      *
      * <p>The extension always comes from the original file (enforced by
      * {@link EmployeeDocumentService#normalizeDisplayName}), never from
      * anything parsed here.</p>
      *
-     * <p><b>Not migration-only.</b> The conversion promotion writer
+     * <p><b>Not categorizer-only.</b> The conversion promotion writer
      * ({@link dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService})
      * names its documents through this same builder, so a hired
      * candidate's contract reads like every migrated one instead of

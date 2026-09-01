@@ -2,7 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource;
@@ -33,9 +33,9 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * The S3→S3 conversion promotion (employee-documents spec §6.5.3) — the
- * replacement for {@code SharePointEmployeeFolderService.copyToEmployeeFolder}
- * once the {@code employee_documents.writers.promotion} toggle is ON.
+ * The S3→S3 conversion promotion (employee-documents spec §6.5.3): the
+ * hired candidate's signed documents, appendices and identity documents
+ * move from recruitment staging into the new employee's document store.
  *
  * <h3>What promotes</h3>
  * <b>Only what came back signed.</b> That is the {@code signed_pdfs_snapshot}
@@ -210,7 +210,7 @@ public class S3EmployeePromotionService {
                         // Same builder the migration corpus was named with, so a
                         // hire's contract reads "Ansættelseskontrakt" next to the
                         // migrated ones rather than keeping its dossier filename.
-                        MigrationCategorizerRules.buildDisplayName(
+                        EmployeeDocumentCategorizerRules.buildDisplayName(
                                 item.category(), item.filename(), null, null),
                         item.category(),
                         null,
@@ -410,7 +410,7 @@ public class S3EmployeePromotionService {
         }
     }
 
-    /** Deterministic identity-document filename mirroring the SharePoint layout. */
+    /** Deterministic identity-document filename (the original upload name, else a typed fallback). */
     private static String onboardingFilename(OnboardingUploadSubmission sub) {
         String original = sub.getOriginalFilename();
         if (original != null && !original.isBlank()) return original;

@@ -1,7 +1,7 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import dk.trustworks.intranet.apis.openai.OpenAIService;
-import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCategorizerService.AiVerdict;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerService.AiVerdict;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource;
@@ -33,12 +33,12 @@ import static org.mockito.Mockito.verify;
  * never overwritten.
  */
 @QuarkusTest
-class SharePointMigrationCategorizerIntegrationTest {
+class EmployeeDocumentCategorizerIntegrationTest {
 
     private static final String AI_KEY = "employee_documents.migration.ai.enabled";
 
     @Inject
-    SharePointMigrationCategorizerService categorizer;
+    EmployeeDocumentCategorizerService categorizer;
 
     @Inject
     AppSettingService appSettingService;

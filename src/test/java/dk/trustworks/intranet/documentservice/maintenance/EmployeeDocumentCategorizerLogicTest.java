@@ -1,7 +1,7 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.documentservice.migration.services.SharePointMigrationCategorizerService.AiVerdict;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerService.AiVerdict;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import org.junit.jupiter.api.Test;
 
@@ -19,12 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * of AI output, image exclusion from the excerpt pass, and the exact
  * deterministic signing-linkage matching (decision A4).
  */
-class SharePointMigrationCategorizerLogicTest {
+class EmployeeDocumentCategorizerLogicTest {
 
-    private final SharePointMigrationCategorizerService service = newService();
+    private final EmployeeDocumentCategorizerService service = newService();
 
-    private static SharePointMigrationCategorizerService newService() {
-        SharePointMigrationCategorizerService service = new SharePointMigrationCategorizerService();
+    private static EmployeeDocumentCategorizerService newService() {
+        EmployeeDocumentCategorizerService service = new EmployeeDocumentCategorizerService();
         service.objectMapper = new ObjectMapper();
         return service;
     }
@@ -174,65 +174,50 @@ class SharePointMigrationCategorizerLogicTest {
 
     @Test
     void onlyPdfAndDocxAreExcerptEligible() {
-        assertTrue(SharePointMigrationCategorizerService.excerptEligible("application/pdf"));
-        assertTrue(SharePointMigrationCategorizerService.excerptEligible(
+        assertTrue(EmployeeDocumentCategorizerService.excerptEligible("application/pdf"));
+        assertTrue(EmployeeDocumentCategorizerService.excerptEligible(
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
-        assertFalse(SharePointMigrationCategorizerService.excerptEligible("image/jpeg"));
-        assertFalse(SharePointMigrationCategorizerService.excerptEligible("image/png"));
-        assertFalse(SharePointMigrationCategorizerService.excerptEligible("message/rfc822"));
-        assertFalse(SharePointMigrationCategorizerService.excerptEligible("application/octet-stream"));
-        assertFalse(SharePointMigrationCategorizerService.excerptEligible(null));
+        assertFalse(EmployeeDocumentCategorizerService.excerptEligible("image/jpeg"));
+        assertFalse(EmployeeDocumentCategorizerService.excerptEligible("image/png"));
+        assertFalse(EmployeeDocumentCategorizerService.excerptEligible("message/rfc822"));
+        assertFalse(EmployeeDocumentCategorizerService.excerptEligible("application/octet-stream"));
+        assertFalse(EmployeeDocumentCategorizerService.excerptEligible(null));
     }
 
     // ── Signing linkage: exact matching only (decision A4) ─────────────────
 
     @Test
-    void filenameFromUrlDecodesAndSanitizes() {
-        assertEquals("Ansaettelseskontrakt_signed_2025-12-11.pdf",
-                SharePointMigrationCategorizerService.filenameFromUrl(
-                        "https://trustworks.sharepoint.com/sites/hr/Docs/Ansaettelseskontrakt_signed_2025-12-11.pdf?web=1"));
-        assertEquals("Kontrakt med mellemrum_signed_x.pdf",
-                SharePointMigrationCategorizerService.filenameFromUrl(
-                        "https://x/y/Kontrakt%20med%20mellemrum_signed_x.pdf"));
-        assertNull(SharePointMigrationCategorizerService.filenameFromUrl(null));
-        assertNull(SharePointMigrationCategorizerService.filenameFromUrl(""));
-    }
-
-    @Test
     void signedPatternMatchesExactBaseOnly() {
-        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Ansættelseskontrakt.pdf");
+        Pattern pattern = EmployeeDocumentCategorizerService.signedPattern("Ansættelseskontrakt.pdf");
         assertTrue(pattern.matcher("Ansættelseskontrakt_signed_2025-12-11.pdf").matches());
         assertFalse(pattern.matcher("Anden kontrakt_signed_2025-12-11.pdf").matches());
         assertFalse(pattern.matcher("Ansættelseskontrakt.pdf").matches());
     }
 
     @Test
-    void matchesExactlyRequiresUrlFilenameOrPattern() {
-        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Kontrakt.pdf");
+    void matchesExactlyRequiresThePattern() {
+        Pattern pattern = EmployeeDocumentCategorizerService.signedPattern("Kontrakt.pdf");
 
-        // URL filename match (and it must look like a signed artifact).
-        assertTrue(SharePointMigrationCategorizerService.matchesExactly(
-                "Kontrakt_signed_2024.pdf", "Kontrakt_signed_2024.pdf", pattern));
-        // A same-name match that is NOT a signed artifact never links.
-        assertFalse(SharePointMigrationCategorizerService.matchesExactly(
-                "Kontrakt.pdf", "Kontrakt.pdf", null));
-        // Pattern match without URL filename.
-        assertTrue(SharePointMigrationCategorizerService.matchesExactly(
-                "Kontrakt_signed_2024-01-01.pdf", null, pattern));
+        // Pattern match.
+        assertTrue(EmployeeDocumentCategorizerService.matchesExactly(
+                "Kontrakt_signed_2024-01-01.pdf", pattern));
+        // A same-name file that is NOT a signed artifact never links.
+        assertFalse(EmployeeDocumentCategorizerService.matchesExactly(
+                "Kontrakt.pdf", pattern));
         // No signals ⇒ no link.
-        assertFalse(SharePointMigrationCategorizerService.matchesExactly(
-                "Kontrakt_signed_2024-01-01.pdf", null, null));
-        assertFalse(SharePointMigrationCategorizerService.matchesExactly(null, "x.pdf", pattern));
+        assertFalse(EmployeeDocumentCategorizerService.matchesExactly(
+                "Kontrakt_signed_2024-01-01.pdf", null));
+        assertFalse(EmployeeDocumentCategorizerService.matchesExactly(null, pattern));
     }
 
     @Test
     void signedPatternTreatsSpacesAndUnderscoresAsInterchangeable() {
-        // The legacy SharePoint upload wrote spaces as underscores, so a
+        // The legacy (pre-migration) upload wrote spaces as underscores, so a
         // document name carrying a space produced a stored file its own
         // pattern could never match. Production case 6a16b54e:
         //   document_name = "Timelønskontrakt_Joao Almeida"
         //   stored file   = "Timelønskontrakt_Joao_Almeida_signed_2026-05-28_115036.pdf"
-        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Timelønskontrakt_Joao Almeida");
+        Pattern pattern = EmployeeDocumentCategorizerService.signedPattern("Timelønskontrakt_Joao Almeida");
         assertTrue(pattern.matcher("Timelønskontrakt_Joao_Almeida_signed_2026-05-28_115036.pdf").matches());
         assertTrue(pattern.matcher("Timelønskontrakt Joao Almeida_signed_2026-05-28_115036.pdf").matches());
 
@@ -244,43 +229,43 @@ class SharePointMigrationCategorizerLogicTest {
 
     @Test
     void signedPatternStillRequiresTheWholeName() {
-        Pattern pattern = SharePointMigrationCategorizerService.signedPattern("Kontrakt.pdf");
+        Pattern pattern = EmployeeDocumentCategorizerService.signedPattern("Kontrakt.pdf");
         assertFalse(pattern.matcher("Tillæg Kontrakt_signed_2026-01-01.pdf").matches());
         assertFalse(pattern.matcher("Kontrakt udvidet_signed_2026-01-01.pdf").matches());
-        assertNull(SharePointMigrationCategorizerService.signedPattern("   "));
-        assertNull(SharePointMigrationCategorizerService.signedPattern(null));
+        assertNull(EmployeeDocumentCategorizerService.signedPattern("   "));
+        assertNull(EmployeeDocumentCategorizerService.signedPattern(null));
     }
 
     @Test
     void signedTimestampIsolatesTheBatchStamp() {
         // Every document of one signing envelope carries the same stamp —
         // that is what tells a multi-document case apart from a re-filing.
-        assertEquals("2026-03-06_172620", SharePointMigrationCategorizerService.signedTimestamp(
+        assertEquals("2026-03-06_172620", EmployeeDocumentCategorizerService.signedTimestamp(
                 "Ansættelseskontrakt_signed_2026-03-06_172620.pdf"));
-        assertEquals("2026-03-06_172620", SharePointMigrationCategorizerService.signedTimestamp(
+        assertEquals("2026-03-06_172620", EmployeeDocumentCategorizerService.signedTimestamp(
                 "Din_del_af_Trustworks_-_Loyalitetsprogram_signed_2026-03-06_172620.pdf"));
         // Different stamps must NOT group: a document filed twice is not a batch.
         assertNotEquals(
-                SharePointMigrationCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103029.pdf"),
-                SharePointMigrationCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103527.pdf"));
+                EmployeeDocumentCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103029.pdf"),
+                EmployeeDocumentCategorizerService.signedTimestamp("Fratrædelseserklæring_signed_2026-06-27_103527.pdf"));
     }
 
     @Test
     void signedTimestampFallsBackToTheWholeNameWhenUnmarked() {
         // No marker ⇒ the filename itself is the key, so two unmarked files
         // group separately instead of being mistaken for one envelope.
-        assertEquals("Kontrakt.pdf", SharePointMigrationCategorizerService.signedTimestamp("Kontrakt.pdf"));
-        assertEquals("", SharePointMigrationCategorizerService.signedTimestamp(null));
+        assertEquals("Kontrakt.pdf", EmployeeDocumentCategorizerService.signedTimestamp("Kontrakt.pdf"));
+        assertEquals("", EmployeeDocumentCategorizerService.signedTimestamp(null));
         assertNotEquals(
-                SharePointMigrationCategorizerService.signedTimestamp("A.pdf"),
-                SharePointMigrationCategorizerService.signedTimestamp("B.pdf"));
+                EmployeeDocumentCategorizerService.signedTimestamp("A.pdf"),
+                EmployeeDocumentCategorizerService.signedTimestamp("B.pdf"));
     }
 
     // ── DOCX text extraction helper ────────────────────────────────────────
 
     @Test
     void docxTextReturnsNullOnGarbage() {
-        assertNull(SharePointMigrationCategorizerService.docxText(new byte[]{1, 2, 3}));
+        assertNull(EmployeeDocumentCategorizerService.docxText(new byte[]{1, 2, 3}));
     }
 
     // ── Re-run guard ───────────────────────────────────────────────────────
@@ -294,17 +279,17 @@ class SharePointMigrationCategorizerLogicTest {
     void aRealCategoryIsNeverReconsidered() {
         for (EmployeeDocumentCategory placed : EmployeeDocumentCategory.values()) {
             if (placed == EmployeeDocumentCategory.OTHER) continue;
-            assertTrue(SharePointMigrationCategorizerService.skip(placed, false, false));
-            assertTrue(SharePointMigrationCategorizerService.skip(placed, false, true));
-            assertTrue(SharePointMigrationCategorizerService.skip(placed, true, true));
+            assertTrue(EmployeeDocumentCategorizerService.skip(placed, false, false));
+            assertTrue(EmployeeDocumentCategorizerService.skip(placed, false, true));
+            assertTrue(EmployeeDocumentCategorizerService.skip(placed, true, true));
         }
     }
 
     @Test
     void anUnflaggedOtherIsAlwaysACandidate() {
-        assertFalse(SharePointMigrationCategorizerService.skip(
+        assertFalse(EmployeeDocumentCategorizerService.skip(
                 EmployeeDocumentCategory.OTHER, false, false));
-        assertFalse(SharePointMigrationCategorizerService.skip(
+        assertFalse(EmployeeDocumentCategorizerService.skip(
                 EmployeeDocumentCategory.OTHER, false, true));
     }
 
@@ -317,9 +302,9 @@ class SharePointMigrationCategorizerLogicTest {
      */
     @Test
     void aFlaggedOtherIsStrandedUntilTheCallerAsksForIt() {
-        assertTrue(SharePointMigrationCategorizerService.skip(
+        assertTrue(EmployeeDocumentCategorizerService.skip(
                 EmployeeDocumentCategory.OTHER, true, false));
-        assertFalse(SharePointMigrationCategorizerService.skip(
+        assertFalse(EmployeeDocumentCategorizerService.skip(
                 EmployeeDocumentCategory.OTHER, true, true));
     }
 }

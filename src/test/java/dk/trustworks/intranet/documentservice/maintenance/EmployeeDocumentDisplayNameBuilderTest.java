@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import org.junit.jupiter.api.Test;
@@ -15,14 +15,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Pattern: {@code {YYYY-MM-DD}_{CATEGORY}_{subject}.{ext}}, with the
  * date segment omitted entirely when no real date is derivable. The
- * builder must never invent a date: {@code created_at} carries
- * SharePoint's upload timestamp, so a 2019 contract re-filed in 2021
- * would otherwise be stamped 2021.</p>
+ * builder must never invent a date: for migrated rows {@code created_at}
+ * carries the legacy store's upload timestamp, so a 2019 contract
+ * re-filed in 2021 would otherwise be stamped 2021.</p>
  */
-class MigrationDisplayNameBuilderTest {
+class EmployeeDocumentDisplayNameBuilderTest {
 
     private static String build(EmployeeDocumentCategory category, String filename) {
-        return MigrationCategorizerRules.buildDisplayName(category, filename, "", null);
+        return EmployeeDocumentCategorizerRules.buildDisplayName(category, filename, "", null);
     }
 
     // ── Date formats ───────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ class MigrationDisplayNameBuilderTest {
     @Test
     void noDateMeansTheSegmentIsOmittedEntirely() {
         assertEquals("CONTRACT_kontrakt-anders.docx",
-                MigrationCategorizerRules.buildDisplayName(EmployeeDocumentCategory.CONTRACT,
+                EmployeeDocumentCategorizerRules.buildDisplayName(EmployeeDocumentCategory.CONTRACT,
                         "Kontrakt Anders FINAL FINAL.docx", "Arkiv", null));
     }
 
@@ -77,7 +77,7 @@ class MigrationDisplayNameBuilderTest {
     @Test
     void aCallerSuppliedDateWins() {
         assertEquals("2019-03-04_IDENTITY_img.jpg",
-                MigrationCategorizerRules.buildDisplayName(EmployeeDocumentCategory.IDENTITY,
+                EmployeeDocumentCategorizerRules.buildDisplayName(EmployeeDocumentCategory.IDENTITY,
                         "IMG_4471.jpg", "", LocalDate.of(2019, 3, 4)));
     }
 
@@ -108,7 +108,7 @@ class MigrationDisplayNameBuilderTest {
     @Test
     void aFilenameWithNoWordsFallsBackToTheFolderNameForItsSubject() {
         assertEquals("2019_VACATION_ferieaftaler.pdf",
-                MigrationCategorizerRules.buildDisplayName(EmployeeDocumentCategory.VACATION,
+                EmployeeDocumentCategorizerRules.buildDisplayName(EmployeeDocumentCategory.VACATION,
                         "2019.pdf", "HR/Ferieaftaler", null));
     }
 
@@ -120,7 +120,7 @@ class MigrationDisplayNameBuilderTest {
     @Test
     void aDocumentWithNothingToSayIsStillNamedByItsCategory() {
         assertEquals("OTHER.pdf",
-                MigrationCategorizerRules.buildDisplayName(EmployeeDocumentCategory.OTHER,
+                EmployeeDocumentCategorizerRules.buildDisplayName(EmployeeDocumentCategory.OTHER,
                         "123.pdf", "", null));
     }
 
@@ -151,6 +151,6 @@ class MigrationDisplayNameBuilderTest {
 
     @Test
     void aNullCategoryYieldsNoName() {
-        assertNull(MigrationCategorizerRules.buildDisplayName(null, "x.pdf", "", null));
+        assertNull(EmployeeDocumentCategorizerRules.buildDisplayName(null, "x.pdf", "", null));
     }
 }

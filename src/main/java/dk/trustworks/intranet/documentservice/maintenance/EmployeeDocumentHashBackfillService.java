@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.documentservice.migration.services;
+package dk.trustworks.intranet.documentservice.maintenance;
 
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
@@ -15,8 +15,9 @@ import java.util.List;
  * Backfills {@code employee_documents.sha256} for rows that never got one.
  *
  * <p><b>Why this exists.</b> The hash is computed on byte-level writes
- * only, so every server-side S3→S3 copy (the SharePoint migration, the
- * conversion promotion) left it null — roughly a quarter of the corpus.
+ * only, so every server-side S3→S3 copy (the completed migration into
+ * the store, the conversion promotion) left it null — roughly a quarter
+ * of the corpus at the time.
  * That is invisible until something needs to prove two rows hold the same
  * document: duplicate detection then falls back to filename + exact byte
  * size, which is strong evidence but not proof, and proof is exactly what
