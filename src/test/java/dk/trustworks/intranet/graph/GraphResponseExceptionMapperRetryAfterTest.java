@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.sharepoint.client;
+package dk.trustworks.intranet.graph;
 
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
@@ -58,8 +58,8 @@ class GraphResponseExceptionMapperRetryAfterTest {
 
     @Test
     void otherStatuses_keepTheirExistingPredicates() {
-        // Blast-radius guard: SharePoint migration, employee docs and the
-        // recruitment recheck all branch on these.
+        // Blast-radius guard: the recruitment calendar recheck and failure
+        // classification branch on these.
         var notFound = mapper.toThrowable(response(404, "Not Found",
                 "{\"error\":{\"code\":\"ErrorInvalidUser\"}}", null, null));
         assertTrue(notFound.isNotFound());

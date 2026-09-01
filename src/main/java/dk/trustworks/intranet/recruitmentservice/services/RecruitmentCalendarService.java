@@ -9,9 +9,9 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventRequest;
-import dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarEventRequest;
+import dk.trustworks.intranet.graph.GraphMailboxConcurrencyLimiter;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -144,10 +144,10 @@ public class RecruitmentCalendarService {
      */
     @Inject
     @RestClient
-    Instance<GraphApiClient> graphApiClientInstance;
+    Instance<GraphCalendarClient> graphApiClientInstance;
 
     /** Test seam; resolved from {@link #graphApiClientInstance} on first use. */
-    GraphApiClient graphApiClient;
+    GraphCalendarClient graphApiClient;
 
     /**
      * The tenant-side MailboxConcurrency guard. Application-scoped on
@@ -234,7 +234,7 @@ public class RecruitmentCalendarService {
                 .map(String::trim).orElse(null);
     }
 
-    private GraphApiClient graph() {
+    private GraphCalendarClient graph() {
         if (graphApiClient == null) {
             graphApiClient = graphApiClientInstance.get();
         }
@@ -330,8 +330,8 @@ public class RecruitmentCalendarService {
      * the 504-is-retryable rule directly.
      */
     static GraphWriteFailure classifyGraphFailure(Exception e) {
-        if (e instanceof dk.trustworks.intranet.sharepoint.client
-                .GraphResponseExceptionMapper.SharePointException graphError) {
+        if (e instanceof dk.trustworks.intranet.graph
+                .GraphResponseExceptionMapper.GraphApiException graphError) {
             boolean retryable = graphError.isThrottled()
                     || graphError.isServerError()
                     || graphError.getStatusCode() == 408;
@@ -465,7 +465,7 @@ public class RecruitmentCalendarService {
                     interview.getUuid());
             return CreateResult.skipped();
         }
-        GraphApiClient.CalendarEvent created;
+        GraphCalendarClient.CalendarEvent created;
         try {
             created = graph().createCalendarEvent(
                     organizer, buildInternalEvent(interview, candidate, position, true, false, organizer));
@@ -551,7 +551,7 @@ public class RecruitmentCalendarService {
             return new CandidateEventOutcome(null, null);
         }
         try {
-            GraphApiClient.CalendarEvent created = graph().createCalendarEvent(
+            GraphCalendarClient.CalendarEvent created = graph().createCalendarEvent(
                     candidateOrganizer(internalOrganizer),
                     buildCandidateEvent(interview, candidate, position, joinUrl, true));
             return new CandidateEventOutcome(created != null ? created.id() : null, null);
@@ -590,7 +590,7 @@ public class RecruitmentCalendarService {
                 return new UpdateResult(null, false, null);
             }
             boolean split = interview.getGraphCandidateEventId() != null;
-            GraphApiClient.CalendarEvent updated = graph().updateCalendarEvent(
+            GraphCalendarClient.CalendarEvent updated = graph().updateCalendarEvent(
                     organizer, interview.getGraphEventId(),
                     buildInternalEvent(interview, candidate, position, false, !split, organizer));
             String joinUrl = updated != null ? joinUrlOf(updated) : null;
@@ -623,7 +623,7 @@ public class RecruitmentCalendarService {
         }
     }
 
-    private static String joinUrlOf(GraphApiClient.CalendarEvent event) {
+    private static String joinUrlOf(GraphCalendarClient.CalendarEvent event) {
         return event.onlineMeeting() != null ? event.onlineMeeting().joinUrl() : null;
     }
 
@@ -645,7 +645,7 @@ public class RecruitmentCalendarService {
             if (organizer == null) {
                 return unknown;
             }
-            GraphApiClient.CalendarEventDetails details = graph().getCalendarEventDetails(
+            GraphCalendarClient.CalendarEventDetails details = graph().getCalendarEventDetails(
                     organizer, interview.getGraphEventId(), "start,attendees,onlineMeeting");
             if (details == null) {
                 return unknown;
@@ -668,7 +668,7 @@ public class RecruitmentCalendarService {
                 return status;
             }
             try {
-                GraphApiClient.CalendarEventDetails candidateDetails =
+                GraphCalendarClient.CalendarEventDetails candidateDetails =
                         graph().getCalendarEventDetails(candidateOrganizer(organizer),
                                 interview.getGraphCandidateEventId(),
                                 "start,attendees,onlineMeeting");
@@ -709,7 +709,7 @@ public class RecruitmentCalendarService {
                                                  String candidateUuid,
                                                  String candidateEmail,
                                                  LocalDateTime scheduledAt,
-                                                 GraphApiClient.CalendarEventDetails details) {
+                                                 GraphCalendarClient.CalendarEventDetails details) {
         Map<String, String> interviewerUuidByEmail = new HashMap<>();
         emailByInterviewerUuid.forEach((uuid, email) ->
                 interviewerUuidByEmail.put(email.toLowerCase(Locale.ROOT), uuid));
@@ -720,7 +720,7 @@ public class RecruitmentCalendarService {
         List<CalendarStatusResponse.Rsvp> rsvps = new ArrayList<>();
         Set<String> placedInterviewerUuids = new HashSet<>();
         if (details.attendees() != null) {
-            for (GraphApiClient.CalendarEventDetails.EventAttendee attendee : details.attendees()) {
+            for (GraphCalendarClient.CalendarEventDetails.EventAttendee attendee : details.attendees()) {
                 if (attendee.emailAddress() == null || attendee.emailAddress().address() == null) {
                     continue;
                 }
@@ -903,7 +903,7 @@ public class RecruitmentCalendarService {
         int page = 0;
         boolean complete = true;
         do {
-            GraphApiClient.RoomCollectionResponse response;
+            GraphCalendarClient.RoomCollectionResponse response;
             try {
                 response = graph().listRoomsPaged(ROOM_PAGE_SIZE, skipToken);
             } catch (Exception e) {
@@ -1456,9 +1456,9 @@ public class RecruitmentCalendarService {
             return BatchOutcome.failed();
         }
         try {
-            GraphApiClient.ScheduleCollectionResponse response = graph().getSchedule(
+            GraphCalendarClient.ScheduleCollectionResponse response = graph().getSchedule(
                     caller,
-                    new GraphApiClient.ScheduleRequest(
+                    new GraphCalendarClient.ScheduleRequest(
                             batch,
                             new CalendarEventRequest.DateTimeTimeZone(
                                     windowStart.toString(), EVENT_TIME_ZONE),
@@ -1469,7 +1469,7 @@ public class RecruitmentCalendarService {
                 return BatchOutcome.ok(Map.of());
             }
             Map<String, AvailabilitySlotSuggester.MailboxWindowSchedule> batchResult = new HashMap<>();
-            for (GraphApiClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
+            for (GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation info : response.value()) {
                 if (info.scheduleId() == null) {
                     continue;
                 }
@@ -1494,8 +1494,8 @@ public class RecruitmentCalendarService {
 
     /** Graph's 429 {@code ApplicationThrottled}, whatever shape it arrives in. */
     static boolean isGraphThrottled(Exception e) {
-        if (e instanceof dk.trustworks.intranet.sharepoint.client
-                .GraphResponseExceptionMapper.SharePointException graphError) {
+        if (e instanceof dk.trustworks.intranet.graph
+                .GraphResponseExceptionMapper.GraphApiException graphError) {
             return graphError.isThrottled();
         }
         if (e instanceof WebApplicationException webError) {
@@ -1507,8 +1507,8 @@ public class RecruitmentCalendarService {
 
     /** The {@code Retry-After} Graph asked for, when the client preserved it. */
     static Integer graphRetryAfterSeconds(Exception e) {
-        if (e instanceof dk.trustworks.intranet.sharepoint.client
-                .GraphResponseExceptionMapper.SharePointException graphError) {
+        if (e instanceof dk.trustworks.intranet.graph
+                .GraphResponseExceptionMapper.GraphApiException graphError) {
             return graphError.getRetryAfterSeconds();
         }
         return null;
@@ -1521,7 +1521,7 @@ public class RecruitmentCalendarService {
      * never break availability itself.
      */
     static AvailabilitySlotSuggester.WorkingHours toWorkingHours(
-            GraphApiClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours workingHours) {
+            GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours workingHours) {
         if (workingHours == null) {
             return null;
         }
@@ -1575,7 +1575,7 @@ public class RecruitmentCalendarService {
     public String createHoldEvent(String mailbox, String subject, String bodyText,
                                   LocalDateTime start, LocalDateTime end,
                                   String transactionId) {
-        GraphApiClient.CalendarEvent created = graph().createCalendarEvent(mailbox,
+        GraphCalendarClient.CalendarEvent created = graph().createCalendarEvent(mailbox,
                 new CalendarEventRequest(
                         subject,
                         new CalendarEventRequest.ItemBody("text", bodyText),
@@ -1617,16 +1617,16 @@ public class RecruitmentCalendarService {
     /**
      * The Graph client's 404, whatever shape it arrives in (F18,
      * production 2026-08-15): the REST client's registered
-     * {@link dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper}
-     * throws its own {@code SharePointException} (a plain
+     * {@link dk.trustworks.intranet.graph.GraphResponseExceptionMapper}
+     * throws its own {@code GraphApiException} (a plain
      * RuntimeException carrying the status), so a catch on
      * {@code WebApplicationException} NEVER sees Graph 404s — the
      * reconciliation probe logged every deleted hold as a failed probe
      * and MISSING detection was dead. Both shapes are recognized here.
      */
     static boolean isGraphNotFound(Exception e) {
-        if (e instanceof dk.trustworks.intranet.sharepoint.client
-                .GraphResponseExceptionMapper.SharePointException graphError) {
+        if (e instanceof dk.trustworks.intranet.graph
+                .GraphResponseExceptionMapper.GraphApiException graphError) {
             return graphError.isNotFound();
         }
         if (e instanceof WebApplicationException webError) {
@@ -1660,7 +1660,7 @@ public class RecruitmentCalendarService {
         // meetings two hours after the slot (the actual cause of the
         // 08-14 round-hour rejections first blamed on boundary
         // semantics). Explicit Europe/Copenhagen offsets pin the window.
-        GraphApiClient.CalendarViewResponse response = graph().calendarView(
+        GraphCalendarClient.CalendarViewResponse response = graph().calendarView(
                 mailbox, graphWindowParam(start), graphWindowParam(end),
                 "id,showAs,isCancelled,start,end", 100);
         if (response == null || response.value() == null) {
@@ -1672,7 +1672,7 @@ public class RecruitmentCalendarService {
                         event.showAs() == null ? "" : event.showAs()))
                 .filter(event -> !Boolean.TRUE.equals(event.isCancelled()))
                 .filter(event -> strictlyOverlaps(event, start, end))
-                .map(GraphApiClient.CalendarViewResponse.CalendarViewEvent::id)
+                .map(GraphCalendarClient.CalendarViewResponse.CalendarViewEvent::id)
                 .toList();
     }
 
@@ -1683,7 +1683,7 @@ public class RecruitmentCalendarService {
      * reading: never silently pass a conflict we cannot place).
      */
     static boolean strictlyOverlaps(
-            GraphApiClient.CalendarViewResponse.CalendarViewEvent event,
+            GraphCalendarClient.CalendarViewResponse.CalendarViewEvent event,
             LocalDateTime start, LocalDateTime end) {
         LocalDateTime eventStart = parseGraphDateTime(event.start());
         LocalDateTime eventEnd = parseGraphDateTime(event.end());
@@ -1705,7 +1705,7 @@ public class RecruitmentCalendarService {
     /** Graph answers e.g. {@code 2026-08-25T14:00:00.0000000} (wall
      * clock in the Prefer header's zone). Null on absence or surprise. */
     static LocalDateTime parseGraphDateTime(
-            GraphApiClient.CalendarViewResponse.GraphDateTime value) {
+            GraphCalendarClient.CalendarViewResponse.GraphDateTime value) {
         if (value == null || value.dateTime() == null) {
             return null;
         }

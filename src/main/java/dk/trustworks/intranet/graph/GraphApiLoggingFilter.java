@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.sharepoint.client;
+package dk.trustworks.intranet.graph;
 
 import jakarta.ws.rs.client.ClientRequestContext;
 import jakarta.ws.rs.client.ClientRequestFilter;

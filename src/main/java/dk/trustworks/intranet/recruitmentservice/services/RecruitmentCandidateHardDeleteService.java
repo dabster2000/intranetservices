@@ -14,7 +14,7 @@ import dk.trustworks.intranet.recruitmentservice.notifications.CandidateDiscussi
 import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentSlackThread;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCardReactor;
 import dk.trustworks.intranet.recruitmentservice.reporting.RecruitmentReportingProjector;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -25,7 +25,6 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -63,7 +62,7 @@ import java.util.UUID;
  * <ol>
  *   <li><b>Preflight</b> (read-only): refusals, and the manifest of things
  *       the cascade will make unreachable (S3 file uuids, {@code mail} row
- *       uuids, SharePoint ids, Graph event handles).</li>
+ *       uuids, Graph event handles).</li>
  *   <li><b>The ledger row is opened and COMMITTED</b>, before anything
  *       irreversible happens. See "the durable record", below.</li>
  *   <li><b>External redaction</b>: Microsoft Graph event cancellation and
@@ -184,8 +183,7 @@ public class RecruitmentCandidateHardDeleteService {
      * statics and is therefore testable without a database.
      */
     record Preflight(List<String> applicationUuids, List<String> fileUuids,
-                     List<String> mailUuids, List<String> sharepointDriveItemIds,
-                     String sharepointFolderPath, List<GraphEventHandle> graphEventHandles,
+                     List<String> mailUuids, List<GraphEventHandle> graphEventHandles,
                      boolean calendarEnabled, List<String> slackCardApplicationUuids,
                      List<String> discussionThreadUuids, boolean slackPresenceUnknown) {
 
@@ -224,7 +222,7 @@ public class RecruitmentCandidateHardDeleteService {
     RecruitmentReportingProjector reportingProjector;
 
     @Inject
-    Instance<GraphApiClient> graphApiClientInstance;
+    Instance<GraphCalendarClient> graphApiClientInstance;
 
     /**
      * The shared organizer mailbox events are created under, read from the
@@ -326,13 +324,6 @@ public class RecruitmentCandidateHardDeleteService {
                 "the `mail` table has no candidate column at all — these rendered "
                         + "message bodies are unreachable from here and must be cleaned "
                         + "up by uuid if that matters");
-        recordUnreachable(residue, "sharepointDriveItemsRetained", pre.sharepointDriveItemIds(),
-                "onboarding documents stored in SharePoint; this module has no delete path for them");
-        String folderPath = pre.sharepointFolderPath();
-        if (folderPath != null && !folderPath.isBlank()) {
-            residue.put("sharepointFolderRetained",
-                    redactedFolderHandle(folderPath, candidateUuid));
-        }
 
         // ---- Commit what was irreversibly done, BEFORE the destructive tx ----
         // This is the whole point of the ordering: from here on, a rollback
@@ -435,11 +426,6 @@ public class RecruitmentCandidateHardDeleteService {
                 .map(RecruitmentApplication::getUuid).toList();
         List<String> fileUuids = File.<File>list("relateduuid", candidateUuid).stream()
                 .map(File::getUuid).toList();
-        List<String> sharepointDriveItemIds = OnboardingUploadSubmission
-                .<OnboardingUploadSubmission>list(
-                        "candidateUuid = ?1 and sharepointDriveItemId is not null", candidateUuid)
-                .stream().map(OnboardingUploadSubmission::getSharepointDriveItemId).toList();
-
         List<String> slackCardApplicationUuids = List.of();
         List<String> discussionThreadUuids = List.of();
         boolean slackPresenceUnknown = false;
@@ -459,7 +445,6 @@ public class RecruitmentCandidateHardDeleteService {
         }
 
         return new Preflight(applicationUuids, fileUuids, orphanedMailUuids(candidateUuid),
-                sharepointDriveItemIds, candidate.getSharepointFolderPath(),
                 graphEventHandles(applicationUuids), calendarService.isEnabled(),
                 slackCardApplicationUuids, discussionThreadUuids, slackPresenceUnknown);
     }
@@ -568,7 +553,7 @@ public class RecruitmentCandidateHardDeleteService {
      *
      * <p>A Graph 404 counts as cancelled: the event is not on anyone's
      * calendar, which is the outcome being asked for
-     * ({@code GraphApiClient.deleteCalendarEvent} documents 404 as
+     * ({@code GraphCalendarClient.deleteCalendarEvent} documents 404 as
      * idempotent).</p>
      */
     private void cancelGraphEvents(Preflight pre, Map<String, Object> residue,
@@ -800,61 +785,6 @@ public class RecruitmentCandidateHardDeleteService {
                     + "stands, the numbers correct on the next rebuild: %s",
                     candidateUuid, e.getMessage());
             return false;
-        }
-    }
-
-    /**
-     * A non-identifying handle for the SharePoint folder that survives the
-     * delete. The raw {@code sharepoint_folder_path} may NOT be stored:
-     * {@code RecruitmentCandidate.anonymize} nulls that exact column with the
-     * comment "contains the candidate's name", and residue is persisted
-     * verbatim into {@code recruitment_candidate_deletions.residue} — a row
-     * with no FK, excluded from the prod → staging sync, never cleaned. Its
-     * migration header states the rule outright: the ledger must hold no
-     * identifier beyond the (now meaningless) uuid, because storing the name
-     * there would defeat the deletion it records.
-     *
-     * <p>What is stored instead is a SHA-256 over the candidate uuid and the
-     * path. It is a <em>verifier</em>, not a lookup key: an operator holding
-     * a candidate folder path can prove it belongs to this ledger row by
-     * recomputing the digest, and nobody reading the ledger learns a name.
-     * Salting with the candidate uuid is what stops one rainbow table of
-     * plausible names covering every row at once — the digest is only
-     * checkable by someone who already has this row.</p>
-     *
-     * <p>The path is deliberately not returned to the client either. The
-     * deleting admin just typed the candidate's full name into the confirm
-     * box, so it would leak nothing to them — but the dialog renders residue
-     * by <em>key</em>, never by value, so the raw path would buy the operator
-     * nothing while adding a second copy to log at every hop.</p>
-     */
-    static Map<String, Object> redactedFolderHandle(String path, String candidateUuid) {
-        Map<String, Object> handle = new LinkedHashMap<>();
-        handle.put("pathSha256", saltedDigest(candidateUuid, path));
-        handle.put("pathLength", path.length());
-        handle.put("note", "The SharePoint folder still exists and this module has no delete "
-                + "path for it. Its path is withheld on purpose — it embeds the candidate's "
-                + "name, and this ledger may not carry one. To confirm a folder is the one "
-                + "this row means, recompute sha256(candidate_uuid + 0x00 + path) and compare.");
-        return handle;
-    }
-
-    /** SHA-256 of {@code salt + NUL + value}, lower-case hex. */
-    private static String saltedDigest(String salt, String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(salt.getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(64);
-            for (byte b : digest.digest()) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16))
-                        .append(Character.forDigit(b & 0xF, 16));
-            }
-            return hex.toString();
-        } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is mandated by the JLS platform spec; unreachable.
-            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 

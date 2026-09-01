@@ -8,7 +8,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBod
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCalendarService.InvitationDetails;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCalendarService.Interviewer;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -48,12 +48,12 @@ class RecruitmentCandidateInvitationContentTest {
     private static final String ADDRESS = "Hausergade 3, 1128 København K";
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
     private RecruitmentVisitingAddress addressSetting;
 
     @BeforeEach
     void setUp() {
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         addressSetting = mock(RecruitmentVisitingAddress.class);
         when(addressSetting.effectiveAddress()).thenReturn(ADDRESS);
         service = new RecruitmentCalendarService();
@@ -280,14 +280,14 @@ class RecruitmentCandidateInvitationContentTest {
     @Test
     void createEvent_candidateEventBodyNamesEveryInterviewer() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-1", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-1", null, null));
         RecruitmentInterview interview = interview(false);
         interview.setInterviewerUuids(List.of("a", "b"));
 
         service.createEvent(interview, candidate(), position());
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, org.mockito.Mockito.atLeastOnce())
                 .createCalendarEvent(anyString(), body.capture());
         String candidateBody = body.getAllValues().get(body.getAllValues().size() - 1)
@@ -305,7 +305,7 @@ class RecruitmentCandidateInvitationContentTest {
     @Test
     void updateEvent_reschedule_reRendersTheCandidateBodyWithTheCurrentPanel() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-1", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-1", null, null));
         RecruitmentInterview interview = interview(false);
         interview.setInterviewerUuids(List.of("a", "b", "c"));
         interview.setGraphEventId("evt-int");
@@ -314,8 +314,8 @@ class RecruitmentCandidateInvitationContentTest {
 
         service.updateEvent(interview, candidate(), position());
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(anyString(), org.mockito.ArgumentMatchers.eq("evt-cand"),
                 body.capture());
         assertTrue(body.getValue().body().content().contains("Name a, Name b og Name c"),

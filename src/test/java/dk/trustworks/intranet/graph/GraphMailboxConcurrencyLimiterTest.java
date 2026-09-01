@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.sharepoint.client;
+package dk.trustworks.intranet.graph;
 
 import org.junit.jupiter.api.Test;
 

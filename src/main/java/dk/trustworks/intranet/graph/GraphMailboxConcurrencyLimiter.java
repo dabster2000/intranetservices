@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.sharepoint.client;
+package dk.trustworks.intranet.graph;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;

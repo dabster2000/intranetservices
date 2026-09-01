@@ -4,10 +4,10 @@ import dk.trustworks.intranet.recruitmentservice.dto.CalendarStatusResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventDetails;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventDetails.EventAttendee;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarEventRequest;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarEventDetails;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarEventDetails.EventAttendee;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarEventRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,11 +37,11 @@ class RecruitmentCalendarStatusTest {
     private static final LocalDateTime SCHEDULED = LocalDateTime.of(2026, 8, 20, 10, 0);
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
 
     @BeforeEach
     void setUp() {
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;

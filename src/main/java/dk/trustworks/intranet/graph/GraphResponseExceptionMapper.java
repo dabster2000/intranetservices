@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.sharepoint.client;
+package dk.trustworks.intranet.graph;
 
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
@@ -13,10 +13,10 @@ import java.nio.charset.StandardCharsets;
  * Captures error response details for debugging and proper error handling.
  */
 @JBossLog
-public class GraphResponseExceptionMapper implements ResponseExceptionMapper<GraphResponseExceptionMapper.SharePointException> {
+public class GraphResponseExceptionMapper implements ResponseExceptionMapper<GraphResponseExceptionMapper.GraphApiException> {
 
     @Override
-    public SharePointException toThrowable(Response response) {
+    public GraphApiException toThrowable(Response response) {
         int status = response.getStatus();
         String statusInfo = response.getStatusInfo().getReasonPhrase();
         // Headers must be read BEFORE the body: readResponseBody drains the
@@ -27,7 +27,7 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
 
         log.errorf("Graph API error - Status: %d %s, Body: %s", status, statusInfo, responseBody);
 
-        return new SharePointException(
+        return new GraphApiException(
             formatErrorMessage(status, statusInfo, responseBody),
             status,
             retryAfter,
@@ -143,22 +143,22 @@ public class GraphResponseExceptionMapper implements ResponseExceptionMapper<Gra
     }
 
     /**
-     * Custom exception for SharePoint/Graph API errors.
+     * Custom exception for Microsoft Graph API errors.
      */
-    public static class SharePointException extends RuntimeException {
+    public static class GraphApiException extends RuntimeException {
         private final int statusCode;
         private final Integer retryAfterSeconds;
         private final String requestId;
 
-        public SharePointException(String message, int statusCode) {
+        public GraphApiException(String message, int statusCode) {
             this(message, statusCode, null);
         }
 
-        public SharePointException(String message, int statusCode, Integer retryAfterSeconds) {
+        public GraphApiException(String message, int statusCode, Integer retryAfterSeconds) {
             this(message, statusCode, retryAfterSeconds, null);
         }
 
-        public SharePointException(String message, int statusCode, Integer retryAfterSeconds,
+        public GraphApiException(String message, int statusCode, Integer retryAfterSeconds,
                                    String requestId) {
             super(message);
             this.statusCode = statusCode;
