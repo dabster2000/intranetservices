@@ -14,6 +14,7 @@ import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
@@ -30,6 +31,9 @@ import java.util.stream.Collectors;
 @RequestScoped
 public class TemplateService {
 
+    @Inject
+    CompanyPlaceholderResolver companyPlaceholderResolver;
+
     /**
      * Find all templates with their placeholder counts.
      *
@@ -41,6 +45,60 @@ public class TemplateService {
         return entities.stream()
                 .map(this::toDTOWithPlaceholders)  // Include placeholders for count display
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * As {@link #findAll(boolean)}, but with each template's default signers
+     * narrowed to one person's company: the signers marked for every company
+     * plus that company's own.
+     * <p>
+     * A merged template (one shared contract instead of the TW/TWC/TWT copies)
+     * carries every company's counter-signers at once, so the signing wizard
+     * must be told whom it is preparing for — otherwise it would offer another
+     * company's executives. Everything else about the template is unchanged.
+     *
+     * @param includeInactive whether to include inactive templates
+     * @param forUserUuid     the person the documents are being prepared for;
+     *                        when null or when no company can be derived, only
+     *                        company-agnostic signers are returned
+     */
+    public List<DocumentTemplateDTO> findAllForUser(boolean includeInactive, String forUserUuid) {
+        String companyUuid = companyPlaceholderResolver.deriveForUser(forUserUuid)
+                .map(CompanyPlaceholderResolver.CompanyContext::companyUuid)
+                .orElse(null);
+        return findAll(includeInactive).stream()
+                .map(dto -> withSignersForCompany(dto, companyUuid))
+                .collect(Collectors.toList());
+    }
+
+    private DocumentTemplateDTO withSignersForCompany(DocumentTemplateDTO dto, String companyUuid) {
+        if (dto.getDefaultSigners() == null || dto.getDefaultSigners().isEmpty()) {
+            return dto;
+        }
+        dto.setDefaultSigners(signersForCompany(dto.getDefaultSigners(), companyUuid));
+        return dto;
+    }
+
+    /**
+     * The signers that apply to one company: rows marked for every company
+     * ({@code companyUuid == null}) plus that company's own.
+     * <p>
+     * Pure and package-private on purpose — the DB-free tier is the deploy
+     * gate, so the decision lives here rather than in the Panache query.
+     * A null {@code companyUuid} (no company could be derived) keeps only the
+     * company-agnostic rows; it must never fall back to "all signers", which
+     * would put another company's executives on the contract.
+     */
+    static List<TemplateDefaultSignerDTO> signersForCompany(
+            List<TemplateDefaultSignerDTO> signers, String companyUuid) {
+        return signers.stream()
+                .filter(s -> s.getCompanyUuid() == null || s.getCompanyUuid().equals(companyUuid))
+                .collect(Collectors.toList());
+    }
+
+    /** Blank means "Alle selskaber"; normalise to null so the filter behaves. */
+    static String normalizeCompanyUuid(String companyUuid) {
+        return companyUuid == null || companyUuid.isBlank() ? null : companyUuid;
     }
 
     /**
@@ -415,6 +473,7 @@ public class TemplateService {
                 .role(entity.getRole())
                 .signing(entity.isSigning())
                 .displayOrder(entity.getDisplayOrder())
+                .companyUuid(entity.getCompanyUuid())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -434,6 +493,7 @@ public class TemplateService {
         entity.setRole(dto.getRole());
         entity.setSigning(dto.isSigning());
         entity.setDisplayOrder(dto.getDisplayOrder());
+        entity.setCompanyUuid(normalizeCompanyUuid(dto.getCompanyUuid()));
         return entity;
     }
 

@@ -51,15 +51,28 @@ public class TemplateResource {
      * Get all templates.
      *
      * @param includeInactive Whether to include inactive templates
+     * @param usage           Restricts the collection to one template usage
+     * @param forUserUuid     Optional. The person the caller is preparing
+     *                        documents for. When given, each template's default
+     *                        signers are narrowed to that person's company —
+     *                        the signers marked for every company plus that
+     *                        company's own — so a merged template offers the
+     *                        right counter-signers instead of all three
+     *                        companies' executives. Omitting it returns every
+     *                        signer, which is what the template editor wants.
      * @return List of templates
      */
     @GET
     public List<DocumentTemplateDTO> getAll(
             @QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive,
-            @QueryParam("usage") TemplateUsage usage) {
+            @QueryParam("usage") TemplateUsage usage,
+            @QueryParam("forUserUuid") String forUserUuid) {
         accessPolicy.requireCollectionRead(usage);
-        log.infof("GET /templates?includeInactive=%s&usage=%s", includeInactive, usage);
-        return accessPolicy.filterCollection(templateService.findAll(includeInactive), usage);
+        log.infof("GET /templates?includeInactive=%s&usage=%s&forUserUuid=%s", includeInactive, usage, forUserUuid);
+        List<DocumentTemplateDTO> templates = forUserUuid == null || forUserUuid.isBlank()
+                ? templateService.findAll(includeInactive)
+                : templateService.findAllForUser(includeInactive, forUserUuid);
+        return accessPolicy.filterCollection(templates, usage);
     }
 
     /**

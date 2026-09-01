@@ -58,6 +58,18 @@ public class TemplateDefaultSignerEntity extends PanacheEntityBase {
     @Min(value = 1, message = "Display order must be at least 1")
     private int displayOrder = 1;
 
+    /**
+     * The company this signer applies to, or {@code null} for "every company".
+     * <p>
+     * A merged template (one shared contract instead of the TW/TWC/TWT copies)
+     * carries every company's counter-signers at once; the effective list for a
+     * given company is the NULL rows plus that company's own. Stored as a plain
+     * UUID string rather than a {@code @ManyToOne}, matching
+     * {@code CompanyFactEntity.companyUuid}.
+     */
+    @Column(name = "company_uuid", length = 36)
+    private String companyUuid;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -88,6 +100,23 @@ public class TemplateDefaultSignerEntity extends PanacheEntityBase {
      */
     public static List<TemplateDefaultSignerEntity> findByTemplate(DocumentTemplateEntity template) {
         return find("template = ?1 ORDER BY signerGroup, displayOrder", template).list();
+    }
+
+    /**
+     * The effective signer list for one company: rows that apply to every
+     * company ({@code companyUuid IS NULL}) plus that company's own rows.
+     * <p>
+     * A {@code null} {@code companyUuid} argument means "no company could be
+     * derived" and yields only the company-agnostic rows — never another
+     * company's counter-signers.
+     *
+     * @param templateUuid the template
+     * @param companyUuid  the derived company, or {@code null} if unknown
+     * @return signers sorted by signerGroup then displayOrder
+     */
+    public static List<TemplateDefaultSignerEntity> findByTemplateForCompany(String templateUuid, String companyUuid) {
+        return find("template.uuid = ?1 AND (companyUuid IS NULL OR companyUuid = ?2)"
+                + " ORDER BY signerGroup, displayOrder", templateUuid, companyUuid).list();
     }
 
     /**
