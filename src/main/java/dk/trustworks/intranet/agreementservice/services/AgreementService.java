@@ -151,7 +151,7 @@ public class AgreementService {
         row.setValidFrom(request.validFrom());
         row.setValidTo(request.validTo());
         row.setEffectiveDate(request.effectiveDate());
-        row.setDocumentUrl(request.documentUrl());
+        row.setDocumentUrl(validateDocumentUrl(request.documentUrl()));
         row.setSource(AgreementSource.MANUAL.name());
         row.setStatus(AgreementStatus.ACTIVE.name());
         row.setCreatedBy(actor);
@@ -184,7 +184,9 @@ public class AgreementService {
         row.setValidTo(request.validTo());
         row.setEffectiveDate(request.effectiveDate());
         if (request.documentUrl() != null) {
-            row.setDocumentUrl(request.documentUrl().isBlank() ? null : request.documentUrl());
+            row.setDocumentUrl(request.documentUrl().isBlank()
+                    ? null
+                    : validateDocumentUrl(request.documentUrl()));
         }
         if (request.status() != null && !request.status().isBlank()) {
             row.setStatus(parseStatus(request.status()).name());
@@ -247,6 +249,25 @@ public class AgreementService {
         } catch (IllegalArgumentException e) {
             throw new WebApplicationException("Unknown agreement status: " + raw, 400);
         }
+    }
+
+    /**
+     * The document link is rendered as an anchor in the HR UI — only
+     * web URLs are stored, never javascript:/data: schemes.
+     */
+    static String validateDocumentUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        String trimmed = url.trim();
+        String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+        if (!lower.startsWith("https://") && !lower.startsWith("http://")) {
+            throw new WebApplicationException("documentUrl must be an http(s) link", 400);
+        }
+        if (trimmed.length() > 1000) {
+            throw new WebApplicationException("documentUrl exceeds 1000 characters", 400);
+        }
+        return trimmed;
     }
 
     private static String normalizeCurrency(String currency) {
