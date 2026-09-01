@@ -705,6 +705,13 @@ dk:
         # also revisiting AgreementExtractionService.
         vision-model: ${DK_TRUSTWORKS_AGREEMENTS_AI_VISION_MODEL:gpt-4o-mini}
         vision-max-output-tokens: ${DK_TRUSTWORKS_AGREEMENTS_AI_VISION_MAX_OUTPUT_TOKENS:4096}
+        # EmployeeDocumentCategory names the backfill walk extracts from
+        # (the S3 employee-documents corpus, V554). Deliberately excludes
+        # SICKNESS/IDENTITY (GDPR data minimization — never reach the AI
+        # call), SALARY/VACATION/TERMINATION (no negotiated terms) and
+        # OTHER (the uncategorized long tail; widen deliberately per run,
+        # not by default).
+        backfill-categories: ${DK_TRUSTWORKS_AGREEMENTS_AI_BACKFILL_CATEGORIES:CONTRACT,ADDENDUM,DECLARATION}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,

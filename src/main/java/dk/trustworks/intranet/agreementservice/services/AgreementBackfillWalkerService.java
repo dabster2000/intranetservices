@@ -6,38 +6,34 @@ import dk.trustworks.intranet.agreementservice.model.AgreementBackfillRun;
 import dk.trustworks.intranet.agreementservice.model.AgreementType;
 import dk.trustworks.intranet.agreementservice.model.enums.BackfillRunStatus;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationFolder;
-import dk.trustworks.intranet.documentservice.migration.model.SharePointMigrationFolder.FolderStatus;
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
+import dk.trustworks.intranet.documentservice.services.EmployeeDocumentStorageAdapter;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
 import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
-import dk.trustworks.intranet.sharepoint.dto.DriveItemCollectionResponse;
-import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.io.InputStream;
 import java.net.URI;
-import java.net.URLDecoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -45,27 +41,31 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * The Phase-4 corpus walk (template-clauses spec §10): every ACTIVE
- * employee's mapped SharePoint folder is enumerated <b>by files</b> —
- * live Graph listing with paging, never the migration tables' folder
- * aggregates, which the 84-empty-folders incident proved can read
- * "empty" while holding hundreds of files. Each new PDF is downloaded,
- * hashed and put through one extraction call; proposals land as
- * {@code PROPOSED} items for the human review queue.
+ * The Phase-4 corpus walk over the S3 employee-documents store
+ * (template-clauses spec §10, corpus reworked per the completed
+ * SharePoint→S3 migration): every ACTIVE employee's
+ * {@code employee_documents} rows in the configured categories are
+ * fetched from S3 and put through one extraction call each. New
+ * documents land ONLY in this store ({@code SIGNING}/{@code MANUAL_HR}/
+ * {@code ONBOARDING} sources), so it is both complete and — unlike the
+ * retired Graph walk — pre-categorized, pre-hashed and throttle-free.
  *
- * <p>Runs on the single-flight job-runner thread (the
- * {@code DocumentMigrationJobRunner} pattern): narrow
- * {@code requiringNew} transactions per write, politeness delay and
- * 429/503 backoff on every Graph call, live counter updates so the
- * console can show progress.</p>
+ * <p>Runs on the single-flight job-runner thread: narrow
+ * {@code requiringNew} transactions per write, live counter updates so
+ * the console shows progress. Run counters keep their V549 columns with
+ * per-employee semantics: {@code folders_total/walked} = employees with
+ * corpus documents / employees completed.</p>
+ *
+ * <p>Idempotency is unchanged: {@code (user_uuid, doc_sha256)} UNIQUE —
+ * the migration copied bytes verbatim, so documents already itemized by
+ * a V549-era SharePoint walk keep their review state and are skipped.
+ * The Graph download path survives only to preview those legacy items.</p>
  */
 @JBossLog
 @ApplicationScoped
 public class AgreementBackfillWalkerService {
 
-    static final int PAGE_SIZE = 200;
     static final int MAX_RETRIES = 5;
-    static final long POLITENESS_DELAY_MS = 150;
     /** Contracts are a few MB; anything larger is not a signable document. */
     static final long MAX_FILE_BYTES = 40L * 1024 * 1024;
 
@@ -73,7 +73,7 @@ public class AgreementBackfillWalkerService {
     UserService userService;
 
     @Inject
-    SharePointService sharePointService;
+    EmployeeDocumentStorageAdapter storageAdapter;
 
     @RestClient
     GraphApiClient graphClient;
@@ -84,14 +84,25 @@ public class AgreementBackfillWalkerService {
     @Inject
     ObjectMapper objectMapper;
 
+    /**
+     * Comma-separated {@code EmployeeDocumentCategory} names the walk
+     * extracts from. Deliberately excludes SICKNESS/IDENTITY (GDPR data
+     * minimization — they never reach the AI call), SALARY/VACATION/
+     * TERMINATION (no negotiated terms to register) and OTHER (the
+     * uncategorized long tail; widen deliberately, not by default).
+     */
+    @ConfigProperty(name = "dk.trustworks.agreements.ai.backfill-categories",
+            defaultValue = "CONTRACT,ADDENDUM,DECLARATION")
+    String backfillCategories;
+
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
     /** Console-facing summary; also folded into the run row. */
-    public record WalkSummary(String runUuid, boolean dryRun, int employees, int foldersTotal,
-                              int foldersWalked, int filesSeen, int filesSkipped, int documentsNew,
+    public record WalkSummary(String runUuid, boolean dryRun, int employees, int employeesWithDocs,
+                              int employeesWalked, int docsSeen, int docsSkipped, int documentsNew,
                               int proposalsCreated, int errors, List<String> notes) {
     }
 
@@ -103,30 +114,41 @@ public class AgreementBackfillWalkerService {
     public WalkSummary walk(String runUuid, boolean dryRun) {
         Counters counters = new Counters();
         try {
-            // Corpus: active employees (incl. leave states — people on
-            // leave still hold agreements) of every internal type.
+            // Corpus subjects: active employees (incl. leave states —
+            // people on leave still hold agreements) of every internal type.
             List<User> employees = QuarkusTransaction.requiringNew().call(() ->
                     userService.findEmployedUsersByDate(LocalDate.now(), true,
                             ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT));
             Set<String> activeUuids = employees.stream().map(User::getUuid).collect(Collectors.toSet());
+            counters.employees = employees.size();
 
-            List<SharePointMigrationFolder> folders = QuarkusTransaction.requiringNew().call(() ->
-                    SharePointMigrationFolder.<SharePointMigrationFolder>list(
-                                    "matchedUserUuid IS NOT NULL AND status IN (?1, ?2, ?3)",
-                                    FolderStatus.MAPPED, FolderStatus.COPYING, FolderStatus.VERIFIED)
+            Set<String> categories = parseCategories(backfillCategories);
+
+            // Corpus documents: the S3 store's rows for those employees in
+            // the configured categories. Enumeration is a single DB read —
+            // no Graph paging, no politeness delays, no folder aggregates.
+            List<EmployeeDocumentCategory> categoryValues = categories.stream()
+                    .map(EmployeeDocumentCategory::valueOf)
+                    .toList();
+            List<EmployeeDocument> corpus = QuarkusTransaction.requiringNew().call(() ->
+                    EmployeeDocument.<EmployeeDocument>list(
+                                    "archived = false AND category IN ?1 ORDER BY userUuid, createdAt",
+                                    categoryValues)
                             .stream()
-                            .filter(folder -> activeUuids.contains(folder.getMatchedUserUuid()))
+                            .filter(doc -> activeUuids.contains(doc.getUserUuid()))
                             .toList());
 
-            counters.employees = employees.size();
-            counters.foldersTotal = folders.size();
-            Set<String> coveredUsers = folders.stream()
-                    .map(SharePointMigrationFolder::getMatchedUserUuid).collect(Collectors.toSet());
-            long uncovered = activeUuids.stream().filter(uuid -> !coveredUsers.contains(uuid)).count();
+            Map<String, List<EmployeeDocument>> byEmployee = corpus.stream()
+                    .collect(Collectors.groupingBy(EmployeeDocument::getUserUuid,
+                            LinkedHashMap::new, Collectors.toList()));
+            counters.employeesWithDocs = byEmployee.size();
+
+            long uncovered = activeUuids.stream().filter(uuid -> !byEmployee.containsKey(uuid)).count();
             if (uncovered > 0) {
-                // No silent caps: an employee without a mapped folder is
-                // invisible to the walk and HR must know.
-                counters.note(uncovered + " active employees have no mapped SharePoint folder and were not walked");
+                // No silent caps: an employee with no corpus documents at
+                // all is invisible to the walk and HR must know.
+                counters.note(uncovered + " active employees have no "
+                        + String.join("/", categories) + " documents in the employee-document store");
             }
             updateRunCounters(runUuid, counters);
 
@@ -134,29 +156,22 @@ public class AgreementBackfillWalkerService {
                     AgreementType.<AgreementType>list("active", true).stream()
                             .map(AgreementType::getTypeKey).toList());
 
-            // Resolve each site once (the crawler posture).
-            Map<String, String> driveIdBySite = new HashMap<>();
-            Map<String, List<SharePointMigrationFolder>> foldersBySite = folders.stream()
-                    .collect(Collectors.groupingBy(SharePointMigrationFolder::getSiteUrl));
-
-            for (Map.Entry<String, List<SharePointMigrationFolder>> site : foldersBySite.entrySet()) {
-                String driveId;
-                try {
-                    driveId = driveIdBySite.computeIfAbsent(site.getKey(), this::resolveDriveId);
-                } catch (Exception e) {
-                    counters.error("Site unresolvable: " + site.getKey() + " (" + e.getMessage() + ")");
-                    updateRunCounters(runUuid, counters);
-                    continue;
-                }
-                for (SharePointMigrationFolder folder : site.getValue()) {
-                    try {
-                        walkFolder(runUuid, dryRun, driveId, folder, typeKeys, counters);
-                        counters.foldersWalked++;
-                    } catch (Exception e) {
-                        counters.error("Folder failed: " + folder.getFolderPath() + " (" + e.getMessage() + ")");
+            for (Map.Entry<String, List<EmployeeDocument>> employee : byEmployee.entrySet()) {
+                for (EmployeeDocument doc : employee.getValue()) {
+                    counters.docsSeen++;
+                    if (!isCorpusDocument(doc)) {
+                        counters.docsSkipped++;
+                        continue;
                     }
-                    updateRunCounters(runUuid, counters);
+                    try {
+                        processDocument(runUuid, dryRun, doc, typeKeys, counters);
+                    } catch (Exception e) {
+                        counters.error("Document failed: " + doc.getUuid()
+                                + " (" + e.getClass().getSimpleName() + ")");
+                    }
                 }
+                counters.employeesWalked++;
+                updateRunCounters(runUuid, counters);
             }
 
             finishRun(runUuid, counters, null);
@@ -169,98 +184,57 @@ public class AgreementBackfillWalkerService {
         }
     }
 
-    // ── Folder walk (BFS by files, the crawler posture) ─────────────────────
-
-    private void walkFolder(String runUuid, boolean dryRun, String driveId,
-                            SharePointMigrationFolder folder, List<String> typeKeys,
-                            Counters counters) {
-        String folderId;
-        try {
-            folderId = sharePointService.resolveFolderId(driveId, folder.getFolderPath());
-        } catch (SharePointException e) {
-            if (e.getStatusCode() == 404) {
-                // Stale duplicate mapping (the Adam Hoppe case) — note, don't fail.
-                counters.note("Folder gone in SharePoint: " + folder.getFolderPath());
-                return;
-            }
-            throw e;
-        }
-
-        record Pending(String itemId, String relativePath) { }
-        Deque<Pending> queue = new ArrayDeque<>();
-        queue.add(new Pending(folderId, ""));
-
-        while (!queue.isEmpty()) {
-            Pending current = queue.poll();
-            for (DriveItem child : listAllChildren(driveId, current.itemId())) {
-                if (child.isFolder()) {
-                    if (isExcludedFolder(child.name())) {
-                        counters.filesSkipped++;
-                        continue;
-                    }
-                    queue.add(new Pending(child.id(),
-                            current.relativePath().isEmpty() ? child.name()
-                                    : current.relativePath() + "/" + child.name()));
-                    continue;
-                }
-                if (!child.isFile()) {
-                    continue;
-                }
-                counters.filesSeen++;
-                if (!isCandidateFile(child)) {
-                    counters.filesSkipped++;
-                    continue;
-                }
-                try {
-                    processFile(runUuid, dryRun, driveId, folder, child, typeKeys, counters);
-                } catch (Exception e) {
-                    counters.error("File failed: " + child.name() + " (" + e.getClass().getSimpleName() + ")");
-                }
-            }
-        }
-    }
+    // ── Document filter (pure — the fast tier reaches every branch) ─────────
 
     /**
-     * PDFs only (spec §10.2 — extraction is PDFBox text + page-1
-     * vision); temp files and zero-byte rows are the crawler posture.
-     * Subfolders named for sickness records are excluded up front
-     * (data minimization: health data never reaches the AI call).
+     * PDFs only (extraction is PDFBox + page-1 vision, spec §10.2),
+     * bounded size. Category and archived are already filtered by the
+     * corpus query; re-checked here so the predicate is self-contained.
      */
-    static boolean isCandidateFile(DriveItem file) {
-        String name = file.name() == null ? "" : file.name();
-        if (name.startsWith("~$")) {
+    static boolean isCorpusDocument(EmployeeDocument doc) {
+        if (doc.isArchived()) {
             return false;
         }
-        if (file.size() == null || file.size() == 0 || file.size() > MAX_FILE_BYTES) {
+        if (doc.getFileSizeBytes() <= 0 || doc.getFileSizeBytes() > MAX_FILE_BYTES) {
             return false;
         }
-        String mime = file.file() != null && file.file().mimeType() != null
-                ? file.file().mimeType().toLowerCase(Locale.ROOT) : "";
-        return name.toLowerCase(Locale.ROOT).endsWith(".pdf") || mime.equals("application/pdf");
+        String contentType = doc.getContentType() == null ? "" : doc.getContentType().toLowerCase(Locale.ROOT);
+        String name = doc.getOriginalFilename() == null ? "" : doc.getOriginalFilename().toLowerCase(Locale.ROOT);
+        return contentType.equals("application/pdf") || name.endsWith(".pdf");
     }
 
-    /** Crawler exclusions + health-record subfolders (GDPR special category). */
-    static boolean isExcludedFolder(String name) {
-        if (name == null || name.isBlank()) {
-            return true;
-        }
-        String lower = name.toLowerCase(Locale.ROOT);
-        return name.equalsIgnoreCase("Forms") || name.startsWith(".") || name.startsWith("_")
-                || lower.contains("sygdom") || lower.contains("sygemeld");
+    static Set<String> parseCategories(String raw) {
+        return Arrays.stream((raw == null ? "" : raw).split(","))
+                .map(String::trim)
+                .map(s -> s.toUpperCase(Locale.ROOT))
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
     }
 
-    private void processFile(String runUuid, boolean dryRun, String driveId,
-                             SharePointMigrationFolder folder, DriveItem file,
-                             List<String> typeKeys, Counters counters) throws Exception {
-        String userUuid = folder.getMatchedUserUuid();
+    // ── Per-document processing ─────────────────────────────────────────────
 
-        // Fast path: unchanged id+eTag was itemized before — no download.
-        boolean unchanged = QuarkusTransaction.requiringNew().call(() ->
-                AgreementBackfillItem.findByUserAndItemId(userUuid, file.id())
-                        .map(existing -> existing.getETag() != null && existing.getETag().equals(file.eTag()))
-                        .orElse(false));
-        if (unchanged) {
-            return;
+    private void processDocument(String runUuid, boolean dryRun, EmployeeDocument doc,
+                                 List<String> typeKeys, Counters counters) {
+        String userUuid = doc.getUserUuid();
+        String knownSha = doc.getSha256();
+
+        // Fast path: the store's own sha (present on 99%+ of rows) makes
+        // the idempotency check free — no S3 fetch for known documents.
+        if (knownSha != null && !knownSha.isBlank()) {
+            boolean known = QuarkusTransaction.requiringNew().call(() -> {
+                var existing = AgreementBackfillItem.findByUserAndSha(userUuid, knownSha);
+                existing.ifPresent(item -> {
+                    // Adopt legacy SharePoint-walk items so their preview
+                    // upgrades to the S3 path.
+                    if (item.getEmployeeDocumentUuid() == null) {
+                        item.setEmployeeDocumentUuid(doc.getUuid());
+                    }
+                });
+                return existing.isPresent();
+            });
+            if (known) {
+                return;
+            }
         }
 
         if (dryRun) {
@@ -268,23 +242,13 @@ public class AgreementBackfillWalkerService {
             return;
         }
 
-        DriveItem fresh = politeGetItem(driveId, file.id());
-        byte[] bytes = downloadBytes(driveId, fresh);
-        String sha256 = sha256Hex(bytes);
+        byte[] bytes = storageAdapter.get(doc.getS3Key()).bytes();
+        String sha256 = knownSha != null && !knownSha.isBlank() ? knownSha : sha256Hex(bytes);
 
-        // Idempotency on content: already itemized (any review state) — skip.
-        boolean known = QuarkusTransaction.requiringNew().call(() -> {
-            var existing = AgreementBackfillItem.findByUserAndSha(userUuid, sha256);
-            existing.ifPresent(item -> {
-                // Keep the pointer fresh so the preview follows a moved file.
-                item.setSharepointItemId(file.id());
-                item.setETag(fresh.eTag() != null ? fresh.eTag() : file.eTag());
-                if (fresh.webUrl() != null) {
-                    item.setWebUrl(boundedUrl(fresh.webUrl()));
-                }
-            });
-            return existing.isPresent();
-        });
+        // Sha computed post-fetch (rows copied server-side can lack one):
+        // re-check before extracting.
+        boolean known = QuarkusTransaction.requiringNew().call(() ->
+                AgreementBackfillItem.findByUserAndSha(userUuid, sha256).isPresent());
         if (known) {
             return;
         }
@@ -295,13 +259,9 @@ public class AgreementBackfillWalkerService {
             AgreementBackfillItem item = new AgreementBackfillItem();
             item.setRunUuid(runUuid);
             item.setUserUuid(userUuid);
-            item.setSiteUrl(folder.getSiteUrl());
-            item.setDriveId(driveId);
-            item.setSharepointItemId(file.id());
-            item.setETag(fresh.eTag() != null ? fresh.eTag() : file.eTag());
-            item.setWebUrl(boundedUrl(fresh.webUrl() != null ? fresh.webUrl() : file.webUrl()));
-            item.setFileName(bounded(file.name(), 500));
-            item.setFileSize(file.size() == null ? bytes.length : file.size());
+            item.setEmployeeDocumentUuid(doc.getUuid());
+            item.setFileName(bounded(doc.getOriginalFilename(), 500));
+            item.setFileSize(doc.getFileSizeBytes());
             item.setDocSha256(sha256);
             item.setStatus(result.status().name());
             item.setProposalJson(writeProposals(result.proposals()));
@@ -324,74 +284,12 @@ public class AgreementBackfillWalkerService {
         }
     }
 
-    // ── Graph plumbing (paging, politeness, downloads) ──────────────────────
-
-    private String resolveDriveId(String siteUrl) {
-        // Drive name from the matching sharepoint_locations row so the
-        // walker resolves exactly what the crawler crawled.
-        String driveName = QuarkusTransaction.requiringNew().call(() -> {
-            SharePointLocationEntity location =
-                    SharePointLocationEntity.find("siteUrl", siteUrl).firstResult();
-            return location == null ? null : location.getDriveName();
-        });
-        String siteId = sharePointService.resolveSiteId(siteUrl);
-        return sharePointService.resolveDriveId(siteId, driveName);
-    }
-
-    private List<DriveItem> listAllChildren(String driveId, String itemId) {
-        List<DriveItem> all = new ArrayList<>();
-        String skipToken = null;
-        do {
-            DriveItemCollectionResponse page = politeListChildren(driveId, itemId, skipToken);
-            if (page.value() != null) {
-                all.addAll(page.value());
-            }
-            skipToken = parseSkipToken(page.odataNextLink());
-        } while (skipToken != null);
-        return all;
-    }
-
-    private DriveItemCollectionResponse politeListChildren(String driveId, String itemId, String skipToken) {
-        int attempt = 0;
-        while (true) {
-            pause(POLITENESS_DELAY_MS);
-            try {
-                return graphClient.listChildrenById(driveId, itemId, PAGE_SIZE, skipToken);
-            } catch (SharePointException e) {
-                attempt++;
-                if ((e.getStatusCode() == 429 || e.getStatusCode() == 503) && attempt <= MAX_RETRIES) {
-                    long backoffMs = 5000L * (1L << (attempt - 1));
-                    log.warnf("Graph %d on listChildren (attempt %d/%d) — backing off %d ms",
-                            e.getStatusCode(), attempt, MAX_RETRIES, backoffMs);
-                    pause(backoffMs);
-                    continue;
-                }
-                throw e;
-            }
-        }
-    }
-
-    private DriveItem politeGetItem(String driveId, String itemId) {
-        int attempt = 0;
-        while (true) {
-            pause(POLITENESS_DELAY_MS);
-            try {
-                return graphClient.getItem(driveId, itemId);
-            } catch (SharePointException e) {
-                attempt++;
-                if ((e.getStatusCode() == 429 || e.getStatusCode() == 503) && attempt <= MAX_RETRIES) {
-                    long backoffMs = 5000L * (1L << (attempt - 1));
-                    pause(backoffMs);
-                    continue;
-                }
-                throw e;
-            }
-        }
-    }
+    // ── Legacy Graph download (V549-era items' PDF preview only) ────────────
 
     /**
-     * Download one itemized document again — the review console's PDF
-     * preview. Fresh metadata first so a moved file still resolves.
+     * Download a legacy SharePoint-walk item's document — the review
+     * console's PDF preview for items created before the S3 corpus
+     * (V554). S3-sourced items never reach this path.
      */
     public byte[] downloadItemBytes(String driveId, String itemId) throws Exception {
         return downloadBytes(driveId, politeGetItem(driveId, itemId));
@@ -434,32 +332,25 @@ public class AgreementBackfillWalkerService {
         }
     }
 
-    static String parseSkipToken(String nextLink) {
-        if (nextLink == null || nextLink.isBlank()) {
-            return null;
-        }
-        try {
-            String query = URI.create(nextLink).getRawQuery();
-            if (query == null) {
-                return null;
-            }
-            for (String pair : query.split("&")) {
-                int eq = pair.indexOf('=');
-                if (eq <= 0) {
+    private DriveItem politeGetItem(String driveId, String itemId) {
+        int attempt = 0;
+        while (true) {
+            try {
+                return graphClient.getItem(driveId, itemId);
+            } catch (SharePointException e) {
+                attempt++;
+                if ((e.getStatusCode() == 429 || e.getStatusCode() == 503) && attempt <= MAX_RETRIES) {
+                    pause(5000L * (1L << (attempt - 1)));
                     continue;
                 }
-                String key = URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8);
-                if (key.equalsIgnoreCase("$skiptoken") || key.equalsIgnoreCase("skiptoken")) {
-                    return URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
-                }
+                throw e;
             }
-        } catch (Exception e) {
-            log.warnf("Could not parse @odata.nextLink '%s' — stopping pagination", nextLink);
         }
-        return null;
     }
 
-    /** A truncated URL is a broken link — drop over-long ones instead. */
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /** A cut-off URL is a broken link — drop over-long ones instead. */
     static String boundedUrl(String url) {
         return url == null || url.length() > 1000 ? null : url;
     }
@@ -516,10 +407,10 @@ public class AgreementBackfillWalkerService {
 
     private static final class Counters {
         int employees;
-        int foldersTotal;
-        int foldersWalked;
-        int filesSeen;
-        int filesSkipped;
+        int employeesWithDocs;
+        int employeesWalked;
+        int docsSeen;
+        int docsSkipped;
         int documentsNew;
         int proposalsCreated;
         final List<String> notes = new ArrayList<>();
@@ -538,29 +429,31 @@ public class AgreementBackfillWalkerService {
 
         void applyTo(AgreementBackfillRun run) {
             run.setEmployeesTotal(employees);
-            run.setFoldersTotal(foldersTotal);
-            run.setFoldersWalked(foldersWalked);
-            run.setFilesSeen(filesSeen);
-            run.setFilesSkipped(filesSkipped);
+            // V549 columns, per-employee semantics since the S3 corpus
+            // has no folders: total/walked = employees with docs / done.
+            run.setFoldersTotal(employeesWithDocs);
+            run.setFoldersWalked(employeesWalked);
+            run.setFilesSeen(docsSeen);
+            run.setFilesSkipped(docsSkipped);
             run.setDocumentsNew(documentsNew);
             run.setProposalsCreated(proposalsCreated);
             run.setErrorsCount(errors);
         }
 
         String corpusSummary() {
-            String base = employees + " aktive medarbejdere, " + foldersWalked + "/" + foldersTotal
-                    + " mapper gennemgået, " + filesSeen + " filer, " + documentsNew + " nye dokumenter";
+            String base = employees + " aktive medarbejdere, " + employeesWalked + "/" + employeesWithDocs
+                    + " med dokumenter i S3-arkivet, " + docsSeen + " dokumenter, " + documentsNew + " nye";
             return notes.isEmpty() ? base
-                    : truncateTo(base + " — " + String.join("; ", notes), 500);
+                    : shortened(base + " — " + String.join("; ", notes), 500);
         }
 
-        static String truncateTo(String text, int max) {
+        static String shortened(String text, int max) {
             return text.length() <= max ? text : text.substring(0, max - 1) + "…";
         }
 
         WalkSummary toSummary(String runUuid, boolean dryRun) {
-            return new WalkSummary(runUuid, dryRun, employees, foldersTotal, foldersWalked,
-                    filesSeen, filesSkipped, documentsNew, proposalsCreated, errors, List.copyOf(notes));
+            return new WalkSummary(runUuid, dryRun, employees, employeesWithDocs, employeesWalked,
+                    docsSeen, docsSkipped, documentsNew, proposalsCreated, errors, List.copyOf(notes));
         }
     }
 }

@@ -14,6 +14,8 @@ import dk.trustworks.intranet.agreementservice.model.enums.BackfillItemStatus;
 import dk.trustworks.intranet.agreementservice.model.enums.BackfillRunStatus;
 import dk.trustworks.intranet.agreementservice.services.AgreementBackfillJobRunner.JobType;
 import dk.trustworks.intranet.agreementservice.services.AgreementExtractionService.Proposal;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.services.EmployeeDocumentStorageAdapter;
 import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -50,6 +52,9 @@ public class AgreementBackfillService {
 
     @Inject
     AgreementBackfillWalkerService walkerService;
+
+    @Inject
+    EmployeeDocumentStorageAdapter storageAdapter;
 
     // ── Requests ───────────────────────────────────────────────────────────
 
@@ -181,9 +186,25 @@ public class AgreementBackfillService {
         return item;
     }
 
-    /** The console's PDF preview — bytes fetched live from SharePoint. */
+    /**
+     * The console's PDF preview. S3-sourced items (V554 corpus) stream
+     * from the employee-document store; legacy V549-era items still
+     * fetch live from SharePoint via Graph.
+     */
     public byte[] downloadDocument(String itemUuid) {
         AgreementBackfillItem item = requireItem(itemUuid);
+        if (item.getEmployeeDocumentUuid() != null) {
+            EmployeeDocument doc = EmployeeDocument.findById(item.getEmployeeDocumentUuid());
+            if (doc == null) {
+                throw new WebApplicationException("Source document no longer exists", 404);
+            }
+            try {
+                return storageAdapter.get(doc.getS3Key()).bytes();
+            } catch (Exception e) {
+                log.warnf("Backfill S3 download failed for item %s: %s", itemUuid, e.getMessage());
+                throw new WebApplicationException("Document could not be fetched from storage", 502);
+            }
+        }
         try {
             return walkerService.downloadItemBytes(item.getDriveId(), item.getSharepointItemId());
         } catch (Exception e) {
