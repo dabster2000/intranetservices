@@ -4,6 +4,9 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.model.EmailAttachment;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
+import dk.trustworks.intranet.documentservice.dto.PlaceholderPrefillResponse;
+import dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver;
+import dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.BulkTagsRequest;
@@ -53,6 +56,7 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.PromotionStagingRestoreService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCandidateHardDeleteService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFactLedgerService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentOfferBridge;
@@ -202,6 +206,15 @@ public class RecruitmentResource {
 
     @Inject
     DossierPdfGenerationService pdfGenerationService;
+
+    @Inject
+    CompanyPlaceholderResolver companyPlaceholderResolver;
+
+    @Inject
+    PlaceholderPrefillService placeholderPrefillService;
+
+    @Inject
+    RecruitmentFactLedgerService factLedgerService;
 
     @Inject
     RecruitmentS3StorageService recruitmentS3StorageService;
@@ -1150,7 +1163,9 @@ public class RecruitmentResource {
         requireDossierReadable(candidateUuid);
         CandidateDossierRevision revision = requireRevisionForCandidate(revUuid, candidateUuid);
         CandidateDossier dossier = requireDossierById(revision.getDossierUuid());
-        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(revision, dossier.getTemplateUuid());
+        RecruitmentCandidate downloadCandidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(revision, dossier.getTemplateUuid(),
+                downloadCandidate != null ? downloadCandidate.getTargetCompanyUuid() : null);
         if (index < 1 || index > pdfs.size()) {
             throw new NotFoundException("Document index out of range: " + index);
         }
@@ -1327,7 +1342,8 @@ public class RecruitmentResource {
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
-                dossier.getTemplateUuid(), placeholders, appendices);
+                dossier.getTemplateUuid(), placeholders, appendices,
+                candidate.getTargetCompanyUuid());
 
         // 2) Persist each template-generated PDF to S3 (best-effort — the
         //    audit-side store must not block the user-facing email when the
@@ -1394,7 +1410,8 @@ public class RecruitmentResource {
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
         List<GeneratedPdf> allPdfs = pdfGenerationService.generatePdfsFromValues(
-                dossier.getTemplateUuid(), placeholders, appendices);
+                dossier.getTemplateUuid(), placeholders, appendices,
+                candidate.getTargetCompanyUuid());
         List<GeneratedPdf> templatePdfs = allPdfs.stream()
                 .filter(GeneratedPdf::fromTemplate)
                 .toList();
@@ -1440,6 +1457,55 @@ public class RecruitmentResource {
                 .build();
     }
 
+    /**
+     * Per-field prefill for the dossier's placeholder form (template-clauses
+     * spec §5.1): candidate-record values with provenance, the derived target
+     * company for the read-only chip, missing company facts, and interview-fact
+     * click-to-apply suggestions from the hiring ledger. Compensation-group
+     * suggestions are withheld unless the viewer holds the comp tier
+     * ({@code RecruitmentVisibility.isCompTierFor}); employee-only fields
+     * (CPR, current salary, hire date) stay manual for candidates.
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/prefill")
+    @RolesAllowed({"recruitment:read"})
+    public PlaceholderPrefillResponse dossierPrefill(@PathParam("uuid") UUID candidateUuid) {
+        enforceFlag();
+        RecruitmentCandidate candidate = requireDossierReadable(candidateUuid);
+        CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
+
+        Map<String, PlaceholderPrefillResponse.FactSuggestion> suggestions = new java.util.LinkedHashMap<>();
+        if (featureFlag.isFactsEnabled()) {
+            UUID viewer = currentActor();
+            List<dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication> applications =
+                    dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication
+                            .list("candidateUuid", candidate.getUuid());
+            List<RecruitmentPosition> positions = applications.isEmpty() ? List.of()
+                    : RecruitmentPosition.list("uuid in ?1", applications.stream()
+                            .map(dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication::getPositionUuid)
+                            .distinct().toList());
+            boolean compTier = visibility.isCompTierFor(viewer.toString(), positions);
+            // The ledger already applies the comp gate (redacted entries carry
+            // no value), so mapping value-bearing entries is visibility-safe.
+            for (var entry : factLedgerService.ledger(candidate, compTier).facts()) {
+                if (entry.value() != null && !entry.redacted()
+                        && ("STATED".equals(entry.state()) || "CONFIRMED".equals(entry.state())
+                                || "STALE".equals(entry.state()))) {
+                    suggestions.put(entry.field(), new PlaceholderPrefillResponse.FactSuggestion(
+                            entry.value(), entry.state(), entry.statedAt()));
+                }
+            }
+        }
+
+        return placeholderPrefillService.prefillForCandidate(
+                dossier.getTemplateUuid(),
+                new PlaceholderPrefillService.CandidateSubject(
+                        candidate.getFirstName(), candidate.getLastName(),
+                        candidate.getEmail(), candidate.getPhone(),
+                        candidate.getTargetCompanyUuid()),
+                suggestions);
+    }
+
     @POST
     @Path("/candidates/{uuid}/dossier/send-signature")
     @RolesAllowed({"recruitment:write"})
@@ -1459,8 +1525,30 @@ public class RecruitmentResource {
         offerBridge.assertSignatureSendAllowed(candidate);
 
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
-        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<SignerConfigDto> configuredSigners = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+
+        // Counter-signer fields may reference company facts via ${COMPANY_*}
+        // tokens (e.g. ${COMPANY_SIGNATORY_NAME}); resolve them from the
+        // candidate's target company and refuse the send if a token survives —
+        // an unresolved token would reach NextSign as a literal recipient.
+        var derivedCompany = companyPlaceholderResolver.deriveForCompanyUuid(candidate.getTargetCompanyUuid());
+        List<SignerConfigDto> signers = configuredSigners.stream()
+                .map(s -> new SignerConfigDto(
+                        s.group(),
+                        companyPlaceholderResolver.resolveCompanyTokens(s.name(), derivedCompany),
+                        companyPlaceholderResolver.resolveCompanyTokens(s.email(), derivedCompany),
+                        s.signing(), s.needsCpr(), s.role(), s.signingSchema()))
+                .toList();
+        try {
+            companyPlaceholderResolver.requireNoUnresolvedCompanyTokens(
+                    signers.stream().flatMap(s -> java.util.stream.Stream.of(s.name(), s.email())).toList(),
+                    derivedCompany);
+        } catch (CompanyPlaceholderResolver.MissingCompanyFactException e) {
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "MISSING_COMPANY_FACT", "message", e.getMessage()))
+                    .build());
+        }
 
         // Validate signers before generating PDFs — PDF generation is the
         // most expensive step in this flow, so a misconfigured dossier
@@ -1473,7 +1561,8 @@ public class RecruitmentResource {
         }
 
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
-                dossier.getTemplateUuid(), placeholders, appendices);
+                dossier.getTemplateUuid(), placeholders, appendices,
+                candidate.getTargetCompanyUuid());
 
         // Resolve appendix bytes from S3 so NextSign receives every dossier
         // document, not just the template-rendered ones. Templates already

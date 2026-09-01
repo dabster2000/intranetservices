@@ -27,5 +27,13 @@ public enum DataSource {
     COMPANY,
 
     /** Current date/time */
-    SYSTEM_DATE
+    SYSTEM_DATE,
+
+    /**
+     * Interview-fact suggestion (dossier flow only): the field offers a
+     * click-to-apply value from the candidate's hiring-fact ledger
+     * ({@code recruitment_candidate_fact_state}), never an auto-insert.
+     * {@code source_field} names the fact key (e.g. SALARY_EXPECTATION).
+     */
+    INTERVIEW_FACT
 }

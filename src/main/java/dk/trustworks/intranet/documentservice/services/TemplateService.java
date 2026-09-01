@@ -291,6 +291,18 @@ public class TemplateService {
         }
     }
 
+    /**
+     * Source fields are uppercase key names (NAME_GENITIVE, CPR, …);
+     * blank collapses to null so "no explicit field" is one state, not two.
+     */
+    private static String normalizeSourceField(String sourceField) {
+        if (sourceField == null) {
+            return null;
+        }
+        String trimmed = sourceField.trim().toUpperCase(java.util.Locale.ROOT);
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
     // --- DTO/Entity Mapping ---
 
     /**
@@ -359,6 +371,7 @@ public class TemplateService {
                 .defaultValue(entity.getDefaultValue())
                 .helpText(entity.getHelpText())
                 .source(entity.getSource())
+                .sourceField(entity.getSourceField())
                 .fieldGroup(entity.getFieldGroup())
                 .validationRules(entity.getValidationRules())
                 .selectOptions(entity.getSelectOptions())
@@ -383,6 +396,7 @@ public class TemplateService {
         entity.setDefaultValue(dto.getDefaultValue());
         entity.setHelpText(dto.getHelpText());
         entity.setSource(dto.getSource());
+        entity.setSourceField(normalizeSourceField(dto.getSourceField()));
         entity.setFieldGroup(dto.getFieldGroup());
         entity.setValidationRules(dto.getValidationRules());
         entity.setSelectOptions(dto.getSelectOptions());

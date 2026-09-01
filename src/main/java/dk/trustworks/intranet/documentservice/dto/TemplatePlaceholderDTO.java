@@ -28,6 +28,8 @@ public class TemplatePlaceholderDTO {
     private String defaultValue;
     private String helpText;
     private DataSource source;
+    /** Named field `source` resolves (e.g. NAME_GENITIVE, CPR, SALARY_EXPECTATION); null = legacy keyword matching. */
+    private String sourceField;
     private String fieldGroup;
     private String validationRules;
     private String selectOptions;
