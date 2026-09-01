@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
+import dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver;
+import dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.MissingCompanyFactException;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse.PdfArtifactRef;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
@@ -11,6 +13,8 @@ import dk.trustworks.intranet.utils.services.PlaceholderFormattingService;
 import dk.trustworks.intranet.utils.services.WordDocumentService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
@@ -44,6 +48,9 @@ public class DossierPdfGenerationService {
 
     @Inject
     PlaceholderFormattingService placeholderFormattingService;
+
+    @Inject
+    CompanyPlaceholderResolver companyPlaceholderResolver;
 
     @Inject
     ObjectMapper objectMapper;
@@ -85,23 +92,32 @@ public class DossierPdfGenerationService {
      *         first in template's {@code displayOrder}, followed by
      *         appendices in their stored order
      */
-    public List<GeneratedPdf> generatePdfsFor(CandidateDossierRevision revision, String templateUuid) {
+    public List<GeneratedPdf> generatePdfsFor(CandidateDossierRevision revision, String templateUuid,
+                                              String targetCompanyUuid) {
         Objects.requireNonNull(revision, "revision must not be null");
         return generatePdfsFromValues(
                 templateUuid,
                 readPlaceholderSnapshot(revision),
-                readAppendicesSnapshot(revision));
+                readAppendicesSnapshot(revision),
+                targetCompanyUuid);
     }
 
     /**
      * Pre-resolved variant: caller supplies placeholder values and appendices
      * directly. Used by the signature-send flow so the external NextSign call
      * can run outside the snapshot transaction.
+     *
+     * @param targetCompanyUuid the candidate's target company — COMPANY-sourced
+     *                          placeholders resolve from its facts (spec §4.9);
+     *                          null skips fact resolution unless the template
+     *                          explicitly references facts, in which case the
+     *                          generation fails closed
      */
     public List<GeneratedPdf> generatePdfsFromValues(
             String templateUuid,
             Map<String, String> placeholders,
-            List<AppendixDto> appendices) {
+            List<AppendixDto> appendices,
+            String targetCompanyUuid) {
         Objects.requireNonNull(templateUuid, "templateUuid must not be null");
         Objects.requireNonNull(placeholders, "placeholders must not be null");
         Objects.requireNonNull(appendices, "appendices must not be null");
@@ -109,11 +125,24 @@ public class DossierPdfGenerationService {
         List<TemplateDocumentEntity> templateDocs =
                 TemplateDocumentEntity.findByTemplateUuid(templateUuid);
 
-        // Apply type-aware formatting (CURRENCY → "kr. 40.000,00", DECIMAL →
-        // "40.000,00") so the substituted strings render the same way as in
-        // the signing wizard. Mirrors SigningService.createMultiDocumentCaseFromTemplate.
+        // Company facts first (authoritative for COMPANY-sourced placeholders,
+        // fail-closed on explicitly mapped facts), then type-aware formatting
+        // (CURRENCY → "kr. 40.000,00") so the substituted strings render the
+        // same way as in the signing wizard. Mirrors
+        // SigningService.createMultiDocumentCaseFromTemplate.
+        Map<String, String> withFacts = new HashMap<>(placeholders);
+        try {
+            companyPlaceholderResolver.applyCompanyFacts(templateUuid, withFacts,
+                    companyPlaceholderResolver.deriveForCompanyUuid(targetCompanyUuid));
+        } catch (MissingCompanyFactException e) {
+            // The dossier dialogs render {error, message} bodies verbatim —
+            // the message names the facts and points at Settings → Selskaber.
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "MISSING_COMPANY_FACT", "message", e.getMessage()))
+                    .build());
+        }
         Map<String, String> effectiveValues = placeholderFormattingService
-                .formatPlaceholderValues(templateUuid, placeholders);
+                .formatPlaceholderValues(templateUuid, withFacts);
         long nonBlank = effectiveValues.values().stream()
                 .filter(v -> v != null && !v.isBlank())
                 .count();
@@ -149,8 +178,9 @@ public class DossierPdfGenerationService {
      * Generate only the template-derived PDFs (no appendices). Used by the
      * "Generate review PDF" download endpoint.
      */
-    public List<GeneratedPdf> generateTemplatePdfsFor(CandidateDossierRevision revision, String templateUuid) {
-        return generatePdfsFor(revision, templateUuid).stream()
+    public List<GeneratedPdf> generateTemplatePdfsFor(CandidateDossierRevision revision, String templateUuid,
+                                                      String targetCompanyUuid) {
+        return generatePdfsFor(revision, templateUuid, targetCompanyUuid).stream()
                 .filter(GeneratedPdf::fromTemplate)
                 .toList();
     }

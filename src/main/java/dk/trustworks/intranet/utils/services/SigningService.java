@@ -70,6 +70,12 @@ public class SigningService {
     PlaceholderFormattingService placeholderFormattingService;
 
     @Inject
+    dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver companyPlaceholderResolver;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService placeholderPrefillService;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     @Inject
@@ -216,6 +222,9 @@ public class SigningService {
      * @param signingSchemas      Optional signing schema URNs
      * @param templateUuid        Optional UUID of the parent template for placeholder type lookup
      * @param additionalDocuments Optional list of pre-generated PDFs to include (each with signObligated flag)
+     * @param targetUserUuid      The employee the documents are for — the COMPANY
+     *                            placeholder source resolves facts from this
+     *                            person's derived company (spec §4.9)
      * @return Response containing the case key and initial status
      * @throws SigningException if PDF generation or case creation fails
      */
@@ -227,7 +236,8 @@ public class SigningService {
             String referenceId,
             List<String> signingSchemas,
             String templateUuid,
-            List<UploadedDocument> additionalDocuments) {
+            List<UploadedDocument> additionalDocuments,
+            String targetUserUuid) {
 
         int additionalCount = additionalDocuments != null ? additionalDocuments.size() : 0;
         log.infof("Creating multi-document signing case from template. Template docs: %d, Additional docs: %d, Signers: %d, TemplateUuid: %s",
@@ -244,10 +254,24 @@ public class SigningService {
 
             List<DocumentInfo> documents = new java.util.ArrayList<>();
 
-            // Apply type-aware formatting if templateUuid is provided
-            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            // Company facts + server-resolved person fields, then type-aware
+            // formatting. The derived company's facts are authoritative for
+            // COMPANY-sourced placeholders (spec §4.9, fail-closed), and CPR /
+            // current-salary values are injected server-side so they never
+            // depend on a browser round-trip (spec §5.1).
+            Map<String, String> rawFormValues = new HashMap<>(formValues != null ? formValues : Map.of());
+            var company = companyPlaceholderResolver.deriveForUser(targetUserUuid);
+            companyPlaceholderResolver.applyCompanyFacts(templateUuid, rawFormValues, company);
+            placeholderPrefillService.applyServerResolvedPersonFields(templateUuid, rawFormValues, targetUserUuid);
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
+
+            // Counter-signer fields may reference company facts via
+            // ${COMPANY_*} tokens (e.g. ${COMPANY_SIGNATORY_NAME}); resolve
+            // them against the same derived company and refuse the send if a
+            // token survives — an unresolved token would reach NextSign as a
+            // literal recipient name/email.
+            List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
 
             // Generate PDF for each template document via NextSign convert API
             // Template documents always require signature (signObligated: true)
@@ -292,7 +316,7 @@ public class SigningService {
             // Create signing case with all documents
             String caseKey = nextsignService.createMultiDocumentSigningCase(
                 documents,
-                signers,
+                effectiveSigners,
                 referenceId,
                 signingSchemas
             );
@@ -309,10 +333,45 @@ public class SigningService {
             log.errorf(e, "NextSign API error creating multi-document case: %s", e.getMessage());
             throw new SigningException("Failed to create multi-document signing case: " + e.getMessage(), e);
 
+        } catch (IllegalArgumentException e) {
+            // Validation failures (incl. missing company facts) must surface
+            // as 400s in the resource layer, not be wrapped into a 500.
+            log.warnf("Template signing validation failed: %s", e.getMessage());
+            throw e;
+
         } catch (Exception e) {
             log.errorf(e, "Unexpected error creating multi-document signing case from template: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Resolve {@code ${COMPANY_*}} tokens in signer names/emails from the
+     * derived company's facts, failing closed when a token survives.
+     */
+    private List<SignerInfo> resolveSignerCompanyTokens(
+            List<SignerInfo> signers,
+            java.util.Optional<dk.trustworks.intranet.documentservice.services.CompanyPlaceholderResolver.CompanyContext> company) {
+        if (signers == null || signers.isEmpty()) {
+            return signers;
+        }
+        List<SignerInfo> resolved = new ArrayList<>(signers.size());
+        for (SignerInfo signer : signers) {
+            resolved.add(new SignerInfo(
+                signer.group(),
+                companyPlaceholderResolver.resolveCompanyTokens(signer.name(), company),
+                companyPlaceholderResolver.resolveCompanyTokens(signer.email(), company),
+                signer.role(),
+                signer.signing(),
+                signer.needsCpr()));
+        }
+        List<String> signerFields = new ArrayList<>();
+        for (SignerInfo signer : resolved) {
+            signerFields.add(signer.name());
+            signerFields.add(signer.email());
+        }
+        companyPlaceholderResolver.requireNoUnresolvedCompanyTokens(signerFields, company);
+        return resolved;
     }
 
     /**
@@ -333,6 +392,21 @@ public class SigningService {
             List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
             Map<String, String> formValues,
             String templateUuid) {
+        return generatePreviewDocuments(templateDocuments, formValues, templateUuid, null);
+    }
+
+    /**
+     * Preview variant carrying the target person: when {@code targetUserUuid}
+     * is present, COMPANY-sourced placeholders resolve from that person's
+     * derived company (fail-closed, spec §4.9) and sensitive USER fields
+     * (CPR, current salary) are injected server-side — the preview must show
+     * exactly what the signed document will contain.
+     */
+    public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String templateUuid,
+            String targetUserUuid) {
 
         log.infof("Generating preview documents from %d template documents (templateUuid: %s)",
             templateDocuments != null ? templateDocuments.size() : 0,
@@ -356,8 +430,15 @@ public class SigningService {
                 throw new IllegalArgumentException("At least one document is required for preview");
             }
 
-            // Apply type-aware formatting if templateUuid is provided
-            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            // Same value pipeline as the send path: company facts + server
+            // resolved person fields (when a target person is known), then
+            // type-aware formatting — the preview must match the sent document.
+            Map<String, String> rawFormValues = new HashMap<>(formValues != null ? formValues : Map.of());
+            if (targetUserUuid != null && !targetUserUuid.isBlank()) {
+                var company = companyPlaceholderResolver.deriveForUser(targetUserUuid);
+                companyPlaceholderResolver.applyCompanyFacts(templateUuid, rawFormValues, company);
+                placeholderPrefillService.applyServerResolvedPersonFields(templateUuid, rawFormValues, targetUserUuid);
+            }
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
             List<PreviewTemplateResponse.PreviewDocumentDTO> previewDocuments = new java.util.ArrayList<>();

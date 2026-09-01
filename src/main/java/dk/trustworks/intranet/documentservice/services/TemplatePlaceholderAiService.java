@@ -142,6 +142,27 @@ public class TemplatePlaceholderAiService {
                   "Dates", "Compensation", "Clause"). Use 2-6 groups total; every field gets a
                   group; fields that appear near each other in the document belong together.
                 - fieldType: the best-fitting input type from the allowed values.
+                - source: where the value comes from at preparation time:
+                  COMPANY for facts about the employing company (legal name, its Danish
+                  genitive form, CVR number, address, pension provider/percentages, health
+                  insurance, lunch-scheme price, counter-signatory name/email);
+                  USER for facts about the person the document is for (name, email, phone,
+                  address, title, CPR, hire date, current monthly salary);
+                  SYSTEM_DATE for "today's date" fields;
+                  INTERVIEW_FACT for values negotiated with a candidate (salary expectation,
+                  earliest/preferred start date);
+                  MANUAL for everything the preparer must decide (new salary, new terms,
+                  free-text conditions).
+                - sourceField: the named field the source resolves, or empty string for MANUAL.
+                  COMPANY: LEGAL_NAME, SHORT_NAME, NAME_GENITIVE, CVR, ADDRESS,
+                  PENSION_PROVIDER, PENSION_COMPANY_PCT, PENSION_EMPLOYEE_PCT,
+                  HEALTH_INSURANCE_PROVIDER, LUNCH_PRICE, SIGNATORY_NAME, SIGNATORY_EMAIL.
+                  USER: NAME, FIRSTNAME, LASTNAME, EMAIL, PHONE, ADDRESS, TITLE, CPR,
+                  HIRE_DATE, CURRENT_MONTHLY_SALARY.
+                  INTERVIEW_FACT: SALARY_EXPECTATION, EARLIEST_START, PREFERRED_START.
+                  SYSTEM_DATE: empty string.
+                  A NEW salary being offered is MANUAL — CURRENT_MONTHLY_SALARY is only the
+                  person's existing salary (e.g. in a salary-regulation letter).
 
                 Return one entry per given key — no extra keys, no omissions.
                 """;
@@ -171,8 +192,16 @@ public class TemplatePlaceholderAiService {
         for (FieldType type : FieldType.values()) {
             allowed.add(type.name());
         }
+        ObjectNode source = props.putObject("source");
+        source.put("type", "string");
+        ArrayNode allowedSources = source.putArray("enum");
+        for (DataSource dataSource : DataSource.values()) {
+            allowedSources.add(dataSource.name());
+        }
+        props.putObject("sourceField").put("type", "string");
         ArrayNode required = field.putArray("required");
-        required.add("key").add("label").add("helpText").add("fieldGroup").add("fieldType");
+        required.add("key").add("label").add("helpText").add("fieldGroup").add("fieldType")
+                .add("source").add("sourceField");
 
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
@@ -212,6 +241,14 @@ public class TemplatePlaceholderAiService {
             } catch (IllegalArgumentException ignored) {
                 // Keep the suffix-guessed type.
             }
+            try {
+                dto.setSource(DataSource.valueOf(field.path("source").asText("")));
+            } catch (IllegalArgumentException ignored) {
+                // Keep the MANUAL fallback.
+            }
+            String sourceField = field.path("sourceField").asText("").trim().toUpperCase(java.util.Locale.ROOT);
+            dto.setSourceField(sourceField.isEmpty() || dto.getSource() == DataSource.MANUAL
+                    || dto.getSource() == DataSource.NONE ? null : sourceField);
         }
     }
 

@@ -138,9 +138,9 @@ class SigningResourceTemplateBoundaryApiTest {
                 .when().post("/utils/signing/cases/from-template")
                 .then().statusCode(403);
 
-        verify(signingService, never()).generatePreviewDocuments(anyList(), anyMap(), anyString());
+        verify(signingService, never()).generatePreviewDocuments(anyList(), anyMap(), anyString(), anyString());
         verify(signingService, never()).createMultiDocumentCaseFromTemplate(
-                anyList(), anyMap(), anyString(), anyList(), isNull(), anyList(), anyString(), anyList());
+                anyList(), anyMap(), anyString(), anyList(), isNull(), anyList(), anyString(), anyList(), anyString());
     }
 
     @Test
@@ -162,7 +162,7 @@ class SigningResourceTemplateBoundaryApiTest {
                 .then().statusCode(400)
                 .body("message", containsString("not part of the selected"));
 
-        verify(signingService, never()).generatePreviewDocuments(anyList(), anyMap(), anyString());
+        verify(signingService, never()).generatePreviewDocuments(anyList(), anyMap(), anyString(), anyString());
     }
 
     @Test
@@ -185,18 +185,18 @@ class SigningResourceTemplateBoundaryApiTest {
                 .body("message", containsString("not available for employee signing"));
 
         verify(signingService, never()).createMultiDocumentCaseFromTemplate(
-                anyList(), anyMap(), anyString(), anyList(), isNull(), anyList(), anyString(), anyList());
+                anyList(), anyMap(), anyString(), anyList(), isNull(), anyList(), anyString(), anyList(), anyString());
     }
 
     @Test
     @TestSecurity(user = "bff-client", roles = {"signing:read", "signing:write"})
     void ordinaryEmployeeSigningTemplateStillPreviewsAndSends() {
-        when(signingService.generatePreviewDocuments(anyList(), anyMap(), eq(employeeTemplate)))
+        when(signingService.generatePreviewDocuments(anyList(), anyMap(), eq(employeeTemplate), anyString()))
                 .thenReturn(List.of(new PreviewTemplateResponse.PreviewDocumentDTO(
                         "Salary adjustment.pdf", "cGRm", 0)));
         when(signingService.createMultiDocumentCaseFromTemplate(
                 anyList(), anyMap(), anyString(), anyList(), isNull(), anyList(),
-                eq(employeeTemplate), anyList()))
+                eq(employeeTemplate), anyList(), anyString()))
                 .thenReturn(SigningCaseResponse.created("case-employee", "Salary adjustment"));
 
         given().header("X-Requested-By", hr)

@@ -65,6 +65,15 @@ public class TemplatePlaceholderEntity extends PanacheEntityBase {
     @NotNull(message = "Source is required")
     private DataSource source = DataSource.MANUAL;
 
+    /**
+     * The named field {@link #source} resolves (V544): a company-fact key
+     * for COMPANY, a profile field for USER, a hiring-fact key for
+     * INTERVIEW_FACT. NULL keeps the legacy keyword matching on the
+     * placeholder key, so existing templates work unchanged.
+     */
+    @Column(name = "source_field", length = 50)
+    private String sourceField;
+
     @Column(name = "field_group", length = 100)
     private String fieldGroup;
 

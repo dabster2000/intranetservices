@@ -281,10 +281,13 @@ public class HrLetterService {
             applyVacationAgreementFacts(letter, actorUuid, effectiveValues);
         }
 
+        // The letter's employee is the target person: COMPANY-sourced
+        // placeholders resolve from their derived company's facts (V544).
         List<PreviewTemplateResponse.PreviewDocumentDTO> rendered = signingService.generatePreviewDocuments(
                 templateDocuments.stream().map(HrLetterService::toTemplateDocumentDTO).toList(),
                 effectiveValues,
-                template.getUuid());
+                template.getUuid(),
+                letter.getUseruuid());
 
         LocalDate today = LocalDate.now(COPENHAGEN);
         EmployeeDocumentCategory category = letter.getLetterType() == HrLetterType.SALARY_REGULATION
