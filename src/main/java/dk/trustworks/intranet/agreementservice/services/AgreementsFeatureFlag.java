@@ -22,6 +22,7 @@ public class AgreementsFeatureFlag {
 
     static final String ENABLED_KEY = "documents.agreements.enabled";
     static final String SLACK_CHANNEL_KEY = "agreements.slack.channel";
+    static final String BACKFILL_ENABLED_KEY = "documents.agreements.backfill.enabled";
 
     @Inject
     AppSettingService appSettingService;
@@ -29,6 +30,20 @@ public class AgreementsFeatureFlag {
     /** UI surfaces + expiry alerts armed. */
     public boolean isEnabled() {
         return appSettingService.findByKey(ENABLED_KEY)
+                .map(AppSetting::getSettingValue)
+                .map(String::trim)
+                .map(Boolean::parseBoolean)
+                .orElse(false);
+    }
+
+    /**
+     * Phase-4 AI backfill (spec §10). Seeded OFF by V549; gates the
+     * console UI and, unlike the registry recorder, also the run-start
+     * endpoint — a corpus walk downloads employee documents and spends
+     * AI tokens, so it must never fire while the feature is dark.
+     */
+    public boolean isBackfillEnabled() {
+        return appSettingService.findByKey(BACKFILL_ENABLED_KEY)
                 .map(AppSetting::getSettingValue)
                 .map(String::trim)
                 .map(Boolean::parseBoolean)

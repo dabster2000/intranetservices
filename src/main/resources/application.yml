@@ -677,6 +677,34 @@ dk:
       scheduling:
         methodb:
           enabled: ${DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED:false}
+    agreements:
+      ai:
+        # Phase-4 AI backfill of the agreement registry (template-clauses spec
+        # §10): one structured-output call per discovered PDF, store=false —
+        # backfill documents are contracts and HR letters, so responses are
+        # never persisted at OpenAI and error bodies are logged via the
+        # redacting envelope path only.
+        #
+        # extraction-model is the TEXT path (PDFBox-extracted document text).
+        # It defaults to the reasoning-class extraction model the recruitment
+        # domain uses; extraction-reasoning-effort and
+        # extraction-max-output-tokens move TOGETHER with it — a reasoning
+        # model spends the output budget on hidden reasoning first, so
+        # raising the effort without raising the budget yields a 2xx response
+        # with no output text (the documented openai.vision-model trap).
+        # If this is ever pointed at a non-reasoning (gpt-4o-family) model,
+        # extraction-reasoning-effort MUST be set empty — the family rejects
+        # the reasoning node with HTTP 400.
+        extraction-model: ${DK_TRUSTWORKS_AGREEMENTS_AI_EXTRACTION_MODEL:gpt-5.6-terra}
+        extraction-reasoning-effort: ${DK_TRUSTWORKS_AGREEMENTS_AI_EXTRACTION_REASONING_EFFORT:low}
+        extraction-max-output-tokens: ${DK_TRUSTWORKS_AGREEMENTS_AI_EXTRACTION_MAX_OUTPUT_TOKENS:6000}
+        # vision-model is the SCAN fallback (page 1 rendered as PNG when the
+        # PDF yields no text layer). Deliberately a proven non-reasoning
+        # vision model (the receipt-OCR posture) — no reasoning node is sent
+        # on this path, so never point it at a reasoning-class model without
+        # also revisiting AgreementExtractionService.
+        vision-model: ${DK_TRUSTWORKS_AGREEMENTS_AI_VISION_MODEL:gpt-4o-mini}
+        vision-max-output-tokens: ${DK_TRUSTWORKS_AGREEMENTS_AI_VISION_MAX_OUTPUT_TOKENS:4096}
     practice:
       # Daily practice reconciliation tick (Part 2 Phase 2, spec §4.2).
       # 06:20 UTC: outside the 02:00–05:00 CET quiet window (staging refresh,
