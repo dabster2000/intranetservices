@@ -49,13 +49,14 @@ public class TemplateService {
 
     /**
      * As {@link #findAll(boolean)}, but with each template's default signers
-     * narrowed to one person's company: the signers marked for every company
-     * plus that company's own.
+     * <em>and documents</em> narrowed to one person's company: the rows marked
+     * for every company plus that company's own.
      * <p>
-     * A merged template (one shared contract instead of the TW/TWC/TWT copies)
-     * carries every company's counter-signers at once, so the signing wizard
-     * must be told whom it is preparing for — otherwise it would offer another
-     * company's executives. Everything else about the template is unchanged.
+     * A merged template (one shared template instead of the TW/TWC/TWT copies)
+     * carries every company's counter-signers and every company's documents at
+     * once, so the signing wizard must be told whom it is preparing for —
+     * otherwise it would offer another company's executives, and another
+     * company's contract. Everything else about the template is unchanged.
      *
      * @param includeInactive whether to include inactive templates
      * @param forUserUuid     the person the documents are being prepared for;
@@ -67,15 +68,17 @@ public class TemplateService {
                 .map(CompanyPlaceholderResolver.CompanyContext::companyUuid)
                 .orElse(null);
         return findAll(includeInactive).stream()
-                .map(dto -> withSignersForCompany(dto, companyUuid))
+                .map(dto -> narrowToCompany(dto, companyUuid))
                 .collect(Collectors.toList());
     }
 
-    private DocumentTemplateDTO withSignersForCompany(DocumentTemplateDTO dto, String companyUuid) {
-        if (dto.getDefaultSigners() == null || dto.getDefaultSigners().isEmpty()) {
-            return dto;
+    private DocumentTemplateDTO narrowToCompany(DocumentTemplateDTO dto, String companyUuid) {
+        if (dto.getDefaultSigners() != null && !dto.getDefaultSigners().isEmpty()) {
+            dto.setDefaultSigners(signersForCompany(dto.getDefaultSigners(), companyUuid));
         }
-        dto.setDefaultSigners(signersForCompany(dto.getDefaultSigners(), companyUuid));
+        if (dto.getDocuments() != null && !dto.getDocuments().isEmpty()) {
+            dto.setDocuments(documentsForCompany(dto.getDocuments(), companyUuid));
+        }
         return dto;
     }
 
@@ -532,6 +535,7 @@ public class TemplateService {
                 .fileUuid(entity.getFileUuid())
                 .originalFilename(entity.getOriginalFilename())
                 .displayOrder(entity.getDisplayOrder())
+                .companyUuid(entity.getCompanyUuid())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -549,6 +553,25 @@ public class TemplateService {
         entity.setFileUuid(dto.getFileUuid());
         entity.setOriginalFilename(dto.getOriginalFilename());
         entity.setDisplayOrder(dto.getDisplayOrder() != null ? dto.getDisplayOrder() : 1);
+        entity.setCompanyUuid(normalizeCompanyUuid(dto.getCompanyUuid()));
         return entity;
+    }
+
+    /**
+     * The documents one company actually receives: those marked for every
+     * company ({@code companyUuid == null}) plus that company's own.
+     * <p>
+     * Pure and package-private for the same reason as
+     * {@link #signersForCompany}: the DB-free tier is the deploy gate, so
+     * the decision lives here rather than in the Panache query. A null
+     * {@code companyUuid} keeps only the company-agnostic documents — it
+     * must never widen to "every document", which would put another
+     * company's contract in the envelope.
+     */
+    static List<TemplateDocumentDTO> documentsForCompany(
+            List<TemplateDocumentDTO> documents, String companyUuid) {
+        return documents.stream()
+                .filter(d -> d.getCompanyUuid() == null || d.getCompanyUuid().equals(companyUuid))
+                .collect(Collectors.toList());
     }
 }

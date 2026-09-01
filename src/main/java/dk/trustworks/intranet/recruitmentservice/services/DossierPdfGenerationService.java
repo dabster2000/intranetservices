@@ -176,8 +176,12 @@ public class DossierPdfGenerationService {
         Objects.requireNonNull(placeholders, "placeholders must not be null");
         Objects.requireNonNull(appendices, "appendices must not be null");
 
+        // Narrowed to the candidate's target company: a merged template carries
+        // every company's documents, so an unfiltered read would put another
+        // company's contract in the dossier.
         List<TemplateDocumentEntity> templateDocs =
-                TemplateDocumentEntity.findByTemplateUuid(templateUuid);
+                TemplateDocumentEntity.findByTemplateUuidForCompany(templateUuid, targetCompanyUuid);
+        requireDocumentsForCompany(templateDocs, templateUuid, targetCompanyUuid);
 
         // Company facts first (authoritative for COMPANY-sourced placeholders,
         // fail-closed on explicitly mapped facts), then type-aware formatting
@@ -384,4 +388,24 @@ public class DossierPdfGenerationService {
         }
         return name + ".pdf";
     }
+
+    /**
+     * A merged template must still produce documents for the company at hand.
+     * If every document on it is scoped to other companies, the dossier would
+     * otherwise be generated with nothing in it — refuse instead, naming the
+     * company, the same way a missing company fact does.
+     */
+    static void requireDocumentsForCompany(List<TemplateDocumentEntity> docs,
+                                           String templateUuid, String companyUuid) {
+        if (docs != null && !docs.isEmpty()) {
+            return;
+        }
+        throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", "NO_DOCUMENTS_FOR_COMPANY",
+                        "message", "Skabelonen har ingen dokumenter for dette selskab."
+                                + " Tilføj et dokument til selskabet, eller marker et dokument"
+                                + " som gældende for alle selskaber."))
+                .build());
+    }
+
 }
