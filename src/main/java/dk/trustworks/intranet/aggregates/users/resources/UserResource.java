@@ -28,8 +28,6 @@ import dk.trustworks.intranet.services.ItExpenseService;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
-import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
-import dk.trustworks.intranet.fileservice.resources.UserSharePointDocumentResource;
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.model.Certification;
 import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
@@ -101,12 +99,6 @@ public class UserResource {
 
     @Inject
     PhotoService photoAPI;
-
-    @Inject
-    UserDocumentResource documentAPI;
-
-    @Inject
-    UserSharePointDocumentResource sharePointDocumentAPI;
 
     @Inject
     ContractService contractService;
@@ -504,26 +496,6 @@ public class UserResource {
     @Path("/{useruuid}/photo")
     public File findPhotoByUserUUID(@PathParam("useruuid") String useruuid) {
         return photoAPI.findPhotoByRelatedUUID(useruuid);
-    }
-
-    @GET
-    @Path("/{useruuid}/documents")
-    public List<File> findDocumentsByUserUUID(@PathParam("useruuid") String useruuid) {
-        return documentAPI.findDocumentsByUserUUID(useruuid);
-    }
-
-    @POST
-    @GZIP
-    @Path("/{useruuid}/documents")
-    @RolesAllowed({"users:write"})
-    public void saveDocument(File document) {
-        documentAPI.save(document);
-    }
-
-    @GET
-    @Path("/{useruuid}/sharepoint-documents")
-    public List<UserSharePointDocumentDTO> findSharePointDocumentsByUserUUID(@PathParam("useruuid") String useruuid) {
-        return sharePointDocumentAPI.findByUserUUID(useruuid);
     }
 
     @GET
