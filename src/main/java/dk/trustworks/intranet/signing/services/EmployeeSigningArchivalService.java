@@ -65,7 +65,7 @@ public class EmployeeSigningArchivalService {
 
     /**
      * Failed archival attempts after which a case is abandoned as SKIPPED
-     * (V549). At the sweep's 5-minute cadence this is roughly two hours of
+     * (V551). At the sweep's 5-minute cadence this is roughly two hours of
      * retrying, which comfortably outlasts a transient NextSign or S3 blip
      * while still terminating on a permanently expired envelope.
      *

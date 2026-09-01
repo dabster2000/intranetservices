@@ -18,7 +18,7 @@ import static org.mockito.Mockito.mock;
  * per-TemplateCategory mapping is covered by
  * {@code EmployeeDocumentCategory.fromTemplateCategory}'s own contract.
  *
- * <p>Also covers the archival retry cap (V549): the catch-up sweep selects
+ * <p>Also covers the archival retry cap (V551): the catch-up sweep selects
  * purely on {@code archive_status='PENDING'}, so the only thing standing
  * between an expired NextSign envelope and an unbounded 5-minute retry loop
  * is {@code markArchiveError}'s attempt counter.</p>
@@ -61,7 +61,7 @@ class EmployeeSigningArchivalServiceTest {
                 EmployeeSigningArchivalService.resolveCategory(caseWith("NOT_A_CATEGORY", null)));
     }
 
-    // ── Archival retry cap (V549, spec §14) ────────────────────────────────
+    // ── Archival retry cap (V551, spec §14) ────────────────────────────────
 
     /**
      * A service wired with a stubbed repository — enough to exercise

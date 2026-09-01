@@ -1,5 +1,5 @@
 -- ===================================================================
--- V549: signing_cases.archive_attempts — bound the archival retry loop
+-- V551: signing_cases.archive_attempts — bound the archival retry loop
 -- ===================================================================
 -- Feature: Employee documents S3-only store (spec §14 open item)
 --

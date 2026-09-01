@@ -245,7 +245,7 @@ public class SigningCase {
     private String archiveError;
 
     /**
-     * Failed S3 archival attempts (V549). The catch-up sweep selects on
+     * Failed S3 archival attempts (V551). The catch-up sweep selects on
      * {@code archive_status='PENDING'} alone, and a failure leaves the row
      * PENDING, so without this counter a case whose NextSign envelope has
      * expired would be retried every 5-minute pass forever. At
