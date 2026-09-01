@@ -101,20 +101,27 @@ public class PublicApplyService {
     @Inject
     RecruitmentEventRecorder eventRecorder;
 
+    @Inject
+    RecruitmentFeatureFlag featureFlag;
+
+    @Inject
+    PublicApplyReferrerService referrerService;
+
     // ---- Reads -----------------------------------------------------------------
 
     /** Form config for a position form; uniform 404 when the slug resolves to nothing public. */
     public PublicApplyFormResponse positionForm(String slug) {
         RecruitmentPosition position = openPositionBySlug(slug);
         return new PublicApplyFormResponse(
-                position.getTitle(), position.getPracticeName(), PublicApplyQuestions.all());
+                position.getTitle(), position.getPracticeName(),
+                PublicApplyQuestions.asked(featureFlag.isApplyReferrerClaimEnabled()));
     }
 
     /** Form config for the unsolicited form: questions + active practices (sort order). */
     public PublicUnsolicitedFormResponse unsolicitedForm() {
         List<Practice> practices = Practice.list("active = true order by sortOrder");
         return new PublicUnsolicitedFormResponse(
-                PublicApplyQuestions.all(),
+                PublicApplyQuestions.asked(featureFlag.isApplyReferrerClaimEnabled()),
                 practices.stream()
                         .map(p -> new PublicUnsolicitedFormResponse.PracticeOption(p.getUuid(), p.getName()))
                         .toList());
@@ -145,10 +152,23 @@ public class PublicApplyService {
      * keeps the CV — the recruiter re-files the existing application with
      * the move command if the new req is the better fit.
      */
-    @Transactional
     public void submitForPosition(String slug, PublicApplySubmission submission) {
+        submitForPosition(slug, submission, resolveReferrerClaim(submission));
+    }
+
+    /**
+     * The transactional core of {@link #submitForPosition(String,
+     * PublicApplySubmission)} — see that method for the semantics. Split out
+     * so the referrer claim can be resolved BEFORE the transaction opens
+     * (its AI tier is an OpenAI round-trip; the no-OpenAI-in-tx rule). ArC
+     * weaves interceptors by subclassing, so the {@code this}-call above
+     * still starts this transaction.
+     */
+    @Transactional
+    public void submitForPosition(String slug, PublicApplySubmission submission,
+                                  PublicApplyReferrerService.ReferrerClaim referrerClaim) {
         RecruitmentPosition position = openPositionBySlug(slug);
-        CandidateResolution resolution = resolveCandidate(submission, null);
+        CandidateResolution resolution = resolveCandidate(submission, null, referrerClaim);
         RecruitmentCandidate candidate = resolution.candidate();
 
         boolean duplicateOpen = resolution.reused() && RecruitmentApplication.count(
@@ -192,10 +212,21 @@ public class PublicApplyService {
      * deactivation must still land) goes into {@code source_detail};
      * anything else is silently dropped.
      */
-    @Transactional
     public void submitUnsolicited(PublicApplySubmission submission) {
+        submitUnsolicited(submission, resolveReferrerClaim(submission));
+    }
+
+    /**
+     * The transactional core of {@link
+     * #submitUnsolicited(PublicApplySubmission)} — see that method for the
+     * semantics. Split for the same reason as the position twin: the
+     * referrer claim is resolved outside the transaction.
+     */
+    @Transactional
+    public void submitUnsolicited(PublicApplySubmission submission,
+                                  PublicApplyReferrerService.ReferrerClaim referrerClaim) {
         PracticeRef practice = resolvePractice(submission.desiredPracticeUuid());
-        CandidateResolution resolution = resolveCandidate(submission, practice);
+        CandidateResolution resolution = resolveCandidate(submission, practice, referrerClaim);
         RecruitmentCandidate candidate = resolution.candidate();
 
         persistCandidateAnswers(candidate, submission.answers(), resolution.reused());
@@ -262,7 +293,8 @@ public class PublicApplyService {
      * stored candidate.
      */
     private CandidateResolution resolveCandidate(PublicApplySubmission submission,
-                                                 PracticeRef practice) {
+                                                 PracticeRef practice,
+                                                 PublicApplyReferrerService.ReferrerClaim claim) {
         // The UNFILTERED check on purpose: there is no viewer on a public
         // submission, and this decides whether to reuse a row, not what to
         // show anyone. Nothing from the match escapes this method.
@@ -283,11 +315,12 @@ public class PublicApplyService {
                 return new CandidateResolution(existing, true);
             }
         }
-        return new CandidateResolution(createCandidate(submission, practice), false);
+        return new CandidateResolution(createCandidate(submission, practice, claim), false);
     }
 
     private RecruitmentCandidate createCandidate(PublicApplySubmission submission,
-                                                 PracticeRef practice) {
+                                                 PracticeRef practice,
+                                                 PublicApplyReferrerService.ReferrerClaim claim) {
         RecruitmentCandidate candidate = new RecruitmentCandidate();
         candidate.setFirstName(submission.firstName());
         candidate.setLastName(submission.lastName());
@@ -309,6 +342,7 @@ public class PublicApplyService {
         // WEBSITE/LINKEDIN_AD/JOBINDEX), so no Art. 14 bookkeeping here.
         candidate.setLawfulBasis(CandidateLawfulBasis.LEGITIMATE_INTEREST);
         candidate.setCreatedByUseruuid(PUBLIC_FORM_CREATOR);
+        applyReferrerClaim(candidate, claim);
         RecruitmentCandidate.persist(candidate);
 
         RecruitmentEventBuilder event = RecruitmentEventBuilder
@@ -330,7 +364,77 @@ public class PublicApplyService {
             event.pii("source_detail", candidate.getSourceDetail());
         }
         eventRecorder.record(event);
+        recordReferrerClaim(candidate, claim);
         return candidate;
+    }
+
+    // ---- Applicant referrer claim (change request (e), 2026-09-01) --------------
+
+    /**
+     * Resolve the applicant's "Kender du nogen hos Trustworks?" answer to an
+     * employee. Called from the NON-transactional entry points on purpose —
+     * the matcher's AI tier is an OpenAI round-trip and must not hold a
+     * pooled connection open on a public endpoint.
+     */
+    private PublicApplyReferrerService.ReferrerClaim resolveReferrerClaim(
+            PublicApplySubmission submission) {
+        Map<String, String> answers = submission.answers();
+        return referrerService.resolve(
+                answers == null ? null : answers.get(PublicApplyQuestions.KNOWS_SOMEONE_KEY));
+    }
+
+    /**
+     * Store the claim on the NEW candidate row: a confident directory match
+     * links {@code referred_by_user_uuid}; anything else — no match, an
+     * ambiguous name, a non-employee — is preserved verbatim as
+     * {@code external_referrer_name}. Never both, and never a guess.
+     * <p>
+     * Deliberately new candidates only. Reuse of an existing candidate
+     * "never mutates the stored candidate" (see {@link #resolveCandidate}),
+     * and a public, unauthenticated caller must not be able to attach a
+     * colleague's name to a row someone else already owns. The answer itself
+     * still lands in {@code recruitment_application_answers} on every path,
+     * so nothing an applicant wrote is lost.
+     */
+    private static void applyReferrerClaim(RecruitmentCandidate candidate,
+                                           PublicApplyReferrerService.ReferrerClaim claim) {
+        if (claim == null || !claim.isPresent()) {
+            return;
+        }
+        if (claim.isMatched()) {
+            candidate.setReferredByUserUuid(claim.matchedUserUuid());
+        } else {
+            // Real data: the person named is often not an employee at all.
+            candidate.setExternalReferrerName(claim.claimedName());
+        }
+    }
+
+    /**
+     * Append the audit fact that an applicant named a colleague. This event
+     * is load-bearing, not decoration: it is the ONLY thing that tells the
+     * rest of the system this link is an unverified applicant claim rather
+     * than a referral the employee gave — {@code ReferrerNotificationReactor}
+     * reads it to stay quiet, and {@code ApplicantReferrerNotificationReactor}
+     * reads it to send the one honest notice.
+     */
+    private void recordReferrerClaim(RecruitmentCandidate candidate,
+                                     PublicApplyReferrerService.ReferrerClaim claim) {
+        if (claim == null || !claim.isPresent()) {
+            return;
+        }
+        RecruitmentEventBuilder event = RecruitmentEventBuilder
+                .event(RecruitmentEventType.APPLICANT_REFERRER_CLAIMED)
+                .candidate(candidate.getUuid())
+                .actorCandidate()
+                .payload("origin", ORIGIN_PUBLIC_FORM)
+                .payload("match_method", claim.matchMethod() == null ? "none" : claim.matchMethod())
+                // The applicant's own words about another person — pii, so P19
+                // anonymisation rewrites it with everything else.
+                .pii("claimed_name", claim.claimedName());
+        if (claim.isMatched()) {
+            event.payload("matched_user_uuid", claim.matchedUserUuid());
+        }
+        eventRecorder.record(event);
     }
 
     /** Any registry row — active or since-deactivated; garbage → null (dropped). */

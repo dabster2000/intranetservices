@@ -25,13 +25,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class RecruitmentCalendarInvitationBodyTest {
 
+    /**
+     * No panel names, no address — the pre-(a)+(h) shape, kept as the
+     * baseline for the tests that pin the greeting and the internal-pointer
+     * guard. The added lines have their own test class.
+     */
+    private static final RecruitmentCalendarService.InvitationDetails NO_DETAILS =
+            RecruitmentCalendarService.InvitationDetails.NONE;
+
     private static final String INTERNAL_NOTE =
             "Scheduled via the Trustworks intranet — see /recruitment/interviews for the interview kit.";
 
     @Test
     void candidateInvited_roundInterview_addressesTheCandidate_withNoInternalLink() {
         String body = RecruitmentCalendarService.invitationBody(
-                interview(RecruitmentInterviewKind.ROUND), candidate("Anna", "Nielsen"), true);
+                interview(RecruitmentInterviewKind.ROUND), candidate("Anna", "Nielsen"), true, NO_DETAILS);
 
         assertEquals("""
                 Kære Anna
@@ -47,7 +55,7 @@ class RecruitmentCalendarInvitationBodyTest {
     @Test
     void candidateInvited_informalChat_saysUformelSnak() {
         String body = RecruitmentCalendarService.invitationBody(
-                interview(RecruitmentInterviewKind.INFORMAL), candidate("Anna", "Nielsen"), true);
+                interview(RecruitmentInterviewKind.INFORMAL), candidate("Anna", "Nielsen"), true, NO_DETAILS);
 
         assertTrue(body.contains("Vi glæder os til en uformel snak med dig hos Trustworks."),
                 "informal chats must not be announced as a samtale: " + body);
@@ -61,7 +69,7 @@ class RecruitmentCalendarInvitationBodyTest {
     void candidateInvited_neverNamesThePosition() {
         for (RecruitmentInterviewKind kind : RecruitmentInterviewKind.values()) {
             String body = RecruitmentCalendarService.invitationBody(
-                    interview(kind), candidate("Anna", "Nielsen"), true);
+                    interview(kind), candidate("Anna", "Nielsen"), true, NO_DETAILS);
             assertFalse(body.contains("stilling"), "position mentioned for " + kind + ": " + body);
         }
     }
@@ -74,7 +82,7 @@ class RecruitmentCalendarInvitationBodyTest {
     void candidateInvited_neverCarriesInternalPointers() {
         for (RecruitmentInterviewKind kind : RecruitmentInterviewKind.values()) {
             String body = RecruitmentCalendarService.invitationBody(
-                    interview(kind), candidate("Anna", "Nielsen"), true);
+                    interview(kind), candidate("Anna", "Nielsen"), true, NO_DETAILS);
             assertFalse(body.contains(INTERNAL_NOTE), "old internal note leaked for " + kind);
             assertFalse(body.contains("/recruitment"), "internal path leaked for " + kind + ": " + body);
             assertFalse(body.contains("intranet"), "intranet mentioned for " + kind + ": " + body);
@@ -84,7 +92,7 @@ class RecruitmentCalendarInvitationBodyTest {
     @Test
     void candidateWithoutFirstName_greetsNamelessly_neverBySurname() {
         String body = RecruitmentCalendarService.invitationBody(
-                interview(RecruitmentInterviewKind.ROUND), candidate(null, "Nielsen"), true);
+                interview(RecruitmentInterviewKind.ROUND), candidate(null, "Nielsen"), true, NO_DETAILS);
 
         assertTrue(body.startsWith("Hej\n"), "expected a nameless greeting, got: " + body);
         assertFalse(body.contains("Kære"), "must not address a candidate by surname: " + body);
@@ -93,7 +101,7 @@ class RecruitmentCalendarInvitationBodyTest {
     @Test
     void blankFirstName_treatedAsMissing() {
         String body = RecruitmentCalendarService.invitationBody(
-                interview(RecruitmentInterviewKind.ROUND), candidate("   ", "Nielsen"), true);
+                interview(RecruitmentInterviewKind.ROUND), candidate("   ", "Nielsen"), true, NO_DETAILS);
 
         assertTrue(body.startsWith("Hej\n"), "expected a nameless greeting, got: " + body);
     }
@@ -106,7 +114,7 @@ class RecruitmentCalendarInvitationBodyTest {
     @Test
     void candidateNotInvited_keepsTheInternalNote() {
         String body = RecruitmentCalendarService.invitationBody(
-                interview(RecruitmentInterviewKind.ROUND), candidate("Anna", "Nielsen"), false);
+                interview(RecruitmentInterviewKind.ROUND), candidate("Anna", "Nielsen"), false, NO_DETAILS);
 
         assertEquals(INTERNAL_NOTE, body);
     }

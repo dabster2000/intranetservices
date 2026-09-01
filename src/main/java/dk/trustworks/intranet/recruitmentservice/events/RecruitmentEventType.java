@@ -94,6 +94,32 @@ public enum RecruitmentEventType {
      */
     REFERRAL_TRIAGED,
     REFERRAL_OUTCOME_NOTIFIED,
+    /**
+     * A public-form applicant typed a name into "Kender du nogen hos
+     * Trustworks?" (change request (e), 2026-09-01). Catalog addition:
+     * the claim is a fact about a THIRD party that no existing type
+     * covers, and every downstream decision keys off it —
+     * {@code ReferrerNotificationReactor} suppresses its "your referral"
+     * milestone DMs for these links (the employee referred nobody), and
+     * {@code ApplicantReferrerNotificationReactor} sends the one honest
+     * notice instead. Payload: {@code origin=public_form},
+     * {@code match_method=name|ai_extraction|none},
+     * {@code matched_user_uuid} when the directory match was confident;
+     * the applicant's raw text is pii ({@code claimed_name}).
+     * <p>
+     * Recorded ONLY when {@code recruitment.apply.referrer-claim.enabled}
+     * is on, which is why no historic rows exist.
+     */
+    APPLICANT_REFERRER_CLAIMED,
+    /**
+     * The employee an applicant named was DM'ed about it — the durable
+     * per-candidate idempotency key for
+     * {@code ApplicantReferrerNotificationReactor}, exactly as
+     * {@link #REFERRAL_OUTCOME_NOTIFIED} is for the referrer cadence
+     * ("reactors' own side effects are recorded as events", spec §3.4).
+     * Payload: {@code notified_user_uuid}, {@code trigger_seq}.
+     */
+    APPLICANT_REFERRER_NOTIFIED,
 
     // --- Interviews & scorecards (P11) ----------------------------------
     INTERVIEW_SCHEDULED,

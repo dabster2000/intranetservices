@@ -275,13 +275,13 @@ class SlackRecruitmentViewsTest {
 
         List<InputBlock> inputs = inputs(view.getBlocks());
         String whyHint = inputs.get(0).getHint().getText();
-        assertTrue(whyHint.contains("Motivation for the consultant role"),
+        assertTrue(whyHint.contains("Motivation for selve konsulentrollen"),
                 "the curated one-liner an interviewer reads before scoring");
         assertFalse(whyHint.contains("1: ") || whyHint.contains("4: "),
                 "the anchors no longer travel inline — they live in the guide view");
 
         assertTrue(inputs.get(1).getHint().getText()
-                        .contains("level the role is hired for"),
+                        .contains("det niveau, rollen ansættes til"),
                 "faglighed keeps its one-line definition");
         assertEquals("Closes a month cleanly.", inputs.get(2).getHint().getText(),
                 "a custom subject falls back to its author's help text");
@@ -326,9 +326,9 @@ class SlackRecruitmentViewsTest {
         assertTrue(view.getTitle().getText().length() <= 24, "Slack caps modal titles at 24 chars");
 
         String text = allMrkdwn(view.getBlocks());
-        assertTrue(text.contains("ceiling for one sitting"),
+        assertTrue(text.contains("loftet for én samtale"),
                 "the usage note keeps six subjects from becoming a checklist");
-        assertTrue(text.contains("Motivation for the consultant role itself — not just"),
+        assertTrue(text.contains("Motivation for selve konsulentrollen — ikke bare"),
                 "the full definition, not the one-liner");
         assertTrue(text.contains("*1*") && text.contains("*4*"),
                 "all four anchors are spelled out");
