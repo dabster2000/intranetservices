@@ -280,7 +280,7 @@ public class AgreementBackfillWalkerService {
                 item.setSharepointItemId(file.id());
                 item.setETag(fresh.eTag() != null ? fresh.eTag() : file.eTag());
                 if (fresh.webUrl() != null) {
-                    item.setWebUrl(fresh.webUrl());
+                    item.setWebUrl(boundedUrl(fresh.webUrl()));
                 }
             });
             return existing.isPresent();
@@ -299,8 +299,8 @@ public class AgreementBackfillWalkerService {
             item.setDriveId(driveId);
             item.setSharepointItemId(file.id());
             item.setETag(fresh.eTag() != null ? fresh.eTag() : file.eTag());
-            item.setWebUrl(fresh.webUrl() != null ? fresh.webUrl() : file.webUrl());
-            item.setFileName(file.name());
+            item.setWebUrl(boundedUrl(fresh.webUrl() != null ? fresh.webUrl() : file.webUrl()));
+            item.setFileName(bounded(file.name(), 500));
             item.setFileSize(file.size() == null ? bytes.length : file.size());
             item.setDocSha256(sha256);
             item.setStatus(result.status().name());
@@ -457,6 +457,18 @@ public class AgreementBackfillWalkerService {
             log.warnf("Could not parse @odata.nextLink '%s' — stopping pagination", nextLink);
         }
         return null;
+    }
+
+    /** A truncated URL is a broken link — drop over-long ones instead. */
+    static String boundedUrl(String url) {
+        return url == null || url.length() > 1000 ? null : url;
+    }
+
+    static String bounded(String text, int max) {
+        if (text == null) {
+            return null;
+        }
+        return text.length() <= max ? text : text.substring(0, max);
     }
 
     static String sha256Hex(byte[] bytes) {
