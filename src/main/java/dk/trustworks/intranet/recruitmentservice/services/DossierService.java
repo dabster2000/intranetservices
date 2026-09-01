@@ -299,6 +299,9 @@ public class DossierService {
         if (req.signersConfig() != null) {
             dossier.setSignersConfigJson(writeJson(req.signersConfig()));
         }
+        if (req.clauses() != null) {
+            dossier.setClausesJson(writeJson(req.clauses()));
+        }
         log.debugf("Autosaved dossier uuid=%s by actor=%s", dossier.getUuid(), actor);
         return toResponse(dossier);
     }
@@ -400,9 +403,10 @@ public class DossierService {
                     "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
         }
 
-        // 1) Overwrite placeholder + signer drafts.
+        // 1) Overwrite placeholder + signer + clause drafts.
         dossier.setPlaceholderValuesJson(rev.getPlaceholderValuesSnapshot());
         dossier.setSignersConfigJson(rev.getSignersConfigSnapshot());
+        dossier.setClausesJson(rev.getClausesSnapshot());
 
         // 2) Replace appendix rows with what the snapshot recorded.
         CandidateDossierAppendix.delete("dossierUuid", dossier.getUuid());
@@ -535,6 +539,10 @@ public class DossierService {
                 .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(),
                         a.getDisplayOrder(), a.isSignObligated()))
                 .toList();
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses = readJson(
+                dossier.getClausesJson(),
+                new TypeReference<>() {
+                });
         return new DossierResponse(
                 dossier.getUuid(),
                 dossier.getCandidateUuid(),
@@ -543,6 +551,7 @@ public class DossierService {
                 signersConfig != null ? signersConfig : List.of(),
                 dossier.getStatus(),
                 appendices,
+                clauses != null ? clauses : List.of(),
                 dossier.getCreatedAt(),
                 dossier.getUpdatedAt()
         );
@@ -588,6 +597,14 @@ public class DossierService {
     public List<SignerConfigDto> currentSignersConfig(CandidateDossier dossier) {
         List<SignerConfigDto> v = readJson(dossier.getSignersConfigJson(), new TypeReference<>() {
         });
+        return v == null ? List.of() : v;
+    }
+
+    /** The draft's clause selection (template-clauses Phase 2); empty when none. */
+    public List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> currentClauses(CandidateDossier dossier) {
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> v =
+                readJson(dossier.getClausesJson(), new TypeReference<>() {
+                });
         return v == null ? List.of() : v;
     }
 

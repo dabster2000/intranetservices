@@ -210,6 +210,7 @@ class RecruitmentRevisionResponseFilterTest {
                 snapshot,
                 List.of(),
                 List.of(),
+                List.of(),
                 null,
                 null,
                 "candidate@example.com",

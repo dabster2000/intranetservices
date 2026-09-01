@@ -21,11 +21,14 @@ import java.util.Map;
  * @param formValues   Key-value pairs for template placeholder substitution
  * @param templateUuid UUID of the parent document template for placeholder type lookup.
  *                     Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
+ * @param clauses      Optional clause selection (template-clauses spec §5) — the preview renders exactly
+ *                     what the send would produce, including the combined tillæg.
  */
 public record PreviewTemplateRequest(
     List<TemplateDocumentDTO> documents,
     Map<String, String> formValues,
-    String templateUuid
+    String templateUuid,
+    List<SelectedClauseDTO> clauses
 ) {
     /**
      * Validates that required fields are present and valid.

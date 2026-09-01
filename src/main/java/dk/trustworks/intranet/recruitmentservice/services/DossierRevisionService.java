@@ -9,6 +9,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
+import dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -92,7 +93,8 @@ public class DossierRevisionService {
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
-        return snapshotFromValues(dossier, kind, placeholders, signers, appendices, recipient, actor);
+        List<SelectedClauseDTO> clauses = dossierService.currentClauses(dossier);
+        return snapshotFromValues(dossier, kind, placeholders, signers, appendices, clauses, recipient, actor);
     }
 
     /**
@@ -107,6 +109,7 @@ public class DossierRevisionService {
             Map<String, String> placeholders,
             List<SignerConfigDto> signers,
             List<AppendixDto> appendices,
+            List<SelectedClauseDTO> clauses,
             RecipientInfo recipient,
             UUID actor) {
         Objects.requireNonNull(dossier, "dossier must not be null");
@@ -119,6 +122,7 @@ public class DossierRevisionService {
         revision.setPlaceholderValuesSnapshot(writeJson(placeholders));
         revision.setSignersConfigSnapshot(writeJson(signers));
         revision.setAppendicesSnapshot(writeJson(appendices));
+        revision.setClausesSnapshot(clauses == null || clauses.isEmpty() ? null : writeJson(clauses));
 
         revision.setRecipientEmail(recipient.recipientEmail());
         revision.setSentByUseruuid(recipient.sentByUseruuid().toString());
@@ -175,6 +179,10 @@ public class DossierRevisionService {
                 revision.getAppendicesSnapshot(),
                 new TypeReference<>() {
                 });
+        List<SelectedClauseDTO> clauses = readJson(
+                revision.getClausesSnapshot(),
+                new TypeReference<>() {
+                });
         List<RevisionResponse.PdfArtifactRef> pdfArtifacts = readJson(
                 revision.getGeneratedPdfsSnapshot(),
                 new TypeReference<>() {
@@ -187,6 +195,7 @@ public class DossierRevisionService {
                 placeholders != null ? placeholders : Map.of(),
                 signers != null ? signers : List.of(),
                 appendices != null ? appendices : List.of(),
+                clauses != null ? clauses : List.of(),
                 pdfArtifacts != null ? pdfArtifacts : List.of(),
                 revision.getSigningCaseKey(),
                 revision.getRecipientEmail(),

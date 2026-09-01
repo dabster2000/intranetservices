@@ -255,6 +255,38 @@ public class WordDocumentService {
     }
 
     /**
+     * Local-only PDF generation from in-memory DOCX bytes with a value
+     * map that may carry poi-tl sub-document values
+     * ({@link com.deepoove.poi.data.DocxRenderData}) — the clause
+     * composition path (template-clauses spec §5).
+     * <p>
+     * Deliberately NO NextSign fallback: the NextSign convert API takes
+     * flat string tags, so a sub-document value would be stringified into
+     * the document. When local conversion is unavailable the composition
+     * fails loudly instead of shipping a corrupted bundle.
+     */
+    public byte[] generatePdfFromDocxBytes(byte[] docxBytes, Map<String, Object> placeholderValues, String documentName) {
+        if (!wordToPdfConverterInstance.isResolvable()) {
+            throw new WordDocumentException(
+                    "Local Word converter is not available — clause composition requires word-converter.backend=local");
+        }
+        try {
+            WordToPdfConverter converter = wordToPdfConverterInstance.get();
+            return converter.convert(docxBytes, placeholderValues != null ? placeholderValues : Map.of(), documentName);
+        } catch (WordConversionException e) {
+            throw new WordDocumentException("Local conversion failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Full readable document text (body, tables, headers, footers) —
+     * used for the clause anchor detection and AI enrichment context.
+     */
+    public String extractDocumentText(byte[] docxBytes) {
+        return placeholderExtractor.extractDocumentText(docxBytes);
+    }
+
+    /**
      * Generates PDF via NextSign API (fallback or when explicitly configured).
      */
     private byte[] generatePdfViaNextSign(String fileUuid, Map<String, Object> placeholderValues, String documentName) {

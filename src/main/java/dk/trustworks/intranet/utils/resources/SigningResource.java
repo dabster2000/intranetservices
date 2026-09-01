@@ -70,6 +70,12 @@ public class SigningResource {
     dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService placeholderPrefillService;
 
     @Inject
+    dk.trustworks.intranet.documentservice.services.ClauseCompositionService clauseCompositionService;
+
+    @Inject
+    dk.trustworks.intranet.signing.services.SigningCaseClauseRecorder signingCaseClauseRecorder;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     @Inject
@@ -221,11 +227,19 @@ public class SigningResource {
             request.validate();
             requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
+            // Resolve the clause selection before any external call: an
+            // invalid selection (retired clause, missing required parameter,
+            // key collision) answers 400 here instead of after NextSign has
+            // accepted a case (template-clauses spec §5).
+            var clausePlan = clauseCompositionService.resolveForTemplate(
+                request.templateUuid(), request.documents(), request.clauses());
+
             // Always use multi-document method (multi-document pattern is the only supported pattern)
             int additionalCount = request.additionalDocuments() != null ? request.additionalDocuments().size() : 0;
-            log.infof("Creating signing case from template with %d template docs, %d additional docs (templateUuid: %s)",
+            log.infof("Creating signing case from template with %d template docs, %d additional docs, %d clauses (templateUuid: %s)",
                 request.documents() != null ? request.documents().size() : 0,
                 additionalCount,
+                clausePlan.items().size(),
                 request.templateUuid());
             SigningCaseResponse response = signingService.createMultiDocumentCaseFromTemplate(
                 request.documents(),
@@ -236,7 +250,8 @@ public class SigningResource {
                 request.signingSchemas(),
                 request.templateUuid(),
                 request.additionalDocuments(),
-                targetUserUuid
+                targetUserUuid,
+                clausePlan
             );
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
@@ -258,6 +273,11 @@ public class SigningResource {
                     sharepointLocationUuid, request.templateUuid());
                 log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
                     response.caseKey(), totalSigners, sharepointLocationUuid);
+
+                // Immutable snapshot of what the case contained — the Phase 3
+                // registry's single source (spec §4.5). Failures are logged
+                // inside the recorder, never propagated: the case is sent.
+                signingCaseClauseRecorder.record(response.caseKey(), clausePlan);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -436,6 +456,12 @@ public class SigningResource {
             request.validate();
             requireEmployeeSigningTemplateDocuments(request.templateUuid(), request.documents());
 
+            // Same clause resolution as the send path — the preview must show
+            // exactly what will be sent, including the combined tillæg and any
+            // INLINE→ADDENDUM fallback notice.
+            var clausePlan = clauseCompositionService.resolveForTemplate(
+                request.templateUuid(), request.documents(), request.clauses());
+
             // Generate preview documents directly from the documents in the request.
             // templateUuid drives type-aware formatting; targetUserUuid drives the
             // derived-company fact resolution + server-resolved person fields, so
@@ -444,12 +470,13 @@ public class SigningResource {
                 request.documents(),
                 request.formValues(),
                 request.templateUuid(),
-                targetUserUuid
+                targetUserUuid,
+                clausePlan
             );
 
             log.infof("Preview documents generated successfully. Count: %d", documents.size());
 
-            return Response.ok(new PreviewTemplateResponse(documents)).build();
+            return Response.ok(new PreviewTemplateResponse(documents, clausePlan.notices())).build();
 
         } catch (IllegalArgumentException e) {
             log.warnf("Preview request validation failed (templateUuid=%s, docCount=%d): %s",

@@ -24,6 +24,8 @@ import java.util.Map;
  * @param placeholderValuesSnapshot  frozen placeholder map
  * @param signersConfigSnapshot      frozen signer configuration
  * @param appendixFileUuidsSnapshot  frozen appendix list
+ * @param clausesSnapshot            frozen clause selection (template-clauses
+ *                                   Phase 2); empty for pre-clause revisions
  * @param pdfArtifactsSnapshot       frozen list of generated/included PDF
  *                                   artifacts (filename + S3 file UUID),
  *                                   nullable for {@code REVIEW_EMAIL} sends
@@ -45,6 +47,7 @@ public record RevisionResponse(
         Map<String, String> placeholderValuesSnapshot,
         List<SignerConfigDto> signersConfigSnapshot,
         List<AppendixDto> appendixFileUuidsSnapshot,
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clausesSnapshot,
         List<PdfArtifactRef> pdfArtifactsSnapshot,
         String signingCaseKey,
         String recipientEmail,

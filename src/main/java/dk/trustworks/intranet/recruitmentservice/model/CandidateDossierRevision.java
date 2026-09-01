@@ -64,6 +64,15 @@ public class CandidateDossierRevision extends PanacheEntityBase {
     @Column(name = "appendices_snapshot", columnDefinition = "JSON", nullable = false, updatable = false)
     private String appendicesSnapshot;
 
+    /**
+     * Frozen JSON snapshot of the clause selection at Send time
+     * (template-clauses Phase 2). {@code null} for revisions written
+     * before clauses existed. Immutable like the other snapshot columns.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "clauses_snapshot", columnDefinition = "JSON", updatable = false)
+    private String clausesSnapshot;
+
     /** Soft FK to {@code signing_cases.case_key}. Only set for {@link RevisionKind#SIGNATURE}. */
     @Column(name = "signing_case_key", length = 255, updatable = false)
     private String signingCaseKey;

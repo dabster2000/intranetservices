@@ -1,6 +1,10 @@
 package dk.trustworks.intranet.utils.converter;
 
 import com.deepoove.poi.XWPFTemplate;
+import com.deepoove.poi.config.Configure;
+import com.deepoove.poi.config.ConfigureBuilder;
+import com.deepoove.poi.data.DocxRenderData;
+import com.deepoove.poi.policy.DocxRenderPolicy;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -122,7 +126,7 @@ public class LocalWordToPdfConverter implements WordToPdfConverter {
     private void replacePlaceholders(Path inputDocx, Path outputDocx, Map<String, Object> placeholders) {
         log.debugf("Replacing %d placeholders in Word document", placeholders.size());
 
-        try (XWPFTemplate template = XWPFTemplate.compile(inputDocx.toFile())) {
+        try (XWPFTemplate template = XWPFTemplate.compile(inputDocx.toFile(), configureFor(placeholders))) {
             // poi-tl expects {{key}} syntax - it handles the braces internally
             template.render(placeholders);
             template.writeToFile(outputDocx.toString());
@@ -130,6 +134,29 @@ public class LocalWordToPdfConverter implements WordToPdfConverter {
         } catch (Exception e) {
             throw new WordConversionException("Failed to replace placeholders: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * poi-tl configuration for a value map. A plain {@code {{KEY}}} text
+     * tag renders a {@link DocxRenderData} value as the object's
+     * {@code toString()} — garbage in a signed document — so every key
+     * whose value is a sub-document is bound to {@link DocxRenderPolicy}
+     * (the policy the {@code {{+KEY}}} syntax uses natively). This is how
+     * the clause composition merges the {@code {{CLAUSES}}} anchor
+     * (template-clauses spec §5). With no such values this builds the
+     * default configuration — behavior is unchanged for every existing
+     * template.
+     */
+    public static Configure configureFor(Map<String, Object> placeholders) {
+        ConfigureBuilder builder = Configure.builder();
+        if (placeholders != null) {
+            placeholders.forEach((key, value) -> {
+                if (value instanceof DocxRenderData) {
+                    builder.bind(key, new DocxRenderPolicy());
+                }
+            });
+        }
+        return builder.build();
     }
 
     /**

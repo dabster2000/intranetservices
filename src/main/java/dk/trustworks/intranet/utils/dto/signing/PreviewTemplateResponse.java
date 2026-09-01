@@ -10,10 +10,19 @@ import java.util.List;
  * </p>
  *
  * @param documents List of preview documents with base64-encoded PDF content
+ * @param notices   Human-readable composition notices (e.g. an INLINE clause
+ *                  falling back to the tillæg because the template lacks the
+ *                  {@code {{CLAUSES}}} anchor) — shown in the wizard, never
+ *                  a silent drop
  */
 public record PreviewTemplateResponse(
-    List<PreviewDocumentDTO> documents
+    List<PreviewDocumentDTO> documents,
+    List<String> notices
 ) {
+    public PreviewTemplateResponse(List<PreviewDocumentDTO> documents) {
+        this(documents, List.of());
+    }
+
     /**
      * Individual preview document with base64-encoded PDF content.
      *

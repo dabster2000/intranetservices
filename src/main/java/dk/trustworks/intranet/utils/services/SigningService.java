@@ -76,6 +76,9 @@ public class SigningService {
     dk.trustworks.intranet.documentservice.services.PlaceholderPrefillService placeholderPrefillService;
 
     @Inject
+    dk.trustworks.intranet.documentservice.services.ClauseCompositionService clauseCompositionService;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     @Inject
@@ -238,6 +241,28 @@ public class SigningService {
             String templateUuid,
             List<UploadedDocument> additionalDocuments,
             String targetUserUuid) {
+        return createMultiDocumentCaseFromTemplate(templateDocuments, formValues, documentName, signers,
+                referenceId, signingSchemas, templateUuid, additionalDocuments, targetUserUuid, null);
+    }
+
+    /**
+     * Clause-composing variant (template-clauses spec §5): a non-empty
+     * {@code clausePlan} merges INLINE clauses into the base document at
+     * the {@code {{CLAUSES}}} anchor and appends one combined tillæg for
+     * ADDENDUM clauses + Individuel aftale entries. A null/empty plan is
+     * byte-identical to the pre-clause path.
+     */
+    public SigningCaseResponse createMultiDocumentCaseFromTemplate(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String documentName,
+            List<SignerInfo> signers,
+            String referenceId,
+            List<String> signingSchemas,
+            String templateUuid,
+            List<UploadedDocument> additionalDocuments,
+            String targetUserUuid,
+            dk.trustworks.intranet.documentservice.services.ClauseCompositionService.CompositionPlan clausePlan) {
 
         int additionalCount = additionalDocuments != null ? additionalDocuments.size() : 0;
         log.infof("Creating multi-document signing case from template. Template docs: %d, Additional docs: %d, Signers: %d, TemplateUuid: %s",
@@ -266,16 +291,26 @@ public class SigningService {
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
 
+            // Clause fragments may reference {{COMPANY_*}} tags the base
+            // template does not declare — carry the derived company's facts
+            // into the composition as render tokens.
+            if (clausePlan != null && !clausePlan.isEmpty()) {
+                clausePlan = clausePlan.withCompanyFactTokens(
+                    clauseCompositionService.companyFactTokensFor(company));
+            }
+
             // Signer fields may reference company facts via ${COMPANY_*}
             // tokens (e.g. ${COMPANY_LEGAL_NAME} in a signer's display name);
             // resolve them against the same derived company and refuse the
             // send if a token survives — an unresolved token would reach
-            // NextSign as a
-            // literal recipient name/email.
+            // NextSign as a literal recipient name/email.
             List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
 
-            // Generate PDF for each template document via NextSign convert API
+            // Generate PDF for each template document. With a clause plan the
+            // base document renders through the composition path (INLINE merge
+            // at the anchor); without one the pre-clause path runs unchanged.
             // Template documents always require signature (signObligated: true)
+            boolean composing = clausePlan != null && !clausePlan.isEmpty();
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
                 if (fileUuid == null || fileUuid.isBlank()) {
@@ -288,13 +323,36 @@ public class SigningService {
                     docName = docName + ".pdf";
                 }
 
-                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid,
-                    effectiveFormValues,
-                    docName
-                );
+                byte[] pdfBytes;
+                if (composing) {
+                    byte[] baseDocx = wordDocumentService.getWordTemplate(fileUuid);
+                    Map<String, Object> renderValues = clauseCompositionService
+                        .renderValuesForBaseDocument(clausePlan, fileUuid, effectiveFormValues);
+                    pdfBytes = wordDocumentService.generatePdfFromDocxBytes(baseDocx, renderValues, docName);
+                } else {
+                    pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                        fileUuid,
+                        effectiveFormValues,
+                        docName
+                    );
+                }
                 documents.add(new DocumentInfo(docName, pdfBytes, true)); // Template docs always require signature
                 log.debugf("Generated PDF for template document '%s': %d bytes (signObligated: true)", docName, pdfBytes.length);
+            }
+
+            // One combined tillæg for ADDENDUM clauses + Individuel aftale
+            // entries, appended after the base documents (spec §5 step 3).
+            if (composing) {
+                byte[] addendumDocx = clauseCompositionService.buildAddendumDocx(clausePlan, effectiveFormValues);
+                if (addendumDocx != null) {
+                    String addendumName =
+                        dk.trustworks.intranet.documentservice.services.ClauseCompositionService.ADDENDUM_DOCUMENT_NAME
+                            + ".pdf";
+                    byte[] addendumPdf = wordDocumentService.generatePdfFromDocxBytes(
+                        addendumDocx, new HashMap<>(), addendumName);
+                    documents.add(new DocumentInfo(addendumName, addendumPdf, true));
+                    log.infof("Generated combined tillæg with %d point(s)", clausePlan.addendumItems().size());
+                }
             }
 
             // Add any additional pre-generated PDF documents
@@ -408,6 +466,21 @@ public class SigningService {
             Map<String, String> formValues,
             String templateUuid,
             String targetUserUuid) {
+        return generatePreviewDocuments(templateDocuments, formValues, templateUuid, targetUserUuid, null);
+    }
+
+    /**
+     * Clause-composing preview variant: the returned bundle is exactly
+     * what the send produces — base documents with INLINE clauses merged
+     * plus the combined tillæg — each document individually (PDFBOX-3931
+     * no-merge rule).
+     */
+    public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String templateUuid,
+            String targetUserUuid,
+            dk.trustworks.intranet.documentservice.services.ClauseCompositionService.CompositionPlan clausePlan) {
 
         log.infof("Generating preview documents from %d template documents (templateUuid: %s)",
             templateDocuments != null ? templateDocuments.size() : 0,
@@ -439,12 +512,18 @@ public class SigningService {
                 var company = companyPlaceholderResolver.deriveForUser(targetUserUuid);
                 companyPlaceholderResolver.applyCompanyFacts(templateUuid, rawFormValues, company);
                 placeholderPrefillService.applyServerResolvedPersonFields(templateUuid, rawFormValues, targetUserUuid);
+                if (clausePlan != null && !clausePlan.isEmpty()) {
+                    clausePlan = clausePlan.withCompanyFactTokens(
+                        clauseCompositionService.companyFactTokensFor(company));
+                }
             }
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
             List<PreviewTemplateResponse.PreviewDocumentDTO> previewDocuments = new java.util.ArrayList<>();
 
-            // Generate PDF for each template document
+            // Generate PDF for each template document (composition path when
+            // a clause plan is present — the preview must match the send).
+            boolean composing = clausePlan != null && !clausePlan.isEmpty();
             int displayOrder = 0;
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
@@ -458,11 +537,19 @@ public class SigningService {
                     docName = docName + ".pdf";
                 }
 
-                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid,
-                    effectiveFormValues,
-                    docName
-                );
+                byte[] pdfBytes;
+                if (composing) {
+                    byte[] baseDocx = wordDocumentService.getWordTemplate(fileUuid);
+                    Map<String, Object> renderValues = clauseCompositionService
+                        .renderValuesForBaseDocument(clausePlan, fileUuid, effectiveFormValues);
+                    pdfBytes = wordDocumentService.generatePdfFromDocxBytes(baseDocx, renderValues, docName);
+                } else {
+                    pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                        fileUuid,
+                        effectiveFormValues,
+                        docName
+                    );
+                }
 
                 // Encode PDF as base64
                 String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
@@ -474,6 +561,22 @@ public class SigningService {
                 ));
 
                 log.debugf("Generated preview PDF for document '%s': %d bytes", docName, pdfBytes.length);
+            }
+
+            if (composing) {
+                byte[] addendumDocx = clauseCompositionService.buildAddendumDocx(clausePlan, effectiveFormValues);
+                if (addendumDocx != null) {
+                    String addendumName =
+                        dk.trustworks.intranet.documentservice.services.ClauseCompositionService.ADDENDUM_DOCUMENT_NAME
+                            + ".pdf";
+                    byte[] addendumPdf = wordDocumentService.generatePdfFromDocxBytes(
+                        addendumDocx, new HashMap<>(), addendumName);
+                    previewDocuments.add(new PreviewTemplateResponse.PreviewDocumentDTO(
+                        addendumName,
+                        Base64.getEncoder().encodeToString(addendumPdf),
+                        displayOrder++
+                    ));
+                }
             }
 
             log.infof("Generated %d preview documents", previewDocuments.size());

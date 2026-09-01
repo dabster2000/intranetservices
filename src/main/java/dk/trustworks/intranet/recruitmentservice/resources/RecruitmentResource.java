@@ -238,6 +238,12 @@ public class RecruitmentResource {
     SigningService signingService;
 
     @Inject
+    dk.trustworks.intranet.signing.services.SigningCaseClauseRecorder signingCaseClauseRecorder;
+
+    @Inject
+    dk.trustworks.intranet.documentservice.services.ClauseService clauseService;
+
+    @Inject
     SigningCaseRepository signingCaseRepository;
 
     @Inject
@@ -1047,6 +1053,21 @@ public class RecruitmentResource {
                 .orElseThrow(() -> new NotFoundException("Dossier not found for candidate: " + uuid));
     }
 
+    /**
+     * ACTIVE clauses offered on the dossier's template (template-clauses
+     * Phase 2) — the dossier page's "Vilkår & klausuler" section. Rides
+     * the dossier's own candidate-context authorization (named hiring
+     * owners included) instead of the manager-only generic clause read.
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/clauses")
+    public Response getDossierClauses(@PathParam("uuid") UUID candidateUuid) {
+        enforceFlag();
+        requireDossierReadable(candidateUuid);
+        CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
+        return Response.ok(clauseService.findOfferedForTemplate(dossier.getTemplateUuid())).build();
+    }
+
     @PUT
     @Path("/candidates/{uuid}/dossier")
     @RolesAllowed({"recruitment:write"})
@@ -1341,8 +1362,10 @@ public class RecruitmentResource {
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses =
+                dossierService.currentClauses(dossier);
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
-                dossier.getTemplateUuid(), placeholders, appendices,
+                dossier.getTemplateUuid(), placeholders, appendices, clauses,
                 candidate.getTargetCompanyUuid());
 
         // 2) Persist each template-generated PDF to S3 (best-effort — the
@@ -1366,7 +1389,7 @@ public class RecruitmentResource {
                 pdfRefs);
         CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
                 dossier, RevisionKind.REVIEW_EMAIL,
-                placeholders, signers, appendices,
+                placeholders, signers, appendices, clauses,
                 recipient, actor);
 
         // 4) Build and send the review email immediately (so the transient
@@ -1409,8 +1432,10 @@ public class RecruitmentResource {
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses =
+                dossierService.currentClauses(dossier);
         List<GeneratedPdf> allPdfs = pdfGenerationService.generatePdfsFromValues(
-                dossier.getTemplateUuid(), placeholders, appendices,
+                dossier.getTemplateUuid(), placeholders, appendices, clauses,
                 candidate.getTargetCompanyUuid());
         List<GeneratedPdf> templatePdfs = allPdfs.stream()
                 .filter(GeneratedPdf::fromTemplate)
@@ -1445,7 +1470,7 @@ public class RecruitmentResource {
                 pdfRefs);
         CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
                 dossier, RevisionKind.REVIEW_PDF,
-                placeholders, signers, appendices,
+                placeholders, signers, appendices, clauses,
                 recipient, actor);
 
         // 5) Stream the ZIP back to the manager for download.
@@ -1527,6 +1552,14 @@ public class RecruitmentResource {
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> configuredSigners = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses =
+                dossierService.currentClauses(dossier);
+
+        // Resolve the clause selection in the fail-fast zone (before PDF
+        // generation and the NextSign call): an invalid selection answers
+        // 400 here; the resolved plan renders the bundle and is snapshotted
+        // into signing_case_clauses after NextSign accepts.
+        var clausePlan = pdfGenerationService.resolveClausePlan(dossier.getTemplateUuid(), clauses);
 
         // Signer fields may reference company facts via ${COMPANY_*}
         // tokens (e.g. ${COMPANY_LEGAL_NAME}); resolve them from the
@@ -1629,6 +1662,10 @@ public class RecruitmentResource {
                         null);
                 return null;
             });
+            // Immutable snapshot of the bundle's clauses — the Phase 3
+            // registry's single source (spec §4.5). The recorder logs and
+            // swallows its own failures; the case is already sent.
+            signingCaseClauseRecorder.record(caseKey, clausePlan);
         } catch (Exception e) {
             log.errorf(e,
                     "POST-NEXTSIGN LOCAL PERSIST FAILED — caseKey=%s candidate=%s; "
@@ -1675,7 +1712,7 @@ public class RecruitmentResource {
             CandidateDossierRevision revision = withJdbcRetry("snapshotFromValues", () ->
                     dossierRevisionService.snapshotFromValues(
                             dossier, RevisionKind.SIGNATURE,
-                            placeholders, signers, appendices,
+                            placeholders, signers, appendices, clauses,
                             recipient, actor));
             revisionResponse = dossierRevisionService.toResponse(revision);
         } catch (Exception e) {
@@ -1689,6 +1726,7 @@ public class RecruitmentResource {
             final Map<String, String> repairPlaceholders = placeholders;
             final List<SignerConfigDto> repairSigners = signers;
             final List<AppendixDto> repairAppendices = appendices;
+            final List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> repairClauses = clauses;
             final RecipientInfo repairRecipient = recipient;
             final UUID repairActor = actor;
             managedExecutor.submit(() -> {
@@ -1697,7 +1735,7 @@ public class RecruitmentResource {
                     withJdbcRetry("snapshotFromValues(async)", () ->
                             dossierRevisionService.snapshotFromValues(
                                     repairDossier, RevisionKind.SIGNATURE,
-                                    repairPlaceholders, repairSigners, repairAppendices,
+                                    repairPlaceholders, repairSigners, repairAppendices, repairClauses,
                                     repairRecipient, repairActor));
                     log.infof("Async repair: revision snapshot backfilled for caseKey=%s", caseKey);
                 } catch (Exception async) {
@@ -1707,7 +1745,7 @@ public class RecruitmentResource {
                 }
             });
             revisionResponse = degradedRevisionResponse(
-                    dossier, placeholders, signers, appendices, recipient, actor);
+                    dossier, placeholders, signers, appendices, clauses, recipient, actor);
         }
 
         // Offer-channel ping (2026-08-25): the send-signature flow appends no
@@ -2150,6 +2188,7 @@ public class RecruitmentResource {
             Map<String, String> placeholders,
             List<SignerConfigDto> signers,
             List<AppendixDto> appendices,
+            List<dk.trustworks.intranet.utils.dto.signing.SelectedClauseDTO> clauses,
             RecipientInfo recipient,
             UUID actor) {
         return new RevisionResponse(
@@ -2160,6 +2199,7 @@ public class RecruitmentResource {
                 placeholders != null ? placeholders : Map.of(),
                 signers != null ? signers : List.of(),
                 appendices != null ? appendices : List.of(),
+                clauses != null ? clauses : List.of(),
                 List.of(),
                 recipient.signingCaseKey(),
                 recipient.recipientEmail(),
