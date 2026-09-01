@@ -4,7 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dk.trustworks.intranet.agreementservice.services.AgreementExtractionService.Proposal;
-import dk.trustworks.intranet.sharepoint.dto.DriveItem;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -40,56 +41,67 @@ class AgreementBackfillCoreTest {
         return service;
     }
 
-    // ---- File filter (what gets downloaded at all) -----------------------------
+    // ---- Corpus filter (what gets fetched from S3 at all) ----------------------
 
-    private static DriveItem file(String name, Long size, String mimeType) {
-        return new DriveItem("id-1", name, size, null, null, null, null,
-                new DriveItem.File(mimeType, null), null, null, "etag-1");
+    private static EmployeeDocument doc(String filename, String contentType, long size,
+                                        boolean archived) {
+        EmployeeDocument doc = new EmployeeDocument();
+        doc.setUuid("doc-1");
+        doc.setUserUuid("user-1");
+        doc.setS3Key("employee/user-1/doc-1");
+        doc.setCategory(EmployeeDocumentCategory.CONTRACT);
+        doc.setOriginalFilename(filename);
+        doc.setContentType(contentType);
+        doc.setFileSizeBytes(size);
+        doc.setArchived(archived);
+        return doc;
     }
 
     @Test
-    void candidateFile_pdfByExtensionOrMime() {
-        assertTrue(AgreementBackfillWalkerService.isCandidateFile(file("Ansættelsesaftale.pdf", 100_000L, null)));
-        assertTrue(AgreementBackfillWalkerService.isCandidateFile(file("Tillæg 2021.PDF", 100_000L, null)));
-        assertTrue(AgreementBackfillWalkerService.isCandidateFile(file("misnamed.dat", 100_000L, "application/pdf")));
+    void corpusDocument_pdfByContentTypeOrExtension() {
+        assertTrue(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("Ansættelsesaftale.pdf", "application/octet-stream", 100_000, false)));
+        assertTrue(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("Tillæg 2021.PDF", "application/octet-stream", 100_000, false)));
+        assertTrue(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("misnamed.dat", "application/pdf", 100_000, false)));
     }
 
     @Test
-    void candidateFile_rejectsNonPdfTempZeroByteAndOversize() {
-        assertFalse(AgreementBackfillWalkerService.isCandidateFile(file("CV.docx", 100_000L,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document")));
-        assertFalse(AgreementBackfillWalkerService.isCandidateFile(file("~$kontrakt.pdf", 100_000L, null)));
+    void corpusDocument_rejectsNonPdfArchivedZeroByteAndOversize() {
+        assertFalse(AgreementBackfillWalkerService.isCorpusDocument(doc("CV.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 100_000, false)));
+        // Archived replaces the SharePoint "Arkiv" folders — out of corpus.
+        assertFalse(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("kontrakt.pdf", "application/pdf", 100_000, true)));
         // Zero-byte files are the false-duplicate trap from the migration.
-        assertFalse(AgreementBackfillWalkerService.isCandidateFile(file("empty.pdf", 0L, "application/pdf")));
-        assertFalse(AgreementBackfillWalkerService.isCandidateFile(file("nosize.pdf", null, "application/pdf")));
-        assertFalse(AgreementBackfillWalkerService.isCandidateFile(
-                file("huge.pdf", AgreementBackfillWalkerService.MAX_FILE_BYTES + 1, "application/pdf")));
+        assertFalse(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("empty.pdf", "application/pdf", 0, false)));
+        assertFalse(AgreementBackfillWalkerService.isCorpusDocument(
+                doc("huge.pdf", "application/pdf", AgreementBackfillWalkerService.MAX_FILE_BYTES + 1, false)));
     }
 
-    // ---- Folder exclusions (data minimization) ---------------------------------
+    // ---- Category config (data minimization) -----------------------------------
 
     @Test
-    void excludedFolder_systemFoldersAndHealthRecords() {
-        assertTrue(AgreementBackfillWalkerService.isExcludedFolder("Forms"));
-        assertTrue(AgreementBackfillWalkerService.isExcludedFolder(".hidden"));
-        assertTrue(AgreementBackfillWalkerService.isExcludedFolder("_private"));
-        // Health data must never reach the AI call (GDPR special category).
-        assertTrue(AgreementBackfillWalkerService.isExcludedFolder("Sygdom 2023"));
-        assertTrue(AgreementBackfillWalkerService.isExcludedFolder("sygemeldinger"));
-        assertFalse(AgreementBackfillWalkerService.isExcludedFolder("Arkiv"));
-        assertFalse(AgreementBackfillWalkerService.isExcludedFolder("Kontrakter"));
+    void parseCategories_defaultExcludesHealthAndIdentity() {
+        var categories = AgreementBackfillWalkerService.parseCategories("CONTRACT,ADDENDUM,DECLARATION");
+        assertEquals(java.util.Set.of("CONTRACT", "ADDENDUM", "DECLARATION"), categories);
+        // SICKNESS/IDENTITY must never reach the AI call by default
+        // (GDPR special-category data minimization).
+        assertFalse(categories.contains("SICKNESS"));
+        assertFalse(categories.contains("IDENTITY"));
     }
-
-    // ---- Pagination + hashing --------------------------------------------------
 
     @Test
-    void parseSkipToken_extractsTokenAndStopsCleanly() {
-        assertEquals("abc123", AgreementBackfillWalkerService.parseSkipToken(
-                "https://graph.microsoft.com/v1.0/drives/d/items/i/children?$skiptoken=abc123"));
-        assertNull(AgreementBackfillWalkerService.parseSkipToken(null));
-        assertNull(AgreementBackfillWalkerService.parseSkipToken(
-                "https://graph.microsoft.com/v1.0/drives/d/items/i/children"));
+    void parseCategories_toleratesSpacingCaseAndBlanks() {
+        assertEquals(java.util.Set.of("CONTRACT", "OTHER"),
+                AgreementBackfillWalkerService.parseCategories(" contract , OTHER ,, "));
+        assertTrue(AgreementBackfillWalkerService.parseCategories("").isEmpty());
+        assertTrue(AgreementBackfillWalkerService.parseCategories(null).isEmpty());
     }
+
+    // ---- Hashing ---------------------------------------------------------------
 
     @Test
     void sha256Hex_isStableLowercaseHex() {

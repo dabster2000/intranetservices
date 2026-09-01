@@ -43,19 +43,28 @@ public class AgreementBackfillItem extends PanacheEntityBase {
     @Column(name = "run_uuid", nullable = false, length = 36)
     private String runUuid;
 
-    /** The employee whose folder held the document — corpus is user-keyed only. */
+    /** The employee the document belongs to — corpus is user-keyed only. */
     @Column(name = "user_uuid", nullable = false, length = 36)
     private String userUuid;
 
-    @Column(name = "site_url", nullable = false, length = 500)
+    /**
+     * The {@code employee_documents.uuid} the item was extracted from
+     * (the S3 corpus, V554). NULL on legacy V549-era SharePoint-walk
+     * items, whose preview still streams from Graph.
+     */
+    @Column(name = "employee_document_uuid", length = 36)
+    private String employeeDocumentUuid;
+
+    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
+    @Column(name = "site_url", length = 500)
     private String siteUrl;
 
-    /** Graph drive id — needed to re-download for the PDF preview. */
-    @Column(name = "drive_id", nullable = false, length = 255)
+    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
+    @Column(name = "drive_id", length = 255)
     private String driveId;
 
-    /** Graph drive item id (stable across moves). */
-    @Column(name = "sharepoint_item_id", nullable = false, length = 255)
+    /** Legacy Graph pointer (V549-era items); NULL on S3-sourced items. */
+    @Column(name = "sharepoint_item_id", length = 255)
     private String sharepointItemId;
 
     @Column(name = "e_tag", length = 255)
