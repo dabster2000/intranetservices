@@ -26,9 +26,7 @@ class CompanyPlaceholderResolverTest {
     private static final Map<String, String> FACTS = Map.of(
             "LEGAL_NAME", "Trustworks Technology ApS",
             "NAME_GENITIVE", "Trustworks Technologys",
-            "CVR", "12345678",
-            "SIGNATORY_NAME", "Jane Doe",
-            "SIGNATORY_EMAIL", "jane@trustworks.dk");
+            "CVR", "12345678");
 
     // ---- mergeCompanyValues -----------------------------------------------------
 
@@ -105,13 +103,18 @@ class CompanyPlaceholderResolverTest {
 
     // ---- substituteCompanyTokens ------------------------------------------------
 
+    /**
+     * The {@code ${COMPANY_*}} substitution is generic over the fact vocabulary —
+     * it is not tied to any one key. (It is deliberately not exercised here with a
+     * counter-signer: signers live in {@code template_default_signers}, not in facts.)
+     */
     @Test
-    void signerTokensResolveFromFacts() {
-        assertEquals("Jane Doe",
-                CompanyPlaceholderResolver.substituteCompanyTokens("${COMPANY_SIGNATORY_NAME}", FACTS));
-        assertEquals("CEO Jane Doe <jane@trustworks.dk>",
+    void companyTokensResolveFromFacts() {
+        assertEquals("Trustworks Technology ApS",
+                CompanyPlaceholderResolver.substituteCompanyTokens("${COMPANY_LEGAL_NAME}", FACTS));
+        assertEquals("Trustworks Technology ApS (CVR 12345678)",
                 CompanyPlaceholderResolver.substituteCompanyTokens(
-                        "CEO ${COMPANY_SIGNATORY_NAME} <${COMPANY_SIGNATORY_EMAIL}>", FACTS));
+                        "${COMPANY_LEGAL_NAME} (CVR ${COMPANY_CVR})", FACTS));
     }
 
     @Test

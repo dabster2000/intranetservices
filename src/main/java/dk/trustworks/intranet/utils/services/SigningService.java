@@ -266,10 +266,11 @@ public class SigningService {
             Map<String, String> effectiveFormValues = placeholderFormattingService
                 .formatPlaceholderValues(templateUuid, rawFormValues);
 
-            // Counter-signer fields may reference company facts via
-            // ${COMPANY_*} tokens (e.g. ${COMPANY_SIGNATORY_NAME}); resolve
-            // them against the same derived company and refuse the send if a
-            // token survives — an unresolved token would reach NextSign as a
+            // Signer fields may reference company facts via ${COMPANY_*}
+            // tokens (e.g. ${COMPANY_LEGAL_NAME} in a signer's display name);
+            // resolve them against the same derived company and refuse the
+            // send if a token survives — an unresolved token would reach
+            // NextSign as a
             // literal recipient name/email.
             List<SignerInfo> effectiveSigners = resolveSignerCompanyTokens(signers, company);
 

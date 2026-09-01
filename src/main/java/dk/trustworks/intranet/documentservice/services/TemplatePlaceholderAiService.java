@@ -156,7 +156,7 @@ public class TemplatePlaceholderAiService {
                 - sourceField: the named field the source resolves, or empty string for MANUAL.
                   COMPANY: LEGAL_NAME, SHORT_NAME, NAME_GENITIVE, CVR, ADDRESS,
                   PENSION_PROVIDER, PENSION_COMPANY_PCT, PENSION_EMPLOYEE_PCT,
-                  HEALTH_INSURANCE_PROVIDER, LUNCH_PRICE, SIGNATORY_NAME, SIGNATORY_EMAIL.
+                  HEALTH_INSURANCE_PROVIDER, LUNCH_PRICE.
                   USER: NAME, FIRSTNAME, LASTNAME, EMAIL, PHONE, ADDRESS, TITLE, CPR,
                   HIRE_DATE, CURRENT_MONTHLY_SALARY.
                   INTERVIEW_FACT: SALARY_EXPECTATION, EARLIEST_START, PREFERRED_START.
