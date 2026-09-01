@@ -115,6 +115,17 @@ public class ReferrerNotificationReactor extends RecruitmentReactor {
         if (candidate == null || candidate.getReferredByUserUuid() == null) {
             return; // not a referred candidate — the common case
         }
+        if (isUnverifiedApplicantClaim(candidateUuid, candidate.getReferredByUserUuid())) {
+            // Change request (e), 2026-09-01: the public apply form can now
+            // populate referred_by_user_uuid from a name the APPLICANT typed.
+            // This reactor has always keyed on that column alone, so without
+            // this guard an employee who referred nobody would be told "Your
+            // referral X has entered screening" four times over. The honest
+            // one-off notice is ApplicantReferrerNotificationReactor's job.
+            // Scoped to the exact uuid the claim resolved to, so a later real
+            // referral or a recruiter's own "Referred by" edit still notifies.
+            return;
+        }
         List<RecruitmentApplication> applications =
                 RecruitmentApplication.list("candidateUuid = ?1", candidateUuid);
         RecruitmentReferralDerivedStatus milestone =
@@ -152,6 +163,22 @@ public class ReferrerNotificationReactor extends RecruitmentReactor {
             notified.payload("referral_uuid", referral.getUuid());
         }
         eventRecorder.record(notified);
+    }
+
+    /**
+     * True when this candidate's referrer link came from a public applicant
+     * naming the employee, rather than from the refer form, referral triage,
+     * the Airtable migration or a recruiter's edit. Event-derived state (the
+     * P9 idiom — no new column): {@code APPLICANT_REFERRER_CLAIMED} carries
+     * the uuid its directory match resolved to.
+     */
+    private boolean isUnverifiedApplicantClaim(String candidateUuid, String referrerUuid) {
+        List<RecruitmentEvent> claims = RecruitmentEvent.list(
+                "candidateUuid = ?1 and eventType = ?2",
+                candidateUuid, RecruitmentEventType.APPLICANT_REFERRER_CLAIMED);
+        return claims.stream()
+                .map(e -> parse(e.getPayload()).get("matched_user_uuid"))
+                .anyMatch(referrerUuid::equals);
     }
 
     /** Milestone values already DM'ed for this candidate, from the durable bookkeeping events. */

@@ -59,6 +59,16 @@ import java.util.regex.Pattern;
  *       so an attacker cannot learn that an email already applied.</li>
  *   <li>Defense in depth: {@code PublicApplyRateLimitFilter} throttles
  *       POSTs per source IP before this class runs.</li>
+ *   <li>The optional {@code answer_KNOWS_SOMEONE} question asks for
+ *       ANOTHER person's name and is gated by
+ *       {@code recruitment.apply.referrer-claim.enabled}: with the flag
+ *       off it is neither published in the form config nor accepted here
+ *       (a hand-rolled multipart body carrying it is silently dropped,
+ *       not rejected — the surface must not confirm the field exists).
+ *       It is capped far tighter than the prose answers, and nothing
+ *       about the directory match is ever reflected back to the
+ *       caller — the endpoint must never become an
+ *       "is this person an employee?" oracle.</li>
  * </ul>
  */
 @JBossLog
@@ -118,6 +128,7 @@ public class PublicApplyResource {
             @RestForm("answer_BEST_TASKS") String answerBestTasks,
             @RestForm("answer_DNA_MATCH") String answerDnaMatch,
             @RestForm("answer_STRENGTHS") String answerStrengths,
+            @RestForm("answer_KNOWS_SOMEONE") String answerKnowsSomeone,
             @RestForm("poolConsent") String poolConsent,
             @RestForm("gdprConsent") String gdprConsent,
             @RestForm("isaeConsent") String isaeConsent,
@@ -130,6 +141,7 @@ public class PublicApplyResource {
                 educationLevel, educationOther, experienceLevel,
                 channel, selfReportedSource, sourceFollowUp,
                 answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths,
+                answerKnowsSomeone,
                 poolConsent, gdprConsent, isaeConsent, cv, coverLetter, desiredPracticeUuid);
         publicApplyService.submitUnsolicited(submission);
         return received();
@@ -156,6 +168,7 @@ public class PublicApplyResource {
             @RestForm("answer_BEST_TASKS") String answerBestTasks,
             @RestForm("answer_DNA_MATCH") String answerDnaMatch,
             @RestForm("answer_STRENGTHS") String answerStrengths,
+            @RestForm("answer_KNOWS_SOMEONE") String answerKnowsSomeone,
             @RestForm("poolConsent") String poolConsent,
             @RestForm("gdprConsent") String gdprConsent,
             @RestForm("isaeConsent") String isaeConsent,
@@ -170,6 +183,7 @@ public class PublicApplyResource {
                 educationLevel, educationOther, experienceLevel,
                 channel, selfReportedSource, sourceFollowUp,
                 answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths,
+                answerKnowsSomeone,
                 poolConsent, gdprConsent, isaeConsent, cv, coverLetter, null);
         publicApplyService.submitForPosition(slug, submission);
         return received();
@@ -194,7 +208,7 @@ public class PublicApplyResource {
             String educationLevel, String educationOther, String experienceLevel,
             String channel, String selfReportedSource, String sourceFollowUp,
             String answerWhyTrustworks, String answerBestTasks,
-            String answerDnaMatch, String answerStrengths,
+            String answerDnaMatch, String answerStrengths, String answerKnowsSomeone,
             String poolConsent, String gdprConsent, String isaeConsent,
             FileUpload cv, FileUpload coverLetter,
             String desiredPracticeUuid) {
@@ -214,8 +228,12 @@ public class PublicApplyResource {
         CandidateSource entryChannel = parseChannel(channel);
         String selfReported = parseSelfReportedSource(selfReportedSource);
 
+        // Flag off ⇒ the question is not published, so an answer_KNOWS_SOMEONE
+        // posted directly against the endpoint is dropped rather than stored:
+        // the launch gate must hold for a hand-rolled multipart body too.
         Map<String, String> answers = collectAnswers(
-                answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths);
+                answerWhyTrustworks, answerBestTasks, answerDnaMatch, answerStrengths,
+                featureFlag.isApplyReferrerClaimEnabled() ? answerKnowsSomeone : null);
 
         if (!hasContent(cv)) {
             throw badRequest("FILE_REQUIRED");
@@ -260,16 +278,24 @@ public class PublicApplyResource {
     }
 
     private static Map<String, String> collectAnswers(String whyTrustworks, String bestTasks,
-                                                      String dnaMatch, String strengths) {
+                                                      String dnaMatch, String strengths,
+                                                      String knowsSomeone) {
         Map<String, String> answers = new LinkedHashMap<>();
-        putAnswer(answers, "WHY_TRUSTWORKS", whyTrustworks);
-        putAnswer(answers, "BEST_TASKS", bestTasks);
-        putAnswer(answers, "DNA_MATCH", dnaMatch);
-        putAnswer(answers, "STRENGTHS", strengths);
+        putAnswer(answers, "WHY_TRUSTWORKS", whyTrustworks, PublicApplyQuestions.MAX_ANSWER_LENGTH);
+        putAnswer(answers, "BEST_TASKS", bestTasks, PublicApplyQuestions.MAX_ANSWER_LENGTH);
+        putAnswer(answers, "DNA_MATCH", dnaMatch, PublicApplyQuestions.MAX_ANSWER_LENGTH);
+        putAnswer(answers, "STRENGTHS", strengths, PublicApplyQuestions.MAX_ANSWER_LENGTH);
+        // A name, not an essay: capped far tighter than the prose answers
+        // because the text is preserved in a VARCHAR(200) column and is fed
+        // to the directory matcher (whose AI tier is an OpenAI call reachable
+        // by anonymous callers).
+        putAnswer(answers, PublicApplyQuestions.KNOWS_SOMEONE_KEY, knowsSomeone,
+                PublicApplyQuestions.KNOWS_SOMEONE_MAX_LENGTH);
         return answers;
     }
 
-    private static void putAnswer(Map<String, String> answers, String key, String raw) {
+    private static void putAnswer(Map<String, String> answers, String key, String raw,
+                                  int maxLength) {
         if (raw == null) {
             return;
         }
@@ -277,7 +303,7 @@ public class PublicApplyResource {
         if (trimmed.isEmpty()) {
             return;
         }
-        if (trimmed.length() > PublicApplyQuestions.MAX_ANSWER_LENGTH) {
+        if (trimmed.length() > maxLength) {
             throw badRequest("ANSWER_TOO_LONG");
         }
         answers.put(key, trimmed);

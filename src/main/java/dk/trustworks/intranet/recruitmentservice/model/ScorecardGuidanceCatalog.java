@@ -19,6 +19,22 @@ import java.util.Optional;
  * {@code CULTURE}: positions created before the six-subject framework keep
  * their snapshotted template, and their in-flight interviews still deserve
  * help text.
+ *
+ * <h3>Language: the coaching is Danish, the codes and labels are not</h3>
+ * The interview is held in Danish, so the coaching an interviewer reads mid
+ * sitting — {@link #USAGE_NOTE}, the short hints, what-you-are-scoring, the
+ * probes and the anchors — is Danish, authored here rather than translated by a
+ * model (the pattern of {@code RecruitmentDanishLabels} and
+ * {@code PublicApplyQuestions}: translation belongs in code, where it is total
+ * and testable).
+ * <p>
+ * The subject {@code code} and {@code label} deliberately stay as they are. The
+ * label is <em>snapshotted per position</em> into
+ * {@code recruitment_positions.scorecard_template}, and the web scorecard dialog
+ * and the Slack modal render that stored copy while the interview room renders
+ * this one. Translating the label here alone would make the same subject read
+ * Danish on one surface and English on another with nothing failing anywhere;
+ * translating both is a data migration over every existing opening. Names stay.
  */
 public final class ScorecardGuidanceCatalog {
 
@@ -36,65 +52,68 @@ public final class ScorecardGuidanceCatalog {
      * backfilled 3s.
      */
     public static final String USAGE_NOTE =
-            "Six subjects is the ceiling for one sitting. Probe deep on three or four, "
-                    + "and score the rest from what naturally surfaced — with one line of "
-                    + "concrete evidence per score in your notes. Working through all six as "
-                    + "a checklist is what produces backfilled 3s. The overall recommendation "
-                    + "is a separate, holistic call: if it diverges from the subject scores, "
-                    + "that is signal worth saying out loud, not an error to correct.";
+            "Seks emner er loftet for én samtale. Gå i dybden med tre eller fire, og score "
+                    + "resten på det, der alligevel dukkede op undervejs — med én linje konkret "
+                    + "evidens pr. score i dine noter. At arbejde sig gennem alle seks som en "
+                    + "tjekliste er præcis det, der producerer efterrationaliserede 3-taller. Den "
+                    + "samlede indstilling er en selvstændig, helhedsorienteret vurdering: afviger "
+                    + "den fra emnescorerne, er det et signal værd at sige højt — ikke en fejl, "
+                    + "der skal rettes.";
 
     private static final ScorecardGuidance WHY_CONSULTING = new ScorecardGuidance(
             "WHY_CONSULTING",
             "Why consulting",
-            "Motivation for the consultant role itself — with a realistic picture of "
-                    + "its uncomfortable parts.",
-            "Motivation for the consultant role itself — not just for Trustworks or the "
-                    + "domain. A realistic picture including the uncomfortable parts "
-                    + "(utilization, being measured on client value, representing an unpopular "
-                    + "recommendation). For experienced profiles: evidence they have genuinely "
-                    + "operated as a consultant — big-corp profiles with “one Danske Bank "
-                    + "line on the CV” often carry too much of their own way of working.",
+            "Motivation for selve konsulentrollen — med et realistisk billede af dens "
+                    + "ubehagelige sider.",
+            "Motivation for selve konsulentrollen — ikke bare for Trustworks eller fagområdet. "
+                    + "Et realistisk billede, der også rummer de ubehagelige sider (belægning, at "
+                    + "blive målt på kundeværdi, at skulle stå på mål for en upopulær anbefaling). "
+                    + "For erfarne profiler: belæg for, at de reelt har fungeret som konsulenter — "
+                    + "storkoncernprofiler med “én Danske Bank-linje på CV'et” har ofte for meget "
+                    + "af deres egen måde at arbejde på med i bagagen.",
             List.of(
-                    "What does a consultant do that a permanent employee in the same seat doesn't?",
-                    "Tell me about representing an advisory position the client didn't like.",
-                    "(Seniors) What will you have to unlearn here?"),
+                    "Hvad gør en konsulent, som en fastansat i samme stol ikke gør?",
+                    "Fortæl om en gang, hvor du stod på mål for en anbefaling, kunden ikke brød sig om.",
+                    "(Seniorer) Hvad skal du aflære for at lykkes her?"),
             List.of(
-                    "Wants out of their current job more than into consulting; treats it as a "
-                            + "waiting room; no realistic picture of the role.",
-                    "Drawn to variety/prestige but hasn't confronted the downsides; big-corp "
-                            + "habits unexamined.",
-                    "Realistic picture incl. the hard parts; motivation anchored in client value "
-                            + "and variety; seniors have demonstrably worked as consultants.",
-                    "Talks about consulting as a craft, with concrete examples of choosing the "
-                            + "harder advisory path; energizes the interviewer about the role."));
+                    "Vil mere væk fra sit nuværende job end ind i konsulentfaget; behandler det som "
+                            + "en venteposition; har intet realistisk billede af rollen.",
+                    "Tiltrukket af variationen og prestigen, men har ikke forholdt sig til "
+                            + "bagsiderne; storkoncernvanerne er ureflekterede.",
+                    "Realistisk billede inkl. de hårde sider; motivationen er forankret i "
+                            + "kundeværdi og variation; seniorer har påviseligt arbejdet som konsulenter.",
+                    "Taler om konsulentfaget som et håndværk og har konkrete eksempler på at have "
+                            + "valgt den sværere rådgivervej; giver intervieweren energi om rollen."));
 
     private static final String CULTURE_WHAT =
-            "The DNA made observable, both halves. Good People: honest, empathetic, outgoing; "
-                    + "holds multiple perspectives “in a spacious manner”; balances fun, "
-                    + "work and life. Talent & Passion / Continuous Improvement: a fast learner on "
-                    + "a steep curve who shares what they learn — the behaviour practices, faglige "
-                    + "fredage and vidensdage run on. The test is “someone you want to work "
-                    + "with, professionally and personally” — explicitly not “similar to us”.";
+            "DNA'et gjort observerbart, begge halvdele. Good People: ærlig, empatisk, udadvendt; "
+                    + "kan rumme flere perspektiver “på en rummelig måde”; balancerer sjov, arbejde "
+                    + "og liv. Talent & Passion / Continuous Improvement: en hurtig lærende på en "
+                    + "stejl kurve, der deler det, vedkommende lærer — den adfærd, praksisser, "
+                    + "faglige fredage og vidensdage kører på. Testen er “en, du gerne vil arbejde "
+                    + "sammen med, fagligt og personligt” — udtrykkeligt ikke “en, der ligner os”.";
 
     private static final List<String> CULTURE_PROBES = List.of(
-            "Tell me about a colleague you disagreed with and still made successful.",
-            "What do colleagues get from working with you that isn't on your CV?",
-            "What have you taught yourself in the last six months, and who did you pass it on to?",
-            "What would you run a faglig fredag session on?");
+            "Fortæl om en kollega, du var uenig med, og som du alligevel var med til at gøre "
+                    + "succesfuld.",
+            "Hvad får dine kolleger ud af at arbejde sammen med dig, som ikke står på dit CV?",
+            "Hvad har du lært dig selv de seneste seks måneder — og hvem gav du det videre til?",
+            "Hvad ville du holde en faglig fredag om?");
 
     private static final List<String> CULTURE_ANCHORS = List.of(
-            "Talks down former colleagues; empathy absent; one fixed perspective; learning "
-                    + "stopped at the last certification; hoards knowledge.",
-            "Pleasant but guarded or rehearsed; struggles to genuinely hold another "
-                    + "perspective; learns when forced, shares only if asked.",
-            "Honest, warm, concrete; owns failures unprompted; real steep-curve examples; "
-                    + "teaches or presents by habit; you'd staff them with your best client tomorrow.",
-            "Would visibly raise the room; a learning machine with a sharing reflex — arrives "
-                    + "with an idea for what they'd contribute to a practice in month one.");
+            "Taler nedsættende om tidligere kolleger; empatien er fraværende; ét fastlåst "
+                    + "perspektiv; læringen stoppede ved seneste certificering; holder sin viden for sig selv.",
+            "Rar, men lukket eller indøvet; har svært ved reelt at rumme et andet perspektiv; "
+                    + "lærer, når det bliver krævet, og deler kun, hvis der bliver spurgt.",
+            "Ærlig, varm og konkret; tager selv sine fejl op uopfordret; har ægte eksempler på en "
+                    + "stejl kurve; underviser eller formidler af vane; du ville sætte vedkommende "
+                    + "på din bedste kunde i morgen.",
+            "Ville synligt løfte niveauet i rummet; en læringsmaskine med en delerefleks — møder "
+                    + "op med en idé til, hvad vedkommende vil bidrage med i en praksis den første måned.");
 
     private static final String CULTURE_SHORT_HINT =
-            "Someone you want to work with — honest, empathetic, a fast learner "
-                    + "who shares what they learn.";
+            "En, du gerne vil arbejde sammen med — ærlig, empatisk, hurtigt lærende "
+                    + "og deler det, vedkommende lærer.";
 
     private static final ScorecardGuidance CULTURE = new ScorecardGuidance(
             "CULTURE",
@@ -110,94 +129,96 @@ public final class ScorecardGuidanceCatalog {
     private static final ScorecardGuidance SELF_LEADERSHIP = new ScorecardGuidance(
             "SELF_LEADERSHIP",
             "Self-leadership & structure",
-            "Can they run their own week at a client with no one steering?",
-            "Can they run their own week at a client with no one steering? Career-model "
-                    + "behaviours: plan and structure own work, prioritize, align expectations up "
-                    + "front (forventningsafstemning), flag slippage early, sustainable pace with "
-                    + "boundaries.",
+            "Kan vedkommende styre sin egen uge hos en kunde, uden at nogen holder i tøjlerne?",
+            "Kan vedkommende styre sin egen uge hos en kunde, uden at nogen holder i tøjlerne? "
+                    + "Adfærd fra karrieremodellen: planlægger og strukturerer eget arbejde, "
+                    + "prioriterer, laver forventningsafstemning på forkant, melder skred tidligt, "
+                    + "og holder et bæredygtigt tempo med grænser.",
             List.of(
-                    "Describe a week with three deliverables and nobody managing you — how did you run it?",
-                    "When did you last flag early that something would slip?",
-                    "How do you decide what not to do?"),
+                    "Beskriv en uge med tre leverancer og ingen til at styre dig — hvordan greb du den an?",
+                    "Hvornår meldte du sidst tidligt ud, at noget ville skride?",
+                    "Hvordan beslutter du, hvad du ikke skal lave?"),
             List.of(
-                    "Needs task-level direction; deadline surprises; no prioritization — or "
-                            + "endless hours as the only coping tool.",
-                    "Structured when the frame is handed over; slippage surfaces late; hesitant "
-                            + "to renegotiate expectations.",
-                    "Plans own work, aligns expectations up front, raises risk early, keeps a "
-                            + "sustainable pace.",
-                    "Creates structure others adopt; expectation alignment is a reflex; proven "
-                            + "delivery under ambiguity without steering."));
+                    "Har brug for anvisninger på opgaveniveau; deadlines kommer bag på vedkommende; "
+                            + "ingen prioritering — eller endeløse timer som eneste værktøj.",
+                    "Struktureret, når rammen bliver serveret; skred kommer først frem sent; "
+                            + "tøvende med at genforhandle forventninger.",
+                    "Planlægger eget arbejde, afstemmer forventninger på forkant, rejser risici "
+                            + "tidligt og holder et bæredygtigt tempo.",
+                    "Skaber struktur, som andre tager til sig; forventningsafstemning er en "
+                            + "refleks; dokumenteret leverance under uklarhed uden styring."));
 
     private static final ScorecardGuidance UNCERTAINTY = new ScorecardGuidance(
             "UNCERTAINTY",
             "Handling uncertainty",
-            "Do they create clarity when the brief is unclear — or wait for it?",
-            "Comfort and effectiveness when the brief is unclear, the data is missing, or a "
-                    + "committed deadline meets fixed scope (leverancekultur: timebox, "
-                    + "“lever effektivt, brænd færrest timer”). Do they create "
-                    + "clarity or wait for it?",
+            "Skaber vedkommende selv klarhed, når opgaven er uklar — eller ventes der på den?",
+            "Tryghed og effektivitet, når opgaven er uklar, data mangler, eller en aftalt deadline "
+                    + "møder et fast scope (leverancekultur: timeboks, “lever effektivt, brænd "
+                    + "færrest timer”). Skaber vedkommende klarhed — eller ventes der på den?",
             List.of(
-                    "Tell me about landing on a project where the brief was wrong or missing.",
-                    "A committed deadline is at risk and scope can't move — what did you actually do?",
-                    "When has not knowing been fun?"),
+                    "Fortæl om et projekt, hvor opgavebeskrivelsen var forkert eller slet ikke fandtes.",
+                    "En aftalt deadline er i fare, og scope kan ikke flyttes — hvad gjorde du helt konkret?",
+                    "Hvornår har det været sjovt ikke at vide?"),
             List.of(
-                    "Needs certainty to act; freezes or escalates everything; discomfort reads as stress.",
-                    "Copes when supported; waits for clarity rather than creating it.",
-                    "Creates clarity for themselves and others; acts on 70% information; "
-                            + "timeboxes instead of gold-plating.",
-                    "Seeks ambiguity out; track record of turning unclear situations into plans "
-                            + "others followed; energized by it."));
+                    "Har brug for sikkerhed for at handle; går i stå eller eskalerer alt; ubehaget "
+                            + "aflæses som stress.",
+                    "Klarer den med støtte; venter på klarhed frem for selv at skabe den.",
+                    "Skaber klarhed for sig selv og andre; handler på 70 % information; timeboxer "
+                            + "frem for at forgylde løsningen.",
+                    "Opsøger det uklare; har en historik for at forvandle uklare situationer til "
+                            + "planer, andre fulgte; får energi af det."));
 
     private static final ScorecardGuidance FAGLIGHED = new ScorecardGuidance(
             "FAGLIGHED",
             "Faglighed & formidling",
-            "Can they do the job at the level the role is hired for — and explain it simply?",
-            "Can they do the job at the level the role is hired for — and explain it simply? "
-                    + "Judged against the practice's kompetencekatalog (Aspirer baseline for grads "
-                    + "→ Udfører for seniors), plus DNA Q4: complicated matters "
-                    + "communicated simply — conclusions first, adapted to the listener. In the "
-                    + "case round, score on the practice-owned case; in interviews without a case, "
-                    + "depth-probe the CV: take their strongest claimed experience and test whether "
-                    + "it survives three follow-ups (Why that trade-off? What broke first? What "
-                    + "didn't you know at the time?).",
+            "Kan vedkommende løse opgaven på det niveau, rollen ansættes til — og forklare det enkelt?",
+            "Kan vedkommende løse opgaven på det niveau, rollen ansættes til — og forklare det "
+                    + "enkelt? Vurderes op mod praksissens kompetencekatalog (Aspirer som "
+                    + "udgangspunkt for nyuddannede → Udfører for seniorer), plus DNA Q4: "
+                    + "komplicerede emner formidlet enkelt — konklusionen først, tilpasset "
+                    + "modtageren. I caserunden scores der på praksissens egen case; i samtaler "
+                    + "uden case dybdeprøves CV'et: tag den stærkeste påståede erfaring og test, om "
+                    + "den holder til tre opfølgende spørgsmål (Hvorfor det trade-off? Hvad brød "
+                    + "sammen først? Hvad vidste du ikke dengang?).",
             List.of(
-                    "The case — or a CV depth-probe on their strongest claimed experience.",
-                    "Explain the core of your solution as if to the client's steering committee — two minutes.",
-                    "Now explain it to the graduate joining Monday."),
+                    "Casen — eller en dybdeprøve af den stærkeste erfaring på CV'et.",
+                    "Forklar kernen i din løsning, som var det til kundens styregruppe — to minutter.",
+                    "Forklar den nu for den nyuddannede, der starter på mandag."),
             List.of(
-                    "Below the catalog level the role requires; hand-waves where specifics are "
-                            + "demanded; claims collapse under follow-up; loses the listener in complexity.",
-                    "Fragments of the required level; name-drops frameworks rather than applying "
-                            + "them; clear only with a script.",
-                    "Meets the catalog level: applies competence, reasons about trade-offs, says "
-                            + "clearly what they don't know — and presents it simply, conclusions first.",
-                    "Above role level: reframes the problem, teaches the interviewer something, "
-                            + "makes the complex feel obvious — steering-group-ready tomorrow."));
+                    "Under det katalogniveau, rollen kræver; bliver upræcis, når der bedes om "
+                            + "detaljer; påstandene falder fra hinanden ved opfølgning; taber "
+                            + "tilhøreren i kompleksitet.",
+                    "Fragmenter af det krævede niveau; nævner frameworks frem for at anvende dem; "
+                            + "kun tydelig med et manuskript.",
+                    "Rammer katalogniveauet: anvender sin kompetence, ræsonnerer om trade-offs, "
+                            + "siger klart, hvad vedkommende ikke ved — og formidler det enkelt, "
+                            + "konklusionen først.",
+                    "Over rolleniveau: omformulerer selve problemet, lærer intervieweren noget, får "
+                            + "det komplekse til at virke indlysende — klar til en styregruppe i morgen."));
 
     private static final ScorecardGuidance COMMERCIAL_DRIVE = new ScorecardGuidance(
             "COMMERCIAL_DRIVE",
             "Commercial drive",
-            "Curiosity about the client's business, and comfort talking value and "
-                    + "price at their level.",
-            "“Consultants first, commercially aware second.” Genuine curiosity about "
-                    + "the client's business, spotting and routing extension opportunities, comfort "
-                    + "talking value and price at their level — and realism about numbers (a "
-                    + "confident “10 million” without asking about rates is a signal, not "
-                    + "an answer).",
+            "Nysgerrighed på kundens forretning og tryghed ved at tale værdi og pris "
+                    + "på kundens niveau.",
+            "“Konsulenter først, kommercielt bevidste dernæst.” Ægte nysgerrighed på kundens "
+                    + "forretning, øje for mersalg og evne til at give det videre, tryghed ved at "
+                    + "tale værdi og pris på kundens niveau — og realisme om tal (et selvsikkert "
+                    + "“10 millioner” uden at spørge til rater er et signal, ikke et svar).",
             List.of(
-                    "On your last project, what should your firm have sold next — and why didn't it happen?",
-                    "How do you keep a relationship alive after the project ends?",
-                    "(Commercial roles) Give me a number you'd commit to, and the reasoning."),
+                    "På dit seneste projekt: hvad burde dit firma have solgt som det næste — og "
+                            + "hvorfor skete det ikke?",
+                    "Hvordan holder du en relation i live, efter projektet er slut?",
+                    "(Kommercielle roller) Giv mig et tal, du vil binde dig til, og ræsonnementet bag."),
             List.of(
-                    "Sales is someone else's dirty job; no curiosity about the client's business; "
-                            + "numbers are fantasy-grade.",
-                    "Understands commercial context when pointed at it; spots opportunities but "
-                            + "doesn't act or route them.",
-                    "Genuinely curious about the client's business; spots and routes opportunities; "
-                            + "comfortable on value/price at their level.",
-                    "Track record of self-sales/extensions; thinks in client outcomes and Trustworks "
-                            + "positioning unprompted; numbers are reasoned."));
+                    "Salg er andres beskidte arbejde; ingen nysgerrighed på kundens forretning; "
+                            + "tallene er rent gætværk.",
+                    "Forstår den kommercielle sammenhæng, når den bliver peget ud; ser muligheder, "
+                            + "men handler ikke på dem og giver dem ikke videre.",
+                    "Ægte nysgerrig på kundens forretning; ser muligheder og giver dem videre; tryg "
+                            + "ved værdi og pris på kundens niveau.",
+                    "Har en historik for selvsalg og forlængelser; tænker uopfordret i kundens "
+                            + "udbytte og Trustworks' positionering; tallene er velbegrundede."));
 
     /**
      * The standard subjects in interview order. {@code CULTURE_FIT} is
