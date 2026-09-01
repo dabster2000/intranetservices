@@ -10,8 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * onboarding upload endpoint. The endpoint is {@code @PermitAll} - the
  * filename is therefore untrusted input and must be stripped of path
  * separators, control characters, and {@code ..} traversal sequences
- * before it can be embedded in an audit row, used as a SharePoint path
- * leaf, or written to logs.
+ * before it can be embedded in an audit row, used as a stored filename,
+ * or written to logs.
  */
 class OnboardingUploadServiceFilenameTest {
 
@@ -83,7 +83,7 @@ class OnboardingUploadServiceFilenameTest {
     @Test
     void sanitise_dropsNonAsciiLetters() {
         // Allowlist is intentionally ASCII-only — Danish letters (æ ø å) get
-        // stripped. SharePoint/Graph would accept them, but tightening the
+        // stripped. The store would accept them, but tightening the
         // surface here guards against unicode mischief.
         assertEquals("Krekort.pdf",
                 OnboardingUploadService.sanitiseFilename("Kørekort.pdf"));

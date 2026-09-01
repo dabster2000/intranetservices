@@ -611,7 +611,7 @@ public class DossierService {
      * Sanitise an appendix filename: strip path components (defensive against
      * upload payloads that include directory prefixes), reject {@code ..},
      * leading slashes, and any non-printable / control characters before the
-     * value can land on a SharePoint URL.
+     * value can land in a storage key or URL.
      *
      * @throws IllegalArgumentException if the name contains forbidden patterns
      */

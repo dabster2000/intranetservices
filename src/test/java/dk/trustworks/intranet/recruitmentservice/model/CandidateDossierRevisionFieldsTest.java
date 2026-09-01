@@ -6,12 +6,11 @@ import org.hibernate.type.SqlTypes;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Verifies the two fields added in V321 are present on
+ * Verifies the snapshot field added in V321 is present on
  * {@link CandidateDossierRevision} with the expected JPA mappings.
  * Uses reflection so the test runs without booting Quarkus —
  * matches the {@code ContractBillingFieldsTest} pattern.
@@ -33,17 +32,5 @@ class CandidateDossierRevisionFieldsTest {
         JdbcTypeCode jdbcType = f.getAnnotation(JdbcTypeCode.class);
         assertNotNull(jdbcType, "generatedPdfsSnapshot must use @JdbcTypeCode for JSON storage");
         assertEquals(SqlTypes.JSON, jdbcType.value());
-    }
-
-    @Test
-    void s3RetentionUntil_is_mutable_datetime_column() throws Exception {
-        Field f = CandidateDossierRevision.class.getDeclaredField("s3RetentionUntil");
-        assertEquals(LocalDateTime.class, f.getType());
-
-        Column column = f.getAnnotation(Column.class);
-        assertNotNull(column, "s3RetentionUntil must be annotated with @Column");
-        assertEquals("s3_retention_until", column.name());
-        assertTrue(column.updatable(),
-                "s3RetentionUntil must be mutable — it is stamped post-persist by the promote flow");
     }
 }

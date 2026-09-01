@@ -7,7 +7,6 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityClearance;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
-import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
@@ -196,19 +195,11 @@ public class RecruitmentCandidate extends PanacheEntityBase {
     @Column(name = "converted_user_uuid", length = 36)
     private String convertedUserUuid;
 
-    @Column(name = "sharepoint_folder_path", length = 512)
-    private String sharepointFolderPath;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "sharepoint_move_status", length = 20)
-    private SharePointMoveStatus sharepointMoveStatus;
-
     /**
      * S3→S3 promotion state (employee-documents spec §6.5.3, V454).
-     * Set to PENDING instead of {@code sharepoint_move_status} when the
-     * {@code employee_documents.writers.promotion} toggle is ON at
-     * conversion time; re-driven to COMPLETED/FAILED by the
-     * nextsign-status-sync sweep. NULL = legacy SharePoint pipeline.
+     * Set to PENDING at conversion time; re-driven to COMPLETED/FAILED by
+     * the nextsign-status-sync sweep. NULL = not converted (or converted
+     * before promotion existed).
      */
     @Enumerated(EnumType.STRING)
     @Column(name = "promotion_status", length = 20)
@@ -419,7 +410,6 @@ public class RecruitmentCandidate extends PanacheEntityBase {
         this.educationOther = null;        // free-form text
         this.currentEmployer = null;
         this.languages = null;             // free-form text (AI chips)
-        this.sharepointFolderPath = null;  // contains the candidate's name
         this.poolStatus = null;
         this.retentionDeadline = null;     // the clock has been consumed
         this.status = CandidateStatus.ANONYMIZED;

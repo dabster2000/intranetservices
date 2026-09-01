@@ -40,22 +40,20 @@ import java.util.stream.Collectors;
  * transfer) rolls the entire conversion back — no partial hires.
  * <p>
  * <b>Two-phase design (efficiency finding H2).</b> The transactional phase
- * does only DB work and exits with {@code sharepoint_move_status = PENDING}.
- * The slow Graph API uploads (~200-500ms per PDF, 4-8 PDFs/appendices) run
- * <em>after</em> the conversion transaction commits, via
- * {@link #runSharePointCopy(UUID)}. Callers are expected to dispatch
- * {@code runSharePointCopy} on a {@code ManagedExecutor} so the HTTP response
- * returns fast and DB row locks on
+ * does only DB work and exits with {@code promotion_status = PENDING}.
+ * The S3→S3 document promotion (4-8 PDFs/appendices) runs <em>after</em>
+ * the conversion transaction commits, via
+ * {@link #runPostConversionCopy(UUID)}. Callers are expected to dispatch
+ * {@code runPostConversionCopy} on a {@code ManagedExecutor} so the HTTP
+ * response returns fast and DB row locks on
  * {@code recruitment_candidates / candidate_dossiers /
  * candidate_dossier_revisions / candidate_dossier_appendix /
  * users / team_role / user_status / signing_cases} are released promptly.
  * <p>
- * If the post-commit copy fails (network blip, Graph API throttle,
- * SharePoint outage), {@link
- * dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
- * picks up the still-{@code PENDING}/{@code PARTIAL}/{@code FAILED} row on
- * its 5-minute cadence and retries — the user-facing conversion succeeds
- * either way.
+ * If the post-commit promotion fails, the nextsign-status-sync sweep
+ * ({@code NextSignStatusSyncBatchlet#runPromotionRedriveSweep}) picks up
+ * the still-{@code PENDING}/{@code FAILED} row on its 5-minute cadence and
+ * retries — the user-facing conversion succeeds either way.
  *
  * <h3>Conversion steps (transactional)</h3>
  * <ol>
@@ -77,16 +75,16 @@ import java.util.stream.Collectors;
  *       {@link SigningCaseOwnershipPort#transferLocalOwner}.</li>
  *   <li>Call {@link RecruitmentCandidate#markHired}.</li>
  *   <li>Close every OPEN dossier on this candidate.</li>
- *   <li>Set {@code sharepoint_move_status = PENDING}. The post-commit
- *       SharePoint copy is dispatched by the resource layer.</li>
+ *   <li>Set {@code promotion_status = PENDING}. The post-commit
+ *       promotion is dispatched by the resource layer.</li>
  * </ol>
  *
- * <h3>Post-commit steps ({@link #runSharePointCopy})</h3>
+ * <h3>Post-commit steps ({@link #runPostConversionCopy})</h3>
  * <ol>
- *   <li>Resolve target username and template base folder.</li>
- *   <li>Copy every S3-backed PDF and appendix to the destination folder.</li>
- *   <li>In a short follow-up tx, set the final move status and stamp
- *       {@code s3_retention_until} on COMPLETED.</li>
+ *   <li>Promote every signed PDF, appendix and identity document S3→S3
+ *       into the new employee's document store
+ *       ({@code S3EmployeePromotionService}).</li>
+ *   <li>In a short follow-up tx, set the final promotion status.</li>
  * </ol>
  */
 @JBossLog
@@ -152,7 +150,7 @@ public class CandidateConversionUseCase {
 
         // (c) Two status rows: PREBOARDING (alloc=0, bonus=false) makes the
         // new user discoverable to StatusService.getLatestEmploymentStatus
-        // today so the SharePoint copy resolves the user's company on
+        // today so the document promotion resolves the user's company on
         // convert day. ACTIVE carries the requested allocation and bonus
         // eligibility. Skipping PREBOARDING when its date collapses onto
         // plannedStart honours uq_userstatus_user_date(useruuid, statusdate).

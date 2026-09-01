@@ -8,7 +8,7 @@ import jakarta.transaction.Transactional;
  * Narrow transactional boundary around the {@code onboarding_upload_submissions}
  * audit-row insert. Lives in its own bean so the surrounding
  * {@link OnboardingUploadService#handleUpload} can execute the slow
- * S3/SharePoint upload <i>outside</i> any DB transaction (no connection held
+ * S3 upload <i>outside</i> any DB transaction (no connection held
  * for the 1–5 s round trip), then call into here for a small write-only TX.
  *
  * <p>Pattern: persist-then-upload was the original shape; we deliberately

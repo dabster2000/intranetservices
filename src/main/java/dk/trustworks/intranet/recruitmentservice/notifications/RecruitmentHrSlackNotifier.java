@@ -19,9 +19,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Posts a single Slack notification to HR when a recruitment candidate's
- * SharePoint copy completes successfully on Convert. Idempotent across the
- * JVM lifetime via an in-memory candidate-UUID dedup set, so the
- * SharePoint retry batchlet cannot trigger a second notification.
+ * document promotion completes successfully on Convert. Idempotent across
+ * the JVM lifetime via an in-memory candidate-UUID dedup set, so the
+ * promotion re-drive sweep cannot trigger a second notification.
  *
  * <h3>Channel resolution (offer split, 2026-08-25)</h3>
  * Every message resolves its channel per send:
@@ -44,7 +44,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h3>Failure semantics</h3>
  * Any exception thrown by {@link SlackService} (or by data resolution) is
  * caught, logged at ERROR with the candidate UUID, and swallowed so the
- * caller's transactional flow ({@code applySharePointResult}) is not
+ * caller's transactional flow (the promotion result apply) is not
  * affected. Sends use the STRICT variant, so a not-ok Slack response (e.g.
  * {@code channel_not_found} on a private offer channel the bot is not a
  * member of) reaches that catch block instead of being swallowed inside
@@ -58,7 +58,7 @@ public class RecruitmentHrSlackNotifier {
     /**
      * In-memory dedup set, JVM-lifetime. Mirrors the pattern used by
      * {@link RecruitmentSignatureCompletionListener#NOTIFIED_CASE_KEYS} but
-     * keyed on candidate UUID — the SharePoint retry batchlet may cause the
+     * keyed on candidate UUID — the promotion re-drive sweep may cause the
      * Convert flow to re-enter on PARTIAL/FAILED→COMPLETED transitions.
      */
     private static final Set<String> NOTIFIED_CANDIDATE_UUIDS = ConcurrentHashMap.newKeySet();
@@ -96,14 +96,14 @@ public class RecruitmentHrSlackNotifier {
 
     /**
      * Notify HR that {@code candidate} has been hired and their signed
-     * documents have landed in SharePoint. No-ops if a notification was
+     * documents have landed in their employee file. No-ops if a notification was
      * already sent for this candidate UUID in the current JVM.
      *
      * @param candidate       the hired candidate (must not be null)
      * @param recruiterUuid   the actor (recruiter) who triggered Convert; may
      *                        be {@code null} if unknown
      * @param signedFilenames bullet list of {@code _signed.pdf} filenames
-     *                        archived to SharePoint; may be empty but not null
+     *                        archived to the employee store; may be empty but not null
      */
     public void notifyHire(RecruitmentCandidate candidate,
                            UUID recruiterUuid,
@@ -401,8 +401,8 @@ public class RecruitmentHrSlackNotifier {
      *   <li><b>Candidate flow</b> — message names the candidate and links
      *       to the recruitment dossier page.</li>
      *   <li><b>User flow</b> — message names the new hire (full name +
-     *       username) and links to their SharePoint onboarding folder via
-     *       the most recent submission's {@code webUrl}.</li>
+     *       username); HR finds the files on the employee's HR Documents
+     *       tab, so no link is attached.</li>
      * </ul>
      *
      * <p>Idempotent across the JVM lifetime per {@code token.uuid}. Slack
@@ -422,9 +422,8 @@ public class RecruitmentHrSlackNotifier {
      *                     forward-compatibility / count metrics)
      * @param displayName  candidate full name OR {@code "Full Name (username)"}
      *                     for the user flow; never null
-     * @param linkUrl      candidate dossier URL (candidate flow) or the
-     *                     SharePoint folder webUrl (user flow); may be empty
-     *                     but never null
+     * @param linkUrl      candidate dossier URL (candidate flow) or empty
+     *                     (user flow); never null
      */
     public void notifyOnboardingComplete(OnboardingUploadToken token,
                                          List<OnboardingUploadSubmission> submissions,
@@ -466,9 +465,7 @@ public class RecruitmentHrSlackNotifier {
                     + " has uploaded all required onboarding identity documents ("
                     + count + " file(s)). " + linkUrl;
         }
-        // User flow. Storage-neutral copy: depending on the
-        // employee_documents.writers.onboarding toggle the files land in
-        // SharePoint (legacy) or the employee document store (S3).
+        // User flow: the files land in the employee document store.
         return ":file_folder: " + displayName
                 + " has uploaded all required onboarding identity documents ("
                 + count + " file(s)). " + linkUrl;

@@ -98,8 +98,9 @@ public class OnboardingResource {
 
     /**
      * Public endpoint: persist a single uploaded identity document for the
-     * given onboarding token. Routes to S3 (candidate token) or SharePoint
-     * (user token) and returns the refreshed validate response so the
+     * given onboarding token. Routes to candidate staging (candidate token)
+     * or the employee document store (user token) and returns the refreshed
+     * validate response so the
      * page can lock zones in one round trip.
      *
      * <p>Same silence rule as {@link #validate(String)} — invalid /
