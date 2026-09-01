@@ -133,6 +133,7 @@ class RecruitmentEventTypeCatalogTest {
                 "UNSOLICITED_APPLICATION_RECEIVED", "DUPLICATE_APPLICATION_RECEIVED",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
                 "APPLICANT_REFERRER_CLAIMED", "APPLICANT_REFERRER_NOTIFIED",
+                "APPLICANT_REFERRER_BACKFILLED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
                 "INTERVIEW_CANDIDATE_INVITE_SENT", "INTERVIEW_CANDIDATE_INVITE_FAILED",
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
@@ -179,9 +180,11 @@ class RecruitmentEventTypeCatalogTest {
                         + "the structural Tidy log the AI Act obligation reads) "
                         + "and FACT_REDACTED (the append-only ledger's retraction), plus the "
                         + "change-request-(e) APPLICANT_REFERRER_* pair (the applicant's "
-                        + "unverified claim that they know a colleague, and the notice "
-                        + "sent to that colleague)");
-        assertEquals(89, RecruitmentEventType.values().length);
+                        + "unverified claim that they know a colleague, the notice "
+                        + "sent to that colleague, and the BACKFILLED type the "
+                        + "one-off sweep over already-collected names uses so it "
+                        + "structurally cannot trigger that notice)");
+        assertEquals(90, RecruitmentEventType.values().length);
     }
 
     @Test

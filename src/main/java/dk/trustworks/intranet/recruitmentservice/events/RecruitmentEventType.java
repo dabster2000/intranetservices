@@ -120,6 +120,22 @@ public enum RecruitmentEventType {
      * Payload: {@code notified_user_uuid}, {@code trigger_seq}.
      */
     APPLICANT_REFERRER_NOTIFIED,
+    /**
+     * A referrer name that had been sitting unread in {@code source_detail}
+     * was matched to an employee and written to
+     * {@code referred_by_user_uuid} by the one-off backfill
+     * ({@code PublicApplyReferrerBackfillService}, 2026-09-01).
+     * <p>
+     * A SEPARATE type from {@link #APPLICANT_REFERRER_CLAIMED} on purpose,
+     * and that separation is the whole notification suppression: the honest
+     * notice reactor acts only on CLAIMED, so a historical sweep structurally
+     * cannot DM a colleague about an application from months ago. It also
+     * keeps the two apart in the audit trail — the applicant asserted this at
+     * apply time, but WE made the link later, from data we already held.
+     * Payload: {@code matched_user_uuid}, {@code match_method},
+     * {@code origin=BACKFILL}; the typed text is pii ({@code claimed_name}).
+     */
+    APPLICANT_REFERRER_BACKFILLED,
 
     // --- Interviews & scorecards (P11) ----------------------------------
     INTERVIEW_SCHEDULED,
