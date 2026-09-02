@@ -70,7 +70,7 @@ public class RecruitmentGdprResource {
     private static final String ADMIN_WILDCARD = "admin:*";
 
     /** Template key of the Art. 14 notice email (V448 seed). */
-    static final String KEY_ART14_NOTICE = "ART14_NOTICE";
+    static final String KEY_ART14_NOTICE = RecruitmentEmailService.KEY_ART14_NOTICE;
 
     @Inject
     RecruitmentFeatureFlag featureFlag;

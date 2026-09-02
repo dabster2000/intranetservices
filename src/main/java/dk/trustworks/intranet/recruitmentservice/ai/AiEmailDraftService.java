@@ -140,9 +140,11 @@ public class AiEmailDraftService {
                 : RecruitmentPosition.findById(application.getPositionUuid());
         RecruitmentEmailBodyFormat bodyFormat = template.getBodyFormat() == null
                 ? RecruitmentEmailBodyFormat.PLAIN : template.getBodyFormat();
+        // Through the service, so the draft the model is handed already has
+        // the house merge values resolved — an AI asked to personalise
+        // "{{visiting_address}}" tends to invent an address.
         RecruitmentEmailRenderer.Rendered rendered =
-                RecruitmentEmailRenderer.render(template.getSubject(), template.getBody(),
-                        candidate, position, java.util.Map.of(), bodyFormat);
+                emailService.render(template, candidate, position);
         return new PreparedDraft(candidate.getUuid(), candidate.getFirstName(),
                 template.getUuid(), template.getTemplateKey(),
                 application == null ? null : application.getUuid(),
