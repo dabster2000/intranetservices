@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import org.junit.jupiter.api.Test;
@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 class PromotedDocumentNamingTest {
 
     private static String promoted(EmployeeDocumentCategory category, String filename) {
-        return MigrationCategorizerRules.buildDisplayName(category, filename, null, null);
+        return EmployeeDocumentCategorizerRules.buildDisplayName(category, filename, null, null);
     }
 
     @Test
@@ -106,7 +106,7 @@ class PromotedDocumentNamingTest {
      * name, so the archival timestamp never reaches the employee's title.
      */
     private static String archived(EmployeeDocumentCategory category, String documentName) {
-        return MigrationCategorizerRules.buildDisplayName(category, documentName + ".pdf", null, null);
+        return EmployeeDocumentCategorizerRules.buildDisplayName(category, documentName + ".pdf", null, null);
     }
 
     @Test

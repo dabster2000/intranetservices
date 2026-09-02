@@ -61,7 +61,6 @@ public class EndpointRegistryService {
             Map.entry("lunch", "Culture"),
             Map.entry("documentservice", "Documents"),
             Map.entry("fileservice", "Documents"),
-            Map.entry("sharepoint", "Documents"),
             Map.entry("openai", "AI"),
             Map.entry("forms", "Forms")
     );

@@ -95,14 +95,15 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
     }
 
     /**
-     * Find all signing cases with a specific SharePoint upload status.
-     * Used for bulk retry of failed uploads.
-     *
-     * @param status SharePoint upload status to filter by (e.g., "FAILED")
-     * @return List of cases with matching SharePoint upload status
+     * Completed cases whose signed documents are not yet in the employee
+     * store — the candidate set for the deterministic signing linkage of
+     * the categorizer (migrated files matched by the
+     * {@code _signed_} filename pattern).
      */
-    public List<SigningCase> findBySharepointUploadStatus(String status) {
-        return find("sharepointUploadStatus", status).list();
+    public List<SigningCase> findCompletedNotArchived() {
+        return find("processingStatus = 'COMPLETED' AND lower(status) = 'completed' " +
+                "AND (archiveStatus IS NULL OR archiveStatus <> 'ARCHIVED') ORDER BY createdAt ASC")
+                .list();
     }
 
     // ========================================================================
@@ -132,12 +133,9 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
      * - Cases with processing_status = COMPLETED whose signing status is not yet
      *   terminal (pending / in_progress / …). Signing completes hours or days
      *   after the first fetch, so these keep polling until NextSign reports a
-     *   status in {@link SigningCase#TERMINAL_STATUSES}. This branch deliberately
-     *   does NOT depend on SharePoint fields — recruitment cases carry no
-     *   SharePoint location, and before this branch existed they froze at their
-     *   first-fetch snapshot forever (never showing signatures in the intranet)
-     * - Cases with processing_status = COMPLETED that have pending SharePoint upload
-     *   (signing may have completed after initial status fetch)
+     *   status in {@link SigningCase#TERMINAL_STATUSES}. Before this branch
+     *   existed, cases froze at their first-fetch snapshot forever (never
+     *   showing signatures in the intranet)
      *
      * Used by NextSignStatusSyncBatchlet to find cases to process.
      *
@@ -159,14 +157,9 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
             "(processingStatus = 'FAILED' AND retryCount >= ?1 AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?4)) OR " +
             // Case 4: Fetched cases whose signing is still in flight — poll
-            // until a terminal signing status is reached, SharePoint or not
+            // until a terminal signing status is reached
             "(processingStatus = 'COMPLETED' AND " +
             "(status IS NULL OR lower(status) NOT IN ?3) AND " +
-            "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) OR " +
-            // Case 5: Completed cases needing SharePoint upload (signing may have completed after fetch)
-            // Includes both PENDING (not yet attempted) and FAILED (retry after delay)
-            "(processingStatus = 'COMPLETED' AND sharepointLocationUuid IS NOT NULL AND " +
-            "sharepointUploadStatus IN ('PENDING', 'FAILED') AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) " +
             "ORDER BY createdAt ASC",
             maxRetries, retryThreshold, SigningCase.TERMINAL_STATUSES, exhaustedRetryThreshold

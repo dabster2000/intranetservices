@@ -35,11 +35,7 @@ class EmployeeDocumentsFeatureFlagTest {
                 .thenReturn(Optional.empty());
         when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.SELF_SERVICE_KEY))
                 .thenReturn(Optional.empty());
-        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.WRITER_SIGNING_KEY))
-                .thenReturn(Optional.empty());
-        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.WRITER_PROMOTION_KEY))
-                .thenReturn(Optional.empty());
-        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.WRITER_ONBOARDING_KEY))
+        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.AI_CATEGORIZATION_KEY))
                 .thenReturn(Optional.empty());
         when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.RETENTION_KEY))
                 .thenReturn(Optional.empty());
@@ -48,18 +44,16 @@ class EmployeeDocumentsFeatureFlagTest {
 
         assertFalse(flag.isHrTabEnabled());
         assertFalse(flag.isSelfServiceEnabled());
-        assertFalse(flag.isSigningWriterEnabled());
-        assertFalse(flag.isPromotionWriterEnabled());
-        assertFalse(flag.isOnboardingWriterEnabled());
+        assertFalse(flag.isAiCategorizationEnabled());
         assertFalse(flag.isRetentionEnabled());
         assertFalse(flag.isReviewSlackNotifyEnabled());
     }
 
     @Test
     void garbageValue_readsAsFalse() {
-        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.WRITER_SIGNING_KEY))
+        when(appSettingService.findByKey(EmployeeDocumentsFeatureFlag.AI_CATEGORIZATION_KEY))
                 .thenReturn(Optional.of(setting("yes please")));
-        assertFalse(flag.isSigningWriterEnabled());
+        assertFalse(flag.isAiCategorizationEnabled());
     }
 
     @Test

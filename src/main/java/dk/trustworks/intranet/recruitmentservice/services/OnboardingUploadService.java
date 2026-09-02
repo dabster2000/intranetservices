@@ -1,7 +1,5 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.dto.OnboardingValidateResponse;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
@@ -9,9 +7,6 @@ import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmissio
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier;
-import dk.trustworks.intranet.sharepoint.dto.DriveItem;
-import dk.trustworks.intranet.sharepoint.service.SharePointService;
-import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.PersistenceException;
@@ -23,7 +18,6 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -32,13 +26,14 @@ import java.util.UUID;
 
 /**
  * Application service that orchestrates the public onboarding upload
- * endpoint. Validates the token, routes the bytes to S3 (candidate flow)
- * or SharePoint (user flow), persists an audit row, and triggers a single
- * HR Slack notification once all required types are received.
+ * endpoint. Validates the token, routes the bytes to the candidate's S3
+ * staging space (candidate flow) or the employee document store (user
+ * flow), persists an audit row, and triggers a single HR Slack
+ * notification once all required types are received.
  *
  * <h3>Transactional shape</h3>
  * <p>The method itself is <b>not</b> {@code @Transactional}. We deliberately
- * keep the slow S3/SharePoint upload (1–5 s round trip) <i>outside</i> any
+ * keep the slow S3 upload (1–5 s round trip) <i>outside</i> any
  * DB transaction so we don't hold a connection while waiting on a
  * remote HTTP API. The narrow audit-row insert runs in its own
  * transaction via {@link OnboardingSubmissionPersister}. The AI vision
@@ -56,7 +51,7 @@ import java.util.UUID;
  *       remote call does not hold a connection.</li>
  *   <li>Pre-resolve display name + link URL for the eventual Slack message
  *       so the notifier needs no further DB reads.</li>
- *   <li>Upload bytes to S3 / SharePoint — <i>still no TX</i>.</li>
+ *   <li>Upload bytes to S3 — <i>still no TX</i>.</li>
  *   <li>Persist the audit row in a small REQUIRED tx via
  *       {@link OnboardingSubmissionPersister#persist}.</li>
  *   <li>If persist fails (e.g. concurrent uploads racing on
@@ -97,12 +92,6 @@ public class OnboardingUploadService {
     RecruitmentS3StorageService recruitmentS3StorageService;
 
     @Inject
-    SharePointService sharePointService;
-
-    @Inject
-    dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
-
-    @Inject
     dk.trustworks.intranet.documentservice.services.EmployeeDocumentService employeeDocumentService;
 
     @Inject
@@ -120,7 +109,8 @@ public class OnboardingUploadService {
 
     /**
      * Persist a single uploaded identity document for the given token,
-     * routing to S3 or SharePoint based on token ownership. Returns a
+     * routing to candidate staging or the employee store based on token
+     * ownership. Returns a
      * fresh {@link OnboardingValidateResponse} reflecting the post-upload
      * submitted-state so the caller can lock the relevant zone in one
      * round trip.
@@ -169,7 +159,7 @@ public class OnboardingUploadService {
 
         // ── 1b. AI validation gate. Synchronous; fail-closed. ────────────
         // Runs after structural checks but before any storage write so
-        // rejected documents never reach S3/SharePoint.
+        // rejected documents never reach S3.
         OnboardingDocumentValidationService.ValidationDecision aiDecision =
                 documentValidationService.validate(type, bytes, normalisedContentType);
         if (!aiDecision.approved()) {
@@ -194,28 +184,11 @@ public class OnboardingUploadService {
             throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
         }
 
-        // Single-path S3 switch (employee-documents spec §6.5.4): while the
-        // employee_documents.writers.onboarding toggle is ON, user-flow
-        // uploads land in the employee document store instead of SharePoint
-        // — no SharePoint location resolution needed at all.
-        boolean userFlowToS3 = userFlow && employeeDocumentsFeatureFlag.isOnboardingWriterEnabled();
-
-        // For the legacy user flow, resolve the SharePoint location now so
-        // any configuration / user-state failure surfaces before we attempt
-        // the upload (and before we have something to compensate for).
-        UserUploadContext userCtx = (userFlow && !userFlowToS3)
-                ? resolveUserUploadContext(token.getUserUuid()) : null;
-
         // ── 2. Pre-resolve Slack notification context (no further reads
         //       needed once we hand off to the notifier). ────────────────
-        NotificationContext notifyCtx;
-        if (candidateFlow) {
-            notifyCtx = buildCandidateNotificationContext(token.getCandidateUuid());
-        } else if (userFlowToS3) {
-            notifyCtx = buildUserNotificationContextFromDb(token.getUserUuid());
-        } else {
-            notifyCtx = buildUserNotificationContext(userCtx);
-        }
+        NotificationContext notifyCtx = candidateFlow
+                ? buildCandidateNotificationContext(token.getCandidateUuid())
+                : buildUserNotificationContextFromDb(token.getUserUuid());
 
         // ── 3. Upload bytes — outside any DB transaction. ────────────────
         OnboardingUploadSubmission row = new OnboardingUploadSubmission();
@@ -228,18 +201,14 @@ public class OnboardingUploadService {
         // Storage handles for compensating delete on persist failure.
         String uploadedS3FileUuid = null;
         String uploadedEmployeeDocumentUuid = null;
-        String uploadedSharepointDriveItemId = null;
-        String uploadedSharepointSiteUrl = null;
-        String uploadedSharepointDriveName = null;
 
         if (candidateFlow) {
             String fileUuid = recruitmentS3StorageService.storeIdentityDocument(
                     bytes, safeFilename, UUID.fromString(token.getCandidateUuid()));
             row.setCandidateUuid(token.getCandidateUuid());
-            row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.S3);
             row.setS3FileUuid(fileUuid);
             uploadedS3FileUuid = fileUuid;
-        } else if (userFlowToS3) {
+        } else {
             // Employee-documents path (spec §6.5.4): straight into the
             // user's employee file — category IDENTITY, source ONBOARDING,
             // system writer (no interactive actor).
@@ -262,25 +231,8 @@ public class OnboardingUploadService {
                             // new uploads only; rows already stored keep hr_only=0.
                             null, null, true, false, null, null, false));
             row.setUserUuid(token.getUserUuid());
-            row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.S3);
             row.setEmployeeDocumentUuid(doc.getUuid());
             uploadedEmployeeDocumentUuid = doc.getUuid();
-        } else {
-            DriveItem driveItem = sharePointService.uploadFile(
-                    userCtx.siteUrl(), userCtx.driveName(),
-                    userCtx.folderPath(), safeFilename, bytes);
-            row.setUserUuid(token.getUserUuid());
-            row.setStorageTarget(OnboardingUploadSubmission.StorageTarget.SHAREPOINT);
-            row.setSharepointDriveItemId(driveItem.id());
-            row.setSharepointWebUrl(driveItem.webUrl());
-            uploadedSharepointDriveItemId = driveItem.id();
-            uploadedSharepointSiteUrl = userCtx.siteUrl();
-            uploadedSharepointDriveName = userCtx.driveName();
-            // Patch the notifier link URL with the actual webUrl (most
-            // direct link to the just-uploaded folder for the user flow).
-            if (driveItem.webUrl() != null && !driveItem.webUrl().isBlank()) {
-                notifyCtx = notifyCtx.withLinkUrl(driveItem.webUrl());
-            }
         }
 
         // ── 4. Persist audit row in a narrow REQUIRED tx. ────────────────
@@ -292,22 +244,18 @@ public class OnboardingUploadService {
             // to 409 ALREADY_SUBMITTED — what the second caller would have
             // received from the precheck.
             if (isUniqueViolation(pe)) {
-                compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid,
-                        uploadedSharepointSiteUrl, uploadedSharepointDriveName,
-                        uploadedSharepointDriveItemId, tokenUuid, type);
+                compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid, tokenUuid, type);
                 throw alreadySubmitted();
             }
             // Any other persistence failure → still try to compensate (we
             // would otherwise leave an orphan in storage with no audit row),
             // then re-throw so the resource maps it to a 5xx.
-            compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid,
-                    uploadedSharepointSiteUrl, uploadedSharepointDriveName,
-                    uploadedSharepointDriveItemId, tokenUuid, type);
+            compensateStorageUpload(uploadedS3FileUuid, uploadedEmployeeDocumentUuid, tokenUuid, type);
             throw pe;
         }
 
         log.infof("Onboarding upload stored token=%s type=%s storage=%s submission=%s",
-                tokenUuid, type, row.getStorageTarget(), row.getUuid());
+                tokenUuid, type, candidateFlow ? "CANDIDATE_S3" : "EMPLOYEE_DOCS", row.getUuid());
 
         // ── 5. Re-read submissions outside the persist tx and notify. ────
         List<OnboardingUploadSubmission> all = OnboardingUploadSubmission.findByToken(tokenUuid);
@@ -327,25 +275,10 @@ public class OnboardingUploadService {
     // ── helpers ────────────────────────────────────────────────────────────
 
     /**
-     * Resolved SharePoint upload target for the user flow, captured up-front
-     * so the actual upload step is a pure I/O call with no further DB reads.
-     */
-    private record UserUploadContext(
-            String siteUrl,
-            String driveName,
-            String folderPath,
-            String fullName,
-            String username) {}
-
-    /**
      * Pre-resolved context for the HR Slack notifier — see the
      * {@link RecruitmentHrSlackNotifier#notifyOnboardingComplete} signature.
      */
-    private record NotificationContext(String displayName, String linkUrl) {
-        NotificationContext withLinkUrl(String newLink) {
-            return new NotificationContext(this.displayName, newLink);
-        }
-    }
+    private record NotificationContext(String displayName, String linkUrl) { }
 
     private static boolean isTypeAllowedByToken(OnboardingUploadToken token, OnboardingDocumentType type) {
         return switch (type) {
@@ -367,45 +300,6 @@ public class OnboardingUploadService {
         return true;
     }
 
-    private UserUploadContext resolveUserUploadContext(String userUuid) {
-        User user = User.findById(userUuid);
-        if (user == null) {
-            log.errorf("Onboarding upload: user %s not found", userUuid);
-            throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
-        }
-        // User.statuses is @Transient — User.findById does not populate it.
-        // Hydrate from UserStatus directly before asking for the active one.
-        user.getStatuses().addAll(UserStatus.findByUseruuid(userUuid));
-        UserStatus status = user.getUserStatus(LocalDate.now());
-        if (status == null || status.getCompany() == null || status.getCompany().getUuid() == null) {
-            log.errorf("Onboarding upload: user %s has no active company", userUuid);
-            throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
-        }
-        String companyUuid = status.getCompany().getUuid();
-        SharePointLocationEntity location = SharePointLocationEntity.findByCompanyAndType(
-                companyUuid, SharePointLocationType.EMPLOYEE);
-        if (location == null) {
-            log.errorf("Onboarding upload: no EMPLOYEE SharePoint location configured for company %s", companyUuid);
-            throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
-        }
-        String username = user.getUsername();
-        if (username == null || username.isBlank()) {
-            log.errorf("Onboarding upload: user %s has no username", userUuid);
-            throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
-        }
-        String basePath = location.getFolderPath() == null ? "" : location.getFolderPath();
-        String folderPath = (basePath.isEmpty() ? "" : stripTrailingSlash(basePath) + "/")
-                + sanitisePathSegment(username) + "/Onboarding";
-
-        String first = nullSafe(user.getFirstname()).trim();
-        String last = nullSafe(user.getLastname()).trim();
-        String fullName = (first + " " + last).trim();
-        if (fullName.isEmpty()) fullName = username;
-
-        return new UserUploadContext(
-                location.getSiteUrl(), location.getDriveName(), folderPath, fullName, username);
-    }
-
     private NotificationContext buildCandidateNotificationContext(String candidateUuid) {
         String displayName = "unknown";
         try {
@@ -421,18 +315,9 @@ public class OnboardingUploadService {
         return new NotificationContext(displayName, linkUrl);
     }
 
-    private NotificationContext buildUserNotificationContext(UserUploadContext userCtx) {
-        // The link URL is patched to the DriveItem.webUrl after upload — at
-        // this point we don't have it yet, so seed with an empty string.
-        String displayName = userCtx.fullName() + " (" + userCtx.username() + ")";
-        return new NotificationContext(displayName, "");
-    }
-
     /**
-     * User-flow display context for the S3 employee-documents path — no
-     * SharePoint location involved, so resolve name/username directly.
-     * No link URL: HR finds the documents on the employee's HR Documents
-     * tab.
+     * User-flow display context for the employee-documents path. No link
+     * URL: HR finds the documents on the employee's HR Documents tab.
      */
     private NotificationContext buildUserNotificationContextFromDb(String userUuid) {
         String displayName = "unknown";
@@ -539,7 +424,6 @@ public class OnboardingUploadService {
      * the caller — they already have a 409/500 to deal with.
      */
     private void compensateStorageUpload(String s3FileUuid, String employeeDocumentUuid,
-                                         String spSiteUrl, String spDriveName, String spDriveItemId,
                                          String tokenUuid, OnboardingDocumentType type) {
         if (employeeDocumentUuid != null) {
             try {
@@ -560,17 +444,6 @@ public class OnboardingUploadService {
             } catch (RuntimeException e) {
                 log.errorf(e, "ORPHAN: compensating S3 delete FAILED token=%s type=%s fileUuid=%s",
                         tokenUuid, type, s3FileUuid);
-            }
-            return;
-        }
-        if (spDriveItemId != null) {
-            try {
-                sharePointService.deleteFileById(spSiteUrl, spDriveName, spDriveItemId);
-                log.infof("Compensating delete OK token=%s type=%s storage=SHAREPOINT itemId=%s",
-                        tokenUuid, type, spDriveItemId);
-            } catch (RuntimeException e) {
-                log.errorf(e, "ORPHAN: compensating SharePoint delete FAILED token=%s type=%s site=%s drive=%s itemId=%s",
-                        tokenUuid, type, spSiteUrl, spDriveName, spDriveItemId);
             }
         }
     }

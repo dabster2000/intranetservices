@@ -867,9 +867,6 @@ bug-report:
     log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/ecs/default/tw-quarkus-staging}
     log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/ecs/default/tw-nextjs-staging}
 
-sharepoint:
-  hostname: tenant.sharepoint.com
-
 virkdata:
   # API key for virkdata.dk CVR registry. Sourced from the Secrets Manager entry
   # tw-quarkus-secrets-{env}:VIRKDATA_API_KEY in deployed environments.

@@ -52,8 +52,9 @@ public class EmployeeDocument extends PanacheEntityBase {
 
     /**
      * Immutable. The signing linkage matches this byte-for-byte
-     * (decision A4) and HR compares it against SharePoint during
-     * runbook verification — nothing renames it. Standardized names
+     * (decision A4) and HR compared it against the legacy store during
+     * migration verification — nothing renames it.
+     * Standardized names
      * live in {@link #displayName}.
      */
     @Column(name = "original_filename", nullable = false, length = 500)
@@ -91,7 +92,7 @@ public class EmployeeDocument extends PanacheEntityBase {
     @Column(name = "hr_only", nullable = false)
     private boolean hrOnly;
 
-    /** Replaces the SharePoint "Arkiv" folders (spec D3). */
+    /** Replaced the legacy "Arkiv" folders (spec D3). */
     @Column(name = "archived", nullable = false)
     private boolean archived;
 
@@ -103,7 +104,11 @@ public class EmployeeDocument extends PanacheEntityBase {
     @Column(name = "uploaded_by", length = 36)
     private String uploadedBy;
 
-    /** Provenance: SharePoint webUrl or {@code files:{uuid}} for re-homed/promoted objects. */
+    /**
+     * Provenance, kept for the audit trail: the legacy SharePoint webUrl
+     * the completed migration copied the bytes from, or
+     * {@code files:{uuid}} for re-homed/promoted objects.
+     */
     @Column(name = "migrated_from", length = 1024)
     private String migratedFrom;
 
@@ -129,6 +134,12 @@ public class EmployeeDocument extends PanacheEntityBase {
 
     public static List<EmployeeDocument> findBySigningCase(String signingCaseKey) {
         return list("signingCaseKey = ?1 ORDER BY documentIndex ASC", signingCaseKey);
+    }
+
+    /** Same bytes for the same employee — the hash is the identity (null sha256 rows never match). */
+    public static EmployeeDocument findByUserAndSha256(String userUuid, String sha256) {
+        if (sha256 == null || sha256.isBlank()) return null;
+        return find("userUuid = ?1 AND sha256 = ?2 ORDER BY createdAt", userUuid, sha256).firstResult();
     }
 
     public static EmployeeDocument findByProvenance(String migratedFrom) {

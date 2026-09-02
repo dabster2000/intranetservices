@@ -106,8 +106,8 @@ class CandidateServiceAtsIntegrationTest {
         QuarkusTransaction.requiringNew().run(() ->
                 em.createNativeQuery(
                                 "INSERT INTO document_templates "
-                                        + "(uuid, name, category, sharepoint_type, active, created_at, updated_at) "
-                                        + "VALUES (:uuid, :name, 'EMPLOYMENT', 'EMPLOYEE', 1, NOW(), NOW())")
+                                        + "(uuid, name, category, active, created_at, updated_at) "
+                                        + "VALUES (:uuid, :name, 'EMPLOYMENT', 1, NOW(), NOW())")
                         .setParameter("uuid", uuid)
                         .setParameter("name", "TEST - Ansaettelseskontrakt " + uuid)
                         .executeUpdate());

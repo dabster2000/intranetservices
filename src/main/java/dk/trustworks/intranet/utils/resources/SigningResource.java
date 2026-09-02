@@ -3,7 +3,6 @@ package dk.trustworks.intranet.utils.resources;
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.security.TemplateAccessPolicy;
 import dk.trustworks.intranet.security.AuthorizationService;
 import dk.trustworks.intranet.security.DataScope;
@@ -142,12 +141,10 @@ public class SigningResource {
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
-                    targetUserUuid, SharePointLocationType.EMPLOYEE);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
-                    response.caseKey(), totalSigners, sharepointLocationUuid);
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
+                    response.caseKey(), totalSigners);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -258,21 +255,17 @@ public class SigningResource {
 
             // Save minimal record for async processing (NEW ASYNC PATTERN)
             // Status will be fetched by background batch job to avoid NextSign race condition.
-            // SharePoint location is resolved from the user's active company + template's
-            // sharepoint_type (no longer specified by the caller).
             try {
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String sharepointLocationUuid = resolveSharepointLocationUuidForTemplate(
-                    request.templateUuid(), targetUserUuid);
 
                 // template_uuid persisted for the S3 archival category
                 // mapping (employee-documents spec §6.5.1).
                 signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners,
-                    sharepointLocationUuid, request.templateUuid());
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
-                    response.caseKey(), totalSigners, sharepointLocationUuid);
+                    request.templateUuid());
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
+                    response.caseKey(), totalSigners);
 
                 // Immutable snapshot of what the case contained — the Phase 3
                 // registry's single source (spec §4.5). Failures are logged
@@ -302,27 +295,6 @@ public class SigningResource {
             log.errorf(e, "Unexpected error creating signing case from template: %s", e.getMessage());
             return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
         }
-    }
-
-    /**
-     * Resolves the SharePoint location UUID for a template-based signing case by
-     * loading the template's {@code sharepointType} and delegating to the signing
-     * service for the (company, type) lookup.
-     *
-     * @param templateUuid The parent template UUID (may be null)
-     * @param userUuid     The employee UUID
-     * @return Resolved SharePoint location UUID, or null if no auto-upload should occur
-     */
-    private String resolveSharepointLocationUuidForTemplate(String templateUuid, String userUuid) {
-        if (templateUuid == null || templateUuid.isBlank() || userUuid == null) {
-            return null;
-        }
-        DocumentTemplateEntity template = DocumentTemplateEntity.findById(templateUuid);
-        if (template == null) {
-            log.warnf("Template not found for SharePoint resolution: %s", templateUuid);
-            return null;
-        }
-        return signingService.resolveSharepointLocationUuid(userUuid, template.getSharepointType());
     }
 
     /**
@@ -592,15 +564,13 @@ public class SigningResource {
             try {
                 String documentName = request.getDisplayName();
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
-                    targetUserUuid, SharePointLocationType.EMPLOYEE);
 
                 // archive_category (V475): the sender's optional category pick
                 // for these template-less cases — used at S3 archival time.
                 signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners,
-                    sharepointLocationUuid, null, request.normalizedArchiveCategory());
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s, archiveCategory: %s)",
-                    response.caseKey(), totalSigners, sharepointLocationUuid, request.normalizedArchiveCategory());
+                    null, request.normalizedArchiveCategory());
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, archiveCategory: %s)",
+                    response.caseKey(), totalSigners, request.normalizedArchiveCategory());
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -1041,76 +1011,6 @@ public class SigningResource {
         } catch (Exception e) {
             log.errorf(e, "Admin sync failed");
             return serverError("ADMIN_SYNC_FAILED", "Sync failed: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Retries a single failed SharePoint upload.
-     */
-    @POST
-    @Path("/admin/retry-upload/{caseKey}")
-    @RolesAllowed({"signing:write"})
-    @Operation(
-        summary = "Retry failed SharePoint upload (admin)",
-        description = "Resets a failed SharePoint upload to PENDING so the batch job picks it up."
-    )
-    @APIResponses({
-        @APIResponse(responseCode = "200", description = "Retry initiated"),
-        @APIResponse(responseCode = "404", description = "Case not found"),
-        @APIResponse(responseCode = "500", description = "Server error")
-    })
-    public Response retrySharePointUpload(
-        @Parameter(description = "The NextSign case key", required = true)
-        @PathParam("caseKey") String caseKey
-    ) {
-        log.infof("POST /utils/signing/admin/retry-upload/%s - Retrying SharePoint upload", caseKey);
-        requireAdminHuman();
-        requireKnownCase(caseKey);
-        try {
-            signingService.retryFailedSharePointUpload(caseKey);
-            return Response.ok(Map.of(
-                "status", "retry_initiated",
-                "caseKey", caseKey,
-                "message", "SharePoint upload retry initiated"
-            )).build();
-        } catch (SigningService.SigningException e) {
-            if (e.getMessage().contains("not found")) {
-                return notFound("CASE_NOT_FOUND", e.getMessage());
-            }
-            return serverError("RETRY_FAILED", e.getMessage());
-        } catch (Exception e) {
-            log.errorf(e, "Retry failed for case %s", caseKey);
-            return serverError("RETRY_FAILED", "Retry failed: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Retries ALL failed SharePoint uploads.
-     */
-    @POST
-    @Path("/admin/retry-uploads")
-    @RolesAllowed({"signing:write"})
-    @Operation(
-        summary = "Retry all failed SharePoint uploads (admin)",
-        description = "Resets ALL failed SharePoint uploads to PENDING so the batch job picks them up."
-    )
-    @APIResponses({
-        @APIResponse(responseCode = "200", description = "Retries initiated"),
-        @APIResponse(responseCode = "500", description = "Server error")
-    })
-    public Response retryAllSharePointUploads() {
-        log.info("POST /utils/signing/admin/retry-uploads - Retrying all failed SharePoint uploads");
-        requireAdminHuman();
-        try {
-            int count = signingService.retryAllFailedSharePointUploads();
-            return Response.ok(Map.of(
-                "status", "retries_initiated",
-                "count", count,
-                "message", String.format("Initiated retry for %d failed uploads", count)
-            )).build();
-        } catch (Exception e) {
-            log.errorf(e, "Bulk retry failed");
-            return serverError("BULK_RETRY_FAILED", "Bulk retry failed: " + e.getMessage());
         }
     }
 

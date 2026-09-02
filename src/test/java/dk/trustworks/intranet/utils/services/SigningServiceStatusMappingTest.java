@@ -80,10 +80,6 @@ class SigningServiceStatusMappingTest {
             List.of(),
             1,
             0,
-            null,
-            null,
-            null,
-            null,
             null
         );
 

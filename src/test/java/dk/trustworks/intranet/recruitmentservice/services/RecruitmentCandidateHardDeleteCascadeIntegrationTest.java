@@ -311,56 +311,6 @@ class RecruitmentCandidateHardDeleteCascadeIntegrationTest {
         assertFalse(whole.contains(lastName));
     }
 
-    /**
-     * The residue leg specifically (verification finding, 2026-08-19). The
-     * test above drives {@code cascade.deleteCandidate} with an empty residue
-     * map, so it could never have caught this: the offending value is added
-     * by the ORCHESTRATOR, from {@code sharepoint_folder_path} — the one
-     * column {@code RecruitmentCandidate.anonymize} nulls with the comment
-     * "contains the candidate's name". This drives the whole
-     * {@code hardDelete} and re-reads the persisted JSON.
-     */
-    @Test
-    void theLedgerResidueCarriesNoNameEvenWhenASharePointFolderSurvives() {
-        String candidateUuid = createCandidateWithApplication();
-        RecruitmentCandidate before = RecruitmentCandidate.findById(candidateUuid);
-        String firstName = before.getFirstName();
-        String lastName = before.getLastName();
-        String folderPath = "/sites/HR/Shared Documents/Recruitment/2026/"
-                + firstName + " " + lastName;
-        QuarkusTransaction.requiringNew().run(() -> exec(
-                "UPDATE recruitment_candidates SET sharepoint_folder_path = :p WHERE uuid = :c",
-                Map.of("p", folderPath, "c", candidateUuid)));
-
-        // The row was changed under the session by native SQL, so drop the
-        // first-level cache before re-reading — otherwise hardDelete gets the
-        // stale instance whose sharepoint_folder_path is still null.
-        em.clear();
-        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid);
-        assertEquals(folderPath, candidate.getSharepointFolderPath());
-        RecruitmentCandidateHardDeleteService.HardDeleteSummary summary =
-                hardDeleteService.hardDelete(candidate, actor, "Created by mistake, undoing it");
-        ledgerUuids.add(summary.ledgerUuid());
-
-        assertTrue(summary.residue().containsKey("sharepointFolderRetained"),
-                "the folder really does survive — the delete must still say so");
-        assertFalse(summary.residue().toString().contains(folderPath),
-                "the API response must not echo the raw path either");
-
-        RecruitmentCandidateDeletion ledger =
-                RecruitmentCandidateDeletion.findById(summary.ledgerUuid());
-        assertNotNull(ledger);
-        String residue = ledger.getResidue() == null ? "" : ledger.getResidue();
-        assertTrue(residue.contains("pathSha256"),
-                "the redacted handle is what should have been persisted: " + residue);
-        assertFalse(residue.contains(firstName),
-                "recruitment_candidate_deletions has no FK, is excluded from the prod -> "
-                        + "staging sync and is never cleaned — a name written here is "
-                        + "permanent, and its own migration header forbids it");
-        assertFalse(residue.contains(lastName));
-        assertFalse(residue.contains(folderPath));
-    }
-
     // ---- The two refusals ----------------------------------------------------------
 
     @Test

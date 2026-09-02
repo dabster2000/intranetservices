@@ -1,8 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.resources;
 
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
-import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
+import dk.trustworks.intranet.documentservice.services.EmployeeDocumentService;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
@@ -10,8 +9,6 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier;
 import dk.trustworks.intranet.recruitmentservice.services.OnboardingSubmissionPersister;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
-import dk.trustworks.intranet.sharepoint.dto.DriveItem;
-import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -54,15 +51,14 @@ import static org.mockito.Mockito.when;
  * {@code (token, type)} unique-key are the only defensive layers.
  *
  * <p>Storage collaborators ({@link RecruitmentS3StorageService},
- * {@link SharePointService}, {@link RecruitmentHrSlackNotifier}) are mocked so
- * the test never reaches out to S3 or Microsoft Graph. The DB integration is
+ * {@link EmployeeDocumentService}, {@link RecruitmentHrSlackNotifier}) are
+ * mocked so the test never reaches out to S3. The DB integration is
  * exercised against the real schema via {@link TestTransaction} so each test
  * leaves no residue.</p>
  *
  * <p>The user-flow happy-path test depends on at least one user with a
- * non-null active company and an {@code EMPLOYEE} SharePoint location for that
- * company. The fixture is created inline; we use the persisted user's existing
- * userstatus row as the company anchor.</p>
+ * non-null active company; we use the persisted user's existing userstatus
+ * row as the anchor.</p>
  */
 @QuarkusTest
 @TestProfile(OnboardingUploadResourceTest.NoDevServicesProfile.class)
@@ -82,7 +78,7 @@ class OnboardingUploadResourceTest {
     @Inject EntityManager em;
 
     @InjectMock RecruitmentS3StorageService recruitmentS3StorageService;
-    @InjectMock SharePointService sharePointService;
+    @InjectMock EmployeeDocumentService employeeDocumentService;
     @InjectMock RecruitmentHrSlackNotifier recruitmentHrSlackNotifier;
     @InjectMock OnboardingSubmissionPersister onboardingSubmissionPersister;
 
@@ -138,19 +134,18 @@ class OnboardingUploadResourceTest {
                 .find("tokenUuid = ?1 AND documentType = ?2",
                         tokenUuid, OnboardingDocumentType.DRIVERS_LICENSE).firstResult();
         assertNotNull(row, "audit row must exist after upload");
-        assertEquals(OnboardingUploadSubmission.StorageTarget.S3, row.getStorageTarget());
         assertEquals(fakeS3FileUuid, row.getS3FileUuid());
         assertEquals(candidateUuid, row.getCandidateUuid());
     }
 
     /**
-     * User flow: JPEG upload routes to SharePoint, audit row stores
-     * {@code drive_item_id} + {@code web_url}, and the upload-folder path
-     * matches {@code {locationFolder}/{username}/Onboarding}.
+     * User flow: JPEG upload lands in the employee document store
+     * (category IDENTITY, source ONBOARDING, HR-only) and the audit row
+     * stores the {@code employee_document_uuid}.
      */
     @Test
     @TestTransaction
-    void userFlow_validJpeg_returns200_storesInSharePoint_andUsesUsernameFolder() throws IOException {
+    void userFlow_validJpeg_returns200_storesInEmployeeDocuments() throws IOException {
         // Pick a real user from the DB that has an active company.
         UserSeed seed = anyUserWithCompany();
         if (seed == null) {
@@ -158,18 +153,13 @@ class OnboardingUploadResourceTest {
             // resource wiring end-to-end.
             return;
         }
-        // Make sure an EMPLOYEE SharePointLocationEntity exists for the user's company.
-        ensureEmployeeLocation(seed.companyUuid);
 
         String tokenUuid = createUserToken(seed.userUuid, false, true, false);
 
-        DriveItem driveItem = new DriveItem(
-                "driveitem-" + UUID.randomUUID(),
-                "card.jpg", 10L, null, null,
-                "https://sharepoint.example/item",
-                null, new DriveItem.File("image/jpeg", null), null, null, null);
-        when(sharePointService.uploadFile(anyString(), anyString(), anyString(), anyString(), any(byte[].class)))
-                .thenReturn(driveItem);
+        EmployeeDocument stored = new EmployeeDocument();
+        stored.setUuid("empdoc-" + UUID.randomUUID());
+        when(employeeDocumentService.store(any(EmployeeDocumentService.StoreCommand.class)))
+                .thenReturn(stored);
         captureAndPersist();
 
         File jpeg = tempFileWithBytes(JPEG_BYTES, "card.jpg");
@@ -181,22 +171,20 @@ class OnboardingUploadResourceTest {
                 .then().statusCode(200)
                 .body("submitted.healthInsurance", equalTo(true));
 
-        // Verify uploadFile called with a folder path that ends in "{username}/Onboarding".
-        ArgumentCaptor<String> folderPath = ArgumentCaptor.forClass(String.class);
-        verify(sharePointService, times(1))
-                .uploadFile(anyString(), anyString(), folderPath.capture(), anyString(), any(byte[].class));
-        assertTrue(folderPath.getValue().endsWith("/Onboarding") || folderPath.getValue().endsWith("Onboarding"),
-                "folder path should end in /Onboarding, got: " + folderPath.getValue());
-        assertTrue(folderPath.getValue().contains(seed.username),
-                "folder path should contain the username, got: " + folderPath.getValue());
+        ArgumentCaptor<EmployeeDocumentService.StoreCommand> command =
+                ArgumentCaptor.forClass(EmployeeDocumentService.StoreCommand.class);
+        verify(employeeDocumentService, times(1)).store(command.capture());
+        assertEquals(seed.userUuid, command.getValue().userUuid());
+        assertEquals(dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory.IDENTITY,
+                command.getValue().category());
+        assertEquals(dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentSource.ONBOARDING,
+                command.getValue().source());
 
         OnboardingUploadSubmission row = OnboardingUploadSubmission
                 .find("tokenUuid = ?1 AND documentType = ?2",
                         tokenUuid, OnboardingDocumentType.HEALTH_INSURANCE).firstResult();
         assertNotNull(row);
-        assertEquals(OnboardingUploadSubmission.StorageTarget.SHAREPOINT, row.getStorageTarget());
-        assertEquals(driveItem.id(), row.getSharepointDriveItemId());
-        assertEquals(driveItem.webUrl(), row.getSharepointWebUrl());
+        assertEquals(stored.getUuid(), row.getEmployeeDocumentUuid());
         assertEquals(seed.userUuid, row.getUserUuid());
     }
 
@@ -505,27 +493,6 @@ class OnboardingUploadResourceTest {
         if (rows.isEmpty()) return null;
         Object[] r = rows.get(0);
         return new UserSeed((String) r[0], (String) r[1], (String) r[2]);
-    }
-
-    /**
-     * Ensure an {@code EMPLOYEE} SharePoint location exists for the given company so
-     * {@link dk.trustworks.intranet.recruitmentservice.services.OnboardingUploadService}
-     * can resolve a destination. Idempotent — looks up first, only inserts if absent.
-     */
-    private void ensureEmployeeLocation(String companyUuid) {
-        SharePointLocationEntity existing = SharePointLocationEntity.findByCompanyAndType(
-                companyUuid, SharePointLocationType.EMPLOYEE);
-        if (existing != null) return;
-        SharePointLocationEntity loc = new SharePointLocationEntity();
-        loc.setName("test-employee-loc-" + UUID.randomUUID());
-        loc.setSiteUrl("https://contoso.sharepoint.com/sites/Test");
-        loc.setDriveName("Documents");
-        loc.setFolderPath("Onboarding");
-        loc.setCompany(em.getReference(Company.class, companyUuid));
-        loc.setType(SharePointLocationType.EMPLOYEE);
-        loc.setIsActive(true);
-        loc.setDisplayOrder(1);
-        loc.persist();
     }
 
     private static File tempFileWithBytes(byte[] bytes, String filename) throws IOException {

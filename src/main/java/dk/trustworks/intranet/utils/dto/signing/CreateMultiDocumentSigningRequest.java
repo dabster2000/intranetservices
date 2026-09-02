@@ -7,9 +7,9 @@ import java.util.List;
  * All documents will be bundled into a single signing case where
  * each signer signs all documents in sequence.
  * <p>
- * SharePoint destination is resolved automatically from the employee's active
- * company and the {@code EMPLOYEE} location type — the same mechanism used by
- * template-based cases.
+ * At completion the signed documents are archived into the employee's
+ * document store — the same mechanism used by template-based cases, with
+ * {@code archiveCategory} standing in for the template's category.
  * </p>
  *
  * @param documents        List of documents to be signed (all required)

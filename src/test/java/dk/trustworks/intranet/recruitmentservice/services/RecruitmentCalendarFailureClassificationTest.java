@@ -3,9 +3,9 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
-import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper;
-import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
+import dk.trustworks.intranet.graph.GraphResponseExceptionMapper;
+import dk.trustworks.intranet.graph.GraphResponseExceptionMapper.GraphApiException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,11 +44,11 @@ class RecruitmentCalendarFailureClassificationTest {
                     + "\"client-request-id\":\"078c03a7-cc41-449a-bf8e-205e7c0db0c1\"}}}";
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
 
     @BeforeEach
     void setUp() {
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;
@@ -65,8 +65,8 @@ class RecruitmentCalendarFailureClassificationTest {
         // Call 1 (internal event) succeeds; call 2 (candidate event) is the
         // prod 504 — down to the empty message and the request-id.
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null))
-                .thenThrow(new SharePointException(
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null))
+                .thenThrow(new GraphApiException(
                         "Graph API error 504 Gateway Timeout: " + PROD_504_BODY,
                         504, null, "078c03a7-cc41-449a-bf8e-205e7c0db0c1"));
 
@@ -90,7 +90,7 @@ class RecruitmentCalendarFailureClassificationTest {
     @Test
     void internalCreate504_reportedRetryable_noCandidateAttempt() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenThrow(new SharePointException("Graph API error 504", 504));
+                .thenThrow(new GraphApiException("Graph API error 504", 504));
 
         RecruitmentCalendarService.CreateResult result =
                 service.createEvent(interview(), candidate(), null);
@@ -105,8 +105,8 @@ class RecruitmentCalendarFailureClassificationTest {
     @Test
     void candidateCreatePermanent403_classifiedNotRetryable() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null))
-                .thenThrow(new SharePointException(
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null))
+                .thenThrow(new GraphApiException(
                         "Graph API error 403: missing Calendars.ReadWrite", 403));
 
         RecruitmentCalendarService.CreateResult result =
@@ -121,8 +121,8 @@ class RecruitmentCalendarFailureClassificationTest {
     @Test
     void splitUpdate_candidateHalf504_reportedRetryable() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null))
-                .thenThrow(new SharePointException("Graph API error 504", 504));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null))
+                .thenThrow(new GraphApiException("Graph API error 504", 504));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-int");
         interview.setGraphCandidateEventId("evt-cand");
@@ -140,7 +140,7 @@ class RecruitmentCalendarFailureClassificationTest {
     @Test
     void splitUpdate_bothHalvesSucceed_reportsCandidateUpdated() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-int");
         interview.setGraphCandidateEventId("evt-cand");
@@ -160,7 +160,7 @@ class RecruitmentCalendarFailureClassificationTest {
     void classify_transientStatuses_areRetryable() {
         for (int status : new int[]{429, 500, 502, 503, 504, 408}) {
             assertTrue(RecruitmentCalendarService.classifyGraphFailure(
-                            new SharePointException("Graph API error " + status, status))
+                            new GraphApiException("Graph API error " + status, status))
                     .retryable(), status + " must be retryable");
         }
     }
@@ -169,7 +169,7 @@ class RecruitmentCalendarFailureClassificationTest {
     void classify_permanentStatuses_areNot() {
         for (int status : new int[]{400, 401, 403, 404, 409, 422}) {
             assertFalse(RecruitmentCalendarService.classifyGraphFailure(
-                            new SharePointException("Graph API error " + status, status))
+                            new GraphApiException("Graph API error " + status, status))
                     .retryable(), status + " must go to a person, not a retry loop");
         }
     }

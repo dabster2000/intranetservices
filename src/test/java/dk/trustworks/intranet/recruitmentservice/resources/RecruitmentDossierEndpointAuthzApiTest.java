@@ -718,8 +718,6 @@ class RecruitmentDossierEndpointAuthzApiTest {
                 .body("targetCompanyUuid", org.hamcrest.Matchers.nullValue())
                 .body("targetStartDate", org.hamcrest.Matchers.nullValue())
                 .body("notes", org.hamcrest.Matchers.nullValue())
-                .body("sharepointFolderPath", org.hamcrest.Matchers.nullValue())
-                .body("sharepointMoveStatus", org.hamcrest.Matchers.nullValue())
                 .body("latestRevision", org.hamcrest.Matchers.nullValue());
     }
 
@@ -732,8 +730,6 @@ class RecruitmentDossierEndpointAuthzApiTest {
                 .body("targetCompanyUuid", org.hamcrest.Matchers.equalTo(targetCompanyUuid))
                 .body("targetStartDate", org.hamcrest.Matchers.equalTo("2026-09-01"))
                 .body("notes", org.hamcrest.Matchers.equalTo("offer-only note"))
-                .body("sharepointFolderPath", org.hamcrest.Matchers.equalTo("/offers/private"))
-                .body("sharepointMoveStatus", org.hamcrest.Matchers.equalTo("PENDING"))
                 .body("latestRevision.kind", org.hamcrest.Matchers.equalTo("REVIEW_PDF"));
     }
 
@@ -1070,9 +1066,7 @@ class RecruitmentDossierEndpointAuthzApiTest {
                         UPDATE recruitment_candidates
                            SET target_company_uuid = :company,
                                target_start_date = '2026-09-01',
-                               notes = 'offer-only note',
-                               sharepoint_folder_path = '/offers/private',
-                               sharepoint_move_status = 'PENDING'
+                               notes = 'offer-only note'
                          WHERE uuid = :candidate
                         """)
                 .setParameter("company", targetCompanyUuid)

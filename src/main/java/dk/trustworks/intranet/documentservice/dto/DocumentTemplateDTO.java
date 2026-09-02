@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.documentservice.dto;
 
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import lombok.AllArgsConstructor;
@@ -27,12 +26,6 @@ public class DocumentTemplateDTO {
     private String description;
     private TemplateCategory category;
     private TemplateUsage templateUsage;
-
-    /**
-     * Determines which {@code sharepoint_locations} row receives signed documents
-     * for cases generated from this template, in combination with the user's company.
-     */
-    private SharePointLocationType sharepointType;
 
     private boolean active;
     private LocalDateTime createdAt;

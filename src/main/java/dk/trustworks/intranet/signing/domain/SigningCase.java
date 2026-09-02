@@ -192,45 +192,10 @@ public class SigningCase {
     @Builder.Default
     private Boolean availabilityUnlimited = false;
 
-    // --- SharePoint Auto-Upload Fields ---
-
-    /**
-     * Reference to {@code sharepoint_locations.uuid} for auto-upload of the signed document.
-     * <p>
-     * Resolved at signing-case creation time from the user's active company and the
-     * template's {@code sharepoint_type}. If null, no auto-upload is performed.
-     * </p>
-     */
-    @Column(name = "sharepoint_location_uuid", length = 36)
-    private String sharepointLocationUuid;
-
-    /**
-     * SharePoint upload status: PENDING, UPLOADED, FAILED.
-     * Tracks whether the signed document has been uploaded to SharePoint.
-     */
-    @Column(name = "sharepoint_upload_status", length = 50)
-    private String sharepointUploadStatus;
-
-    /**
-     * Error message if SharePoint upload failed.
-     */
-    @Column(name = "sharepoint_upload_error", columnDefinition = "TEXT")
-    private String sharepointUploadError;
-
-    /**
-     * Pipe-separated URLs of the uploaded files in SharePoint.
-     * For single-document cases, contains one URL.
-     * For multi-document cases, contains URLs separated by " | ".
-     */
-    @Column(name = "sharepoint_file_url", columnDefinition = "TEXT")
-    private String sharepointFileUrl;
-
     // --- S3 Archival Fields (employee-documents spec §6.5.1, V454) ---
 
     /**
-     * S3 archival state, replacing the four-state SharePoint upload
-     * tracking once the {@code employee_documents.writers.signing} toggle
-     * is ON: PENDING (not yet archived / retrying — some documents may
+     * S3 archival state of the signed documents: PENDING (not yet archived / retrying — some documents may
      * already have rows, idempotent per {@code uq_ed_signing}), ARCHIVED
      * (every document of the case has an {@code employee_documents} row /
      * recruitment cases: a {@code signed_pdfs_snapshot}), SKIPPED

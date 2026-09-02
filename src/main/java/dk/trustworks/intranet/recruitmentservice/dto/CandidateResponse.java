@@ -7,7 +7,6 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSecurityClearance;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
-import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -60,8 +59,6 @@ public record CandidateResponse(
         LocalDateTime art14Deadline,
         String declineReason,
         String convertedUserUuid,
-        String sharepointFolderPath,
-        SharePointMoveStatus sharepointMoveStatus,
         String createdByUseruuid,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
@@ -72,15 +69,13 @@ public record CandidateResponse(
     /**
      * Copy for viewers who may read the candidate profile but not the offer
      * dossier. Target-company/start facts, the dossier-era notes field,
-     * SharePoint hand-off state, and revision kind/version/timestamp must not
-     * cross that narrower boundary.
+     * and revision kind/version/timestamp must not cross that narrower
+     * boundary.
      */
     public CandidateResponse withoutDossierMetadata() {
         if (targetCompanyUuid == null
                 && targetStartDate == null
                 && notes == null
-                && sharepointFolderPath == null
-                && sharepointMoveStatus == null
                 && latestRevision == null) {
             return this;
         }
@@ -116,8 +111,6 @@ public record CandidateResponse(
                 art14Deadline,
                 declineReason,
                 convertedUserUuid,
-                null,
-                null,
                 createdByUseruuid,
                 createdAt,
                 updatedAt,

@@ -5,10 +5,10 @@ import java.util.List;
 /**
  * Request to create a new signing case.
  * <p>
- * Direct (non-template) signing cases do not configure a SharePoint upload
- * destination — auto-upload only happens for cases created via a template,
- * where the destination is resolved from the user's company and the template's
- * {@code sharepoint_type}.
+ * The signed documents of every case are archived into the case owner's
+ * employee document store at completion; the archival category comes from
+ * the template for template-based cases and from the sender's optional
+ * {@code archiveCategory} for direct ones.
  * </p>
  *
  * @param documentName Name/filename of the document (e.g., "contract.pdf")

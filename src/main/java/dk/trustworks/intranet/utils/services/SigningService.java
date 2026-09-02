@@ -2,8 +2,6 @@ package dk.trustworks.intranet.utils.services;
 
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.signing.domain.SigningCase;
@@ -85,32 +83,6 @@ public class SigningService {
 
     @Inject
     StatusService statusService;
-
-    /**
-     * Resolves the SharePoint location UUID for an auto-upload, given the employee
-     * the document is for and the template's {@link SharePointLocationType}.
-     * <p>
-     * Returns null when:
-     * <ul>
-     *   <li>The type is null or {@link SharePointLocationType#NONE}</li>
-     *   <li>The user has no active employment status / company</li>
-     *   <li>No SharePoint location is configured for that (company, type) pair</li>
-     * </ul>
-     * In all of those cases the signing case is created without auto-upload.
-     * </p>
-     *
-     * @param userUuid The employee's UUID (the user the document is "for")
-     * @param type     The template's SharePoint location type
-     * @return The resolved location UUID, or null if no upload should occur
-     */
-    public String resolveSharepointLocationUuid(String userUuid, SharePointLocationType type) {
-        if (type == null || type == SharePointLocationType.NONE) return null;
-        UserStatus currentStatus = statusService.getLatestEmploymentStatus(userUuid);
-        if (currentStatus == null || currentStatus.getCompany() == null) return null;
-        SharePointLocationEntity loc = SharePointLocationEntity.findByCompanyAndType(
-            currentStatus.getCompany().getUuid(), type);
-        return loc != null ? loc.getUuid() : null;
-    }
 
     /**
      * Creates a new signing case with the provided document and signers.
@@ -629,7 +601,7 @@ public class SigningService {
             // Map to our DTO format (live data from NextSign)
             SigningCaseStatus liveStatus = mapToSigningCaseStatus(caseKey, response);
 
-            // Merge with DB record for SharePoint fields and update DB with fresh data
+            // Merge with DB record (archive status, createdAt) and update DB with fresh data
             return mergeWithDbAndUpdate(caseKey, liveStatus);
 
         } catch (NextsignSigningService.NextsignCaseNotFoundException e) {
@@ -651,28 +623,20 @@ public class SigningService {
     }
 
     /**
-     * Merges live NextSign status with DB-stored fields (SharePoint data, createdAt)
+     * Merges live NextSign status with DB-stored fields (archive status, createdAt)
      * and updates the DB record with fresh data from NextSign.
      */
     @Transactional
     SigningCaseStatus mergeWithDbAndUpdate(String caseKey, SigningCaseStatus liveStatus) {
         var dbCaseOpt = signingCaseRepository.findByCaseKey(caseKey);
 
-        String sharepointLocationUuid = null;
-        String spUploadStatus = null;
-        String spUploadError = null;
-        String spFileUrl = null;
         String archiveStatus = null;
         LocalDateTime createdAt = liveStatus.createdAt();
 
         if (dbCaseOpt.isPresent()) {
             SigningCase dbCase = dbCaseOpt.get();
 
-            // Get SharePoint fields from DB (not available from NextSign API)
-            sharepointLocationUuid = dbCase.getSharepointLocationUuid();
-            spUploadStatus = dbCase.getSharepointUploadStatus();
-            spUploadError = dbCase.getSharepointUploadError();
-            spFileUrl = dbCase.getSharepointFileUrl();
+            // Archive status lives only in the DB (not available from NextSign API)
             archiveStatus = dbCase.getArchiveStatus();
 
             // Use DB createdAt if live data doesn't have it
@@ -700,7 +664,7 @@ public class SigningService {
             log.debugf("Updated DB record for case %s with live NextSign data", caseKey);
         }
 
-        // Return merged status with SharePoint fields from DB
+        // Return merged status with the archive status from DB
         return new SigningCaseStatus(
             liveStatus.caseKey(),
             liveStatus.status(),
@@ -709,10 +673,6 @@ public class SigningService {
             liveStatus.signers(),
             liveStatus.totalSigners(),
             liveStatus.completedSigners(),
-            sharepointLocationUuid,
-            spUploadStatus,
-            spUploadError,
-            spFileUrl,
             archiveStatus
         );
     }
@@ -911,10 +871,6 @@ public class SigningService {
                 Collections.emptyList(),
                 0,
                 0,
-                null, // sharepointLocationUuid
-                null, // sharepointUploadStatus
-                null, // sharepointUploadError
-                null, // sharepointFileUrl
                 null  // archiveStatus - no DB row consulted here
             );
         }
@@ -963,10 +919,6 @@ public class SigningService {
             signers,
             totalSigners,
             completedSigners,
-            null, // sharepointLocationUuid - not returned by NextSign API
-            null, // sharepointUploadStatus - not returned by NextSign API
-            null, // sharepointUploadError - not returned by NextSign API
-            null, // sharepointFileUrl - not returned by NextSign API
             null  // archiveStatus - not a NextSign concept; merged in by getStatus()
         );
     }
@@ -1000,7 +952,7 @@ public class SigningService {
         }
 
         // Derive from completion counts. Completion takes precedence over expiry
-        // so fully signed documents remain eligible for SharePoint upload.
+        // so fully signed documents remain eligible for archival.
         if (signingCompleted) {
             return "completed";
         }
@@ -1157,25 +1109,6 @@ public class SigningService {
     }
 
     /**
-     * Save minimal case record immediately after creation (async pattern).
-     * Status will be fetched later by background batch job.
-     *
-     * This method handles the NextSign race condition where newly created cases
-     * return 404 when fetched immediately. Instead of blocking, we save a minimal
-     * record and let the batch job fetch the full status asynchronously.
-     *
-     * @param caseKey NextSign case key
-     * @param userUuid User UUID who owns the case
-     * @param documentName Document name/title
-     * @param totalSigners Total number of signers (known from request)
-     * @param sharepointLocationUuid UUID of {@code sharepoint_locations} for SharePoint auto-upload (optional)
-     */
-    @Transactional
-    public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners, String sharepointLocationUuid) {
-        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, sharepointLocationUuid, null);
-    }
-
-    /**
      * Full variant carrying the source template UUID (employee-documents
      * spec §6.5.1): persisted on the case so the S3 archival step can map
      * the template's {@code TemplateCategory} to an employee-document
@@ -1183,8 +1116,8 @@ public class SigningService {
      */
     @Transactional
     public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners,
-                                String sharepointLocationUuid, String templateUuid) {
-        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, sharepointLocationUuid, templateUuid, null);
+                                String templateUuid) {
+        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, templateUuid, null);
     }
 
     /**
@@ -1196,9 +1129,9 @@ public class SigningService {
      */
     @Transactional
     public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners,
-                                String sharepointLocationUuid, String templateUuid, String archiveCategory) {
-        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, sharepointLocationUuid: %s, templateUuid: %s, archiveCategory: %s)",
-            caseKey, totalSigners, sharepointLocationUuid, templateUuid, archiveCategory);
+                                String templateUuid, String archiveCategory) {
+        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, templateUuid: %s, archiveCategory: %s)",
+            caseKey, totalSigners, templateUuid, archiveCategory);
 
         SigningCase entity = new SigningCase();
         entity.setTemplateUuid(templateUuid);
@@ -1211,13 +1144,6 @@ public class SigningService {
         entity.setCreatedAt(LocalDateTime.now());
         entity.setTotalSigners(totalSigners);
         entity.setCompletedSigners(0); // No one has signed yet
-
-        // Set SharePoint location UUID for auto-upload
-        if (sharepointLocationUuid != null && !sharepointLocationUuid.isBlank()) {
-            entity.setSharepointLocationUuid(sharepointLocationUuid);
-            entity.setSharepointUploadStatus("PENDING");
-            log.infof("SharePoint location configured for case %s: %s", caseKey, sharepointLocationUuid);
-        }
 
         signingCaseRepository.persist(entity);
 
@@ -1464,10 +1390,6 @@ public class SigningService {
             List.of(), // Signers loaded on-demand when needed via getStatus()
             entity.getTotalSigners() != null ? entity.getTotalSigners() : 0,
             entity.getCompletedSigners() != null ? entity.getCompletedSigners() : 0,
-            entity.getSharepointLocationUuid(),
-            entity.getSharepointUploadStatus(),
-            entity.getSharepointUploadError(),
-            entity.getSharepointFileUrl(),
             entity.getArchiveStatus()
         );
     }
@@ -1517,10 +1439,6 @@ public class SigningService {
                 List.of(), // Signers loaded on-demand
                 sc.getTotalSigners() != null ? sc.getTotalSigners() : 0,
                 sc.getCompletedSigners() != null ? sc.getCompletedSigners() : 0,
-                sc.getSharepointLocationUuid(),
-                sc.getSharepointUploadStatus(),
-                sc.getSharepointUploadError(),
-                sc.getSharepointFileUrl(),
                 sc.getUserUuid(),
                 userNameCache.getOrDefault(sc.getUserUuid(), "Unknown"),
                 null, // templateName no longer derivable from signing case (link removed in refactor)
@@ -1649,51 +1567,6 @@ public class SigningService {
 
         log.infof("Admin sync completed. Total synced: %d across %d users", totalSynced, distinctUserUuids.size());
         return totalSynced;
-    }
-
-    /**
-     * Retries a single failed SharePoint upload by resetting its status.
-     * The batch job will pick it up on the next 5-minute run.
-     *
-     * @param caseKey NextSign case key identifying the signing case
-     * @throws SigningException if the case is not found
-     */
-    @Transactional
-    public void retryFailedSharePointUpload(String caseKey) {
-        log.infof("Admin: retrying SharePoint upload for case %s", caseKey);
-
-        SigningCase sc = signingCaseRepository.findByCaseKey(caseKey)
-            .orElseThrow(() -> new SigningException("Case not found: " + caseKey));
-
-        sc.setSharepointUploadStatus("PENDING");
-        sc.setSharepointUploadError(null);
-        sc.setRetryCount(0);
-        signingCaseRepository.persist(sc);
-
-        log.infof("Reset SharePoint upload status to PENDING for case %s", caseKey);
-    }
-
-    /**
-     * Retries ALL failed SharePoint uploads by resetting their status.
-     * The batch job will pick them up on the next 5-minute run.
-     *
-     * @return Number of cases reset for retry
-     */
-    @Transactional
-    public int retryAllFailedSharePointUploads() {
-        log.info("Admin: retrying all failed SharePoint uploads");
-
-        List<SigningCase> failedCases = signingCaseRepository.findBySharepointUploadStatus("FAILED");
-
-        for (SigningCase sc : failedCases) {
-            sc.setSharepointUploadStatus("PENDING");
-            sc.setSharepointUploadError(null);
-            sc.setRetryCount(0);
-            signingCaseRepository.persist(sc);
-        }
-
-        log.infof("Reset %d failed SharePoint uploads to PENDING", failedCases.size());
-        return failedCases.size();
     }
 
     /**

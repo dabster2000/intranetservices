@@ -97,7 +97,7 @@ public class EmployeeAgreement extends PanacheEntityBase {
     @Column(name = "signing_case_key", length = 255)
     private String signingCaseKey;
 
-    /** Signed PDF (SharePoint/S3); set by backfill/manual entry. */
+    /** Optional link to the signed PDF; set by manual entry (backfilled rows link through the employee document). */
     @Column(name = "document_url", length = 1000)
     private String documentUrl;
 

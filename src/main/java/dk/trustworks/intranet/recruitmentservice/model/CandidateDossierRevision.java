@@ -88,22 +88,11 @@ public class CandidateDossierRevision extends PanacheEntityBase {
     private String generatedPdfsSnapshot;
 
     /**
-     * When the S3-stored generated PDFs may be reaped after the parent
-     * candidate has been promoted. Set by the promote flow when the
-     * SharePoint copy succeeds; nulled by {@code S3RetentionCleanupBatchlet}
-     * after the S3 deletes succeed. Mutable — unlike snapshot columns,
-     * lifecycle metadata may evolve post-persist.
-     */
-    @Column(name = "s3_retention_until")
-    private LocalDateTime s3RetentionUntil;
-
-    /**
      * JSON array of {@code {filename, fileUuid}} entries for the SIGNED
      * PDFs archived to candidate staging when the linked signing case
      * completes (employee-documents spec §6.5.2 — closes the NextSign
      * durability gap; mirror of {@link #generatedPdfsSnapshot}). Written
-     * by the archival step of the nextsign-status-sync batchlet while the
-     * {@code employee_documents.writers.signing} toggle is ON; mutable
+     * by the archival step of the nextsign-status-sync batchlet; mutable
      * because it is set after the revision row was created.
      */
     @JdbcTypeCode(SqlTypes.JSON)

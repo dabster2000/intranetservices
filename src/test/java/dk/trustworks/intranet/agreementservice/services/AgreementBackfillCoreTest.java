@@ -71,7 +71,7 @@ class AgreementBackfillCoreTest {
     void corpusDocument_rejectsNonPdfArchivedZeroByteAndOversize() {
         assertFalse(AgreementBackfillWalkerService.isCorpusDocument(doc("CV.docx",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 100_000, false)));
-        // Archived replaces the SharePoint "Arkiv" folders — out of corpus.
+        // Archived replaced the legacy "Arkiv" folders — out of corpus.
         assertFalse(AgreementBackfillWalkerService.isCorpusDocument(
                 doc("kontrakt.pdf", "application/pdf", 100_000, true)));
         // Zero-byte files are the false-duplicate trap from the migration.

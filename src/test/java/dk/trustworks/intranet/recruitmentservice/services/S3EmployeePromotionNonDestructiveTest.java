@@ -43,13 +43,12 @@ class S3EmployeePromotionNonDestructiveTest {
     }
 
     /**
-     * The subtler regression. Stamping {@code s3_retention_until} on the
+     * The subtler regression. Stamping a retention deadline on the
      * candidate's revisions looks like tidy lifecycle management, and the
-     * legacy SharePoint path does exactly that — but
-     * {@code S3RetentionCleanupBatchlet.reapRevisions} then calls the same
-     * {@code S3FileService.delete} on every ref in the snapshot. Under the
-     * signed-only rule those drafts have no copy anywhere else, so the stamp
-     * would delete them outright thirty days later.
+     * retired copy pipeline did exactly that — its reaper then called the
+     * same {@code S3FileService.delete} on every ref in the snapshot. Under
+     * the signed-only rule those drafts have no copy anywhere else, so such
+     * a stamp would delete them outright thirty days later.
      */
     @Test
     void thePromotionServiceArmsNoRetentionClock() {

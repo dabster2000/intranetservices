@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.documentservice.model;
 
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -51,15 +50,6 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @NotNull(message = "Template usage is required")
     private TemplateUsage templateUsage = TemplateUsage.RECRUITMENT_DOSSIER;
-
-    /**
-     * Determines which {@code sharepoint_locations} row receives the signed document
-     * for this template. The location is resolved at signing-case creation time using
-     * the user's active company and this type.
-     */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "sharepoint_type", nullable = false)
-    private SharePointLocationType sharepointType = SharePointLocationType.EMPLOYEE;
 
     @Column(nullable = false)
     private boolean active = true;
