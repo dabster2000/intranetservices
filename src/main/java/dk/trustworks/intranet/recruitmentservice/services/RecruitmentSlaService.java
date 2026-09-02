@@ -2,7 +2,10 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPendingEmail;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEvent;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventBuilder;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventRecorder;
@@ -176,15 +179,15 @@ public class RecruitmentSlaService {
 
     /** Result of one sweep, for logs and the batchlet exit status. */
     public record SweepSummary(boolean enabled, int scorecardNudges, int debriefNudges,
-                               int idleNudges, int failures) {
+                               int idleNudges, int emailReviewNudges, int failures) {
 
         @Override
         public String toString() {
             if (!enabled) {
                 return "sla-sweep[disabled]";
             }
-            return "sla-sweep[scorecards=%d, debriefs=%d, idle=%d%s]"
-                    .formatted(scorecardNudges, debriefNudges, idleNudges,
+            return "sla-sweep[scorecards=%d, debriefs=%d, idle=%d, emailReview=%d%s]"
+                    .formatted(scorecardNudges, debriefNudges, idleNudges, emailReviewNudges,
                             failures > 0 ? ", failures=" + failures : "");
         }
     }
@@ -200,14 +203,15 @@ public class RecruitmentSlaService {
         // (the RecruitmentFeatureFlag no-cache contract).
         if (!inTx(featureFlag::isInterviewsEnabled)) {
             log.debug("recruitment-sla-sweep skipped: recruitment.interviews.enabled=false");
-            return new SweepSummary(false, 0, 0, 0, 0);
+            return new SweepSummary(false, 0, 0, 0, 0, 0);
         }
         Counters counters = new Counters();
         sweepOverdueScorecards(counters);
         sweepStalledDebriefs(counters);
         sweepIdleCandidates(counters);
+        sweepUnattendedEmailReview(counters);
         return new SweepSummary(true, counters.scorecards, counters.debriefs,
-                counters.idle, counters.failures);
+                counters.idle, counters.emailReview, counters.failures);
     }
 
     /**
@@ -241,7 +245,8 @@ public class RecruitmentSlaService {
             RecruitmentEventType.SCORECARD_NUDGED,
             RecruitmentEventType.SCORECARD_PROMPTED,
             RecruitmentEventType.DEBRIEF_STALLED_NUDGED,
-            RecruitmentEventType.CANDIDATE_IDLE_NUDGED);
+            RecruitmentEventType.CANDIDATE_IDLE_NUDGED,
+            RecruitmentEventType.EMAIL_REVIEW_STALE_NUDGED);
 
     private static final int QUIET_HOURS_END = 7;
     private static final int QUIET_HOURS_START = 20;
@@ -250,6 +255,7 @@ public class RecruitmentSlaService {
         int scorecards;
         int debriefs;
         int idle;
+        int emailReview;
         int failures;
     }
 
@@ -745,6 +751,125 @@ public class RecruitmentSlaService {
      * and the recipient dropped from the notified list — with zero
      * successes the caller records nothing, so the next sweep retries.
      */
+    /**
+     * The candidate-email review queue has gone unattended (2026-09-02).
+     * <p>
+     * The fourth sweep, and the only one about a QUEUE rather than a record.
+     * It exists because review-first failed silently once: in August 2026
+     * four rejection letters were queued, none was approved, and the
+     * templates were switched off — while the acknowledgement letter kept
+     * promising every applicant an answer within four working days. The
+     * queue had no clock on it, so nothing ever said it had stopped moving.
+     * <p>
+     * Shape, deliberately unlike the other three:
+     * <ul>
+     *   <li><b>One aggregate DM, not one per email.</b> The failure mode is
+     *       volume; a nudge per queued letter would reproduce it in Slack.</li>
+     *   <li><b>Recipient-keyed idempotency</b> ({@code DPO_DIGEST_SENT}'s
+     *       shape, not {@code DEBRIEF_STALLED_NUDGED}'s): re-pinged at most
+     *       once per threshold window per person.</li>
+     *   <li><b>No candidate named</b>, in the message or the event. Every
+     *       recruiter-tier holder gets this DM, and the oldest queued letter
+     *       may belong to a candidate some of them cannot read.</li>
+     *   <li><b>HR and RECRUITMENT only.</b> ADMIN is a platform role, not a
+     *       hiring one — DMing every admin about the recruiter queue is how
+     *       a useful nudge becomes noise people mute.</li>
+     * </ul>
+     */
+    private void sweepUnattendedEmailReview(Counters counters) {
+        int thresholdHours = inTx(thresholds::emailReviewStaleHours);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime staleBefore = now.minusHours(thresholdHours);
+
+        List<RecruitmentPendingEmail> pending = inTx(() -> RecruitmentPendingEmail.list(
+                "status = ?1", RecruitmentPendingEmailStatus.PENDING));
+        List<RecruitmentPendingEmail> stale = pending.stream()
+                .filter(row -> row.getCreatedAt() != null
+                        && row.getCreatedAt().isBefore(staleBefore))
+                .toList();
+        if (stale.isEmpty()) {
+            return;
+        }
+        LocalDateTime oldest = stale.stream()
+                .map(RecruitmentPendingEmail::getCreatedAt)
+                .min(LocalDateTime::compareTo)
+                .orElse(staleBefore);
+        long oldestHours = ChronoUnit.HOURS.between(oldest, now);
+
+        List<User> recipients = inTx(this::recruiterTierHolders);
+        if (recipients.isEmpty()) {
+            log.warn("SLA sweep: candidate emails are waiting for review but no user holds "
+                    + "HR or RECRUITMENT — nothing to nudge");
+            return;
+        }
+        String message = emailReviewNudgeText(stale.size(), oldestHours);
+        for (User recipient : recipients) {
+            LocalDateTime lastNudge = inTx(() -> newestEmailReviewNudgeFor(recipient.getUuid()));
+            if (lastNudge != null && lastNudge.isAfter(now.minusHours(thresholdHours))) {
+                continue;
+            }
+            List<String> notified = dmAll(List.of(recipient.getUuid()), message);
+            if (notified.isEmpty()) {
+                continue; // not linked to Slack — no bookkeeping, next sweep retries
+            }
+            boolean recorded = record(counters, () ->
+                    eventRecorder.record(RecruitmentEventBuilder
+                            .event(RecruitmentEventType.EMAIL_REVIEW_STALE_NUDGED)
+                            .actorScheduler()
+                            .payload("recipient_user_uuid", recipient.getUuid())
+                            .payload("queued_count", stale.size())
+                            .payload("oldest_hours", oldestHours)));
+            if (recorded) {
+                counters.emailReview++;
+            }
+        }
+    }
+
+    /** HR and RECRUITMENT holders — the people who can approve a queued letter. */
+    private List<User> recruiterTierHolders() {
+        Set<String> userUuids = new LinkedHashSet<>();
+        for (String role : List.of("HR", "RECRUITMENT")) {
+            Role.<Role>list("role", role).forEach(r -> userUuids.add(r.getUseruuid()));
+        }
+        List<User> users = new ArrayList<>();
+        for (String uuid : userUuids) {
+            User user = User.findById(uuid);
+            if (user != null) {
+                users.add(user);
+            }
+        }
+        return users;
+    }
+
+    private LocalDateTime newestEmailReviewNudgeFor(String recipientUuid) {
+        return RecruitmentEvent.<RecruitmentEvent>find(
+                        "eventType = ?1 order by occurredAt desc",
+                        RecruitmentEventType.EMAIL_REVIEW_STALE_NUDGED)
+                .stream()
+                .filter(e -> recipientUuid.equals(parse(e.getPayload()).get("recipient_user_uuid")))
+                .map(RecruitmentEvent::getOccurredAt)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Deliberately count-only. Naming the candidate whose letter is oldest
+     * would put them in front of every recruiter-tier holder, including any
+     * who cannot read that candidate.
+     */
+    static String emailReviewNudgeText(int queued, long oldestHours) {
+        String age = oldestHours >= 48
+                ? (oldestHours / 24) + " dage"
+                : oldestHours + " timer";
+        String subject = queued == 1
+                ? "1 kandidatmail venter"
+                : queued + " kandidatmails venter";
+        return ":email: *%s på godkendelse* — den ældste har ventet %s.\n"
+                .formatted(subject, age)
+                + "Ingen af dem er sendt endnu. Godkend eller afvis dem på "
+                + "<https://intra.trustworks.dk/recruitment|Rekruttering>.";
+    }
+
     private List<String> dmAll(List<String> userUuids, String message) {
         List<String> notified = new ArrayList<>(userUuids.size());
         for (String userUuid : userUuids) {
