@@ -72,14 +72,26 @@ public class RecruitmentReferrerBackfillResource {
      *               nothing: the destructive-looking call should be the one
      *               you have to type out, not the one you get by forgetting a
      *               parameter. Pass {@code ?dryRun=false} to apply.
+     * @param useAi  defaults to FALSE. Turns on the model's name-extraction
+     *               leg for answers the deterministic tiers could not read —
+     *               in practice, the ones naming several people in prose.
+     *               Deliberately opt-in and deliberately NOT the same switch
+     *               as the public form's
+     *               {@code …apply.referrer-ai-extraction.enabled}, which is
+     *               off because an anonymous caller can force that one to
+     *               spend money. Here the caller is a named administrator
+     *               sweeping a bounded set of rows, so the cost is knowable
+     *               and the abuse case does not exist.
      */
     @POST
-    public Response run(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun) {
+    public Response run(@QueryParam("dryRun") @DefaultValue("true") boolean dryRun,
+                        @QueryParam("useAi") @DefaultValue("false") boolean useAi) {
         UUID actor = requireAdmin();
         PublicApplyReferrerBackfillService.BackfillReport report =
-                backfillService.backfill(dryRun, actor);
-        log.infof("Referrer backfill requested by %s (dryRun=%s): %d scanned, %d matched",
-                actor, dryRun, report.scanned(), report.matched());
+                backfillService.backfill(dryRun, useAi, actor);
+        log.infof("Referrer backfill requested by %s (dryRun=%s, useAi=%s): "
+                        + "%d scanned, %d matched",
+                actor, dryRun, useAi, report.scanned(), report.matched());
         return Response.ok(report).build();
     }
 

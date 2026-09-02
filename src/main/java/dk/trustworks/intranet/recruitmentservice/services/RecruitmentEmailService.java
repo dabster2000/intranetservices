@@ -19,6 +19,9 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCop
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentRejectionReason;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import dk.trustworks.intranet.services.AppSettingService;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,6 +34,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -67,6 +71,27 @@ public class RecruitmentEmailService {
     /** Receipt when a repeat submission stored documents onto an open application (remediation F7). */
     public static final String KEY_DUPLICATE_APPLICATION_NOTICE = "DUPLICATE_APPLICATION_NOTICE";
     public static final String STAGE_KEY_PREFIX = "STAGE_";
+
+    /**
+     * Prefix of every rejection key. The two generic keys above are the
+     * bottom rung of {@link #rejectionKeyChain}; above them sit the
+     * reason-coded keys {@code REJECTION_<reason>} and
+     * {@code REJECTION_<reason>_<bucket>}.
+     */
+    public static final String REJECTION_KEY_PREFIX = "REJECTION_";
+
+    /**
+     * The generic talent-pool letter ("not now — may we keep you on file"),
+     * fired by {@code CANDIDATE_POOLED}. Above it sit the bucket-coded keys
+     * {@code POOLED_<CandidatePoolStatus>} — a silver medalist who lost to
+     * another hire deserves different words from a cold prospect.
+     */
+    public static final String KEY_POOLED = "POOLED";
+    public static final String POOLED_KEY_PREFIX = "POOLED_";
+
+    /** Stage bucket appended to a reason-coded rejection key. */
+    private static final String BUCKET_SCREENING = "SCREENING";
+    private static final String BUCKET_POST_INTERVIEW = "POST_INTERVIEW";
 
     /**
      * The candidate's own Outlook-invitation body, read by
@@ -247,14 +272,137 @@ public class RecruitmentEmailService {
                 .firstResult();
     }
 
+    /**
+     * The first template in {@code keys} that exists and is active — the
+     * fall-through the candidate mailer resolves a trigger with. Order is
+     * most-specific-first; an empty list (or no active row anywhere in it)
+     * answers null, which the mailer reads as "send nothing", exactly as a
+     * single missing template always has.
+     */
+    public RecruitmentEmailTemplate findFirstActiveByKey(List<String> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return null;
+        }
+        for (String key : keys) {
+            RecruitmentEmailTemplate template = findActiveByKey(key);
+            if (template != null) {
+                return template;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Rejection template keys to try, most specific first (2026-09-02).
+     * <p>
+     * The reason code has been mandatory on every rejection since P4 and
+     * rides in the {@code APPLICATION_REJECTED} payload beside the stage —
+     * it was simply never read when choosing the letter, so one generic
+     * letter had to cover "too junior", "wanted too much" and "we hired
+     * someone else" alike. The chain lets TA answer any of those
+     * specifically without a deploy, and falls back to the generic letter
+     * (the pre-2026-09-02 behaviour, byte for byte) whenever no specific
+     * one is configured:
+     * <ol>
+     *   <li>{@code REJECTION_<reason>_<bucket>} — reason and stage together</li>
+     *   <li>{@code REJECTION_<reason>} — reason alone</li>
+     *   <li>{@code REJECTION_SCREENING} / {@code REJECTION_POST_INTERVIEW}</li>
+     * </ol>
+     * The bucket is the same SCREENING-vs-later split the generic keys have
+     * always used, so "too junior at screening" and "too junior after two
+     * interviews" can differ without inventing a second stage vocabulary.
+     *
+     * @param reasonCode the persisted {@link RecruitmentRejectionReason}
+     *                   name; null/blank yields the generic rung alone
+     * @param fromStage  the {@link RecruitmentStage} name the rejection came
+     *                   from; anything but SCREENING counts as post-interview
+     */
+    public static List<String> rejectionKeyChain(String reasonCode, String fromStage) {
+        boolean screening = RecruitmentStage.SCREENING.name().equals(fromStage);
+        String generic = screening ? KEY_REJECTION_SCREENING : KEY_REJECTION_POST_INTERVIEW;
+        String reason = reasonCode == null ? "" : reasonCode.trim();
+        if (reason.isEmpty()) {
+            return List.of(generic);
+        }
+        String bucket = screening ? BUCKET_SCREENING : BUCKET_POST_INTERVIEW;
+        // A LinkedHashSet, not a List: should a reason code ever be named
+        // SCREENING, rung 2 would collide with the generic rung and the
+        // mailer would look the same row up twice.
+        return List.copyOf(new LinkedHashSet<>(List.of(
+                REJECTION_KEY_PREFIX + reason + "_" + bucket,
+                REJECTION_KEY_PREFIX + reason,
+                generic)));
+    }
+
+    /**
+     * Talent-pool template keys to try, most specific first: the bucket-coded
+     * {@code POOLED_<status>} then the generic {@code POOLED}.
+     * <p>
+     * This is the trigger unsolicited candidates never had. An unsolicited
+     * submission creates no application ({@code PublicApplyService}), so
+     * {@code APPLICATION_REJECTED} can never fire for one and there was no
+     * path in the product that told them anything after the receipt.
+     * Pooling is the verb they do have.
+     */
+    public static List<String> pooledKeyChain(String poolStatus) {
+        String status = poolStatus == null ? "" : poolStatus.trim();
+        if (status.isEmpty()) {
+            return List.of(KEY_POOLED);
+        }
+        return List.copyOf(new LinkedHashSet<>(List.of(
+                POOLED_KEY_PREFIX + status, KEY_POOLED)));
+    }
+
     /** Reserved reactor-trigger keys — the UI's trigger picker mirrors this set. */
     public static boolean isTriggerKey(String key) {
+        if (key == null) {
+            return false;
+        }
         return KEY_ACKNOWLEDGEMENT.equals(key)
-                || KEY_REJECTION_SCREENING.equals(key)
-                || KEY_REJECTION_POST_INTERVIEW.equals(key)
                 || KEY_UNSOLICITED_ACKNOWLEDGEMENT.equals(key)
                 || KEY_DUPLICATE_APPLICATION_NOTICE.equals(key)
-                || key != null && key.startsWith(STAGE_KEY_PREFIX);
+                || key.startsWith(STAGE_KEY_PREFIX)
+                || isRejectionTriggerKey(key)
+                || isPooledTriggerKey(key);
+    }
+
+    /**
+     * Derived from the enums rather than a prefix test on purpose: a
+     * {@code REJECTION_} key nothing can ever produce is a manual-send
+     * template, and saying otherwise would put a "sent automatically"
+     * explainer on a row that never sends.
+     */
+    private static boolean isRejectionTriggerKey(String key) {
+        if (KEY_REJECTION_SCREENING.equals(key) || KEY_REJECTION_POST_INTERVIEW.equals(key)) {
+            return true;
+        }
+        if (!key.startsWith(REJECTION_KEY_PREFIX)) {
+            return false;
+        }
+        for (RecruitmentRejectionReason reason : RecruitmentRejectionReason.values()) {
+            String base = REJECTION_KEY_PREFIX + reason.name();
+            if (key.equals(base)
+                    || key.equals(base + "_" + BUCKET_SCREENING)
+                    || key.equals(base + "_" + BUCKET_POST_INTERVIEW)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isPooledTriggerKey(String key) {
+        if (KEY_POOLED.equals(key)) {
+            return true;
+        }
+        if (!key.startsWith(POOLED_KEY_PREFIX)) {
+            return false;
+        }
+        for (CandidatePoolStatus status : CandidatePoolStatus.values()) {
+            if (key.equals(POOLED_KEY_PREFIX + status.name())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
+import dk.trustworks.intranet.recruitmentservice.airtable.AirtableReferrerMatcher;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -81,5 +82,59 @@ class PublicApplyReferrerBackfillServiceTest {
         // If this constant ever drifts from the form's key the backfill goes
         // quietly zero-match, which looks exactly like "nothing to do".
         assertEquals("referenceName", PublicApplyReferrerBackfillService.REFERENCE_NAME_KEY);
+    }
+
+    // ---- The multi-name case the AI leg exists for ----------------------
+    // A real production answer named three colleagues in one field. The
+    // deterministic tiers read it as one name and match nothing; the AI leg
+    // splits it. What must NOT happen is linking to whichever one comes back
+    // first — referred_by_user_uuid holds one person, and picking arbitrarily
+    // asserts a relationship the applicant never singled out.
+
+    private static final List<AirtableReferrerMatcher.DirectoryUser> DIRECTORY = List.of(
+            new AirtableReferrerMatcher.DirectoryUser("u-kasper", "Kasper Thorhauge", "Grønbæk"),
+            new AirtableReferrerMatcher.DirectoryUser("u-simon", "Simon Brandt", "Sørensen"),
+            new AirtableReferrerMatcher.DirectoryUser("u-mia", "Mia", "Jørgensen"));
+
+    @Test
+    void theWholeMultiNameStringMatchesNobodyDeterministically() {
+        assertNull(AirtableReferrerMatcher.deterministicMatch(
+                        "Kasper Thorhauge Grønbæk, Simon Branddt Sørensen, Mia Jørgensen",
+                        DIRECTORY),
+                "read as one name it is nobody — which is why the sweep missed it");
+    }
+
+    @Test
+    void eachExtractedNameOnItsOwnDoesMatch() {
+        assertEquals("u-kasper", AirtableReferrerMatcher.deterministicMatch(
+                "Kasper Thorhauge Grønbæk", DIRECTORY));
+        assertEquals("u-mia", AirtableReferrerMatcher.deterministicMatch(
+                "Mia Jørgensen", DIRECTORY));
+    }
+
+    @Test
+    void aMisspeltNameStillResolvesOnTheFirstAndLastToken() {
+        // "Branddt" — the token match is first+last, so the mangled middle
+        // name does not cost the link. This is why extraction helps here.
+        assertEquals("u-simon", AirtableReferrerMatcher.deterministicMatch(
+                "Simon Branddt Sørensen", DIRECTORY));
+    }
+
+    @Test
+    void aSingleNameTypoInTheLastTokenIsStillNotRecoverable() {
+        // Honest limit: the model returns names as written, so "Marquad" for
+        // "Marquard" fails the token match too. The AI leg fixes multi-name
+        // answers, NOT spelling.
+        List<AirtableReferrerMatcher.DirectoryUser> dir = List.of(
+                new AirtableReferrerMatcher.DirectoryUser("u-n", "Nicolaj", "Marquard"));
+        assertNull(AirtableReferrerMatcher.deterministicMatch("Nicolaj Marquad", dir));
+    }
+
+    @Test
+    void ambiguityIsStillNeverGuessed() {
+        List<AirtableReferrerMatcher.DirectoryUser> twoLarses = List.of(
+                new AirtableReferrerMatcher.DirectoryUser("u-a", "Lars", "Hansen"),
+                new AirtableReferrerMatcher.DirectoryUser("u-b", "Lars", "Hansen"));
+        assertNull(AirtableReferrerMatcher.deterministicMatch("Lars Hansen", twoLarses));
     }
 }

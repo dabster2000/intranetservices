@@ -103,6 +103,9 @@ public class OnboardingUploadService {
     @Inject
     OnboardingDocumentValidationService documentValidationService;
 
+    @Inject
+    OnboardingAttemptRecorder attemptRecorder;
+
     @ConfigProperty(name = "recruitment.hr.slack.dossier-base-url",
             defaultValue = "https://intra.trustworks.dk/recruitment/candidates")
     String dossierBaseUrl;
@@ -122,6 +125,27 @@ public class OnboardingUploadService {
                                                    String filename,
                                                    String contentType,
                                                    byte[] bytes) {
+        return handleUpload(tokenUuid, type, filename, contentType, bytes, false);
+    }
+
+    /**
+     * As {@link #handleUpload(String, OnboardingDocumentType, String, String, byte[])},
+     * with the candidate's "submit anyway" request.
+     *
+     * <p>{@code forceReview} is a <b>request</b>, never a grant. It is honoured
+     * only when {@link OnboardingAttemptRecorder} can show that this service
+     * itself already rejected this {@code (token, type)} at least
+     * {@link OnboardingAttemptRecorder#REJECTIONS_BEFORE_OVERRIDE} times.
+     * Unbacked, it is silently ignored and the AI gate runs as usual — the
+     * endpoint is {@code @PermitAll}, so a flag the client can simply assert
+     * would otherwise be a one-request bypass of document validation.</p>
+     */
+    public OnboardingValidateResponse handleUpload(String tokenUuid,
+                                                   OnboardingDocumentType type,
+                                                   String filename,
+                                                   String contentType,
+                                                   byte[] bytes,
+                                                   boolean forceReview) {
         // ── 1. Read-only validation (no DB writes, no transaction) ───────
         OnboardingUploadToken token = OnboardingUploadToken.findById(tokenUuid);
         if (token == null || token.isExpired()) {
@@ -157,15 +181,46 @@ public class OnboardingUploadService {
             throw badRequest(OnboardingErrorCodes.UNSUPPORTED_MEDIA_TYPE);
         }
 
-        // ── 1b. AI validation gate. Synchronous; fail-closed. ────────────
+        // ── 1b. AI validation gate. Synchronous; fail-closed, but no
+        //        longer a dead end — see the submit-anyway path below.
         // Runs after structural checks but before any storage write so
         // rejected documents never reach S3.
-        OnboardingDocumentValidationService.ValidationDecision aiDecision =
-                documentValidationService.validate(type, bytes, normalisedContentType);
-        if (!aiDecision.approved()) {
-            log.infof("Onboarding upload AI-rejected token=%s type=%s reasonLen=%d",
-                    tokenUuid, type, aiDecision.reason() == null ? 0 : aiDecision.reason().length());
-            throw aiRejected(sanitiseReasonForBody(aiDecision.reason()));
+        //
+        // The escape hatch is checked FIRST: a candidate the gate has already
+        // refused twice has earned the right to store the document for a
+        // human to look at, and asking the model a third time would only cost
+        // another 3–8 s to arrive at the same refusal.
+        int priorRejections = forceReview ? attemptRecorder.rejectionCount(tokenUuid, type) : 0;
+        boolean manualReview =
+                priorRejections >= OnboardingAttemptRecorder.REJECTIONS_BEFORE_OVERRIDE;
+
+        if (forceReview && !manualReview) {
+            // Flag asserted without the server-side rejections to back it.
+            // Fall through to normal validation rather than 4xx: an honest
+            // client cannot produce this, and a dishonest one gains nothing.
+            log.warnf("Onboarding submit-anyway ignored (recordedRejections=%d) token=%s type=%s",
+                    priorRejections, tokenUuid, type);
+        }
+
+        if (manualReview) {
+            log.warnf("Onboarding upload bypassing AI gate after %d rejections token=%s type=%s "
+                            + "— stored for manual HR review",
+                    priorRejections, tokenUuid, type);
+        } else {
+            OnboardingDocumentValidationService.ValidationDecision aiDecision =
+                    documentValidationService.validate(type, bytes, normalisedContentType);
+            if (!aiDecision.approved()) {
+                int rejections = attemptRecorder.recordRejection(tokenUuid, type);
+                boolean canSubmitAnyway = rejections >= OnboardingAttemptRecorder.REJECTIONS_BEFORE_OVERRIDE;
+                // rejections=N is the number this incident lacked: a run of
+                // refusals on one token is a stuck candidate, and a run across
+                // many tokens is a broken gate. Both are now countable.
+                log.infof("Onboarding upload AI-rejected token=%s type=%s rejections=%d "
+                                + "canSubmitAnyway=%s reasonLen=%d",
+                        tokenUuid, type, rejections, canSubmitAnyway,
+                        aiDecision.reason() == null ? 0 : aiDecision.reason().length());
+                throw aiRejected(sanitiseReasonForBody(aiDecision.reason()), canSubmitAnyway);
+            }
         }
 
         // Sanitise filename — never trust public input as a path component.
@@ -197,6 +252,7 @@ public class OnboardingUploadService {
         row.setOriginalFilename(safeFilename);
         row.setContentType(normalisedContentType);
         row.setFileSizeBytes(bytes.length);
+        row.setManualReviewRequired(manualReview);
 
         // Storage handles for compensating delete on persist failure.
         String uploadedS3FileUuid = null;
@@ -408,8 +464,12 @@ public class OnboardingUploadService {
         return new String(Character.toChars(cp)).toUpperCase(Locale.ROOT);
     }
 
-    /** Human label for the identity-document type (used as the document label). */
-    static String humanDocumentTypeLabel(OnboardingDocumentType type) {
+    /**
+     * Human label for the identity-document type (used as the document label,
+     * and by the HR Slack notifier when naming a document that skipped the
+     * AI gate).
+     */
+    public static String humanDocumentTypeLabel(OnboardingDocumentType type) {
         return switch (type) {
             case DRIVERS_LICENSE -> "Driver's license";
             case HEALTH_INSURANCE -> "Health insurance card";
@@ -494,12 +554,18 @@ public class OnboardingUploadService {
      *
      * <p>The reason is the model's own text. We escape JSON specials but
      * never log it at WARN — the field is part of the public response body.</p>
+     *
+     * <p>{@code canSubmitAnyway} tells the page whether to offer the
+     * submit-anyway button. It reflects a count the server wrote itself, so
+     * the page is being told what it may show, not asked what it may do —
+     * the next request is re-checked against the same count.</p>
      */
-    private static WebApplicationException aiRejected(String reason) {
+    private static WebApplicationException aiRejected(String reason, boolean canSubmitAnyway) {
         String safe = reason == null ? "" : reason
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"");
-        String body = "{\"error\":\"" + OnboardingErrorCodes.AI_REJECTED + "\",\"reason\":\"" + safe + "\"}";
+        String body = "{\"error\":\"" + OnboardingErrorCodes.AI_REJECTED + "\",\"reason\":\"" + safe + "\""
+                + ",\"canSubmitAnyway\":" + canSubmitAnyway + "}";
         return new WebApplicationException(
                 Response.status(422)
                         .entity(body)

@@ -13,6 +13,16 @@ import java.time.LocalDateTime;
  * {@link #aiSuggestions} (P9, contract §6.3): the latest AI triage
  * suggestions for the referral, re-validated at read time; {@code null}
  * when no suggestions exist or the referral-triage toggle is off.
+ * <p>
+ * The {@code cv*} fields describe the optional CV the referrer attached
+ * (2026-09-02) and are all {@code null}/0 when there is none. No file uuid
+ * is published: the download is addressed by the REFERRAL's uuid
+ * ({@code GET /recruitment/referrals/{uuid}/cv}), so a recruiter never
+ * needs — and never gets — a handle into the shared file store.
+ * {@code cvFilename} and {@code cvContentType} travel together because the
+ * frontend decides "read in place vs. download" on the FILENAME first
+ * (part of the stored corpus is filed as {@code application/octet-stream}
+ * despite being ordinary PDFs).
  */
 public record PendingReferralRow(
         String uuid,
@@ -24,6 +34,9 @@ public record PendingReferralRow(
         String email,
         String whyText,
         LocalDateTime submittedAt,
-        PendingReferralAiSuggestions aiSuggestions
+        PendingReferralAiSuggestions aiSuggestions,
+        String cvFilename,
+        String cvContentType,
+        Integer cvSizeBytes
 ) {
 }

@@ -93,6 +93,23 @@ public enum RecruitmentEventType {
      * event" (findings §P6).
      */
     REFERRAL_TRIAGED,
+    /**
+     * The referrer attached a CV to their referral (2026-09-02). Catalog
+     * addition: the file arrives AFTER {@link #REFERRAL_SUBMITTED} (the
+     * form creates the referral, then uploads), so no existing type could
+     * carry it, and {@link #DOCUMENT_UPLOADED} is candidate-subject —
+     * there is no candidate yet. Payload: {@code referral_uuid},
+     * {@code file_uuid}, {@code content_type}, {@code size_bytes},
+     * {@code origin=web}; the filename is pii ({@code filename}).
+     * <p>
+     * Found by the anonymizer through {@code payload.referral_uuid}, the
+     * same way {@link #REFERRAL_SUBMITTED} is. When the referral is
+     * triaged into a candidate the file is re-pointed at that candidate
+     * and gets its own {@link #DOCUMENT_UPLOADED} with
+     * {@code origin=referral} — the timeline then reads correctly from
+     * both ends.
+     */
+    REFERRAL_CV_ATTACHED,
     REFERRAL_OUTCOME_NOTIFIED,
     /**
      * A public-form applicant typed a name into "Kender du nogen hos

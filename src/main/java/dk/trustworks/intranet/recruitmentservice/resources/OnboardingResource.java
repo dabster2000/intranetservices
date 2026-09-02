@@ -113,7 +113,14 @@ public class OnboardingResource {
     @Consumes(MediaType.MULTIPART_FORM_DATA)
     public Response upload(@PathParam("tokenUuid") String tokenUuid,
                            @RestForm("documentType") String documentTypeRaw,
-                           @RestForm("file") FileUpload file) {
+                           @RestForm("file") FileUpload file,
+                           // Candidate asking to store a document the AI gate
+                           // has already refused twice. Absent on every normal
+                           // upload. Only a request — OnboardingUploadService
+                           // re-checks it against its own rejection count and
+                           // ignores it when unbacked, so nothing here needs
+                           // to authenticate the claim.
+                           @RestForm("forceReview") String forceReviewRaw) {
         if (file == null) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity("{\"error\":\"FILE_REQUIRED\"}")
@@ -166,7 +173,8 @@ public class OnboardingResource {
                     type,
                     file.fileName(),
                     file.contentType(),
-                    bytes);
+                    bytes,
+                    "true".equalsIgnoreCase(forceReviewRaw));
             return Response.ok(response).build();
         } catch (ForbiddenException fe) {
             // Same silence rule as /validate — never leak token existence.

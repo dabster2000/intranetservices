@@ -3,12 +3,15 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 import dk.trustworks.intranet.recruitmentservice.dto.MyReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.ReferralCvDownload;
+import dk.trustworks.intranet.recruitmentservice.dto.ReferralCvResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralTriageRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralTriageResponse;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.ReferralService;
+import dk.trustworks.intranet.recruitmentservice.util.PublicApplyDocuments;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
@@ -25,8 +28,12 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.jboss.resteasy.reactive.RestForm;
+import org.jboss.resteasy.reactive.multipart.FileUpload;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -91,6 +98,67 @@ public class RecruitmentReferralResource {
                 .build();
     }
 
+    /**
+     * Attach the OPTIONAL CV to a referral the caller just submitted
+     * (2026-09-02). Multipart, one field: {@code cv}.
+     * <p>
+     * A separate request rather than a field on the submit body, on
+     * purpose: the CV is an afterthought to the referral, and a failed
+     * upload (bad type, oversize, flaky connection) must never cost the
+     * employee the referral they already wrote. The form posts this
+     * straight after the 201 and tells the user if only this leg failed.
+     * <p>
+     * Same file guard as the public apply forms and the Documents-tab
+     * upload — {@link PublicApplyDocuments}: PDF/JPEG/PNG by MIME
+     * allowlist AND magic bytes, 10 MB cap, positive-allowlist filename
+     * sanitiser. {@code ReferralService} owns the rest: only the
+     * submitting employee (404 otherwise), only while SUBMITTED (409),
+     * and a re-upload replaces rather than accumulates.
+     */
+    @POST
+    @Path("/{uuid}/cv")
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    public Response attachCv(@PathParam("uuid") UUID referralUuid,
+                             @RestForm("cv") FileUpload cv) {
+        enforceFlag();
+        if (cv == null || cv.size() == 0) {
+            throw new WebApplicationException("cv is required", Response.Status.BAD_REQUEST);
+        }
+        if (cv.size() > PublicApplyDocuments.MAX_BYTES) {
+            throw new WebApplicationException("File exceeds the 10 MB limit",
+                    Response.Status.BAD_REQUEST);
+        }
+        byte[] bytes;
+        try {
+            bytes = Files.readAllBytes(cv.uploadedFile());
+        } catch (IOException e) {
+            log.errorf(e, "Failed to read uploaded CV bytes for referral=%s", referralUuid);
+            throw new WebApplicationException("Failed to read the uploaded file",
+                    Response.Status.INTERNAL_SERVER_ERROR);
+        }
+        String contentType = PublicApplyDocuments.normaliseContentType(cv.contentType());
+        if (!PublicApplyDocuments.ALLOWED_MIME_TYPES.contains(contentType)
+                || !PublicApplyDocuments.magicMatches(contentType, bytes)) {
+            throw new WebApplicationException("Only PDF, JPEG and PNG files are accepted",
+                    Response.Status.UNSUPPORTED_MEDIA_TYPE);
+        }
+        String rawName = cv.fileName();
+        String safeName = PublicApplyDocuments.sanitiseFilename(rawName);
+        if (safeName.isBlank()) {
+            safeName = "cv" + switch (contentType) {
+                case "application/pdf" -> ".pdf";
+                case "image/jpeg" -> ".jpg";
+                default -> ".png";
+            };
+        }
+        String piiName = rawName == null || rawName.isBlank()
+                ? safeName
+                : (rawName.length() > 255 ? rawName.substring(0, 255) : rawName);
+        ReferralCvResponse stored = referralService.attachCv(
+                referralUuid, currentActor(), bytes, contentType, safeName, piiName);
+        return Response.status(Response.Status.CREATED).entity(stored).build();
+    }
+
     /** The caller's own referrals with live milestone statuses, newest first. */
     @GET
     @Path("/mine")
@@ -110,6 +178,32 @@ public class RecruitmentReferralResource {
         UUID actor = currentActor();
         requireInboxTier(actor);
         return referralService.listPending(actor);
+    }
+
+    /**
+     * Stream the CV attached to a pending referral so the recruiter can read
+     * it WHILE triaging — the whole point of letting the referrer attach one.
+     * Inbox tier only, exactly like the queue that surfaces the link.
+     * <p>
+     * Served as {@code Content-Disposition: attachment} with the sanitised
+     * filename, the same convention as every candidate document; the
+     * frontend's preview modal frames the bytes itself when its own
+     * allowlist calls them a PDF. 404 when the referral does not exist or
+     * carries no CV.
+     */
+    @GET
+    @Path("/{uuid}/cv")
+    @Produces(MediaType.APPLICATION_OCTET_STREAM)
+    @RolesAllowed({"recruitment:read"})
+    public Response downloadCv(@PathParam("uuid") UUID referralUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        requireInboxTier(actor);
+        ReferralCvDownload download = referralService.readCv(referralUuid, actor);
+        return Response.ok(download.bytes(), download.contentType())
+                .header("Content-Disposition",
+                        "attachment; filename=\"" + headerSafe(download.filename()) + "\"")
+                .build();
     }
 
     /**
@@ -135,6 +229,11 @@ public class RecruitmentReferralResource {
     }
 
     // ---- Helpers --------------------------------------------------------------------
+
+    /** Strip characters that could break out of the Content-Disposition header. */
+    private static String headerSafe(String filename) {
+        return filename.replaceAll("[\"\\r\\n\\\\]", "_");
+    }
 
     /**
      * The intake queues are Inbox-tier surfaces: ADMIN, HR, RECRUITMENT or

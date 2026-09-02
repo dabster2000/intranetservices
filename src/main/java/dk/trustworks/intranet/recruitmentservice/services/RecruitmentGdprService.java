@@ -14,7 +14,6 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -107,15 +106,6 @@ public class RecruitmentGdprService {
 
     @Inject
     RecruitmentEventRecorder eventRecorder;
-
-    /**
-     * Public base URL the consent links are built on. The consent page is
-     * served by the intranet frontend but excluded from its auth gate
-     * (public page, P5 {@code /apply} pattern).
-     */
-    @ConfigProperty(name = "dk.trustworks.recruitment.consent.base-url",
-            defaultValue = "https://intra.trustworks.dk")
-    String consentBaseUrl;
 
     /** Result of one sweep, for logs and the batchlet exit status. */
     public record SweepSummary(boolean enabled, int consentsExpired, int renewalsSent,
@@ -285,7 +275,7 @@ public class RecruitmentGdprService {
         // the candidate is deleted for not clicking something unclickable.
         RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
                 template.getSubject(), template.getBody(), candidate, null,
-                Map.of("consent_link", consentBaseUrl + "/consent/" + minted.token()),
+                Map.of("consent_link", consentService.consentLinkFor(minted.token())),
                 template.getBodyFormat());
 
         emailService.send(candidate, null, null,
