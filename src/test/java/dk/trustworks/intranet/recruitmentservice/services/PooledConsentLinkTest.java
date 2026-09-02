@@ -134,7 +134,7 @@ class PooledConsentLinkTest {
         // "we delete after six months" sentence is only true because of it.
         LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
         assertEquals(now.plusMonths(6),
-                CandidateService.retentionDeadlineOnPooling(null, now));
+                CandidateService.retentionDeadlineOnPooling(null, null, now));
     }
 
     @Test
@@ -145,7 +145,49 @@ class PooledConsentLinkTest {
         // promised when they said yes.
         LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
         LocalDateTime granted = now.plusMonths(12);
-        assertEquals(granted, CandidateService.retentionDeadlineOnPooling(granted, now));
+        assertEquals(granted, CandidateService.retentionDeadlineOnPooling(granted, null, now));
+    }
+
+    // ---- ...and the promise the deadline column does not carry -----------
+
+    @Test
+    void aGrantedConsentWithNoDeadlineOfItsOwnStillHoldsTheClockOpen() {
+        // THE production case (37 candidates on 2026-09-02): consent GRANTED
+        // with a future expires_at, retention_deadline NULL beside it. The
+        // column-only comparison read that as "no constraint" and stamped six
+        // fresh months over an eleven-month promise. Staging reproduced it on
+        // candidate 863c0d00: consent to 2027-08-02, pooling wrote 2027-03-02.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        LocalDateTime consentExpiry = LocalDateTime.of(2027, 8, 2, 12, 0);
+        assertEquals(consentExpiry,
+                CandidateService.retentionDeadlineOnPooling(null, consentExpiry, now));
+    }
+
+    @Test
+    void theLatestOfTheThreeWinsWhicheverItIs() {
+        // The rule is a max(), not a precedence order -- each of the three can
+        // legitimately be the furthest out, and shortening to any of the other
+        // two would be deleting data something still vouches for.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        LocalDateTime near = now.plusMonths(2);
+        LocalDateTime far = now.plusMonths(18);
+        assertEquals(far, CandidateService.retentionDeadlineOnPooling(far, near, now));
+        assertEquals(far, CandidateService.retentionDeadlineOnPooling(near, far, now));
+        // Neither beats the fresh window, so pooling still restarts the clock.
+        assertEquals(now.plusMonths(6),
+                CandidateService.retentionDeadlineOnPooling(near, near, now));
+    }
+
+    @Test
+    void aLapsedConsentCannotShortenAnything() {
+        // An EXPIRED row keeps its old expires_at, and a REQUESTED one may
+        // carry a stale date. Neither is a promise any more, and max() is what
+        // makes them harmless rather than a way to shorten the window.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        assertEquals(now.plusMonths(6),
+                CandidateService.retentionDeadlineOnPooling(null, now.minusMonths(3), now));
+        assertEquals(now.plusMonths(12), CandidateService.retentionDeadlineOnPooling(
+                now.plusMonths(12), now.minusMonths(3), now));
     }
 
     @Test
@@ -154,10 +196,10 @@ class PooledConsentLinkTest {
         // before the letter asking to keep them could be answered.
         LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
         assertEquals(now.plusMonths(6),
-                CandidateService.retentionDeadlineOnPooling(now.minusMonths(1), now));
+                CandidateService.retentionDeadlineOnPooling(now.minusMonths(1), null, now));
         // Same for a deadline sooner than the fresh window.
         assertEquals(now.plusMonths(6),
-                CandidateService.retentionDeadlineOnPooling(now.plusMonths(2), now));
+                CandidateService.retentionDeadlineOnPooling(now.plusMonths(2), null, now));
     }
 
     @Test
@@ -165,7 +207,7 @@ class PooledConsentLinkTest {
         // The two have to agree: a token that expired before the retention
         // deadline would delete a candidate for not answering a dead link.
         LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
-        LocalDateTime deadline = CandidateService.retentionDeadlineOnPooling(null, now);
+        LocalDateTime deadline = CandidateService.retentionDeadlineOnPooling(null, null, now);
         RecruitmentCandidate pooled = candidateWithDeadline(deadline);
         assertEquals(deadline, RecruitmentConsentService.poolTokenExpiry(pooled, now));
     }

@@ -191,6 +191,44 @@ public class RecruitmentConsentService {
                 : now.plusMonths(DEFAULT_POOL_TOKEN_MONTHS);
     }
 
+    /**
+     * The latest expiry among the candidate's still-standing consents, or
+     * {@code null} when they hold none (2026-09-02).
+     * <p>
+     * A consent's {@code expires_at} is a promise: the candidate said yes to
+     * us keeping their data until that moment. Any path that recomputes a
+     * retention deadline has to read it here, because the candidate's
+     * {@code retention_deadline} column does not carry it. A GRANTED consent
+     * sitting next to a NULL deadline is an ordinary state — only the paths
+     * that own the column ever write it, and a candidate can hold a consent
+     * from before those paths existed — so a recompute that consults the
+     * column alone will happily set a deadline earlier than the consent, and
+     * delete data the candidate explicitly agreed we could keep.
+     * <p>
+     * WITHDRAWN rows are excluded: withdrawal is the candidate taking the
+     * promise back, and {@link #withdraw} has already resumed the plain
+     * process countdown for them. Every other status stays in, on an
+     * invariant worth stating because this query leans on it: an
+     * {@code expires_at} only ever accompanies a real grant. All three
+     * writers of it ({@link #grant}, {@code PublicApplyService.grantConsent},
+     * {@code AirtableImportService.grantPoolConsent}) set GRANTED in the same
+     * breath, and the sweep only stamps EXPIRED once the date has passed — so
+     * a row here either records consent or carries a date already in the
+     * past, and a past date loses every {@code max()} it enters. Add a path
+     * that dates an ungranted consent and this filter has to become
+     * {@code status = GRANTED}, or retention starts extending on promises
+     * nobody made.
+     */
+    static LocalDateTime latestStandingConsentExpiry(String candidateUuid) {
+        RecruitmentConsent standing = RecruitmentConsent
+                .<RecruitmentConsent>find(
+                        "candidateUuid = ?1 and status <> ?2 and expiresAt is not null "
+                                + "ORDER BY expiresAt DESC",
+                        candidateUuid, RecruitmentConsentStatus.WITHDRAWN)
+                .firstResult();
+        return standing == null ? null : standing.getExpiresAt();
+    }
+
     /** Resolve a presented token; {@code null} on every invalid case. */
     public ConsentView findByToken(String rawToken) {
         Resolved resolved = resolve(rawToken);
