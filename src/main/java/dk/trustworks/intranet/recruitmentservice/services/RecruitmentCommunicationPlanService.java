@@ -9,8 +9,10 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidatePoolStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyRole;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentRejectionReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -82,6 +84,8 @@ public class RecruitmentCommunicationPlanService {
     public static final String REASON_FLAG_OFF = "FLAG_OFF";
     public static final String REASON_MANUAL_DELIVERY = "MANUAL_DELIVERY";
     public static final String REASON_NO_COMMUNICATION = "NO_COMMUNICATION";
+    /** REJECT: the rejecter deliberately chose to send the candidate nothing. */
+    public static final String REASON_SENDER_OPTED_OUT = "SENDER_OPTED_OUT";
 
     @Inject
     RecruitmentFeatureFlag featureFlag;
@@ -108,6 +112,12 @@ public class RecruitmentCommunicationPlanService {
      * @param toStage    the target stage for STAGE_MOVE; null otherwise
      * @param includeCopyNames whether resolved recipient names may travel
      *                   (candidate-email tier); below it, roles only
+     * @param reasonCode REJECT: the coded reason picked so far — it selects
+     *                   the letter, so a plan without it can only name the
+     *                   generic fallback; null until the dialog has one
+     * @param templateKeyOverride REJECT: the letter the rejecter chose by
+     *                   hand, overruling the chain; null = let it decide
+     * @param suppressEmail REJECT: the rejecter chose to send nothing
      */
     public record PlanContext(
             PlanAction action,
@@ -124,8 +134,26 @@ public class RecruitmentCommunicationPlanService {
             boolean reviewRequired,
             boolean includeCopyNames,
             Function<String, RecruitmentEmailTemplate> templateByKey,
-            Function<RecruitmentEmailTemplate, RecruitmentEmailService.EmailCopies> copiesFor
+            Function<RecruitmentEmailTemplate, RecruitmentEmailService.EmailCopies> copiesFor,
+            RecruitmentRejectionReason reasonCode,
+            String templateKeyOverride,
+            boolean suppressEmail
     ) {
+        /** Every action but REJECT: no reason, no override, nothing suppressed. */
+        public PlanContext(PlanAction action, RecruitmentStage fromStage,
+                           RecruitmentStage toStage, Integer round, List<String> stageSet,
+                           boolean candidateHasEmail, boolean partnerReferral,
+                           boolean interviewsEnabled, boolean calendarEnabled,
+                           boolean methodBEnabled, boolean manualDelivery,
+                           boolean reviewRequired, boolean includeCopyNames,
+                           Function<String, RecruitmentEmailTemplate> templateByKey,
+                           Function<RecruitmentEmailTemplate,
+                                   RecruitmentEmailService.EmailCopies> copiesFor) {
+            this(action, fromStage, toStage, round, stageSet, candidateHasEmail,
+                    partnerReferral, interviewsEnabled, calendarEnabled, methodBEnabled,
+                    manualDelivery, reviewRequired, includeCopyNames, templateByKey,
+                    copiesFor, null, null, false);
+        }
     }
 
     /**
@@ -142,6 +170,23 @@ public class RecruitmentCommunicationPlanService {
                                           boolean manualDelivery,
                                           boolean reviewRequired,
                                           boolean includeCopyNames) {
+        return plan(application, candidate, position, action, toStage, round,
+                manualDelivery, reviewRequired, includeCopyNames, null, null, false);
+    }
+
+    /** As above, plus the REJECT dialog's live choices (2026-09-02). */
+    public CommunicationPlanResponse plan(RecruitmentApplication application,
+                                          RecruitmentCandidate candidate,
+                                          RecruitmentPosition position,
+                                          PlanAction action,
+                                          RecruitmentStage toStage,
+                                          Integer round,
+                                          boolean manualDelivery,
+                                          boolean reviewRequired,
+                                          boolean includeCopyNames,
+                                          RecruitmentRejectionReason reasonCode,
+                                          String templateKeyOverride,
+                                          boolean suppressEmail) {
         // Fallback: the canonical catalog order — declaration order IS the
         // pipeline order (RecruitmentStage contract), so direction judgments
         // stay right even for a position without a stored stage set.
@@ -167,7 +212,11 @@ public class RecruitmentCommunicationPlanService {
                 includeCopyNames,
                 key -> RecruitmentEmailTemplate
                         .<RecruitmentEmailTemplate>find("templateKey", key).firstResult(),
-                template -> emailService.copiesFor(template, candidate, applicationUuid, null));
+                template -> emailService.copiesFor(template, candidate, applicationUuid, null),
+                reasonCode,
+                templateKeyOverride == null || templateKeyOverride.isBlank()
+                        ? null : templateKeyOverride.trim(),
+                suppressEmail);
         return buildPlan(context);
     }
 
@@ -180,7 +229,8 @@ public class RecruitmentCommunicationPlanService {
         List<PlanStep> steps = switch (ctx.action()) {
             case STAGE_MOVE -> stageMoveSteps(ctx);
             case REJECT -> rejectSteps(ctx);
-            case WITHDRAW, RETURN_TO_POOL -> nothingSteps();
+            case WITHDRAW -> nothingSteps();
+            case RETURN_TO_POOL -> returnToPoolSteps(ctx);
             case INTERVIEW_SCHEDULE -> interviewSteps(ctx, TIMING_IMMEDIATE);
             case INTERVIEW_RESCHEDULE -> interviewUpdateSteps(ctx, false);
             case INTERVIEW_CANCEL -> interviewUpdateSteps(ctx, true);
@@ -204,15 +254,38 @@ public class RecruitmentCommunicationPlanService {
         return List.of(templateEmailStep(ctx, 1, key, false, TIMING_IMMEDIATE));
     }
 
-    /** CandidateMailerReactor: rejection key splits on the FROM stage; partner referrals never auto-send. */
+    /**
+     * CandidateMailerReactor: the rejecter's explicit choice, else the
+     * reason/stage chain; partner referrals never auto-send.
+     */
     private static List<PlanStep> rejectSteps(PlanContext ctx) {
-        String key = ctx.fromStage() == RecruitmentStage.SCREENING
-                ? RecruitmentEmailService.KEY_REJECTION_SCREENING
-                : RecruitmentEmailService.KEY_REJECTION_POST_INTERVIEW;
-        return List.of(templateEmailStep(ctx, 1, key, ctx.partnerReferral(), TIMING_IMMEDIATE));
+        if (ctx.suppressEmail()) {
+            return List.of(new PlanStep(1, CHANNEL_EMAIL, AUDIENCE_CANDIDATE, OUTCOME_SKIPPED,
+                    TIMING_IMMEDIATE, REASON_SENDER_OPTED_OUT, null, null, null, null));
+        }
+        List<String> keys = ctx.templateKeyOverride() != null
+                ? List.of(ctx.templateKeyOverride())
+                : RecruitmentEmailService.rejectionKeyChain(
+                        ctx.reasonCode() == null ? null : ctx.reasonCode().name(),
+                        ctx.fromStage() == null ? null : ctx.fromStage().name());
+        return List.of(templateEmailStep(ctx, 1, keys, ctx.partnerReferral(), TIMING_IMMEDIATE));
     }
 
-    /** Withdraw / return-to-pool: the mailer has no trigger — nothing goes out. */
+    /**
+     * CandidateMailerReactor: return-to-pool pools the candidate as
+     * SILVER_MEDALIST, and {@code CANDIDATE_POOLED} now mails them — so
+     * this action stopped being silent on 2026-09-02. It is always an
+     * ENTRY into the pool here (a candidate with a live application is
+     * ACTIVE, never already POOLED), so the reactor's re-bucketing guard
+     * never suppresses it.
+     */
+    private static List<PlanStep> returnToPoolSteps(PlanContext ctx) {
+        List<String> keys = RecruitmentEmailService.pooledKeyChain(
+                CandidatePoolStatus.SILVER_MEDALIST.name());
+        return List.of(templateEmailStep(ctx, 1, keys, ctx.partnerReferral(), TIMING_IMMEDIATE));
+    }
+
+    /** Withdraw: the mailer has no trigger — nothing goes out. */
     private static List<PlanStep> nothingSteps() {
         return List.of(new PlanStep(1, CHANNEL_EMAIL, AUDIENCE_CANDIDATE, OUTCOME_SKIPPED,
                 TIMING_IMMEDIATE, REASON_NO_COMMUNICATION, null, null, null, null));
@@ -321,19 +394,49 @@ public class RecruitmentCommunicationPlanService {
      */
     private static PlanStep templateEmailStep(PlanContext ctx, int order, String key,
                                               boolean forceReview, String timing) {
+        return templateEmailStep(ctx, order, List.of(key), forceReview, timing);
+    }
+
+    /**
+     * The chain form (2026-09-02): the first key with an active template
+     * wins, exactly as {@link RecruitmentEmailService#findFirstActiveByKey}
+     * resolves it in the mailer.
+     * <p>
+     * When nothing in the chain is sendable the step has to name ONE key,
+     * and which one is a usability decision: an inactive row is reported in
+     * preference to a missing one (someone configured that letter and
+     * switched it off — that is the actionable fact), and otherwise the
+     * LAST rung, the generic fallback every pipeline should have.
+     */
+    private static PlanStep templateEmailStep(PlanContext ctx, int order, List<String> keys,
+                                              boolean forceReview, String timing) {
+        String fallbackKey = keys.get(keys.size() - 1);
         if (!ctx.interviewsEnabled()) {
-            return skippedEmail(order, REASON_FLAG_OFF, key, null, null);
+            return skippedEmail(order, REASON_FLAG_OFF, fallbackKey, null, null);
         }
         if (!ctx.candidateHasEmail()) {
-            return skippedEmail(order, REASON_NO_CANDIDATE_EMAIL, key, null, null);
+            return skippedEmail(order, REASON_NO_CANDIDATE_EMAIL, fallbackKey, null, null);
         }
-        RecruitmentEmailTemplate template = ctx.templateByKey().apply(key);
+        RecruitmentEmailTemplate template = null;
+        RecruitmentEmailTemplate inactive = null;
+        for (String key : keys) {
+            RecruitmentEmailTemplate candidate = ctx.templateByKey().apply(key);
+            if (candidate == null) {
+                continue;
+            }
+            if (candidate.isActive()) {
+                template = candidate;
+                break;
+            }
+            if (inactive == null) {
+                inactive = candidate;
+            }
+        }
         if (template == null) {
-            return skippedEmail(order, REASON_NO_TEMPLATE, key, null, null);
-        }
-        if (!template.isActive()) {
-            return skippedEmail(order, REASON_TEMPLATE_INACTIVE, key,
-                    template.getName(), template.getSubject());
+            return inactive != null
+                    ? skippedEmail(order, REASON_TEMPLATE_INACTIVE, inactive.getTemplateKey(),
+                            inactive.getName(), inactive.getSubject())
+                    : skippedEmail(order, REASON_NO_TEMPLATE, fallbackKey, null, null);
         }
         boolean review = forceReview || !template.isAutoSend();
         String reason = forceReview ? REASON_PARTNER_REFERRAL : null;

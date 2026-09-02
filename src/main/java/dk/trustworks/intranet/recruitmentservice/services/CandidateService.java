@@ -694,9 +694,15 @@ public class CandidateService {
     public CandidateResponse pool(UUID candidateUuid, CandidatePoolStatus poolStatus, UUID actor) {
         Objects.requireNonNull(actor, "actor must not be null");
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
+        // Read the status BEFORE pooling: the candidate mailer's POOLED
+        // trigger fires on entering the pool, not on re-bucketing inside it
+        // (pool() accepts POOLED → POOLED for exactly that), so a candidate
+        // moved PROSPECT → CONTACTED must not be mailed a second time.
+        boolean enteredPool = candidate.getStatus() != CandidateStatus.POOLED;
         candidate.pool(poolStatus, actor);
         eventRecorder.record(candidateEvent(RecruitmentEventType.CANDIDATE_POOLED, candidate, actor)
-                .payload("pool_status", candidate.getPoolStatus().name()));
+                .payload("pool_status", candidate.getPoolStatus().name())
+                .payload("entered_pool", enteredPool));
         log.infof("Pooled candidate uuid=%s bucket=%s by actor=%s",
                 candidate.getUuid(), candidate.getPoolStatus(), actor);
         return toResponse(candidate, latestRevision(candidate.getUuid()));

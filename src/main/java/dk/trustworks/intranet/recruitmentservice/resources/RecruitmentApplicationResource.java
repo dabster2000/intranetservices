@@ -13,12 +13,15 @@ import dk.trustworks.intranet.recruitmentservice.dto.ExpectedStartDateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.FormAnswersResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentRejectionReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateProfileReadService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentApplicationService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -97,6 +100,9 @@ public class RecruitmentApplicationResource {
 
     @Inject
     RecruitmentCommunicationPlanService communicationPlanService;
+
+    @Inject
+    RecruitmentEmailService emailService;
 
     // ---- Per-candidate collection ------------------------------------------------
 
@@ -243,7 +249,15 @@ public class RecruitmentApplicationResource {
 
     // ---- Terminals -----------------------------------------------------------------
 
-    /** Reject with a mandatory coded reason (free-text note → event pii). */
+    /**
+     * Reject with a mandatory coded reason (free-text note → event pii).
+     * <p>
+     * The optional {@code emailTemplateKey} / {@code suppressCandidateEmail}
+     * fields overrule the letter the reason/stage chain would pick. An
+     * override is validated HERE rather than left to the mailer: the mailer
+     * skipping an unknown or deactivated key is silence, and a recruiter who
+     * just chose a letter would read that silence as "sent".
+     */
     @POST
     @Path("/applications/{uuid}/reject")
     @RolesAllowed({"recruitment:write"})
@@ -256,6 +270,7 @@ public class RecruitmentApplicationResource {
                     "reasonCode is required — pick the closest coded reason; elaborate in the note");
         }
         requireNoteWithinLimit(request.note());
+        requireUsableTemplateOverride(request);
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
         RecruitmentPosition position = positionOf(application);
@@ -369,6 +384,14 @@ public class RecruitmentApplicationResource {
      *                        link personally, the system mails nothing
      * @param reviewRequired  METHOD_B_START: options wait for recruiter
      *                        review before the candidate hears anything
+     * @param reasonCode      REJECT: the coded reason the rejecter has
+     *                        picked so far. Since 2026-09-02 the reason
+     *                        selects the letter, so a plan computed without
+     *                        it can only name the generic fallback — the
+     *                        dialog re-asks as the dropdown changes
+     * @param emailTemplateKey REJECT: the letter the rejecter chose by hand,
+     *                        overruling the chain
+     * @param suppressEmail   REJECT: the rejecter chose to send nothing
      */
     @GET
     @Path("/applications/{uuid}/communication-plan")
@@ -378,7 +401,10 @@ public class RecruitmentApplicationResource {
             @QueryParam("toStage") String toStage,
             @QueryParam("round") Integer round,
             @QueryParam("manualDelivery") @DefaultValue("false") boolean manualDelivery,
-            @QueryParam("reviewRequired") @DefaultValue("false") boolean reviewRequired) {
+            @QueryParam("reviewRequired") @DefaultValue("false") boolean reviewRequired,
+            @QueryParam("reasonCode") String reasonCode,
+            @QueryParam("emailTemplateKey") String emailTemplateKey,
+            @QueryParam("suppressEmail") @DefaultValue("false") boolean suppressEmail) {
         enforceFlag();
         UUID actor = currentActor();
         RecruitmentApplication application = requireVisibleApplication(applicationUuid, actor);
@@ -395,7 +421,53 @@ public class RecruitmentApplicationResource {
         RecruitmentPosition position = positionOf(application);
         boolean includeCopyNames = visibility.canEmailCandidates(actor.toString());
         return communicationPlanService.plan(application, candidate, position, planAction,
-                targetStage, round, manualDelivery, reviewRequired, includeCopyNames);
+                targetStage, round, manualDelivery, reviewRequired, includeCopyNames,
+                parseRejectionReason(reasonCode), trimToNull(emailTemplateKey), suppressEmail);
+    }
+
+    /**
+     * The reason is optional and arrives half-typed — the dialog asks for a
+     * plan before anything is picked. An UNKNOWN one is a bad request, but
+     * an ABSENT one is the ordinary first call.
+     */
+    private static RecruitmentRejectionReason parseRejectionReason(String reasonCode) {
+        String value = trimToNull(reasonCode);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return RecruitmentRejectionReason.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            throw badRequest("Unknown reasonCode: " + reasonCode);
+        }
+    }
+
+    private static String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    /**
+     * An override must name a template that can actually be sent: present,
+     * active, and not one a scheduled job owns (whose merge fields resolve
+     * only inside that job — {@link RecruitmentEmailService#isSystemKey}).
+     */
+    private void requireUsableTemplateOverride(ApplicationRejectRequest request) {
+        String key = request.normalizedTemplateKey();
+        if (request.suppressesCandidateEmail() && key != null) {
+            throw badRequest(
+                    "Choose one: a template to send, or no email at all — not both");
+        }
+        if (key == null) {
+            return;
+        }
+        if (RecruitmentEmailService.isSystemKey(key)) {
+            throw badRequest("Template " + key
+                    + " is sent by a scheduled job and cannot be chosen here");
+        }
+        RecruitmentEmailTemplate template = emailService.findActiveByKey(key);
+        if (template == null) {
+            throw badRequest("No active email template with key " + key);
+        }
     }
 
     private static RecruitmentCommunicationPlanService.PlanAction parsePlanAction(String action) {

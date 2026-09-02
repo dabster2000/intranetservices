@@ -25,6 +25,15 @@ public enum RecruitmentRejectionReason {
     POSITION_FILLED,
     /** Good candidate, wrong moment (hiring paused, timing mismatch). */
     TIMING,
+    /**
+     * Not eligible on location or language: based outside Denmark, or not
+     * fluent in Danish, spoken and written. Appended 2026-09-02 for the
+     * rejection-routing work — before it, these applicants were filed under
+     * {@link #PROFILE_MISMATCH} or {@link #OTHER}, which hid a high-volume,
+     * highly repeatable case behind two catch-all codes and left it without
+     * a letter of its own.
+     */
+    LOCATION_LANGUAGE,
     /** Anything else — elaborate in the note (stored in the event pii). */
     OTHER
 }
