@@ -172,7 +172,7 @@ class InvoiceServiceInternalCreditNoteTest {
 
         // Intercompany Client with the debtor's CVR so IntercompanyClientResolver resolves.
         em.createNativeQuery("""
-                INSERT INTO client (uuid, active, contactname, name, crmid, accountmanager,
+                INSERT INTO client (uuid, contactname, name, crmid, accountmanager,
                                     managed, type, cvr, billing_country, currency, created)
                 VALUES (:uuid, 1, 't', :name, '', '', 'INTRA', 'CLIENT', :cvr, 'DK', 'DKK', NOW())
                 """)

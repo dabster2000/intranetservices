@@ -338,7 +338,6 @@ class EconomicsCustomerPairingServiceTest {
         c.setName(name);
         c.setCvr(cvr);
         c.setType(type);
-        c.setActive(true);
         return c;
     }
 

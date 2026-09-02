@@ -36,20 +36,11 @@ public class ClientService {
         return Client.findById(uuid);
     }
 
-    public List<Client> findByActiveTrue() {
-        return Client.list("active = ?1", Sort.ascending("name"), true);
-    }
-
     /**
-     * Lists clients filtered by type, and optionally by active state.
-     * When {@code active} is null, both active and inactive clients are returned
-     * (preserves the prior {@code /clients} default). When non-null, filters by value.
+     * Lists clients filtered by type.
      */
-    public List<Client> listByTypeAndActive(ClientType type, Boolean active) {
-        if (active == null) {
-            return Client.list("type = ?1", Sort.ascending("name"), type);
-        }
-        return Client.list("type = ?1 and active = ?2", Sort.ascending("name"), type, active);
+    public List<Client> listByType(ClientType type) {
+        return Client.list("type = ?1", Sort.ascending("name"), type);
     }
 
     @Transactional
@@ -62,8 +53,8 @@ public class ClientService {
             client.setManaged("INTRA");
         }
         client.persist();
-        log.infof("Created client uuid=%s, name=%s, active=%s, user=%s",
-                client.getUuid(), client.getName(), client.isActive(), userUuid);
+        log.infof("Created client uuid=%s, name=%s, user=%s",
+                client.getUuid(), client.getName(), userUuid);
         return client;
     }
 
@@ -71,33 +62,32 @@ public class ClientService {
     public void updateOne(Client client) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         ClientType incomingType = client.getType() != null ? client.getType() : ClientType.CLIENT;
-        log.infof("Updating client uuid=%s, name=%s, active=%s, type=%s, user=%s",
-                client.getUuid(), client.getName(), client.isActive(), incomingType, userUuid);
-        Client.update("active = ?1, " +
-                        "contactname = ?2, " +
-                        "name = ?3, " +
-                        "accountmanager = ?4, " +
-                        "crmid = ?5, " +
-                        "segment = ?6, " +
-                        "managed = ?7, " +
-                        "cvr = ?8, " +
-                        "ean = ?9, " +
-                        "billingAddress = ?10, " +
-                        "billingZipcode = ?11, " +
-                        "billingCity = ?12, " +
-                        "billingCountry = ?13, " +
-                        "billingEmail = ?14, " +
-                        "currency = ?15, " +
-                        "phone = ?16, " +
-                        "industryCode = ?17, " +
-                        "industryDesc = ?18, " +
-                        "companyCode = ?19, " +
-                        "companyDesc = ?20, " +
-                        "type = ?21, " +
-                        "defaultBillingAttention = ?22, " +
-                        "defaultBillingEmail = ?23 " +
-                        "WHERE uuid like ?24 ",
-                client.isActive(), client.getContactname(),
+        log.infof("Updating client uuid=%s, name=%s, type=%s, user=%s",
+                client.getUuid(), client.getName(), incomingType, userUuid);
+        Client.update("contactname = ?1, " +
+                        "name = ?2, " +
+                        "accountmanager = ?3, " +
+                        "crmid = ?4, " +
+                        "segment = ?5, " +
+                        "managed = ?6, " +
+                        "cvr = ?7, " +
+                        "ean = ?8, " +
+                        "billingAddress = ?9, " +
+                        "billingZipcode = ?10, " +
+                        "billingCity = ?11, " +
+                        "billingCountry = ?12, " +
+                        "billingEmail = ?13, " +
+                        "currency = ?14, " +
+                        "phone = ?15, " +
+                        "industryCode = ?16, " +
+                        "industryDesc = ?17, " +
+                        "companyCode = ?18, " +
+                        "companyDesc = ?19, " +
+                        "type = ?20, " +
+                        "defaultBillingAttention = ?21, " +
+                        "defaultBillingEmail = ?22 " +
+                        "WHERE uuid like ?23 ",
+                client.getContactname(),
                 client.getName(), client.getAccountmanager(),
                 client.getCrmid(), client.getSegment(),
                 client.getManaged(),
@@ -112,11 +102,6 @@ public class ClientService {
                 client.getDefaultBillingAttention(),
                 client.getDefaultBillingEmail(),
                 client.getUuid());
-    }
-
-    @Transactional
-    public void updateActiveStatus(String uuid, boolean active) {
-        Client.update("active = ?1 WHERE uuid = ?2", active, uuid);
     }
 
     public Client findByCvr(String cvr) {
