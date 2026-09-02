@@ -21,6 +21,17 @@
 -- Idempotency: repair-at-start re-runs migrations across checkouts —
 -- every statement uses IF EXISTS, so a re-run is a no-op.
 
+-- Fail fast instead of hanging the app. Every ALTER/DROP below needs an
+-- exclusive metadata lock; while such a request is queued, MariaDB blocks
+-- every NEW shared request on that table too — i.e. the running task's own
+-- signing-case reads stall behind this migration. The first production
+-- attempt (2026-09-02 06:52Z) sat in that wait for 8 minutes per task,
+-- froze the NextSign status-sync passes, and was finally killed by the
+-- health check. With a 20 s cap a blocked attempt errors out, the boot
+-- fails, ECS rolls back within a minute and the schema is untouched —
+-- and the error names the wait, which a silent hang never did.
+SET SESSION lock_wait_timeout = 20;
+
 -- ---- signing_cases: SharePoint auto-upload bookkeeping ---------------
 ALTER TABLE signing_cases DROP INDEX IF EXISTS idx_sc_sharepoint_location;
 ALTER TABLE signing_cases DROP INDEX IF EXISTS idx_sc_upload_status;
