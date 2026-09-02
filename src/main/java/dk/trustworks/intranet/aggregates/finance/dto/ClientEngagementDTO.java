@@ -36,12 +36,6 @@ public class ClientEngagementDTO {
     private String segment;
 
     /**
-     * Whether the client is currently active in the system.
-     * True = active customer, False = inactive/churned
-     */
-    private boolean active;
-
-    /**
      * Date of first engagement (MIN of work.registered).
      * Represents when the client relationship began.
      */
