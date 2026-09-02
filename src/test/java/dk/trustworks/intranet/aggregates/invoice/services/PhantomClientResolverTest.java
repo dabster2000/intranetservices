@@ -103,7 +103,7 @@ class PhantomClientResolverTest {
         ClientService cs = mock(ClientService.class);
         when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
         when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
-        when(cs.findByActiveTrue())
+        when(cs.listAllClients())
                 .thenReturn(List.of(client("c-magnit", "Magnit Global Solutions A/S")));
 
         PhantomClientResolver resolver = new PhantomClientResolver(cs);
@@ -121,7 +121,7 @@ class PhantomClientResolverTest {
         when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
         when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
         // First client has a null name (must be skipped, not NPE); second matches case-insensitively.
-        when(cs.findByActiveTrue()).thenReturn(List.of(
+        when(cs.listAllClients()).thenReturn(List.of(
                 client("c-null-name", null),
                 client("c-acme", "ACME MAGNIT COMPANY")));
 
@@ -137,7 +137,7 @@ class PhantomClientResolverTest {
         ClientService cs = mock(ClientService.class);
         when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
         when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
-        when(cs.findByActiveTrue()).thenReturn(List.of(
+        when(cs.listAllClients()).thenReturn(List.of(
                 client("c-other", "Other Corp"),
                 client("c-another", "Another Inc")));
 
@@ -154,7 +154,7 @@ class PhantomClientResolverTest {
         when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
         when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
         // A name match with a null uuid must NOT be returned as a "found" suggestion.
-        when(cs.findByActiveTrue()).thenReturn(List.of(
+        when(cs.listAllClients()).thenReturn(List.of(
                 client(null, "Magnit Global"),
                 client("c-real", "Magnit Holdings")));
 

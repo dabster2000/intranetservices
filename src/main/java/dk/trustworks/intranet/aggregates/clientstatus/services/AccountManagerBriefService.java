@@ -87,12 +87,12 @@ public class AccountManagerBriefService {
 
         AccountManager am = resolveAccountManager(accountManagerUuid);
 
-        // Active clients for this AM.
+        // Clients for this AM.
         @SuppressWarnings("unchecked")
         List<Tuple> clientRows = em.createNativeQuery("""
                 SELECT c.uuid, c.name
                 FROM client c
-                WHERE c.accountmanager = :am AND c.active = 1
+                WHERE c.accountmanager = :am
                 """, Tuple.class)
                 .setParameter("am", accountManagerUuid)
                 .getResultList();

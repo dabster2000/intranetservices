@@ -20,7 +20,6 @@ public class Client extends PanacheEntityBase {
     @Id
     @EqualsAndHashCode.Include
     private String uuid;
-    private boolean active;
     private String contactname;
 
     private LocalDateTime created;
@@ -101,7 +100,6 @@ public class Client extends PanacheEntityBase {
 
     public Client(String contactname, String name) {
         uuid = UUID.randomUUID().toString();
-        this.active = true;
         this.contactname = contactname;
         this.created = LocalDateTime.now();
         this.name = name;

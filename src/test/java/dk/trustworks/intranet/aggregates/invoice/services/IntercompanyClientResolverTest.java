@@ -122,9 +122,9 @@ class IntercompanyClientResolverTest {
                 .executeUpdate();
 
         em.createNativeQuery("""
-                INSERT INTO client (uuid, active, contactname, name, crmid, accountmanager,
+                INSERT INTO client (uuid, contactname, name, crmid, accountmanager,
                                     managed, type, cvr, billing_country, currency, created)
-                VALUES (:uuid, 1, 'tester', :name, '', '', 'INTRA', 'CLIENT', :cvr, 'DK', 'DKK', NOW())
+                VALUES (:uuid, 'tester', :name, '', '', 'INTRA', 'CLIENT', :cvr, 'DK', 'DKK', NOW())
                 """)
                 .setParameter("uuid", fx.clientUuid)
                 .setParameter("name", "Intercompany " + prefix)

@@ -214,7 +214,6 @@ public class PublicResource {
         }
 
         Client client = new Client();
-        client.setActive(false);
         client.setContactname("");
         client.setCreated(LocalDateTime.now());
         client.setName(request.getName());

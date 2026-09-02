@@ -168,9 +168,9 @@ class ClientStatusServiceTest {
 
     private void persistClient(String uuid, String name, String accountManagerUuid) {
         em.createNativeQuery("""
-                INSERT INTO client (uuid, active, contactname, name, crmid, accountmanager,
+                INSERT INTO client (uuid, contactname, name, crmid, accountmanager,
                                     managed, type, cvr, billing_country, currency, created)
-                VALUES (:uuid, 1, 'tester', :name, '', :am, 'INTRA', 'CLIENT', '', 'DK', 'DKK', NOW())
+                VALUES (:uuid, 'tester', :name, '', :am, 'INTRA', 'CLIENT', '', 'DK', 'DKK', NOW())
                 """)
                 .setParameter("uuid", uuid)
                 .setParameter("name", name)
