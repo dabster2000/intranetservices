@@ -437,6 +437,15 @@ public class RecruitmentApplicationService {
                 application, position, actor)
                 .payload("reason_code", request.reasonCode().name())
                 .payload("from_stage", fromStage.name());
+        // What the rejecter decided the candidate should receive. Absent =
+        // the reason/stage chain decides, which is what every rejection did
+        // before 2026-09-02. Structural, not personal: a template key, not
+        // its words, so it belongs in payload rather than pii.
+        if (request.suppressesCandidateEmail()) {
+            event.payload("suppress_email", true);
+        } else if (request.normalizedTemplateKey() != null) {
+            event.payload("email_template_key", request.normalizedTemplateKey());
+        }
         if (cascaded != null) {
             event.payload("candidate_status", cascaded.name());
         }
@@ -505,10 +514,14 @@ public class RecruitmentApplicationService {
         clearPendingDecisions(application);
 
         // Candidate → talent pool via the domain pool path (P3 carry-over).
+        // Read the status BEFORE pooling: the candidate mailer's POOLED
+        // trigger fires on entering the pool, not on re-bucketing inside it.
+        boolean enteredPool = candidate.getStatus() != CandidateStatus.POOLED;
         candidate.pool(CandidatePoolStatus.SILVER_MEDALIST, actor);
         eventRecorder.record(applicationEvent(RecruitmentEventType.CANDIDATE_POOLED,
                 application, position, actor)
                 .payload("pool_status", CandidatePoolStatus.SILVER_MEDALIST.name())
+                .payload("entered_pool", enteredPool)
                 .payload("terminal", application.getTerminal().name())
                 .payload("from_stage", fromStage.name()));
 

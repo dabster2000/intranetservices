@@ -4,6 +4,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.CommunicationPlanResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CommunicationPlanResponse.PlanStep;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCopyMode;
+import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentRejectionReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.PlanAction;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.PlanContext;
@@ -31,6 +32,7 @@ import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentComm
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.REASON_NO_COMMUNICATION;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.REASON_NO_TEMPLATE;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.REASON_PARTNER_REFERRAL;
+import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.REASON_SENDER_OPTED_OUT;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.REASON_TEMPLATE_INACTIVE;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.TIMING_AFTER_APPROVAL;
 import static dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommunicationPlanService.TIMING_AFTER_CANDIDATE_CHOICE;
@@ -81,6 +83,17 @@ class RecruitmentCommunicationPlanServiceTest {
                 partnerReferral, interviewsEnabled, calendarEnabled, methodBEnabled,
                 manualDelivery, reviewRequired, true, lookup,
                 t -> RecruitmentEmailService.EmailCopies.none());
+    }
+
+    /** A REJECT context carrying the dialog's live choices. */
+    private static PlanContext rejectContext(RecruitmentStage from,
+                                             RecruitmentRejectionReason reasonCode,
+                                             String override, boolean suppress,
+                                             Map<String, RecruitmentEmailTemplate> templates) {
+        return new PlanContext(PlanAction.REJECT, from, null, null, STAGE_SET,
+                true, false, true, true, false, false, false, true, templates::get,
+                t -> RecruitmentEmailService.EmailCopies.none(),
+                reasonCode, override, suppress);
     }
 
     private static PlanStep only(CommunicationPlanResponse plan) {
@@ -195,14 +208,151 @@ class RecruitmentCommunicationPlanServiceTest {
     // ---- Silent actions -------------------------------------------------
 
     @Test
-    void withdrawAndReturnToPoolSendNothing() {
-        for (PlanAction action : List.of(PlanAction.WITHDRAW, PlanAction.RETURN_TO_POOL)) {
-            CommunicationPlanResponse plan = buildPlan(context(action,
-                    RecruitmentStage.INTERVIEW_1, null, null,
-                    true, false, true, true, false, false, false, Map.of()));
-            assertEquals(REASON_NO_COMMUNICATION, only(plan).reason());
-            assertTrue(plan.summary().nothingSent());
-        }
+    void withdrawSendsNothing() {
+        // The candidate backed out — there is no trigger and nothing to say.
+        CommunicationPlanResponse plan = buildPlan(context(PlanAction.WITHDRAW,
+                RecruitmentStage.INTERVIEW_1, null, null,
+                true, false, true, true, false, false, false, Map.of()));
+        assertEquals(REASON_NO_COMMUNICATION, only(plan).reason());
+        assertTrue(plan.summary().nothingSent());
+    }
+
+    // ---- Return to pool (2026-09-02: no longer silent) -------------------
+
+    @Test
+    void returnToPoolPrefersTheSilverMedalistLetter() {
+        // A candidate who lost to another hire is pooled as SILVER_MEDALIST,
+        // and deserves different words from a cold prospect — which is the
+        // whole point of the bucket rung sitting above the generic one.
+        CommunicationPlanResponse plan = buildPlan(rejectContextlessReturnToPool(Map.of(
+                "POOLED_SILVER_MEDALIST",
+                template("POOLED_SILVER_MEDALIST", true, true, ""),
+                "POOLED", template("POOLED", true, true, ""))));
+        assertEquals("POOLED_SILVER_MEDALIST", only(plan).templateKey());
+        assertEquals(OUTCOME_SENDS, only(plan).outcome());
+    }
+
+    @Test
+    void returnToPoolFallsBackToTheGenericPoolLetter() {
+        CommunicationPlanResponse plan = buildPlan(rejectContextlessReturnToPool(
+                Map.of("POOLED", template("POOLED", true, false, ""))));
+        assertEquals("POOLED", only(plan).templateKey());
+        assertEquals(OUTCOME_QUEUED_FOR_REVIEW, only(plan).outcome());
+    }
+
+    @Test
+    void returnToPoolWithNoPoolLetterNamesTheGenericKeyToConfigure() {
+        // Nothing sendable: the step must name the rung TA should create,
+        // not the specific one they have never heard of.
+        CommunicationPlanResponse plan =
+                buildPlan(rejectContextlessReturnToPool(Map.of()));
+        assertEquals(REASON_NO_TEMPLATE, only(plan).reason());
+        assertEquals("POOLED", only(plan).templateKey());
+        assertTrue(plan.summary().nothingSent());
+    }
+
+    private static PlanContext rejectContextlessReturnToPool(
+            Map<String, RecruitmentEmailTemplate> templates) {
+        return context(PlanAction.RETURN_TO_POOL, RecruitmentStage.INTERVIEW_1, null, null,
+                true, false, true, true, false, false, false, templates);
+    }
+
+    // ---- Rejection routing on the reason code (2026-09-02) ---------------
+
+    @Test
+    void reasonAndStageTemplateWinsOverReasonAloneAndOverGeneric() {
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.EXPERIENCE_LEVEL,
+                null, false, Map.of(
+                        "REJECTION_EXPERIENCE_LEVEL_SCREENING",
+                        template("REJECTION_EXPERIENCE_LEVEL_SCREENING", true, true, ""),
+                        "REJECTION_EXPERIENCE_LEVEL",
+                        template("REJECTION_EXPERIENCE_LEVEL", true, true, ""),
+                        "REJECTION_SCREENING", template("REJECTION_SCREENING", true, true, ""))));
+        assertEquals("REJECTION_EXPERIENCE_LEVEL_SCREENING", only(plan).templateKey());
+    }
+
+    @Test
+    void reasonTemplateWinsWhenNoStageSpecificOneExists() {
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.LOCATION_LANGUAGE,
+                null, false, Map.of(
+                        "REJECTION_LOCATION_LANGUAGE",
+                        template("REJECTION_LOCATION_LANGUAGE", true, true, ""),
+                        "REJECTION_SCREENING", template("REJECTION_SCREENING", true, true, ""))));
+        assertEquals("REJECTION_LOCATION_LANGUAGE", only(plan).templateKey());
+    }
+
+    @Test
+    void anInactiveSpecificLetterFallsThroughToTheGenericOne() {
+        // Deactivating a specific letter must resume the generic one rather
+        // than silence the rejection — "off" means "not this letter", never
+        // "no letter".
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.EXPERIENCE_LEVEL,
+                null, false, Map.of(
+                        "REJECTION_EXPERIENCE_LEVEL",
+                        template("REJECTION_EXPERIENCE_LEVEL", false, true, ""),
+                        "REJECTION_SCREENING", template("REJECTION_SCREENING", true, true, ""))));
+        assertEquals("REJECTION_SCREENING", only(plan).templateKey());
+        assertEquals(OUTCOME_SENDS, only(plan).outcome());
+    }
+
+    @Test
+    void withNoLetterAtAllTheInactiveRowIsWhatGetsReported() {
+        // The actionable fact is "someone switched this off", not "the key
+        // you have never seen is missing".
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.EXPERIENCE_LEVEL,
+                null, false, Map.of(
+                        "REJECTION_SCREENING", template("REJECTION_SCREENING", false, true, ""))));
+        assertEquals(REASON_TEMPLATE_INACTIVE, only(plan).reason());
+        assertEquals("REJECTION_SCREENING", only(plan).templateKey());
+    }
+
+    @Test
+    void aReasonlessPlanStillAnswersWithTheGenericLetter() {
+        // The dialog asks for a plan before a reason is picked.
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.INTERVIEW_2, null, null, false,
+                Map.of("REJECTION_POST_INTERVIEW",
+                        template("REJECTION_POST_INTERVIEW", true, true, ""))));
+        assertEquals("REJECTION_POST_INTERVIEW", only(plan).templateKey());
+    }
+
+    @Test
+    void anExplicitTemplateChoiceOverridesTheChain() {
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.EXPERIENCE_LEVEL,
+                "REJECTION_CULTURE_FIT", false, Map.of(
+                        "REJECTION_EXPERIENCE_LEVEL",
+                        template("REJECTION_EXPERIENCE_LEVEL", true, true, ""),
+                        "REJECTION_CULTURE_FIT",
+                        template("REJECTION_CULTURE_FIT", true, true, ""))));
+        assertEquals("REJECTION_CULTURE_FIT", only(plan).templateKey());
+    }
+
+    @Test
+    void anOverrideThatCannotSendDoesNotSilentlyPickAnotherLetter() {
+        // A recruiter who chose a letter and got a different one would never
+        // know. Report the choice as unsendable instead.
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.EXPERIENCE_LEVEL,
+                "REJECTION_CULTURE_FIT", false, Map.of(
+                        "REJECTION_CULTURE_FIT",
+                        template("REJECTION_CULTURE_FIT", false, true, ""),
+                        "REJECTION_SCREENING", template("REJECTION_SCREENING", true, true, ""))));
+        assertEquals(REASON_TEMPLATE_INACTIVE, only(plan).reason());
+        assertEquals("REJECTION_CULTURE_FIT", only(plan).templateKey());
+    }
+
+    @Test
+    void optingOutOfTheEmailSendsNothingAndSaysSo() {
+        CommunicationPlanResponse plan = buildPlan(rejectContext(
+                RecruitmentStage.SCREENING, RecruitmentRejectionReason.OTHER, null, true,
+                Map.of("REJECTION_SCREENING", template("REJECTION_SCREENING", true, true, ""))));
+        assertEquals(REASON_SENDER_OPTED_OUT, only(plan).reason());
+        assertTrue(plan.summary().nothingSent());
     }
 
     // ---- Interview scheduling (Method A) --------------------------------
