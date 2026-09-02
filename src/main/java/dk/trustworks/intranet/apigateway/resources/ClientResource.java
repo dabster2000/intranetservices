@@ -81,29 +81,16 @@ public class ClientResource {
             description = "Lists clients filtered by `type` (default CLIENT). " +
                     "PARTNERs are excluded unless explicitly requested via ?type=PARTNER — " +
                     "this hard-filter applies defense-in-depth at the resource layer. " +
-                    "Optional `active` filter: omit for both active and inactive (preserves prior default), " +
-                    "or pass true/false to filter. SPEC-INV-001 §3.4, §8.8.")
+                    "SPEC-INV-001 §3.4, §8.8.")
     public List<Client> findAll(
-            @QueryParam("type")   @DefaultValue("CLIENT") ClientType type,
-            @QueryParam("active")                         Boolean active) {
-        return clientAPI.listByTypeAndActive(type, active);
+            @QueryParam("type") @DefaultValue("CLIENT") ClientType type) {
+        return clientAPI.listByType(type);
     }
 
     @GET
     @Path("/{uuid}")
     public Client findByUuid(@PathParam("uuid") String uuid) {
         return clientAPI.findByUuid(uuid);
-    }
-
-    @GET
-    @Path("/active")
-    @Operation(summary = "List active clients filtered by type (default CLIENT)",
-            description = "Backward-compatible endpoint that now also applies the CLIENT/PARTNER " +
-                    "filter. Defaults to CLIENT so legacy callers see only end-customers. " +
-                    "SPEC-INV-001 §3.4, §8.8.")
-    public List<Client> findByActiveTrue(
-            @QueryParam("type") @DefaultValue("CLIENT") ClientType type) {
-        return clientAPI.listByTypeAndActive(type, true);
     }
 
     @GET
@@ -255,10 +242,6 @@ public class ClientResource {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
                         "segment", String.valueOf(oldClient.getSegment()), String.valueOf(client.getSegment()));
             }
-            if (oldClient.isActive() != client.isActive()) {
-                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
-                        "active", String.valueOf(oldClient.isActive()), String.valueOf(client.isActive()));
-            }
             if (!Objects.equals(oldClient.getAccountmanager(), client.getAccountmanager())) {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
                         "accountmanager", oldClient.getAccountmanager(), client.getAccountmanager());
@@ -340,38 +323,6 @@ public class ClientResource {
             log.warnf(e, "e-conomic customer sync failed during client %s uuid=%s; " +
                     "retry batchlet will pick up any recorded failures", op, client.getUuid());
         }
-    }
-
-    @PATCH
-    @Path("/{uuid}/active")
-    @RolesAllowed({"crm:write"})
-    @Operation(summary = "Toggle client active status",
-            description = "Updates only the active flag without full client validation.")
-    @APIResponses({
-            @APIResponse(responseCode = "200", description = "Status updated"),
-            @APIResponse(responseCode = "404", description = "Client not found")
-    })
-    public Response updateActiveStatus(@PathParam("uuid") String uuid, Map<String, Object> body) {
-        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
-        boolean active = Boolean.TRUE.equals(body.get("active"));
-        log.infof("Updating client active status uuid=%s, active=%s, user=%s", uuid, active, userUuid);
-
-        Client existing = clientAPI.findByUuid(uuid);
-        if (existing == null) {
-            return Response.status(Response.Status.NOT_FOUND)
-                    .entity(Map.of("error", "Client not found"))
-                    .build();
-        }
-
-        boolean oldActive = existing.isActive();
-        clientAPI.updateActiveStatus(uuid, active);
-
-        if (oldActive != active) {
-            activityLogService.logFieldChange(uuid, ClientActivityLog.TYPE_CLIENT, uuid, existing.getName(),
-                    "active", String.valueOf(oldActive), String.valueOf(active));
-        }
-
-        return Response.ok(Map.of("uuid", uuid, "active", active)).build();
     }
 
     @GET

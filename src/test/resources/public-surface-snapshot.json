@@ -164,7 +164,6 @@
       "fields": {
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
-          "active": "boolean",
           "billingAddress": "java.lang.String",
           "billingCity": "java.lang.String",
           "billingCountry": "java.lang.String",
@@ -639,7 +638,6 @@
       "fields": {
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
-          "active": "boolean",
           "billingAddress": "java.lang.String",
           "billingCity": "java.lang.String",
           "billingCountry": "java.lang.String",
@@ -731,7 +729,6 @@
       "fields": {
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
-          "active": "boolean",
           "billingAddress": "java.lang.String",
           "billingCity": "java.lang.String",
           "billingCountry": "java.lang.String",
@@ -837,7 +834,6 @@
         },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
-          "active": "boolean",
           "billingAddress": "java.lang.String",
           "billingCity": "java.lang.String",
           "billingCountry": "java.lang.String",

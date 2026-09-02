@@ -10,7 +10,7 @@ import lombok.NoArgsConstructor;
 public class QuestionnaireStatsResponse {
     private long totalSubmissions;
     private long uniqueClientsSubmitted;
-    private long totalActiveClients;
+    private long totalClients;
     private int coveragePercent;
     private long daysRemaining;
 }

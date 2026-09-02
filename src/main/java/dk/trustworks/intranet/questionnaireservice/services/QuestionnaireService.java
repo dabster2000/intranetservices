@@ -106,10 +106,10 @@ public class QuestionnaireService {
                 .distinct()
                 .count();
 
-        long totalActiveClients = Client.count("active", true);
+        long totalClients = Client.count();
 
-        int coveragePercent = totalActiveClients > 0
-                ? (int) Math.round((double) uniqueClients / totalActiveClients * 100)
+        int coveragePercent = totalClients > 0
+                ? (int) Math.round((double) uniqueClients / totalClients * 100)
                 : 0;
 
         long daysRemaining = q.getDeadline() != null
@@ -117,7 +117,7 @@ public class QuestionnaireService {
                 : 0;
 
         return new QuestionnaireStatsResponse(
-                totalSubmissions, uniqueClients, totalActiveClients, coveragePercent, daysRemaining
+                totalSubmissions, uniqueClients, totalClients, coveragePercent, daysRemaining
         );
     }
 
@@ -135,8 +135,8 @@ public class QuestionnaireService {
         }
 
         Client client = Client.findById(request.getClientUuid());
-        if (client == null || !client.isActive()) {
-            throw new BadRequestException("Client not found or inactive: " + request.getClientUuid());
+        if (client == null) {
+            throw new BadRequestException("Client not found: " + request.getClientUuid());
         }
 
         QuestionnaireSubmission existing = QuestionnaireSubmission.findExisting(

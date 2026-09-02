@@ -1932,9 +1932,9 @@ public class CxoClientService {
 
         sql.append("  GROUP BY w.clientuuid ");
         sql.append("  HAVING DATEDIFF(MAX(w.registered), MIN(w.registered)) > 0 ");
-        // Exclude new active clients (< 6 months engagement and still active)
-        // These artificially lower the average when there's many new acquisitions
-        sql.append("    AND NOT (MAX(c.active) = 1 AND DATEDIFF(:asOfDate, MIN(w.registered)) < 180) ");
+        // Exclude newly-acquired clients (< 6 months engagement).
+        // These artificially lower the average when there's many new acquisitions.
+        sql.append("    AND DATEDIFF(:asOfDate, MIN(w.registered)) >= 180 ");
         sql.append(") AS ce");
 
         Query query = em.createNativeQuery(sql.toString());
