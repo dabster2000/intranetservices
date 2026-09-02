@@ -700,12 +700,45 @@ public class CandidateService {
         // moved PROSPECT → CONTACTED must not be mailed a second time.
         boolean enteredPool = candidate.getStatus() != CandidateStatus.POOLED;
         candidate.pool(poolStatus, actor);
+        LocalDateTime deadline = null;
+        if (enteredPool) {
+            deadline = retentionDeadlineOnPooling(candidate.getRetentionDeadline(),
+                    LocalDateTime.now(ZoneOffset.UTC));
+            candidate.setRetentionDeadline(deadline);
+        }
         eventRecorder.record(candidateEvent(RecruitmentEventType.CANDIDATE_POOLED, candidate, actor)
                 .payload("pool_status", candidate.getPoolStatus().name())
-                .payload("entered_pool", enteredPool));
+                .payload("entered_pool", enteredPool)
+                .payload("retention_deadline", deadline == null ? null : deadline.toString()));
         log.infof("Pooled candidate uuid=%s bucket=%s by actor=%s",
                 candidate.getUuid(), candidate.getPoolStatus(), actor);
         return toResponse(candidate, latestRevision(candidate.getUuid()));
+    }
+
+    /**
+     * The GDPR retention deadline a candidate entering the talent pool should
+     * carry (2026-09-02).
+     * <p>
+     * The application terminals have always done this through
+     * {@code closeOutCandidateIfLastApplication} — return-to-pool included, so
+     * silver medalists were already covered. This path never did, and it is
+     * the one an <em>unsolicited</em> candidate arrives on: their submission
+     * creates no application, so no terminal can fire for them and nothing
+     * ever set a deadline. The consequence was a candidate bank that only
+     * grew — the renewal sweep skips a candidate with no deadline, so nobody
+     * was ever asked to renew and nobody was ever swept.
+     * <p>
+     * Never shortens an existing deadline. A candidate who has already
+     * granted consent holds a 12-month one ({@code CONSENT_MONTHS}), and
+     * pooling them again is not a reason to bring their data's life forward.
+     *
+     * @param existing the candidate's current deadline, or null
+     * @param now       UTC now
+     * @return the deadline that should be in force after pooling
+     */
+    static LocalDateTime retentionDeadlineOnPooling(LocalDateTime existing, LocalDateTime now) {
+        LocalDateTime fresh = now.plusMonths(RecruitmentApplicationService.RETENTION_MONTHS);
+        return existing != null && existing.isAfter(fresh) ? existing : fresh;
     }
 
     /** Bring a pooled candidate back to ACTIVE. Appends {@code CANDIDATE_UNPOOLED}. */

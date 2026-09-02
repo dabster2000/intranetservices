@@ -124,6 +124,52 @@ class PooledConsentLinkTest {
                         candidateWithDeadline(now.minusDays(1)), now));
     }
 
+    // ---- The clock the letter's deletion sentence depends on -------------
+
+    @Test
+    void enteringThePoolStartsASixMonthClock() {
+        // Before this, CandidateService.pool set no deadline at all, so a
+        // manually pooled or unsolicited candidate was never swept and never
+        // asked to renew -- a candidate bank that only grew. The letter's
+        // "we delete after six months" sentence is only true because of it.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        assertEquals(now.plusMonths(6),
+                CandidateService.retentionDeadlineOnPooling(null, now));
+    }
+
+    @Test
+    void poolingNeverShortensAnExistingDeadline() {
+        // A candidate who already granted consent holds a 12-month deadline.
+        // Pooling them again is not a reason to bring their data's life
+        // forward -- that would silently revoke half of what they were
+        // promised when they said yes.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        LocalDateTime granted = now.plusMonths(12);
+        assertEquals(granted, CandidateService.retentionDeadlineOnPooling(granted, now));
+    }
+
+    @Test
+    void aStaleDeadlineIsRefreshedRatherThanKept() {
+        // A deadline already in the past would mean the sweep deletes them
+        // before the letter asking to keep them could be answered.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        assertEquals(now.plusMonths(6),
+                CandidateService.retentionDeadlineOnPooling(now.minusMonths(1), now));
+        // Same for a deadline sooner than the fresh window.
+        assertEquals(now.plusMonths(6),
+                CandidateService.retentionDeadlineOnPooling(now.plusMonths(2), now));
+    }
+
+    @Test
+    void theConsentTokenOutlivesTheClockItStarts() {
+        // The two have to agree: a token that expired before the retention
+        // deadline would delete a candidate for not answering a dead link.
+        LocalDateTime now = LocalDateTime.of(2026, 9, 2, 12, 0);
+        LocalDateTime deadline = CandidateService.retentionDeadlineOnPooling(null, now);
+        RecruitmentCandidate pooled = candidateWithDeadline(deadline);
+        assertEquals(deadline, RecruitmentConsentService.poolTokenExpiry(pooled, now));
+    }
+
     @Test
     void theWindowOutlastsTheReviewQueue() {
         // The pooled letter defaults to review-first and the token is minted
