@@ -2014,7 +2014,6 @@ public class CxoClientService {
         sql.append("  c.uuid AS client_id, ");
         sql.append("  c.name AS client_name, ");
         sql.append("  c.segment, ");
-        sql.append("  c.active, ");
         sql.append("  MIN(w.registered) AS first_engagement, ");
         sql.append("  MAX(w.registered) AS last_engagement, ");
         sql.append("  DATEDIFF(MAX(w.registered), MIN(w.registered)) AS engagement_days, ");
@@ -2037,7 +2036,7 @@ public class CxoClientService {
             sql.append("       ORDER BY us.statusdate DESC LIMIT 1) IN (:companyIds) ");
         }
 
-        sql.append("GROUP BY c.uuid, c.name, c.segment, c.active ");
+        sql.append("GROUP BY c.uuid, c.name, c.segment ");
         sql.append("HAVING engagement_days > 0 ");
         sql.append("ORDER BY engagement_days DESC ");
         sql.append("LIMIT :limit");
@@ -2066,14 +2065,11 @@ public class CxoClientService {
             String clientName = (String) row[1];
             String segment = (String) row[2];
 
-            // c.active is BIT(1) – can come back as Boolean, byte[], Number, BitSet, etc.
-            boolean active = toLong(row[3]) != 0L;
-
-            LocalDate firstEngagement = (LocalDate) row[4];
-            LocalDate lastEngagement = (LocalDate) row[5];
-            int engagementDays = (int) toLong(row[6]);
-            double totalHours = toDouble(row[7]);
-            int uniqueConsultants = (int) toLong(row[8]);
+            LocalDate firstEngagement = (LocalDate) row[3];
+            LocalDate lastEngagement = (LocalDate) row[4];
+            int engagementDays = (int) toLong(row[5]);
+            double totalHours = toDouble(row[6]);
+            int uniqueConsultants = (int) toLong(row[7]);
 
             double engagementMonths = engagementDays / 30.44;
             totalMonths += engagementMonths;
@@ -2082,7 +2078,6 @@ public class CxoClientService {
                     clientId,
                     clientName,
                     segment != null ? segment : "OTHER",
-                    active,
                     firstEngagement,
                     lastEngagement,
                     Math.round(engagementMonths * 100.0) / 100.0,
@@ -2149,7 +2144,6 @@ public class CxoClientService {
         sql.append("  SELECT ");
         sql.append("    c.uuid AS client_id, ");
         sql.append("    c.segment, ");
-        sql.append("    c.active, ");
         sql.append("    COALESCE(SUM(fcr.net_revenue_dkk), 0) AS revenue ");
         sql.append("  FROM client c ");
         sql.append("  LEFT JOIN fact_client_revenue_mat fcr");
@@ -2161,8 +2155,7 @@ public class CxoClientService {
         }
 
         sql.append("  WHERE c.uuid != :internalClientId ");
-        sql.append("    AND (c.active = 1 OR fcr.client_id IS NOT NULL) ");
-        sql.append("  GROUP BY c.uuid, c.segment, c.active ");
+        sql.append("  GROUP BY c.uuid, c.segment ");
         sql.append("), ");
 
         // Calculate engagement for each client
