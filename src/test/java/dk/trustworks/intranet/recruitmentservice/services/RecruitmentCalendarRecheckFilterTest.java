@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarViewResponse.CalendarViewEvent;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient.CalendarViewResponse.GraphDateTime;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarViewResponse.CalendarViewEvent;
+import dk.trustworks.intranet.graph.GraphCalendarClient.CalendarViewResponse.GraphDateTime;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -76,16 +76,16 @@ class RecruitmentCalendarRecheckFilterTest {
 
     @Test
     void graphNotFound_recognisesBothExceptionShapes() {
-        // The REST client's registered mapper throws SharePointException
+        // The REST client's registered mapper throws GraphApiException
         // (a plain RuntimeException) — a WebApplicationException catch
         // never sees Graph 404s, which killed MISSING-hold detection in
         // production (F18, 2026-08-15).
         assertTrue(RecruitmentCalendarService.isGraphNotFound(
-                new dk.trustworks.intranet.sharepoint.client
-                        .GraphResponseExceptionMapper.SharePointException("gone", 404)));
+                new dk.trustworks.intranet.graph
+                        .GraphResponseExceptionMapper.GraphApiException("gone", 404)));
         assertFalse(RecruitmentCalendarService.isGraphNotFound(
-                new dk.trustworks.intranet.sharepoint.client
-                        .GraphResponseExceptionMapper.SharePointException("denied", 403)));
+                new dk.trustworks.intranet.graph
+                        .GraphResponseExceptionMapper.GraphApiException("denied", 403)));
         assertTrue(RecruitmentCalendarService.isGraphNotFound(
                 new jakarta.ws.rs.WebApplicationException(
                         jakarta.ws.rs.core.Response.status(404).build())));

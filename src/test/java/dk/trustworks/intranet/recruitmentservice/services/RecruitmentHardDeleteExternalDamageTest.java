@@ -4,7 +4,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.notifications.CandidateDiscussionSlackNotifier;
 import dk.trustworks.intranet.recruitmentservice.notifications.SlackCardReactor;
 import dk.trustworks.intranet.recruitmentservice.reporting.RecruitmentReportingProjector;
-import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
+import dk.trustworks.intranet.graph.GraphResponseExceptionMapper.GraphApiException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -139,7 +139,7 @@ class RecruitmentHardDeleteExternalDamageTest {
     void anOutlookInvitationThatSurvivesIsResidue_notASilentSuccess() {
         service.graphEventCanceller = (mailbox, eventId) -> {
             if (eventId.equals("candidate-event")) {
-                throw new SharePointException("Graph said 503", 503);
+                throw new GraphApiException("Graph said 503", 503);
             }
             graphCalls.add(mailbox + "/" + eventId);
         };
@@ -162,7 +162,7 @@ class RecruitmentHardDeleteExternalDamageTest {
     @Test
     void aGraph404CountsAsCancelled_becauseTheEventIsOffTheCalendar() {
         service.graphEventCanceller = (mailbox, eventId) -> {
-            throw new SharePointException("ErrorItemNotFound", 404);
+            throw new GraphApiException("ErrorItemNotFound", 404);
         };
 
         RecruitmentCandidateHardDeleteService.HardDeleteSummary summary =
@@ -294,7 +294,7 @@ class RecruitmentHardDeleteExternalDamageTest {
                 RecruitmentCandidateHardDeleteService.handlesFor(
                         interview(), "organizer@trustworks.dk", "career@trustworks.dk");
         return new RecruitmentCandidateHardDeleteService.Preflight(
-                List.of(APPLICATION), List.of(), List.of(), List.of(), null,
+                List.of(APPLICATION), List.of(), List.of(),
                 handles, calendarEnabled, List.of(APPLICATION), List.of(), false);
     }
 

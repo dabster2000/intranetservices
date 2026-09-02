@@ -17,10 +17,6 @@ import java.util.List;
  * @param signers Status of each individual signer
  * @param totalSigners Total number of signers
  * @param completedSigners Number of signers who have completed signing
- * @param sharepointLocationUuid Reference to {@code sharepoint_locations.uuid} for SharePoint auto-upload (nullable)
- * @param sharepointUploadStatus SharePoint upload status: PENDING, UPLOADED, FAILED (nullable)
- * @param sharepointUploadError Error message if SharePoint upload failed (nullable)
- * @param sharepointFileUrl URL of the uploaded file in SharePoint (nullable)
  * @param userUuid UUID of the user who owns this signing case
  * @param employeeName Resolved full name of the employee (nullable)
  * @param templateName Resolved template name (nullable)
@@ -40,10 +36,6 @@ public record AdminSigningCaseDTO(
     List<SignerStatus> signers,
     int totalSigners,
     int completedSigners,
-    String sharepointLocationUuid,
-    String sharepointUploadStatus,
-    String sharepointUploadError,
-    String sharepointFileUrl,
     // Admin-specific fields:
     String userUuid,
     String employeeName,

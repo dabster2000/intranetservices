@@ -42,7 +42,7 @@ import java.util.List;
  * template.</p>
  */
 @JBossLog
-@Tag(name = "agreements", description = "AI backfill of the agreement registry from signed SharePoint documents")
+@Tag(name = "agreements", description = "AI backfill of the agreement registry from the signed documents in the employee-document store")
 @Path("/agreements/backfill")
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
@@ -121,7 +121,7 @@ public class AgreementBackfillResource {
         return backfillService.findItems(runUuid, status, userUuid);
     }
 
-    /** PDF preview beside the proposal — bytes fetched live from SharePoint. */
+    /** PDF preview beside the proposal — bytes streamed from the employee-document store. */
     @GET
     @Path("/items/{uuid}/document")
     @Produces("application/pdf")

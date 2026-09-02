@@ -18,9 +18,9 @@ import java.util.Map;
  * or as attachment-only ({@code signObligated: false}).
  * </p>
  * <p>
- * The SharePoint upload destination is no longer specified by the caller — it is
- * resolved at signing-case creation time from the user's active company and the
- * template's {@code sharepoint_type} (see {@code SigningService}).
+ * The archival destination is never specified by the caller: at completion
+ * the signed documents land in the case owner's employee document store,
+ * categorized from the template (see {@code EmployeeSigningArchivalService}).
  * </p>
  *
  * @param documentName        Name of the document (used in signing case metadata)

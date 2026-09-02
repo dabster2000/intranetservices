@@ -24,7 +24,8 @@ public class BackfillItemDTO {
     private String userName;
     private String fileName;
     private long fileSize;
-    private String webUrl;
+    /** The {@code employee_documents.uuid} the preview streams from; null until adopted. */
+    private String employeeDocumentUuid;
     private String status;
     private List<Proposal> proposals;
     private String extractionNote;

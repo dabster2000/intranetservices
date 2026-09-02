@@ -17,9 +17,10 @@ import java.util.UUID;
 /**
  * One AI-backfill corpus walk (template-clauses spec §4.8/§10): the
  * admin-triggered, single-flight job that enumerates active employees'
- * SharePoint folders <b>by files</b> (never folder aggregates — the
- * 84-empty-folders lesson) and creates {@link AgreementBackfillItem}
- * rows for each new PDF. Counters are updated live so the console can
+ * documents in the S3 employee-document store <b>by files</b> (never
+ * folder aggregates — the 84-empty-folders lesson of the retired
+ * remote-folder walk) and creates {@link AgreementBackfillItem} rows for
+ * each new PDF. Counters are updated live so the console can
  * show progress while the walk runs.
  */
 @Data

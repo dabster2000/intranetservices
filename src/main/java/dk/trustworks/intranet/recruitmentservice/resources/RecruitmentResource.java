@@ -263,12 +263,11 @@ public class RecruitmentResource {
 
     /**
      * MicroProfile {@link ManagedExecutor} used to dispatch the post-commit
-     * SharePoint copy after a successful candidate conversion. Running the
-     * copy off the request thread releases DB locks fast and keeps the
-     * convert-candidate REST response sub-100ms (efficiency finding H2).
-     * The copy itself is best-effort; the
-     * {@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
-     * retries any rows still in PENDING/PARTIAL/FAILED.
+     * document promotion after a successful candidate conversion. Running
+     * the promotion off the request thread releases DB locks fast and keeps
+     * the convert-candidate REST response sub-100ms (efficiency finding H2).
+     * The promotion itself is best-effort; the nextsign-status-sync sweep
+     * retries any rows still in PENDING/FAILED.
      */
     @Inject
     ManagedExecutor managedExecutor;
@@ -928,14 +927,12 @@ public class RecruitmentResource {
         }
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
 
-        // Fire-and-forget the document copy after the conversion tx has
-        // committed (S3→S3 promotion while the employee_documents promotion
-        // writer is ON; legacy SharePoint copy otherwise). Doing it inline
-        // would hold DB row locks on the candidate/dossier/revision/appendix
-        // tables while the copy runs (efficiency finding H2). On failure the
-        // status stays PENDING/FAILED and the 5-minute re-drive (nextsign-
-        // status-sync sweep / SharePoint retry batchlet) picks it up — no
-        // caller retry needed.
+        // Fire-and-forget the S3→S3 document promotion after the conversion
+        // tx has committed. Doing it inline would hold DB row locks on the
+        // candidate/dossier/revision/appendix tables while the copy runs
+        // (efficiency finding H2). On failure the status stays
+        // PENDING/FAILED and the 5-minute re-drive (nextsign-status-sync
+        // sweep) picks it up — no caller retry needed.
         final UUID asyncCandidateUuid = uuid;
         managedExecutor.execute(() -> {
             try {
@@ -1645,12 +1642,10 @@ public class RecruitmentResource {
         // tracks status for this recruitment case. user_uuid must reference
         // an existing row in `user` (FK), so use the actor who triggered the
         // send — the candidate UUID is not a system user and breaks the FK.
-        // The 5th argument is the literal null: recruitment cases have no
-        // SharePoint auto-upload location; their signed documents land in the
-        // candidate's S3 staging space via EmployeeSigningArchivalService.
-        // Status sync is unaffected by the null — the poll-set query tracks
-        // every case to a terminal signing status regardless of SharePoint
-        // fields (SigningCaseRepository#findCasesNeedingStatusFetch).
+        // No template is bound: recruitment cases' signed documents land in
+        // the candidate's S3 staging space via EmployeeSigningArchivalService.
+        // The poll-set query tracks every case to a terminal signing status
+        // (SigningCaseRepository#findCasesNeedingStatusFetch).
         String actorUuid = actor.toString();
         try {
             withJdbcRetry("saveMinimalCase", () -> {
@@ -1658,8 +1653,7 @@ public class RecruitmentResource {
                         caseKey,
                         actorUuid,
                         documentName,
-                        signerInfos.size(),
-                        null);
+                        signerInfos.size());
                 return null;
             });
             // Immutable snapshot of the bundle's clauses — the Phase 3
@@ -1685,8 +1679,7 @@ public class RecruitmentResource {
                                 caseKey,
                                 repairActorUuid,
                                 repairDocumentName,
-                                repairTotalSigners,
-                                null);
+                                repairTotalSigners);
                         return null;
                     });
                     log.infof("Async repair: signing_cases row backfilled for caseKey=%s", caseKey);
@@ -1876,8 +1869,8 @@ public class RecruitmentResource {
 
     /**
      * Candidate profile visibility is deliberately wider than offer-dossier
-     * visibility. Strip target-company/start details, dossier-era notes,
-     * SharePoint hand-off state and the embedded latest-revision summary from
+     * visibility. Strip target-company/start details, dossier-era notes
+     * and the embedded latest-revision summary from
      * every candidate response unless the same backend predicate used by
      * dossier reads grants this viewer access. Missing actor context fails
      * closed.

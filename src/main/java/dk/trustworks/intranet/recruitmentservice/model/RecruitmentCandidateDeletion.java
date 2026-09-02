@@ -116,8 +116,8 @@ public class RecruitmentCandidateDeletion extends PanacheEntityBase {
 
     /**
      * JSON object: what survived and is still out there (Slack cards, Graph
-     * events, S3 objects, the SharePoint folder, {@code mail} rows, whether
-     * the reporting projection rebuilt). Updatable, because the S3 and
+     * events, S3 objects, {@code mail} rows, whether the reporting
+     * projection rebuilt). Updatable, because the S3 and
      * projection legs only run after this row's transaction commits.
      */
     @JdbcTypeCode(SqlTypes.JSON)

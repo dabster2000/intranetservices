@@ -3,15 +3,10 @@ package dk.trustworks.intranet.signing.jobs;
 import dk.trustworks.intranet.agreementservice.services.AgreementRecorder;
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
-import dk.trustworks.intranet.documentservice.services.EmployeeDocumentsFeatureFlag;
-import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.PromotionStatus;
 import dk.trustworks.intranet.recruitmentservice.services.S3EmployeePromotionService;
-import dk.trustworks.intranet.sharepoint.dto.DriveItem;
-import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import dk.trustworks.intranet.signing.services.EmployeeSigningArchivalService;
@@ -24,10 +19,8 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -76,13 +69,7 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     SigningService signingService;
 
     @Inject
-    SharePointService sharePointService;
-
-    @Inject
     SlackService slackService;
-
-    @Inject
-    EmployeeDocumentsFeatureFlag employeeDocumentsFeatureFlag;
 
     @Inject
     EmployeeSigningArchivalService employeeSigningArchivalService;
@@ -98,9 +85,6 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
     /** Bound per pass — promotions are multi-file, keep the batch small. */
     private static final int PROMOTION_SWEEP_LIMIT = 10;
-
-    private static final DateTimeFormatter FILENAME_DATE_FORMATTER =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
 
     /**
      * Maximum fast-lane retry attempts. With 15min delay between retries
@@ -129,8 +113,8 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
         log.info("NextSignStatusSyncBatchlet: Starting status fetch for pending cases");
 
         // S3 archival catch-up + promotion re-drive (employee-documents
-        // spec §6.5.1/§6.5.3) — both no-ops while their writer toggles are
-        // OFF. Never fail the status-fetch pass over sweep errors.
+        // spec §6.5.1/§6.5.3). Never fail the status-fetch pass over sweep
+        // errors.
         //
         // Hoisted above the early return deliberately: these sweeps are not
         // conditional on there being signing cases to poll. An idle poll set
@@ -207,22 +191,16 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 log.infof("Successfully fetched and updated status for case: %s", caseKey);
                 successful++;
 
-                // Check if signing is complete and needs archival. While the
-                // employee_documents.writers.signing toggle is ON, signed
+                // Check if signing is complete and needs archival: signed
                 // documents archive to S3 (employee store / candidate
-                // staging — spec §6.5.1-2); while OFF, the legacy SharePoint
-                // upload path runs unchanged (removed at the deletion release).
+                // staging — spec §6.5.1-2).
                 if (isSigningComplete(status)) {
                     // Registry rows for the case's clauses (Phase 3) — same
                     // transaction as the completion update; idempotent, and
                     // the recorder never lets a failure roll the update back.
                     agreementsRecorded += agreementRecorder.recordCompletedCase(signingCase);
 
-                    if (employeeDocumentsFeatureFlag.isSigningWriterEnabled()) {
-                        employeeSigningArchivalService.archiveCompletedCase(signingCase);
-                    } else if (shouldUploadToSharePoint(signingCase)) {
-                        uploadSignedDocumentToSharePoint(signingCase);
-                    }
+                    employeeSigningArchivalService.archiveCompletedCase(signingCase);
                 }
 
             } catch (Exception e) {
@@ -277,23 +255,29 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     }
 
     // ========================================================================
-    // EMPLOYEE-DOCUMENTS SWEEPS (spec §6.5.1 / §6.5.3 — flag-gated)
+    // EMPLOYEE-DOCUMENTS SWEEPS (spec §6.5.1 / §6.5.3)
     // ========================================================================
 
     /**
-     * Archive completed-but-unarchived cases to S3. Selects only cases
-     * NOT already durably stored in SharePoint (those are the Phase-2
-     * migration's job) — i.e. the durability-gap catch-up plus any case
-     * whose inline archival failed on a previous pass. Bounded per pass.
+     * Archive completed-but-unarchived cases to S3 — the durability-gap
+     * catch-up plus any case whose inline archival failed on a previous
+     * pass. Bounded per pass, and per case by the archive-attempt cap
+     * (V551) inside the archival service.
+     *
+     * <p>Cases the retired SharePoint auto-upload path already stored are
+     * out of this sweep's reach even though the {@code sharepoint_*}
+     * predicate that used to exclude them is gone with the entity mapping:
+     * V556 moved that population to SKIPPED (their bytes came in with the
+     * SharePoint→S3 migration), and the archival service refuses to
+     * re-download a case whose migrated {@code _signed_} copies are already
+     * in the store ({@code EmployeeSigningArchivalService#legacyMigratedCopies}).</p>
      *
      * @return cases archived this pass
      */
     private int runArchivalCatchupSweep() {
-        if (!employeeDocumentsFeatureFlag.isSigningWriterEnabled()) return 0;
         List<SigningCase> candidates = signingCaseRepository.find(
                 "archiveStatus = 'PENDING' AND processingStatus = 'COMPLETED' " +
                 "AND status = 'COMPLETED' " +
-                "AND (sharepointUploadStatus IS NULL OR sharepointUploadStatus NOT IN ('UPLOADED', 'PARTIAL_FAILURE')) " +
                 "ORDER BY createdAt ASC")
                 .page(0, ARCHIVAL_SWEEP_LIMIT)
                 .list();
@@ -310,14 +294,12 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     }
 
     /**
-     * Re-drive PENDING/FAILED S3→S3 promotions (the thin remnant of the
-     * retired SharePoint move batchlet — spec §6.5.3). Bounded per pass;
-     * idempotent per file via {@code migrated_from} provenance.
+     * Re-drive PENDING/FAILED S3→S3 promotions (spec §6.5.3). Bounded per
+     * pass; idempotent per file via {@code migrated_from} provenance.
      *
      * @return candidates re-driven this pass
      */
     private int runPromotionRedriveSweep() {
-        if (!employeeDocumentsFeatureFlag.isPromotionWriterEnabled()) return 0;
         List<RecruitmentCandidate> pending = RecruitmentCandidate.find(
                 "status = ?1 AND (promotionStatus = ?2 OR promotionStatus = ?3)",
                 CandidateStatus.HIRED, PromotionStatus.PENDING, PromotionStatus.FAILED)
@@ -350,7 +332,7 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     }
 
     // ========================================================================
-    // SHAREPOINT AUTO-UPLOAD METHODS
+    // COMPLETION DETECTION
     // ========================================================================
 
     /**
@@ -368,306 +350,5 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             return true;
         }
         return status.totalSigners() > 0 && status.completedSigners() >= status.totalSigners();
-    }
-
-    /**
-     * Checks if the case should be uploaded to SharePoint.
-     *
-     * @param signingCase The signing case entity
-     * @return true if upload is needed
-     */
-    private boolean shouldUploadToSharePoint(SigningCase signingCase) {
-        // Must have a SharePoint location configured
-        if (signingCase.getSharepointLocationUuid() == null || signingCase.getSharepointLocationUuid().isBlank()) {
-            return false;
-        }
-        // Must not already be uploaded or partially uploaded
-        String uploadStatus = signingCase.getSharepointUploadStatus();
-        return !"UPLOADED".equals(uploadStatus) && !"PARTIAL_FAILURE".equals(uploadStatus);
-    }
-
-    /**
-     * Downloads ALL signed documents from NextSign and uploads them to SharePoint.
-     * Handles multi-document cases by iterating over every signed document.
-     * Uses partial failure handling: continues uploading remaining documents if one fails.
-     *
-     * @param signingCase The signing case entity
-     */
-    private void uploadSignedDocumentToSharePoint(SigningCase signingCase) {
-        String caseKey = signingCase.getCaseKey();
-        String sharepointLocationUuid = signingCase.getSharepointLocationUuid();
-
-        log.infof("Starting SharePoint upload for case: %s (location: %s)", caseKey, sharepointLocationUuid);
-
-        try {
-            // 1. Get SharePoint location configuration
-            SharePointLocationEntity location = SharePointLocationEntity.findByUuid(sharepointLocationUuid);
-            if (location == null) {
-                String error = "SharePoint location not found: " + sharepointLocationUuid;
-                log.errorf(error);
-                markSharePointUploadFailed(signingCase, error);
-                return;
-            }
-
-            if (!Boolean.TRUE.equals(location.getIsActive())) {
-                log.warnf("SharePoint location %s is inactive, skipping upload for case %s",
-                    sharepointLocationUuid, caseKey);
-                return;
-            }
-
-            // 2. Download ALL signed documents from NextSign (single status call)
-            log.debugf("Downloading all signed documents for case: %s", caseKey);
-            List<SigningService.SignedDocumentDownload> documents =
-                signingService.downloadAllSignedDocuments(caseKey);
-
-            if (documents.isEmpty()) {
-                String error = "No signed documents downloaded for case: " + caseKey;
-                log.errorf(error);
-                markSharePointUploadFailed(signingCase, error);
-                return;
-            }
-
-            log.infof("Downloaded %d signed documents for case %s", documents.size(), caseKey);
-
-            // 3. Construct folder path with username subdirectory (always appended for EMPLOYEE upload pattern)
-            String uploadFolderPath = buildUploadFolderPath(location, signingCase);
-
-            // 4. Ensure folder exists (create if necessary)
-            if (uploadFolderPath != null && !uploadFolderPath.isBlank()) {
-                log.debugf("Ensuring folder exists before upload: %s", uploadFolderPath);
-                try {
-                    sharePointService.ensureFolderExists(
-                        location.getSiteUrl(),
-                        location.getDriveName(),
-                        uploadFolderPath
-                    );
-                    log.debugf("Folder verified/created successfully");
-                } catch (Exception e) {
-                    log.warnf(e, "Could not ensure folder exists: %s - will attempt upload anyway", uploadFolderPath);
-                }
-            }
-
-            // 5. Upload each document, tracking successes and failures
-            String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
-            List<String> uploadedUrls = new ArrayList<>();
-            List<String> failedDocNames = new ArrayList<>();
-
-            int uploadIdx = 0;
-            for (SigningService.SignedDocumentDownload doc : documents) {
-                uploadIdx++;
-                String docDisplayName = doc.name() != null ? doc.name() : "document_" + doc.index();
-                try {
-                    // Use original document name from NextSign
-                    String baseFilename = sanitizeFilename(doc.name());
-                    String filename = String.format("%s_signed_%s.pdf", baseFilename, timestamp);
-
-                    log.infof("Uploading document %d/%d to SharePoint: %s",
-                        uploadIdx, documents.size(), filename);
-
-                    DriveItem result = sharePointService.uploadFile(
-                        location.getSiteUrl(),
-                        location.getDriveName(),
-                        uploadFolderPath,
-                        filename,
-                        doc.pdfBytes()
-                    );
-
-                    uploadedUrls.add(result.webUrl());
-                    log.infof("Successfully uploaded document '%s' to SharePoint: %s",
-                        docDisplayName, result.webUrl());
-
-                } catch (Exception e) {
-                    log.errorf(e, "Failed to upload document '%s' (index %d) for case %s: %s",
-                        docDisplayName, doc.index(), caseKey, e.getMessage());
-                    failedDocNames.add(docDisplayName);
-                }
-            }
-
-            // 6. Update case status based on results
-            if (uploadedUrls.isEmpty()) {
-                // All documents failed
-                String error = String.format("All %d documents failed to upload", documents.size());
-                markSharePointUploadFailed(signingCase, error);
-            } else if (!failedDocNames.isEmpty()) {
-                // Partial success
-                signingCase.setSharepointUploadStatus("PARTIAL_FAILURE");
-                signingCase.setSharepointFileUrl(String.join(" | ", uploadedUrls));
-                signingCase.setSharepointUploadError(
-                    "Failed documents: " + String.join(", ", failedDocNames));
-                signingCaseRepository.persist(signingCase);
-                log.warnf("Partial upload for case %s: %d/%d documents uploaded",
-                    caseKey, uploadedUrls.size(), documents.size());
-            } else {
-                // All documents uploaded successfully
-                signingCase.setSharepointUploadStatus("UPLOADED");
-                signingCase.setSharepointFileUrl(String.join(" | ", uploadedUrls));
-                signingCase.setSharepointUploadError(null);
-                signingCaseRepository.persist(signingCase);
-                log.infof("Successfully uploaded all %d signed documents for case %s to SharePoint",
-                    uploadedUrls.size(), caseKey);
-            }
-
-            // 7. Send Slack notification (only if at least some documents uploaded)
-            if (!uploadedUrls.isEmpty()) {
-                notifyUserOfSignedDocumentUpload(signingCase);
-            }
-
-        } catch (Exception e) {
-            log.errorf(e, "Failed to upload signed documents to SharePoint for case: %s", caseKey);
-            markSharePointUploadFailed(signingCase, e.getMessage());
-        }
-    }
-
-    /**
-     * Marks a case as having failed SharePoint upload.
-     *
-     * @param signingCase The signing case entity
-     * @param error The error message
-     */
-    private void markSharePointUploadFailed(SigningCase signingCase, String error) {
-        signingCase.setSharepointUploadStatus("FAILED");
-        signingCase.setSharepointUploadError(error);
-        signingCaseRepository.persist(signingCase);
-    }
-
-    /**
-     * Builds the upload folder path by appending the case owner's username to the
-     * location's base folder path.
-     * <p>
-     * Username is always appended for the auto-upload pattern; if the username can't
-     * be resolved the base path is returned unchanged.
-     * </p>
-     *
-     * @param location    The SharePoint location entity
-     * @param signingCase The signing case entity
-     * @return The constructed folder path
-     */
-    private String buildUploadFolderPath(SharePointLocationEntity location, SigningCase signingCase) {
-        String basePath = location.getFolderPath();
-        String userUuid = signingCase.getUserUuid();
-        if (userUuid == null || userUuid.isBlank()) return basePath;
-        Optional<User> userOpt = User.findByIdOptional(userUuid);
-        if (userOpt.isEmpty()) return basePath;
-        String username = userOpt.get().getUsername();
-        if (username == null || username.isBlank()) return basePath;
-        String sanitizedUsername = sanitizePathSegment(username);
-        String normalizedBase = (basePath == null || basePath.isBlank()) ? "" : basePath.trim().replaceAll("[\\\\/]+$", "");
-        return normalizedBase.isEmpty() ? sanitizedUsername : normalizedBase + "/" + sanitizedUsername;
-    }
-
-    /**
-     * Sanitizes a path segment to prevent directory traversal attacks.
-     * Removes or replaces dangerous characters while preserving readable usernames.
-     *
-     * Examples:
-     * - "hans.lassen" → "hans.lassen" (safe, preserved)
-     * - "../admin" → "admin" (path traversal removed)
-     * - "user/../../etc" → "user_etc" (slashes replaced)
-     *
-     * @param segment The path segment to sanitize
-     * @return Sanitized path segment safe for use in file paths
-     */
-    private String sanitizePathSegment(String segment) {
-        if (segment == null || segment.isBlank()) {
-            return "unknown_user";
-        }
-
-        // Remove path traversal attempts
-        String cleaned = segment
-            .replaceAll("\\.\\.", "")  // Remove ".."
-            .replaceAll("^[\\\\/]+", "")  // Remove leading slashes
-            .replaceAll("[\\\\/]+$", ""); // Remove trailing slashes
-
-        // Replace potentially problematic characters with underscore
-        cleaned = cleaned.replaceAll("[\\\\/:*?\"<>|@#$%^&]", "_");
-
-        // Collapse multiple underscores
-        cleaned = cleaned.replaceAll("_+", "_");
-
-        // Trim and ensure not empty
-        cleaned = cleaned.trim();
-        if (cleaned.isEmpty()) {
-            return "unknown_user";
-        }
-
-        return cleaned;
-    }
-
-    /**
-     * Sanitizes a filename by removing/replacing invalid characters.
-     *
-     * @param filename The original filename
-     * @return Sanitized filename safe for filesystem
-     */
-    private String sanitizeFilename(String filename) {
-        if (filename == null || filename.isBlank()) {
-            return "document";
-        }
-        // Remove file extension if present
-        String name = filename;
-        int lastDot = name.lastIndexOf('.');
-        if (lastDot > 0) {
-            name = name.substring(0, lastDot);
-        }
-        // Replace invalid characters with underscores
-        return name.replaceAll("[^a-zA-Z0-9æøåÆØÅ._-]", "_")
-                   .replaceAll("_+", "_")
-                   .replaceAll("^_|_$", "");
-    }
-
-    // ========================================================================
-    // SLACK NOTIFICATION METHODS
-    // ========================================================================
-
-    /**
-     * Sends a Slack notification to the case owner that their document
-     * has been signed and uploaded to SharePoint.
-     *
-     * Graceful degradation: notification failures are logged but do not
-     * fail the overall upload process.
-     *
-     * @param signingCase The signing case that was uploaded
-     */
-    private void notifyUserOfSignedDocumentUpload(SigningCase signingCase) {
-        try {
-            // Lookup user
-            String userUuid = signingCase.getUserUuid();
-            if (userUuid == null || userUuid.isBlank()) {
-                log.warnf("Cannot send notification: no userUuid for case %s",
-                    signingCase.getCaseKey());
-                return;
-            }
-
-            Optional<User> userOpt = User.findByIdOptional(userUuid);
-            if (userOpt.isEmpty()) {
-                log.warnf("Cannot send notification: user %s not found for case %s",
-                    userUuid, signingCase.getCaseKey());
-                return;
-            }
-
-            User user = userOpt.get();
-
-            // Check if user has Slack configured
-            if (user.getSlackusername() == null || user.getSlackusername().isBlank()) {
-                log.debugf("User %s has no Slack username, skipping notification",
-                    user.getUsername());
-                return;
-            }
-
-            // Send notification
-            slackService.sendSignedDocumentNotification(
-                user,
-                signingCase.getDocumentName(),
-                signingCase.getUpdatedAt()
-            );
-
-            log.infof("Sent Slack notification to %s for signed document: %s",
-                user.getUsername(), signingCase.getDocumentName());
-
-        } catch (Exception e) {
-            // Graceful degradation - log but don't fail the upload
-            log.warnf(e, "Failed to send Slack notification for case %s: %s",
-                signingCase.getCaseKey(), e.getMessage());
-        }
     }
 }

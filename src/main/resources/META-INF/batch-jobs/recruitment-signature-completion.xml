@@ -5,7 +5,7 @@
 
     Purpose:
     Fans out HR notifications when a dossier-linked NextSign signing case has
-    transitioned to COMPLETED + sharepoint_upload_status=UPLOADED. Joins
+    transitioned to COMPLETED. Joins
     signing_cases against candidate_dossier_revisions.signing_case_key to
     detect dossier-linked completions, then queues one TrustworksMail per
     configured recipient under recruitment.completion-notification.{company-uuid}.

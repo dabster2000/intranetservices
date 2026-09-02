@@ -497,36 +497,6 @@ public class BatchScheduler {
     }
 
     /**
-     * Drain the SharePoint candidate folder move queue.
-     * <p>
-     * Picks up rows in {@code recruitment_candidates} where status=HIRED and
-     * sharepoint_move_status=PENDING and copies the candidate's recruitment
-     * folder to the new employee's home folder, then deletes the source.
-     * Out-of-band from the convert HTTP transaction because Graph API calls
-     * cannot be rolled back. Idempotent — re-running on a row already in
-     * a terminal state (COMPLETED / PARTIAL / FAILED) is a no-op since the
-     * batchlet's query filters on PENDING.
-     * <p>
-     * Schedule: every 5 minutes — matches the cadence of nextsign-status-sync,
-     * which is the closest analogue (also a queue-drain over an external API).
-     */
-    @Scheduled(every = "5m")
-    void scheduleSharePointEmployeeFolderMove() {
-        try {
-            if (jobOperator.getJobNames().contains("sharepoint-employee-folder-move")) {
-                if (!jobOperator.getRunningExecutions("sharepoint-employee-folder-move").isEmpty()) {
-                    log.debug("sharepoint-employee-folder-move already running, skipping");
-                    return;
-                }
-            }
-            log.debug("Starting sharepoint-employee-folder-move batch job");
-            jobOperator.start("sharepoint-employee-folder-move", new Properties());
-        } catch (Exception e) {
-            log.debug("Could not schedule sharepoint-employee-folder-move: " + e.getMessage());
-        }
-    }
-
-    /**
      * Deliver recruitment events that the in-JVM live path missed
      * (crash/deploy between commit and dispatch) to every registered
      * recruitment reactor — the reliability half of the ATS event backbone.
@@ -788,7 +758,7 @@ public class BatchScheduler {
 
     /**
      * Fan out HR notifications when a dossier-linked NextSign signing case
-     * completes and its signed documents have been uploaded to SharePoint.
+     * completes.
      * Joins signing_cases to candidate_dossier_revisions to detect dossier-
      * linked completions, then queues mails per configured recipient under
      * {@code recruitment.completion-notification.{company-uuid}}.

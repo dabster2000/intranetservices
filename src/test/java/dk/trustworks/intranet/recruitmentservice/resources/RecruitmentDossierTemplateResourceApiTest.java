@@ -69,9 +69,9 @@ class RecruitmentDossierTemplateResourceApiTest {
             em.createNativeQuery("""
                             INSERT INTO document_templates
                                 (uuid, name, description, category, template_usage,
-                                 sharepoint_type, active, created_at, updated_at)
+                                 active, created_at, updated_at)
                             VALUES (:uuid, 'Stale legacy offer', '', 'EMPLOYMENT',
-                                    'EMPLOYEE_SIGNING', 'EMPLOYEE', 1, NOW(), NOW())
+                                    'EMPLOYEE_SIGNING', 1, NOW(), NOW())
                             """)
                     .setParameter("uuid", template)
                     .executeUpdate();

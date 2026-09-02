@@ -134,7 +134,6 @@ class SchedulerShutdownGuardCoverageTest {
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleRecruitmentScorecardPrompt",
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleRecruitmentSignatureCompletion",
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleRecruitmentSlaSweep",
-            "dk.trustworks.intranet.batch.BatchScheduler#scheduleSharePointEmployeeFolderMove",
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleSlackUserSync",
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleTeamDescription",
             "dk.trustworks.intranet.batch.BatchScheduler#scheduleUserResumeUpdate",

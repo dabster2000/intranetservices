@@ -1108,7 +1108,7 @@ public class SlackService {
 
     /**
      * Sends a notification to a user when their signed document has been
-     * uploaded to SharePoint. Uses Block Kit for a clean, professional layout.
+     * archived in their HR documents. Uses Block Kit for a clean, professional layout.
      *
      * @param user The user to notify (must have slackusername set)
      * @param documentName The name of the signed document
@@ -1131,8 +1131,8 @@ public class SlackService {
 
         // Section with main message
         blocks.add(section(s -> s.text(markdownText(
-            ":white_check_mark: *Document Signed & Uploaded*\n" +
-            "Your document *" + documentName + "* has been signed by all parties and uploaded to SharePoint."
+            ":white_check_mark: *Document Signed & Archived*\n" +
+            "Your document *" + documentName + "* has been signed by all parties and archived in your HR documents."
         ))));
 
         // Divider
@@ -1156,7 +1156,7 @@ public class SlackService {
         // Send the message as DM to user
         ChatPostMessageResponse response = slack.methods(motherSlackBotToken).chatPostMessage(req -> req
             .channel(user.getSlackusername())
-            .text("Your document \"" + documentName + "\" has been signed and uploaded to SharePoint.")
+            .text("Your document \"" + documentName + "\" has been signed and archived in your HR documents.")
             .blocks(blocks)
         );
 

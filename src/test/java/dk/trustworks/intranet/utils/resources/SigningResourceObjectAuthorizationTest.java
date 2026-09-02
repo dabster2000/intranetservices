@@ -132,7 +132,7 @@ class SigningResourceObjectAuthorizationTest {
 
         verify(signingService).createCase(any());
         verify(signingService).saveMinimalCase(
-                eq(CASE_KEY), eq(EMPLOYEE), eq("Salary agreement.pdf"), eq(1), any());
+                eq(CASE_KEY), eq(EMPLOYEE), eq("Salary agreement.pdf"), eq(1));
     }
 
     @Test
@@ -250,10 +250,6 @@ class SigningResourceObjectAuthorizationTest {
                 List.of(),
                 1,
                 0,
-                null,
-                null,
-                null,
-                null,
                 null);
     }
 }

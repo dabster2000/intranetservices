@@ -23,20 +23,19 @@ import java.util.UUID;
  * per token" at the DB level so a leaked link cannot flood storage with
  * duplicates.
  *
- * <p>Storage is dual-pathed:</p>
+ * <p>Storage is dual-pathed, both in S3:</p>
  * <ul>
  *   <li><b>Candidate-linked tokens</b> ({@link #candidateUuid} set) →
- *       file lives in S3 via {@code S3FileService}; {@link #s3FileUuid}
- *       holds the file UUID.</li>
+ *       file lives in the candidate's staging space via
+ *       {@code RecruitmentS3StorageService}; {@link #s3FileUuid} holds the
+ *       file UUID.</li>
  *   <li><b>User-linked tokens</b> ({@link #userUuid} set) → file lives in
- *       SharePoint under {@code {EMPLOYEE folder}/{username}/Onboarding/};
- *       {@link #sharepointDriveItemId} and {@link #sharepointWebUrl} hold
- *       the Microsoft Graph identifiers.</li>
+ *       the employee document store; {@link #employeeDocumentUuid} holds
+ *       the {@code employee_documents.uuid}.</li>
  * </ul>
  *
  * <p>The {@code candidate_uuid} XOR {@code user_uuid} invariant is mirrored
- * by a CHECK constraint on the table, and so is the storage_target ↔
- * identifier consistency.</p>
+ * by a CHECK constraint on the table.</p>
  */
 @Getter
 @Setter
@@ -64,24 +63,12 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     @Column(name = "user_uuid", length = 36)
     private String userUuid;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "storage_target", nullable = false)
-    private StorageTarget storageTarget;
-
     @Column(name = "s3_file_uuid", length = 36)
     private String s3FileUuid;
 
-    @Column(name = "sharepoint_drive_item_id", length = 255)
-    private String sharepointDriveItemId;
-
-    @Column(name = "sharepoint_web_url", length = 1024)
-    private String sharepointWebUrl;
-
     /**
-     * {@code employee_documents.uuid} for user-flow uploads stored via the
-     * S3 employee-document path (employee-documents spec §6.5.4, V454) —
-     * set instead of {@link #sharepointDriveItemId} while the
-     * {@code employee_documents.writers.onboarding} toggle is ON.
+     * {@code employee_documents.uuid} for user-flow uploads stored in the
+     * employee document store (employee-documents spec §6.5.4, V454).
      */
     @Column(name = "employee_document_uuid", length = 36)
     private String employeeDocumentUuid;
@@ -94,19 +81,6 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
 
     @Column(name = "file_size_bytes", nullable = false)
     private long fileSizeBytes;
-
-    /**
-     * Lifecycle timestamp for the recruitment S3 reaper. NULL means
-     * <em>not eligible for reaping</em> (default — set on every row at
-     * insert time). Stamped to {@code NOW + 30 days} when the candidate's
-     * promotion-time SharePoint copy reaches
-     * {@link dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus#COMPLETED}
-     * and cleared back to NULL once the S3 reaper has deleted the
-     * underlying object. Has no meaning for SHAREPOINT-target rows, which
-     * never own an S3 object to reap.
-     */
-    @Column(name = "s3_retention_until")
-    private LocalDateTime s3RetentionUntil;
 
     @Column(name = "uploaded_at", nullable = false, updatable = false)
     private LocalDateTime uploadedAt;
@@ -121,11 +95,6 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
         }
     }
 
-    public enum StorageTarget {
-        S3,
-        SHAREPOINT
-    }
-
     /** All submissions made for the given token, ordered by upload time. */
     public static List<OnboardingUploadSubmission> findByToken(String tokenUuid) {
         return list("tokenUuid = ?1 ORDER BY uploadedAt", tokenUuid);
@@ -137,15 +106,14 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     }
 
     /**
-     * All S3-stored onboarding submissions for the given candidate, ordered
-     * by document type so the upload pass and log output are deterministic.
-     * Used by {@code SharePointEmployeeFolderService.copyToEmployeeFolder}
-     * to migrate identity documents into SharePoint at promotion time.
+     * All staging-stored onboarding submissions for the given candidate,
+     * ordered by document type so the promotion pass and log output are
+     * deterministic. Used by {@code S3EmployeePromotionService} to move
+     * identity documents into the employee store at promotion time.
      */
     public static List<OnboardingUploadSubmission> findS3SubmissionsByCandidate(String candidateUuid) {
         return list(
-                "candidateUuid = ?1 AND storageTarget = ?2 AND s3FileUuid IS NOT NULL " +
-                "ORDER BY documentType",
-                candidateUuid, StorageTarget.S3);
+                "candidateUuid = ?1 AND s3FileUuid IS NOT NULL ORDER BY documentType",
+                candidateUuid);
     }
 }

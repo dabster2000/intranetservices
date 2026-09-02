@@ -2,7 +2,8 @@ package dk.trustworks.intranet.signing.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules;
+import dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerService;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.EmployeeDocument;
 import dk.trustworks.intranet.documentservice.model.enums.EmployeeDocumentCategory;
@@ -25,17 +26,17 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
- * S3 archival of completed signing cases — the replacement for the
- * SharePoint upload half of {@code NextSignStatusSyncBatchlet}
- * (employee-documents spec §6.5.1–2). Runs only while the
- * {@code employee_documents.writers.signing} toggle is ON; the caller
- * (the batchlet) owns the flag check and the legacy OFF-branch.
+ * S3 archival of completed signing cases (employee-documents spec
+ * §6.5.1–2), driven by {@code NextSignStatusSyncBatchlet} both inline at
+ * completion and from its bounded catch-up sweep.
  *
  * <p><b>Employee-flow cases</b> archive each signed PDF into the case
  * owner's employee document store ({@code source=SIGNING}, category
@@ -55,6 +56,16 @@ import java.util.UUID;
  * {@code PARTIAL_FAILURE} deliberately does not exist as a state — a
  * half-archived multi-document case is simply PENDING with some rows
  * already present (spec §6.5.1).</p>
+ *
+ * <p><b>Legacy cases</b> — those whose signed PDFs the retired SharePoint
+ * auto-upload path stored, and the completed SharePoint→S3 migration
+ * copied in as {@code source=MIGRATION} — are never archived again from
+ * NextSign: the migrated rows carry no {@code signing_case_key} until the
+ * categorizer links them, so {@code uq_ed_signing} cannot catch the
+ * repeat and this pass would store a second copy of every PDF and DM the
+ * owner about a document signed long ago. V556 moves the known population
+ * to SKIPPED; {@link #legacyMigratedCopies} is the belt for whatever it
+ * did not cover.</p>
  */
 @JBossLog
 @ApplicationScoped
@@ -132,6 +143,23 @@ public class EmployeeSigningArchivalService {
             return false;
         }
 
+        // Legacy guard (SharePoint deletion release) — before a single
+        // NextSign download: a case whose signed output already reached
+        // the store through the migration is SKIPPED, not re-archived. The
+        // categorizer's deterministic linkage still examines SKIPPED cases
+        // and flips them to ARCHIVED once the migrated files are linked.
+        List<EmployeeDocument> legacyCopies = legacyMigratedCopies(signingCase,
+                EmployeeDocument.<EmployeeDocument>list(
+                        "userUuid = ?1 AND source = ?2 AND signingCaseKey IS NULL",
+                        userUuid, EmployeeDocumentSource.MIGRATION));
+        if (!legacyCopies.isEmpty()) {
+            markSkipped(signingCase, "Legacy SharePoint upload; " + legacyCopies.size()
+                    + " migrated signed document(s) already in the S3 store (linked by the categorizer)");
+            log.infof("Case %s not re-archived: %d migrated signed copies already present for user %s",
+                    caseKey, legacyCopies.size(), userUuid);
+            return false;
+        }
+
         List<SignedDocumentDownload> documents = signingService.downloadAllSignedDocuments(caseKey);
         if (documents.isEmpty()) {
             markArchiveError(signingCase, "No signed documents downloadable from NextSign");
@@ -155,7 +183,7 @@ public class EmployeeSigningArchivalService {
             // reads "Lønregulering" and not "Lønregulering signed 2026 08 10
             // 143022": a machine-uniqueness suffix is not part of a title.
             String filename = stripPdfSuffix(baseName) + "_signed_" + timestamp + ".pdf";
-            String displayName = MigrationCategorizerRules.buildDisplayName(
+            String displayName = EmployeeDocumentCategorizerRules.buildDisplayName(
                     category, stripPdfSuffix(baseName) + ".pdf", null, null);
             try {
                 employeeDocumentService.store(new StoreCommand(
@@ -279,11 +307,68 @@ public class EmployeeSigningArchivalService {
         return name.toLowerCase().endsWith(".pdf") ? name.substring(0, name.length() - 4) : name;
     }
 
+    /**
+     * Tolerance when comparing a legacy filename stamp with the case's
+     * creation time. The stamp was {@code LocalDateTime.now()} in the
+     * uploading container's zone while {@code created_at} comes from
+     * NextSign, so the two can disagree by a zone offset for a document
+     * signed within hours of creation; a day absorbs that without giving
+     * up the protection below.
+     */
+    private static final java.time.Duration LEGACY_STAMP_SLACK = java.time.Duration.ofDays(1);
+
+    /**
+     * The subset of a user's unlinked MIGRATION-sourced documents that are
+     * THIS case's signed output: the stored filename matches the legacy
+     * {@code {sanitizedDocName}_signed_{yyyy-MM-dd_HHmmss}.pdf} stamp (the
+     * categorizer's definition, reused verbatim) AND the stamp is not older
+     * than the case. That second test matters: the same document name
+     * signed again years later must archive its NEW PDF — mistaking the
+     * predecessor's migrated copy for it would silently drop the new one.
+     * A name without a parseable stamp is no evidence and never matches.
+     */
+    static List<EmployeeDocument> legacyMigratedCopies(SigningCase signingCase, List<EmployeeDocument> migratedDocs) {
+        if (migratedDocs == null || migratedDocs.isEmpty()) return List.of();
+        Pattern pattern = EmployeeDocumentCategorizerService.signedPattern(signingCase.getDocumentName());
+        if (pattern == null) return List.of();
+        LocalDateTime notBefore = signingCase.getCreatedAt() == null
+                ? null : signingCase.getCreatedAt().minus(LEGACY_STAMP_SLACK);
+        return migratedDocs.stream()
+                .filter(doc -> EmployeeDocumentCategorizerService.matchesExactly(doc.getOriginalFilename(), pattern))
+                .filter(doc -> stampedNotBefore(doc.getOriginalFilename(), notBefore))
+                .toList();
+    }
+
+    private static boolean stampedNotBefore(String filename, LocalDateTime notBefore) {
+        try {
+            LocalDateTime stamp = LocalDateTime.parse(
+                    EmployeeDocumentCategorizerService.signedTimestamp(filename), FILENAME_DATE_FORMATTER);
+            return notBefore == null || !stamp.isBefore(notBefore);
+        } catch (DateTimeParseException e) {
+            return false;
+        }
+    }
+
     @Transactional
     void markArchived(SigningCase signingCase) {
         signingCase.setArchiveStatus("ARCHIVED");
         signingCase.setArchiveError(null);
         signingCase.setArchiveAttempts(0);
+        signingCaseRepository.persist(signingCase);
+    }
+
+    /**
+     * Terminal "nothing to archive" that is NOT a failed attempt: the reason
+     * is structural (the signed bytes are already in the store), so the
+     * V551 counter is left alone. Reuses the V454 SKIPPED state — which
+     * {@code SigningCaseRepository.findCompletedNotArchived()} still hands
+     * to the categorizer's signing linkage — rather than adding an enum
+     * value; the reason stays legible in {@code archive_error}.
+     */
+    @Transactional
+    void markSkipped(SigningCase signingCase, String reason) {
+        signingCase.setArchiveStatus("SKIPPED");
+        signingCase.setArchiveError(reason);
         signingCaseRepository.persist(signingCase);
     }
 
@@ -331,7 +416,7 @@ public class EmployeeSigningArchivalService {
                 snapshotJson, revisionUuid);
     }
 
-    /** Best-effort Slack DM to the case owner (same UX as the SharePoint path). */
+    /** Best-effort Slack DM to the case owner. */
     private void notifyOwner(SigningCase signingCase) {
         try {
             String userUuid = signingCase.getUserUuid();

@@ -10,7 +10,6 @@ import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity;
-import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateUsage;
 import jakarta.enterprise.context.RequestScoped;
@@ -149,7 +148,6 @@ public class TemplateService {
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
         entity.setTemplateUsage(dto.getTemplateUsage());
-        entity.setSharepointType(dto.getSharepointType() != null ? dto.getSharepointType() : SharePointLocationType.EMPLOYEE);
         entity.setActive(dto.isActive());
         entity.setCreatedBy(currentUserUuid);
         entity.setModifiedBy(currentUserUuid);
@@ -217,9 +215,6 @@ public class TemplateService {
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
         entity.setTemplateUsage(dto.getTemplateUsage());
-        if (dto.getSharepointType() != null) {
-            entity.setSharepointType(dto.getSharepointType());
-        }
         entity.setActive(dto.isActive());
         entity.setModifiedBy(currentUserUuid);
 
@@ -378,7 +373,6 @@ public class TemplateService {
                 .templateUsage(entity.getTemplateUsage() == null
                         ? TemplateUsage.RECRUITMENT_DOSSIER
                         : entity.getTemplateUsage())
-                .sharepointType(entity.getSharepointType())
                 .active(entity.isActive())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())

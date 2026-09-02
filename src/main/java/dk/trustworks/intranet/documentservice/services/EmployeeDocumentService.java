@@ -82,7 +82,7 @@ public class EmployeeDocumentService {
      *
      * <p>{@code displayName} is the standardized name the caller has
      * already built (see
-     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * {@link dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules#buildDisplayName};
      * it is normalized again here). Null ⇒ the row falls back to
      * {@code original_filename}, which is what interactive uploads want:
      * HR typed that name deliberately.</p>
@@ -124,7 +124,7 @@ public class EmployeeDocumentService {
      *
      * <p>{@code displayName} is the standardized name the caller has
      * already built (see
-     * {@link dk.trustworks.intranet.documentservice.migration.services.MigrationCategorizerRules#buildDisplayName};
+     * {@link dk.trustworks.intranet.documentservice.maintenance.EmployeeDocumentCategorizerRules#buildDisplayName};
      * it is normalized again here). Null ⇒ the row falls back to
      * {@code original_filename}, which is what the legacy re-home path
      * wants: those documents are named by the migration rename pass.</p>
@@ -259,120 +259,6 @@ public class EmployeeDocumentService {
         return doc;
     }
 
-    // ── Store (migration bytes) ────────────────────────────────────────────
-
-    /** Byte-level store command for the Phase-2a SharePoint migration (runbook 2a-4). */
-    public record MigrationStoreCommand(
-            String userUuid,
-            byte[] bytes,
-            String filename,
-            String contentTypeHint,
-            EmployeeDocumentCategory category,
-            String label,
-            String migratedFrom,
-            java.time.LocalDateTime originalTimestamp) { }
-
-    /** Result: the row plus whether the type had to be sniffed (⇒ needs_review). */
-    /**
-     * @param created   a brand-new document row was written
-     * @param refreshed the document already existed and its bytes were replaced
-     *                  because the SharePoint source had changed. Neither
-     *                  created nor a no-op skip — reported separately so a
-     *                  delta run's counts say what actually happened.
-     */
-    public record MigrationStoreResult(EmployeeDocument document, boolean created,
-                                       boolean refreshed, boolean typeSniffed) { }
-
-    /**
-     * Migration write path (spec §9.4a): same S3-then-narrow-TX shape as
-     * {@link #store}, but — per the migration rules — no size cap, and
-     * unknown/blocked content types are stored with a sniffed content
-     * type and flagged {@code needs_review=1} instead of being rejected
-     * (the corpus predates the D6 allow-list). Idempotent per
-     * {@code migratedFrom} provenance: a re-run returns the existing row
-     * and writes nothing. The SharePoint {@code lastModifiedDateTime} is
-     * carried into {@code created_at} (native update — the column is
-     * DB-defaulted and not insertable via the entity). Audited as MIGRATE.
-     */
-    public MigrationStoreResult storeMigrated(MigrationStoreCommand cmd) {
-        requireValidUserUuid(cmd.userUuid());
-        if (cmd.bytes() == null || cmd.bytes().length == 0) {
-            throw badRequest("EMPTY_FILE", "The migrated file is empty.");
-        }
-        if (cmd.migratedFrom() == null || cmd.migratedFrom().isBlank()) {
-            throw badRequest("MISSING_PROVENANCE", "Migration writes require a migratedFrom provenance.");
-        }
-
-        EmployeeDocument existing = EmployeeDocument.findByProvenance(trimTo(cmd.migratedFrom(), 1024));
-        if (existing != null) {
-            // Provenance is the SharePoint webUrl, and editing a file in
-            // SharePoint does not change its URL. Returning the existing row
-            // unconditionally therefore made the delta path a no-op for the
-            // one case it exists to handle: the crawler resets an item to
-            // DISCOVERED on an eTag change, the copier re-downloads the new
-            // bytes, and they were then dropped on the floor while the item
-            // flipped to COPIED still pointing at the stale document. The
-            // delta crawl reported success and kept the old content.
-            //
-            // So compare content, not identity. Same bytes ⇒ the cheap
-            // idempotent re-run this guard was written for. Different bytes ⇒
-            // the source was edited, and the document is refreshed in place:
-            // the S3 key and uuid are kept, so HR's category, display name and
-            // flags survive, and bucket versioning keeps the previous bytes.
-            String incomingSha = sha256Hex(cmd.bytes());
-            if (isSameContent(existing, incomingSha, cmd.bytes().length)) {
-                log.debugf("storeMigrated: source %s already migrated as %s — skipping",
-                        cmd.migratedFrom(), existing.getUuid());
-                return new MigrationStoreResult(existing, false, false, false);
-            }
-            return refreshMigrated(existing, cmd, incomingSha);
-        }
-
-        String contentType = normalizeContentType(cmd.contentTypeHint());
-        boolean typeSniffed = false;
-        if (!ALLOWED_MIME_TYPES.contains(contentType) || !magicMatches(contentType, cmd.bytes())) {
-            contentType = sniffContentType(cmd.bytes(), cmd.filename());
-            typeSniffed = true;
-        }
-
-        String safeFilename = sanitizeFilename(cmd.filename());
-        if (safeFilename.isBlank()) safeFilename = "document";
-
-        String docUuid = UUID.randomUUID().toString();
-        String key = buildKey(cmd.userUuid(), docUuid, safeFilename);
-
-        EmployeeDocument doc = new EmployeeDocument();
-        doc.setUuid(docUuid);
-        doc.setUserUuid(cmd.userUuid());
-        doc.setS3Key(key);
-        doc.setCategory(cmd.category() == null ? EmployeeDocumentCategory.OTHER : cmd.category());
-        doc.setLabel(trimTo(cmd.label() == null || cmd.label().isBlank() ? null : cmd.label(), 255));
-        doc.setOriginalFilename(trimTo(safeFilename, 500));
-        doc.setContentType(contentType);
-        doc.setFileSizeBytes(cmd.bytes().length);
-        doc.setSha256(sha256Hex(cmd.bytes()));
-        doc.setSource(EmployeeDocumentSource.MIGRATION);
-        doc.setNeedsReview(typeSniffed);
-        doc.setUploadedBy(null);
-        doc.setMigratedFrom(trimTo(cmd.migratedFrom(), 1024));
-
-        storage.put(key, cmd.bytes(), contentType, objectMetadata(doc));
-        try {
-            persistMigratedWithAudit(doc, new EmployeeDocumentAudit(
-                    docUuid, cmd.userUuid(), null,
-                    EmployeeDocumentAuditAction.MIGRATE,
-                    auditDetail(doc) + " from " + trimTo(cmd.migratedFrom(), 500)),
-                    cmd.originalTimestamp());
-        } catch (RuntimeException e) {
-            compensateStorage(key, docUuid);
-            throw e;
-        }
-
-        log.infof("Employee document migrated uuid=%s user=%s size=%d sniffed=%s",
-                docUuid, cmd.userUuid(), cmd.bytes().length, typeSniffed);
-        return new MigrationStoreResult(doc, true, false, typeSniffed);
-    }
-
     /**
      * Whether a re-copied source still holds the bytes we already have.
      *
@@ -388,88 +274,6 @@ public class EmployeeDocumentService {
             return existing.getSha256().equals(incomingSha);
         }
         return existing.getFileSizeBytes() == incomingSize;
-    }
-
-    /**
-     * The source file changed: put the new bytes on the existing key and bring
-     * the row's size, hash and content type up to date. Identity, category,
-     * display name, flags and audit history are all preserved — this is the
-     * same document, in a newer revision.
-     */
-    private MigrationStoreResult refreshMigrated(EmployeeDocument existing,
-                                                 MigrationStoreCommand cmd,
-                                                 String incomingSha) {
-        String contentType = normalizeContentType(cmd.contentTypeHint());
-        boolean typeSniffed = false;
-        if (!ALLOWED_MIME_TYPES.contains(contentType) || !magicMatches(contentType, cmd.bytes())) {
-            contentType = sniffContentType(cmd.bytes(), cmd.filename());
-            typeSniffed = true;
-        }
-
-        storage.put(existing.getS3Key(), cmd.bytes(), contentType, objectMetadata(existing));
-        updateMigratedContent(existing.getUuid(), contentType, cmd.bytes().length, incomingSha,
-                new EmployeeDocumentAudit(existing.getUuid(), existing.getUserUuid(), null,
-                        EmployeeDocumentAuditAction.UPDATE,
-                        "re-migrated after source change from " + trimTo(cmd.migratedFrom(), 500)));
-
-        log.infof("Employee document re-migrated uuid=%s user=%s size=%d (source changed)",
-                existing.getUuid(), existing.getUserUuid(), cmd.bytes().length);
-        return new MigrationStoreResult(existing, false, true, typeSniffed);
-    }
-
-    @Transactional
-    void updateMigratedContent(String docUuid, String contentType, long size, String sha256,
-                               EmployeeDocumentAudit auditRow) {
-        EmployeeDocument managed = EmployeeDocument.findById(docUuid);
-        if (managed == null) return;
-        managed.setContentType(contentType);
-        managed.setFileSizeBytes(size);
-        managed.setSha256(sha256);
-        managed.persist();
-        auditRow.persist();
-    }
-
-    @Transactional
-    void persistMigratedWithAudit(EmployeeDocument doc, EmployeeDocumentAudit auditRow,
-                                  java.time.LocalDateTime originalTimestamp) {
-        doc.persist();
-        auditRow.persist();
-        if (originalTimestamp != null) {
-            // created_at is DB-defaulted (insertable=false on the entity);
-            // the migration carries the SharePoint timestamp into it so the
-            // corpus keeps its historical ordering.
-            getEntityManager()
-                    .createNativeQuery("UPDATE employee_documents SET created_at = ?1 WHERE uuid = ?2")
-                    .setParameter(1, originalTimestamp)
-                    .setParameter(2, doc.getUuid())
-                    .executeUpdate();
-        }
-    }
-
-    private jakarta.persistence.EntityManager getEntityManager() {
-        return EmployeeDocument.getEntityManager();
-    }
-
-    /**
-     * Best-effort content sniffing for legacy corpus types outside the D6
-     * allow-list: magic bytes first, extension second, octet-stream last.
-     */
-    static String sniffContentType(byte[] bytes, String filename) {
-        if (bytes != null && bytes.length >= 4) {
-            if (bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F') return "application/pdf";
-            if ((bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8) return "image/jpeg";
-            if ((bytes[0] & 0xff) == 0x89 && bytes[1] == 0x50) return "image/png";
-            if ((bytes[0] & 0xff) == 0xd0 && (bytes[1] & 0xff) == 0xcf) return "application/vnd.ms-outlook";
-            if (bytes[0] == 0x50 && bytes[1] == 0x4b) {
-                String byExtension = contentTypeFromFilename(filename);
-                // Any zip-based type we can't name stays octet-stream.
-                return byExtension.startsWith("application/vnd.openxmlformats")
-                        ? byExtension : "application/octet-stream";
-            }
-        }
-        String byExtension = contentTypeFromFilename(filename);
-        return byExtension.equals("application/octet-stream") && looksLikeEmlHeader(bytes != null ? bytes : new byte[0])
-                ? "message/rfc822" : byExtension;
     }
 
     // ── Store (server-side copy) ───────────────────────────────────────────
@@ -765,7 +569,8 @@ public class EmployeeDocumentService {
             for (EmployeeDocument doc : docs) {
                 // Zip entries carry the display name (what the subject
                 // recognises); manifest.json keeps original_filename as
-                // the provenance record — HR compares it to SharePoint.
+                // the provenance record — what HR compared against the legacy
+                // store during migration verification.
                 String entryName = "documents/" + doc.getUuid().substring(0, 8) + "-" + servingFilename(doc);
                 try {
                     byte[] bytes = storage.get(doc.getS3Key()).bytes();

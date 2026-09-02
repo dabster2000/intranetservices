@@ -194,9 +194,9 @@ class TemplateResourceAuthorizationApiTest {
         em.createNativeQuery("""
                         INSERT INTO document_templates
                             (uuid, name, description, category, template_usage,
-                             sharepoint_type, active, created_at, updated_at)
+                             active, created_at, updated_at)
                         VALUES (:uuid, :name, '', 'EMPLOYMENT', :usage,
-                                'EMPLOYEE', 1, NOW(), NOW())
+                                1, NOW(), NOW())
                         """)
                 .setParameter("uuid", uuid)
                 .setParameter("name", name)

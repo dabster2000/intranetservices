@@ -27,10 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Periodic listener that fans out HR notifications when a dossier-linked
- * NextSign signing case has fully completed. Recruitment-created cases never
- * upload their signed documents to SharePoint (send-signature persists them
- * with a null SharePoint location), so this listener only requires COMPLETED
- * status — it does <strong>not</strong> gate on the SharePoint upload state.
+ * NextSign signing case has fully completed. This listener only requires
+ * COMPLETED signing status — it does <strong>not</strong> gate on the
+ * archival state of the signed documents.
  *
  * <h3>Why a polling batchlet (and not a CDI event observer)?</h3>
  * The natural integration point would be to emit a CDI event from
@@ -98,10 +97,8 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
 
         // P10: append SIGNING_COMPLETED to the recruitment event stream for
         // ALL dossier-linked completed cases. This loop is deliberately
-        // separate from the email loop below with its OWN query: recruitment
-        // send-signature saves cases with a null SharePoint location, so
-        // sharepoint_upload_status never reaches 'UPLOADED' for them and the
-        // email query below would never match. Idempotency is durable — the
+        // separate from the email loop below with its OWN query.
+        // Idempotency is durable — the
         // bridge checks the event store for an existing SIGNING_COMPLETED
         // with the same case_key (the in-memory set stays email-only).
         int eventsAppended = appendSigningCompletedEvents();
@@ -111,13 +108,11 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
         // candidate_dossier_revisions.signing_case_key) and surface the
         // dossier UUID so we can resolve target_company_uuid and recipient
         // details below. This query is intentionally the same shape as the
-        // event-append loop's (dossier-linked + COMPLETED, no SharePoint
-        // condition): recruitment send-signature saves cases with a null
-        // SharePoint location, so sharepoint_upload_status never reaches
-        // 'UPLOADED' for them — gating the email on UPLOADED kept it dormant
-        // for every recruitment-created case. Since the INNER JOIN means every
-        // matched row is dossier-linked (i.e. recruitment-owned), dropping the
-        // UPLOADED condition is correct for the whole result set.
+        // event-append loop's (dossier-linked + COMPLETED, no archival
+        // condition): gating the email on an archival state once kept it
+        // dormant for every recruitment-created case. Since the INNER JOIN
+        // means every matched row is dossier-linked (i.e. recruitment-owned),
+        // COMPLETED alone is the right condition for the whole result set.
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
                 "SELECT DISTINCT sc.case_key, cdr.dossier_uuid " +
@@ -180,8 +175,7 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
     /**
      * P10 event-append loop: every COMPLETED signing case joined to a
      * dossier revision gets exactly one durable {@code SIGNING_COMPLETED}
-     * event — no SharePoint condition (recruitment cases never reach
-     * 'UPLOADED', see class javadoc of the email loop). Failures of a
+     * event — no archival condition (see the email loop). Failures of a
      * single case are logged and retried on the next 5-minute cycle; they
      * never break the email path.
      *

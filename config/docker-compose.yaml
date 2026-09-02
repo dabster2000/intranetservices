@@ -4,6 +4,8 @@ services:
     container_name: intranet2.0
     image: trustworks/intranet2.0:prod
     env_file:
+      # Copy docker-env-intranet.env.example to docker-env-intranet.env and
+      # fill in real values. Never committed (.gitignore).
       - docker-env-intranet.env
     ports:
       - "8080:8080"
@@ -16,6 +18,8 @@ services:
     container_name: intranet
     image: trustworks/intranet:prod
     env_file:
+      # Copy docker-env-intranet.env.example to docker-env-intranet.env and
+      # fill in real values. Never committed (.gitignore).
       - docker-env-intranet.env
     environment:
       - JAEGER_AGENT_HOST=jaeger
@@ -31,9 +35,14 @@ services:
     container_name: twservices
     image: trustworks/twservices:prod
     env_file:
+      # Copy the .example of each to the real name and fill in real values.
+      # Never committed (.gitignore).
       - docker-env-twservices.env
       - userpass.env
-      - aws.env
+      # Optional: copy aws.env.example to aws.env and fill in short-lived
+      # credentials. Never committed (.gitignore).
+      - path: aws.env
+        required: false
     ports:
       - "9093:9093"
     networks:

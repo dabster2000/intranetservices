@@ -1314,8 +1314,6 @@ public class CandidateService {
                 c.getArt14Deadline(),
                 c.getDeclineReason(),
                 c.getConvertedUserUuid(),
-                c.getSharepointFolderPath(),
-                c.getSharepointMoveStatus(),
                 c.getCreatedByUseruuid(),
                 c.getCreatedAt(),
                 c.getUpdatedAt(),

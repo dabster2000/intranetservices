@@ -354,8 +354,7 @@ public class RecruitmentAnonymizerService {
                             r.appendices_snapshot = '[]',
                             r.generated_pdfs_snapshot = NULL,
                             r.recipient_email = :email,
-                            r.note = NULL,
-                            r.s3_retention_until = NULL
+                            r.note = NULL
                         WHERE d.candidate_uuid = :candidate
                         """)
                 .setParameter("email", SCRUBBED_EMAIL)

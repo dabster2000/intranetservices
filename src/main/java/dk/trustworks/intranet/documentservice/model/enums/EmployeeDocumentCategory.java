@@ -3,7 +3,7 @@ package dk.trustworks.intranet.documentservice.model.enums;
 /**
  * Category of an employee document in the S3-only store (spec §6.2 / D3:
  * flat list + category field, no folder tree). {@code SICKNESS} and
- * {@code TERMINATION} replace the SharePoint "Sygdom" / "Opsigelse"
+ * {@code TERMINATION} replaced the legacy "Sygdom" / "Opsigelse"
  * subfolders; {@code OTHER} is the default for uncategorized and
  * self-uploaded documents.
  */

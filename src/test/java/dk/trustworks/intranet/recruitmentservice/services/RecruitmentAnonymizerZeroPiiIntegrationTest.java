@@ -95,7 +95,7 @@ class RecruitmentAnonymizerZeroPiiIntegrationTest {
                                  decline_reason, status, pool_status, source, source_detail,
                                  external_referrer_name, tags, education_level, education_other,
                                  experience_level, specializations, languages, current_employer,
-                                 sharepoint_folder_path, retention_deadline,
+                                 retention_deadline,
                                  art14_required, art14_deadline, process_ended_at,
                                  created_by_useruuid, created_at, updated_at)
                             VALUES (:uuid, :s, :s, :email, :s, :s, :s,
@@ -103,7 +103,7 @@ class RecruitmentAnonymizerZeroPiiIntegrationTest {
                                     JSON_OBJECT('referenceName', :s),
                                     :s, JSON_ARRAY(:s), 'MASTER', :s,
                                     'SENIOR', JSON_ARRAY('PM'), JSON_ARRAY(:s), :s,
-                                    :s, NOW(), 1, NOW(), NOW(),
+                                    NOW(), 1, NOW(), NOW(),
                                     :actor, NOW(), NOW())
                             """)
                     .setParameter("uuid", candidateUuid)

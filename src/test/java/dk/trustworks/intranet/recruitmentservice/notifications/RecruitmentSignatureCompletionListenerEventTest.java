@@ -30,8 +30,8 @@ import static org.mockito.Mockito.atLeast;
 
 /**
  * P10 completion-listener event append (contract B1c/B3.5): a COMPLETED
- * signing case joined to a dossier revision — WITHOUT any SharePoint upload
- * status, which recruitment-created cases never get — yields exactly one
+ * signing case joined to a dossier revision — with no archival state at
+ * all, the shape every freshly completed case has — yields exactly one
  * {@code SIGNING_COMPLETED} event; a second {@code doProcess} run (the
  * restart simulation: durable idempotency must not rely on the in-memory
  * email dedup set) still yields exactly one. The email path is untouched:
@@ -120,14 +120,12 @@ class RecruitmentSignatureCompletionListenerEventTest {
                     .setParameter("dossier", dossierUuid)
                     .setParameter("caseKey", caseKey)
                     .setParameter("sender", UUID.randomUUID().toString()).executeUpdate();
-            // COMPLETED but NO sharepoint_upload_status — the shape every
-            // recruitment-created case has (upload is owned by Convert).
+            // COMPLETED with no archival state — the shape every
+            // recruitment-created case has (archival is owned by Convert).
             em.createNativeQuery("""
                             INSERT INTO signing_cases
-                                (case_key, user_uuid, document_name, status,
-                                 sharepoint_upload_status, created_at)
-                            VALUES (:caseKey, :user, 'Listener Fixture Contract', 'COMPLETED',
-                                    NULL, NOW())
+                                (case_key, user_uuid, document_name, status, created_at)
+                            VALUES (:caseKey, :user, 'Listener Fixture Contract', 'COMPLETED', NOW())
                             """)
                     .setParameter("caseKey", caseKey)
                     .setParameter("user", UUID.randomUUID().toString()).executeUpdate();
@@ -188,7 +186,7 @@ class RecruitmentSignatureCompletionListenerEventTest {
 
     /**
      * The dormant-email fix (deviation 3 / follow-up 4): a recruitment-created
-     * COMPLETED case with a NULL sharepoint_upload_status — the shape every
+     * COMPLETED case with no archival state — the shape every
      * send-signature case has — now triggers exactly ONE HR courtesy email
      * once a recipient is configured for the candidate's target company. A
      * second {@code doProcess} run (same JVM) sends no duplicate: the existing

@@ -155,8 +155,7 @@ public class EmployeeDocumentResource {
 
     /**
      * The documents archived for one signing case, {@code document_index}
-     * order — what the signing UIs link to now that SharePoint is gone
-     * (spec §6.5.5). A case whose archival has not run yet returns an empty
+     * order — what the signing UIs link to (spec §6.5.5). A case whose archival has not run yet returns an empty
      * list, which is the honest answer: PENDING means no bytes are filed.
      *
      * <p>Authorization mirrors {@link #get(String)} rather than the signing
@@ -369,10 +368,14 @@ public class EmployeeDocumentResource {
                 "documentCount", documentCount,
                 "userCount", userCount == null ? 0L : userCount,
                 "needsReviewCount", needsReviewCount,
+                // The writer toggles are gone — every writer is S3-only now.
+                // Hard-coded true for this ONE release so an older frontend
+                // still reading them during the pipelined deploy renders
+                // "on"; the next release removes the object.
                 "writers", Map.of(
-                        "signing", featureFlag.isSigningWriterEnabled(),
-                        "promotion", featureFlag.isPromotionWriterEnabled(),
-                        "onboarding", featureFlag.isOnboardingWriterEnabled()),
+                        "signing", true,
+                        "promotion", true,
+                        "onboarding", true),
                 "ui", Map.of(
                         "hrTab", featureFlag.isHrTabEnabled(),
                         "selfService", featureFlag.isSelfServiceEnabled()),

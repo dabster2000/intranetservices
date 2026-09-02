@@ -18,14 +18,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * AC16 / AC17 / AC18 depend on without booting the Quarkus runtime.
  *
  * <p>AC16: {@code sendSignature} calls
- * {@code signingService.saveMinimalCase(caseKey, candidateUuid, documentName, totalSigners, null)}
+ * {@code signingService.saveMinimalCase(caseKey, candidateUuid, documentName, totalSigners)}
  * exactly once, immediately after {@code createMultiDocumentSigningCase} returns
  * and BEFORE {@code dossierRevisionService.snapshotFromValues}.
  *
- * <p>AC17: The 5th argument is the literal {@code null} so the
- * {@code NextSignStatusSyncBatchlet} skip guard fires.
+ * <p>AC17: no template is bound — recruitment cases archive into the
+ * candidate's S3 staging space, not an employee store.
  *
- * <p>AC18 (contract level): the 5-arg overload exists and is public.
+ * <p>AC18 (contract level): the 4-arg overload exists and is public.
  */
 class RecruitmentResourceSendSignatureTest {
 
@@ -52,16 +52,15 @@ class RecruitmentResourceSendSignatureTest {
     }
 
     @Test
-    void signingService_saveMinimalCase_5argOverloadExists() throws Exception {
+    void signingService_saveMinimalCase_4argOverloadExists() throws Exception {
         Method m = SigningService.class.getMethod(
                 "saveMinimalCase",
-                String.class, String.class, String.class, int.class, String.class);
+                String.class, String.class, String.class, int.class);
         assertNotNull(m,
-                "SigningService.saveMinimalCase(caseKey,userUuid,documentName,totalSigners,sharepointLocationUuid) " +
+                "SigningService.saveMinimalCase(caseKey,userUuid,documentName,totalSigners) " +
                         "must exist — RecruitmentResource.sendSignature relies on this overload (AC16/AC17).");
-        // 5th param of type String allows the literal null per AC17.
-        assertEquals(String.class, m.getParameterTypes()[4],
-                "5th parameter must be String to accept the literal null per AC17");
+        assertEquals(int.class, m.getParameterTypes()[3],
+                "4th parameter must be the signer count");
     }
 
     private static Method findMethodByName(String name) {

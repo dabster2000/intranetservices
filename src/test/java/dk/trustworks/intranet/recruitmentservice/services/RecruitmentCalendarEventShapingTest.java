@@ -6,7 +6,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailBodyFormat;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -48,11 +48,11 @@ class RecruitmentCalendarEventShapingTest {
             RecruitmentCalendarService.InvitationDetails.NONE;
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
 
     @BeforeEach
     void setUp() {
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;
@@ -67,8 +67,8 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void create_teamsInterview_carriesTheFullEnrichment() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-1", true,
-                        new GraphApiClient.CalendarEvent.OnlineMeeting(
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-1", true,
+                        new GraphCalendarClient.CalendarEvent.OnlineMeeting(
                                 "https://teams.microsoft.com/l/meetup-join/x")));
         RecruitmentInterview interview = interview();
         interview.setOnlineMeeting(true);
@@ -76,10 +76,10 @@ class RecruitmentCalendarEventShapingTest {
         RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(eq("career@trustworks.dk"), body.capture());
-        GraphApiClient.CalendarEventRequest request = body.getValue();
+        GraphCalendarClient.CalendarEventRequest request = body.getValue();
         assertEquals(Boolean.TRUE, request.isOnlineMeeting());
         assertEquals("teamsForBusiness", request.onlineMeetingProvider());
         assertEquals(List.of("Recruitment"), request.categories());
@@ -103,15 +103,15 @@ class RecruitmentCalendarEventShapingTest {
         // %d" — a third kind falls into the round branch and renders
         // "Interview null: Anna Nielsen" on the candidate's own calendar.
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-offer", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-offer", null, null));
         RecruitmentInterview interview = interview();
         interview.setKind(RecruitmentInterviewKind.OFFER);
         interview.setRound(null);
 
         service.createEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(anyString(), body.capture());
         String subject = body.getValue().subject();
         assertTrue(subject.startsWith("Samtale: "),
@@ -124,13 +124,13 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void create_plainInterview_sendsNoTeamsFields() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-2", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-2", null, null));
 
         RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview(), candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(anyString(), body.capture());
         assertNull(body.getValue().isOnlineMeeting(),
                 "FALSE is never sent — absent keeps Graph's default");
@@ -144,15 +144,15 @@ class RecruitmentCalendarEventShapingTest {
         // was CREATED under. Whatever the list looks like now, and whatever
         // the config says today, updates PATCH the stored organizer.
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-3", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-3", null, null));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-3");
         interview.setGraphOrganizer("original.organizer@trustworks.dk");
 
         service.updateEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(eq("original.organizer@trustworks.dk"),
                 eq("evt-3"), body.capture());
         assertNull(body.getValue().transactionId(),
@@ -164,8 +164,8 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void update_capturesTheJoinUrl_whenTeamsWasJustEnabled() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-4", true,
-                        new GraphApiClient.CalendarEvent.OnlineMeeting(
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-4", true,
+                        new GraphCalendarClient.CalendarEvent.OnlineMeeting(
                                 "https://teams.microsoft.com/l/meetup-join/y")));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-4");
@@ -176,8 +176,8 @@ class RecruitmentCalendarEventShapingTest {
                 service.updateEvent(interview, candidateWithoutEmail(), null);
 
         assertEquals("https://teams.microsoft.com/l/meetup-join/y", update.joinUrl());
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(anyString(), anyString(), body.capture());
         assertEquals(Boolean.TRUE, body.getValue().isOnlineMeeting(),
                 "PATCHing Teams onto an existing event works in this tenant (Phase 0.3 spike)");
@@ -188,7 +188,7 @@ class RecruitmentCalendarEventShapingTest {
         // Resolution order is stored → config → first interviewer; a row
         // that somehow carries an organizer already keeps addressing it.
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-5", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-5", null, null));
         RecruitmentInterview interview = interview();
         interview.setGraphOrganizer("stored@trustworks.dk");
 
@@ -220,19 +220,19 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void create_withCandidateEmail_splitsIntoInternalAndCandidateEvents() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-cand", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null))
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-cand", null, null));
         RecruitmentPosition position = position();
 
         RecruitmentCalendarService.CreateResult created =
                 service.createEvent(interview(), candidate(), position);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> bodies =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> bodies =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         org.mockito.Mockito.verify(graph, org.mockito.Mockito.times(2))
                 .createCalendarEvent(eq("career@trustworks.dk"), bodies.capture());
 
-        GraphApiClient.CalendarEventRequest internal = bodies.getAllValues().get(0);
+        GraphCalendarClient.CalendarEventRequest internal = bodies.getAllValues().get(0);
         assertTrue(internal.attendees().stream()
                         .noneMatch(a -> "anna@example.com".equals(a.emailAddress().address())),
                 "the candidate never rides on the internal event");
@@ -241,7 +241,7 @@ class RecruitmentCalendarEventShapingTest {
         assertTrue(internal.body().content().contains("Focus areas"),
                 "internal note carries the kit pointer and focus areas");
 
-        GraphApiClient.CalendarEventRequest candidateEvent = bodies.getAllValues().get(1);
+        GraphCalendarClient.CalendarEventRequest candidateEvent = bodies.getAllValues().get(1);
         assertEquals(1, candidateEvent.attendees().size(), "candidate only");
         assertEquals("anna@example.com",
                 candidateEvent.attendees().get(0).emailAddress().address());
@@ -258,15 +258,15 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void legacyUpdate_keepsTheCandidateOnTheSingleEvent() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-old", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-old", null, null));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-old");
         interview.setGraphOrganizer("career@trustworks.dk");
 
         service.updateEvent(interview, candidate(), position());
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(anyString(), eq("evt-old"), body.capture());
         assertTrue(body.getValue().attendees().stream()
                         .anyMatch(a -> "anna@example.com".equals(a.emailAddress().address())),
@@ -278,7 +278,7 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void splitUpdate_patchesBothEvents() {
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-int", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-int", null, null));
         RecruitmentInterview interview = interview();
         interview.setGraphEventId("evt-int");
         interview.setGraphCandidateEventId("evt-cand");
@@ -428,7 +428,7 @@ class RecruitmentCalendarEventShapingTest {
 
     @Test
     void attendees_sharedOrganizer_invitesEveryInterviewer() {
-        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+        List<GraphCalendarClient.CalendarEventRequest.Attendee> attendees =
                 RecruitmentCalendarService.interviewerAttendees(
                         List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A"),
                                 new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B")),
@@ -455,7 +455,7 @@ class RecruitmentCalendarEventShapingTest {
 
     @Test
     void attendees_legacyOrganizerIsAnInterviewer_excludesExactlyThem() {
-        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+        List<GraphCalendarClient.CalendarEventRequest.Attendee> attendees =
                 RecruitmentCalendarService.interviewerAttendees(
                         List.of(new RecruitmentCalendarService.Interviewer("a@trustworks.dk", "A"),
                                 new RecruitmentCalendarService.Interviewer("b@trustworks.dk", "B")),
@@ -512,14 +512,14 @@ class RecruitmentCalendarEventShapingTest {
     void create_twoInterviewers_bothRideOnTheInternalEvent() {
         // The end-to-end shape of the reported bug: two people picked, one booked.
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-7", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-7", null, null));
         RecruitmentInterview interview = interview();
         interview.setInterviewerUuids(List.of("interviewer-1", "interviewer-2"));
 
         service.createEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(eq("career@trustworks.dk"), body.capture());
         assertEquals(List.of("interviewer-1@trustworks.dk", "interviewer-2@trustworks.dk"),
                 body.getValue().attendees().stream()
@@ -532,7 +532,7 @@ class RecruitmentCalendarEventShapingTest {
         // Reschedule shares the builder, so it was equally truncated — which is
         // why no amount of re-saving ever repaired a dropped interviewer.
         when(graph.updateCalendarEvent(anyString(), anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-8", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-8", null, null));
         RecruitmentInterview interview = interview();
         interview.setInterviewerUuids(List.of("interviewer-1", "interviewer-2"));
         interview.setGraphEventId("evt-8");
@@ -540,8 +540,8 @@ class RecruitmentCalendarEventShapingTest {
 
         service.updateEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).updateCalendarEvent(anyString(), eq("evt-8"), body.capture());
         assertEquals(2, body.getValue().attendees().size());
     }
@@ -549,15 +549,15 @@ class RecruitmentCalendarEventShapingTest {
     @Test
     void create_roomIsBookedAsAResourceAlongsideEveryInterviewer() {
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-9", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-9", null, null));
         RecruitmentInterview interview = interview();
         interview.setRoomEmail("hp3@trustworks.dk");
         interview.setLocation("HP3");
 
         service.createEvent(interview, candidateWithoutEmail(), null);
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph).createCalendarEvent(anyString(), body.capture());
         assertEquals(List.of("required", "resource"),
                 body.getValue().attendees().stream().map(a -> a.type()).toList(),

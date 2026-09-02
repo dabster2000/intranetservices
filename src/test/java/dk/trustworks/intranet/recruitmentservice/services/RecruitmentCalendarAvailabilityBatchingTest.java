@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
-import dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter;
-import dk.trustworks.intranet.sharepoint.client.GraphResponseExceptionMapper.SharePointException;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
+import dk.trustworks.intranet.graph.GraphMailboxConcurrencyLimiter;
+import dk.trustworks.intranet.graph.GraphResponseExceptionMapper.GraphApiException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -50,13 +50,13 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     private static final LocalDateTime SLOT = LocalDateTime.of(2026, 8, 1, 10, 0);
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
 
     private List<Long> slept;
 
     @BeforeEach
     void setUp() {
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         service.calendarEnabled = true;
@@ -171,7 +171,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // everything from the first failure onward.
         List<String> mailboxes = mailboxes(45);
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
-            GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
+            GraphCalendarClient.ScheduleRequest request = invocation.getArgument(1);
             if (request.schedules().contains("u20@trustworks.dk")) {
                 throw new RuntimeException("Graph API error 503 Service Unavailable");
             }
@@ -331,7 +331,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // suggester as an absent schedule, and absent means "unknown never
         // counts as busy" — so we proposed times against a calendar we had
         // never actually read.
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of()));
         when(graph.getSchedule(anyString(), any())).thenThrow(throttled(null));
 
         var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
@@ -348,12 +348,12 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // a permanent, ordinary condition (plenty of employees have none). If
         // that suppressed suggestions, any team with one such member would
         // lose the feature forever.
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of()));
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
-            GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
-            return new GraphApiClient.ScheduleCollectionResponse(request.schedules().stream()
+            GraphCalendarClient.ScheduleRequest request = invocation.getArgument(1);
+            return new GraphCalendarClient.ScheduleCollectionResponse(request.schedules().stream()
                     .filter(mailbox -> !mailbox.equals("u1@trustworks.dk"))
-                    .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse
+                    .map(mailbox -> new GraphCalendarClient.ScheduleCollectionResponse
                             .ScheduleInformation(mailbox, "0".repeat(15 * 24 * 4), null))
                     .toList());
         });
@@ -369,7 +369,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     @Test
     void noConcurrencyPermit_isUnknownNotFree_andNeverCallsGraph() {
         service.mailboxLimiter = new GraphMailboxConcurrencyLimiter(0, 1);
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of()));
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of()));
 
         var availability = service.interviewerAvailability(mailboxes(20), SLOT, 60);
         var suggestions = service.suggestedSlots(List.of("u0@trustworks.dk"), 60,
@@ -387,14 +387,14 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     @Test
     void daySchedule_returnsRawDigitsAndWorkingHours_over48CellDay() {
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
-            GraphApiClient.ScheduleRequest request = invocation.getArgument(1);
-            return new GraphApiClient.ScheduleCollectionResponse(request.schedules().stream()
-                    .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+            GraphCalendarClient.ScheduleRequest request = invocation.getArgument(1);
+            return new GraphCalendarClient.ScheduleCollectionResponse(request.schedules().stream()
+                    .map(mailbox -> new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                             mailbox, "02".repeat(24),
-                            new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours(
+                            new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation.WorkingHours(
                                     List.of("monday", "tuesday", "not-a-day"),
                                     "08:30:00.0000000", "16:00:00.0000000",
-                                    new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation
+                                    new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation
                                             .WorkingHours.TimeZoneName("Romance Standard Time"))))
                     .toList());
         });
@@ -414,8 +414,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
 
         // The probe window is the grid contract: 07:00–19:00 on the day,
         // 15-minute cells.
-        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        ArgumentCaptor<GraphCalendarClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.ScheduleRequest.class);
         verify(graph).getSchedule(anyString(), body.capture());
         assertEquals("2026-08-17T07:00", body.getValue().startTime().dateTime());
         assertEquals("2026-08-17T19:00", body.getValue().endTime().dateTime());
@@ -434,8 +434,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     void suggestedSlots_fetchesOneMultiDayWindow_notOneCallPerDay() {
         // The ALB idle-timeout guard: a 10-business-day scan must be ONE
         // getSchedule window per 20-mailbox batch.
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation ->
                 echo(invocation.getArgument(1)));
@@ -445,8 +445,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
                 List.of("u0@trustworks.dk", "u1@trustworks.dk"), 60,
                 LocalDate.of(2026, 8, 17), 3, LocalDateTime.of(2026, 8, 17, 7, 0)).slots();
 
-        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        ArgumentCaptor<GraphCalendarClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.ScheduleRequest.class);
         verify(graph, times(1)).getSchedule(anyString(), body.capture());
         assertEquals("2026-08-17T07:00", body.getValue().startTime().dateTime());
         assertEquals("2026-08-28T19:00", body.getValue().endTime().dateTime());
@@ -483,9 +483,9 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     // ---- Helpers ---------------------------------------------------------------
 
     /** The shape a 429 arrives in: the Graph client's mapper throws its own
-     * SharePointException, never a WebApplicationException (F18). */
-    private static SharePointException throttled(Integer retryAfterSeconds) {
-        return new SharePointException(
+     * GraphApiException, never a WebApplicationException (F18). */
+    private static GraphApiException throttled(Integer retryAfterSeconds) {
+        return new GraphApiException(
                 "Graph API error 429: Application is over its MailboxConcurrency limit",
                 429, retryAfterSeconds);
     }
@@ -511,12 +511,12 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // tenant, could never be suggested, and nothing anywhere said so.
         service.calendarEnabled = true;
         when(graph.listRoomsPaged(any(), any()))
-                .thenReturn(new GraphApiClient.RoomCollectionResponse(
-                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                .thenReturn(new GraphCalendarClient.RoomCollectionResponse(
+                        List.of(new GraphCalendarClient.RoomCollectionResponse.Room(
                                 "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
                         "https://graph.microsoft.com/v1.0/places/microsoft.graph.room?$skiptoken=TOKEN2"))
-                .thenReturn(new GraphApiClient.RoomCollectionResponse(
-                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                .thenReturn(new GraphCalendarClient.RoomCollectionResponse(
+                        List.of(new GraphCalendarClient.RoomCollectionResponse.Room(
                                 "p2", "Room Two", "two@trustworks.dk", 8, "HQ"))));
 
         var rooms = service.listRooms();
@@ -534,8 +534,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // whole room picker.
         service.calendarEnabled = true;
         when(graph.listRoomsPaged(any(), any()))
-                .thenReturn(new GraphApiClient.RoomCollectionResponse(
-                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                .thenReturn(new GraphCalendarClient.RoomCollectionResponse(
+                        List.of(new GraphCalendarClient.RoomCollectionResponse.Room(
                                 "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
                         "https://graph.microsoft.com/v1.0/places/microsoft.graph.room?$skiptoken=TOKEN2"))
                 .thenThrow(new RuntimeException("Graph 429: throttled"));
@@ -565,8 +565,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
     void roomLookup_reportsComplete_whenGraphAnswersEveryPage() {
         service.calendarEnabled = true;
         when(graph.listRoomsPaged(any(), any())).thenReturn(
-                new GraphApiClient.RoomCollectionResponse(List.of(
-                        new GraphApiClient.RoomCollectionResponse.Room(
+                new GraphCalendarClient.RoomCollectionResponse(List.of(
+                        new GraphCalendarClient.RoomCollectionResponse.Room(
                                 "p1", "Room One", "one@trustworks.dk", 4, "HQ"))));
 
         var lookup = service.roomLookup();
@@ -582,8 +582,8 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         // being the whole list.
         service.calendarEnabled = true;
         when(graph.listRoomsPaged(any(), any())).thenReturn(
-                new GraphApiClient.RoomCollectionResponse(
-                        List.of(new GraphApiClient.RoomCollectionResponse.Room(
+                new GraphCalendarClient.RoomCollectionResponse(
+                        List.of(new GraphCalendarClient.RoomCollectionResponse.Room(
                                 "p1", "Room One", "one@trustworks.dk", 4, "HQ")),
                         "https://graph.microsoft.com/v1.0/places?$unknowncursor=ABC"));
 
@@ -609,7 +609,7 @@ class RecruitmentCalendarAvailabilityBatchingTest {
      * Graph echoes every requested address as free — except when asked AS
      * {@code invalidCaller}, which answers the 404 a mailbox-less user gets.
      * <p>
-     * The 404 is a {@link SharePointException}, not a bare RuntimeException:
+     * The 404 is a {@link GraphApiException}, not a bare RuntimeException:
      * the Graph REST client's registered mapper throws its own type, so that
      * IS the shape production sees (F18). Faking it as a plain
      * RuntimeException hides the status code and makes the address-specific
@@ -619,21 +619,21 @@ class RecruitmentCalendarAvailabilityBatchingTest {
         when(graph.getSchedule(anyString(), any())).thenAnswer(invocation -> {
             String caller = invocation.getArgument(0);
             if (invalidCaller.equals(caller)) {
-                throw new SharePointException("Graph API error 404 Not Found: "
+                throw new GraphApiException("Graph API error 404 Not Found: "
                         + "{\"error\":{\"code\":\"ErrorInvalidUser\"}}", 404);
             }
             return echo(invocation.getArgument(1));
         });
     }
 
-    private static GraphApiClient.ScheduleCollectionResponse echo(
-            GraphApiClient.ScheduleRequest request) {
+    private static GraphCalendarClient.ScheduleCollectionResponse echo(
+            GraphCalendarClient.ScheduleRequest request) {
         // Free everywhere, and long enough to cover any probe window this
         // test file asks for (rooms demand known coverage — see
         // AvailabilitySlotSuggester — so a too-short view would skew tests).
-        return new GraphApiClient.ScheduleCollectionResponse(
+        return new GraphCalendarClient.ScheduleCollectionResponse(
                 request.schedules().stream()
-                        .map(mailbox -> new GraphApiClient.ScheduleCollectionResponse
+                        .map(mailbox -> new GraphCalendarClient.ScheduleCollectionResponse
                                 .ScheduleInformation(mailbox, "0".repeat(15 * 24 * 4), null))
                         .toList());
     }

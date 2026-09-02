@@ -5,7 +5,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentInterviewStatus;
 import dk.trustworks.intranet.recruitmentservice.resources.P8ProfileFixtures;
-import dk.trustworks.intranet.sharepoint.client.GraphApiClient;
+import dk.trustworks.intranet.graph.GraphCalendarClient;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -67,7 +67,7 @@ class RecruitmentCalendarServiceTest {
     private String candidateUuid;
 
     private RecruitmentCalendarService service;
-    private GraphApiClient graph;
+    private GraphCalendarClient graph;
 
     @BeforeEach
     void seed() {
@@ -78,14 +78,14 @@ class RecruitmentCalendarServiceTest {
             P8ProfileFixtures.insertUser(em, interviewerA, "Ida", "Interviewer");
             P8ProfileFixtures.insertUser(em, interviewerB, "Ib", "Interviewer");
         });
-        graph = mock(GraphApiClient.class);
+        graph = mock(GraphCalendarClient.class);
         service = new RecruitmentCalendarService();
         service.graphApiClient = graph;
         // Hand-constructed: no CDI ran, so every @Inject field is null. The
         // limiter is dereferenced on the first line of every free/busy probe,
         // so leaving it out NPEs the whole availability half of this class.
         service.mailboxLimiter =
-                new dk.trustworks.intranet.sharepoint.client.GraphMailboxConcurrencyLimiter(2, 50);
+                new dk.trustworks.intranet.graph.GraphMailboxConcurrencyLimiter(2, 50);
         service.sleeper = millis -> { };
     }
 
@@ -115,13 +115,13 @@ class RecruitmentCalendarServiceTest {
         service.calendarEnabled = true;
         service.configuredOrganizerValue = Optional.of("career@trustworks.dk");
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-shared", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-shared", null, null));
 
         QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(eq("career@trustworks.dk"), body.capture());
         List<String> attendeeEmails = body.getAllValues().get(0).attendees().stream()
                 .map(a -> a.emailAddress().address())
@@ -135,7 +135,7 @@ class RecruitmentCalendarServiceTest {
     void toggleOn_createsInFirstInterviewersMailbox_withCandidateAttendee() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-123", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-123", null, null));
 
         RecruitmentCalendarService.CreateResult created = QuarkusTransaction.requiringNew().call(() ->
                 service.createEvent(interview(), candidate(), null));
@@ -143,10 +143,10 @@ class RecruitmentCalendarServiceTest {
         assertEquals("evt-123", created.created().eventId());
         // Phase 6 split: two creates in the same mailbox (no shared-organizer
         // config in tests) — [0] internal, [1] the candidate's own event.
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(eq(interviewerA + "@example.com"), body.capture());
-        GraphApiClient.CalendarEventRequest internal = body.getAllValues().get(0);
+        GraphCalendarClient.CalendarEventRequest internal = body.getAllValues().get(0);
         List<String> attendeeEmails = internal.attendees().stream()
                 .map(a -> a.emailAddress().address())
                 .toList();
@@ -162,7 +162,7 @@ class RecruitmentCalendarServiceTest {
         assertEquals("Ib Interviewer", internal.attendees().stream()
                 .filter(a -> a.emailAddress().address().equals(interviewerB + "@example.com"))
                 .findFirst().orElseThrow().emailAddress().name());
-        GraphApiClient.CalendarEventRequest candidateEvent = body.getAllValues().get(1);
+        GraphCalendarClient.CalendarEventRequest candidateEvent = body.getAllValues().get(1);
         assertEquals(List.of("candidate@example.com"), candidateEvent.attendees().stream()
                 .map(a -> a.emailAddress().address()).toList());
         assertEquals("html", candidateEvent.body().contentType());
@@ -198,7 +198,7 @@ class RecruitmentCalendarServiceTest {
     void eventTimes_wallClockCopenhagen_summerDate() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-summer", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-tz-summer", null, null));
 
         // Aug 1 = CEST. The wall-clock string must pass through untouched,
         // stamped Europe/Copenhagen — never "UTC" (that shifted every event
@@ -206,8 +206,8 @@ class RecruitmentCalendarServiceTest {
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview(), candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(anyString(), body.capture());
         assertEquals("2026-08-01T10:00", body.getValue().start().dateTime());
         assertEquals("Europe/Copenhagen", body.getValue().start().timeZone());
@@ -219,7 +219,7 @@ class RecruitmentCalendarServiceTest {
     void eventTimes_wallClockCopenhagen_winterDate() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-tz-winter", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-tz-winter", null, null));
 
         // Jan 15 = CET. Same IANA id year-round: Graph resolves CET vs CEST
         // from the event date, so DST needs no handling on our side.
@@ -228,8 +228,8 @@ class RecruitmentCalendarServiceTest {
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview, candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(anyString(), body.capture());
         assertEquals("2027-01-15T14:00", body.getValue().start().dateTime());
         assertEquals("Europe/Copenhagen", body.getValue().start().timeZone());
@@ -241,21 +241,21 @@ class RecruitmentCalendarServiceTest {
     void roomEmail_invitedAsResourceAttendee_peopleStayRequired() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-room", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-room", null, null));
 
         RecruitmentInterview interview = interview();
         interview.setRoomEmail("room-hq2@trustworks.dk");
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview, candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(anyString(), body.capture());
         // The room books through the INTERNAL event (index 0) — the
         // candidate event never carries the resource attendee.
-        List<GraphApiClient.CalendarEventRequest.Attendee> attendees =
+        List<GraphCalendarClient.CalendarEventRequest.Attendee> attendees =
                 body.getAllValues().get(0).attendees();
-        List<GraphApiClient.CalendarEventRequest.Attendee> resources = attendees.stream()
+        List<GraphCalendarClient.CalendarEventRequest.Attendee> resources = attendees.stream()
                 .filter(a -> "resource".equals(a.type()))
                 .toList();
         assertEquals(1, resources.size(), "the room mailbox is the one resource attendee");
@@ -272,13 +272,13 @@ class RecruitmentCalendarServiceTest {
     void withoutRoomEmail_noResourceAttendee() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-no-room", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-no-room", null, null));
 
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview(), candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(anyString(), body.capture());
         assertTrue(body.getValue().attendees().stream()
                 .noneMatch(a -> "resource".equals(a.type())));
@@ -296,10 +296,10 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_toggleOn_mapsRooms_skippingRoomsWithoutMailbox() {
         service.calendarEnabled = true;
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
-                new GraphApiClient.RoomCollectionResponse.Room(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-2", "Unbookable corner", null, null, null))));
 
         var rooms = service.listRooms();
@@ -322,8 +322,8 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withoutStart_noFreeBusyLookup_availableNull() {
         service.calendarEnabled = true;
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
 
         var rooms = service.listRooms(null);
@@ -336,16 +336,16 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStart_marksFreeAndBusy_fromOneGetScheduleCall() {
         service.calendarEnabled = true;
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"),
-                new GraphApiClient.RoomCollectionResponse.Room(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-2", "HQ meeting room 3", "room-hq3@trustworks.dk", 4, "HQ"))));
         when(graph.getSchedule(anyString(), any()))
-                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                .thenReturn(new GraphCalendarClient.ScheduleCollectionResponse(List.of(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "room-hq2@trustworks.dk", "0", null),
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "room-hq3@trustworks.dk", "2", null))));
 
         var rooms = service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0));
@@ -355,8 +355,8 @@ class RecruitmentCalendarServiceTest {
         assertEquals(Boolean.FALSE, rooms.get(1).available(), "non-zero digit = busy");
 
         // One call for both rooms, wall-clock Copenhagen 60-minute window.
-        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        ArgumentCaptor<GraphCalendarClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.ScheduleRequest.class);
         verify(graph).getSchedule(eq("room-hq2@trustworks.dk"), body.capture());
         assertEquals(List.of("room-hq2@trustworks.dk", "room-hq3@trustworks.dk"),
                 body.getValue().schedules());
@@ -368,8 +368,8 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStart_freeBusyFailure_roomsStillReturned_availableNull() {
         service.calendarEnabled = true;
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any()))
                 .thenThrow(new RuntimeException("Graph 503"));
@@ -384,15 +384,15 @@ class RecruitmentCalendarServiceTest {
     void event_usesTheInterviewsOwnDuration() {
         service.calendarEnabled = true;
         when(graph.createCalendarEvent(anyString(), any()))
-                .thenReturn(new GraphApiClient.CalendarEvent("evt-90", null, null));
+                .thenReturn(new GraphCalendarClient.CalendarEvent("evt-90", null, null));
 
         RecruitmentInterview interview = interview();
         interview.setDurationMinutes(90);
         QuarkusTransaction.requiringNew().run(() ->
                 service.createEvent(interview, candidate(), null));
 
-        ArgumentCaptor<GraphApiClient.CalendarEventRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.CalendarEventRequest.class);
+        ArgumentCaptor<GraphCalendarClient.CalendarEventRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.CalendarEventRequest.class);
         verify(graph, times(2)).createCalendarEvent(anyString(), body.capture());
         assertEquals("2026-08-01T10:00", body.getValue().start().dateTime());
         assertEquals("2026-08-01T11:30", body.getValue().end().dateTime(),
@@ -402,18 +402,18 @@ class RecruitmentCalendarServiceTest {
     @Test
     void rooms_withStartAndDuration_freeBusyWindowMatchesDuration() {
         service.calendarEnabled = true;
-        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphApiClient.RoomCollectionResponse(List.of(
-                new GraphApiClient.RoomCollectionResponse.Room(
+        when(graph.listRoomsPaged(any(), any())).thenReturn(new GraphCalendarClient.RoomCollectionResponse(List.of(
+                new GraphCalendarClient.RoomCollectionResponse.Room(
                         "place-1", "HQ meeting room 2", "room-hq2@trustworks.dk", 8, "HQ"))));
         when(graph.getSchedule(anyString(), any()))
-                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                .thenReturn(new GraphCalendarClient.ScheduleCollectionResponse(List.of(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "room-hq2@trustworks.dk", "0", null))));
 
         service.listRooms(LocalDateTime.of(2026, 8, 1, 10, 0), 120);
 
-        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        ArgumentCaptor<GraphCalendarClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.ScheduleRequest.class);
         verify(graph).getSchedule(anyString(), body.capture());
         assertEquals("2026-08-01T12:00", body.getValue().endTime().dateTime(),
                 "the probed window is the picked duration, not a fixed hour");
@@ -434,12 +434,12 @@ class RecruitmentCalendarServiceTest {
     void interviewerAvailability_strictRule_anyNonFreeDigitIsBusy() {
         service.calendarEnabled = true;
         when(graph.getSchedule(anyString(), any()))
-                .thenReturn(new GraphApiClient.ScheduleCollectionResponse(List.of(
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                .thenReturn(new GraphCalendarClient.ScheduleCollectionResponse(List.of(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "free@example.com", "0", null),
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "tentative@example.com", "1", null),
-                        new GraphApiClient.ScheduleCollectionResponse.ScheduleInformation(
+                        new GraphCalendarClient.ScheduleCollectionResponse.ScheduleInformation(
                                 "busy@example.com", "2", null))));
 
         var result = service.interviewerAvailability(
@@ -451,8 +451,8 @@ class RecruitmentCalendarServiceTest {
                 "tentative counts as busy — same strict rule as rooms");
         assertEquals(Boolean.FALSE, result.get("busy@example.com"));
 
-        ArgumentCaptor<GraphApiClient.ScheduleRequest> body =
-                ArgumentCaptor.forClass(GraphApiClient.ScheduleRequest.class);
+        ArgumentCaptor<GraphCalendarClient.ScheduleRequest> body =
+                ArgumentCaptor.forClass(GraphCalendarClient.ScheduleRequest.class);
         verify(graph).getSchedule(eq("free@example.com"), body.capture());
         assertEquals("2026-08-01T11:30", body.getValue().endTime().dateTime(),
                 "the probed window follows the picked duration");

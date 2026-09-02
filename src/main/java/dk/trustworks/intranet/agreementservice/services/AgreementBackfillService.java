@@ -187,29 +187,33 @@ public class AgreementBackfillService {
     }
 
     /**
-     * The console's PDF preview. S3-sourced items (V554 corpus) stream
-     * from the employee-document store; legacy V549-era items still
-     * fetch live from SharePoint via Graph.
+     * The console's PDF preview, always from the employee-document store.
+     * Items itemized by the V549-era legacy walk carry no
+     * {@code employee_document_uuid}; they are adopted here on first
+     * preview by looking the same bytes up as {@code (user, sha256)} in
+     * {@code employee_documents} — the migration copied bytes verbatim, so
+     * the hash is the identity. A document with no such row is gone.
      */
+    @Transactional
     public byte[] downloadDocument(String itemUuid) {
         AgreementBackfillItem item = requireItem(itemUuid);
+        EmployeeDocument doc = null;
         if (item.getEmployeeDocumentUuid() != null) {
-            EmployeeDocument doc = EmployeeDocument.findById(item.getEmployeeDocumentUuid());
+            doc = EmployeeDocument.findById(item.getEmployeeDocumentUuid());
+        }
+        if (doc == null) {
+            doc = EmployeeDocument.findByUserAndSha256(item.getUserUuid(), item.getDocSha256());
             if (doc == null) {
-                throw new WebApplicationException("Source document no longer exists", 404);
+                throw new WebApplicationException("Dokumentet findes ikke i dokumentarkivet", 404);
             }
-            try {
-                return storageAdapter.get(doc.getS3Key()).bytes();
-            } catch (Exception e) {
-                log.warnf("Backfill S3 download failed for item %s: %s", itemUuid, e.getMessage());
-                throw new WebApplicationException("Document could not be fetched from storage", 502);
-            }
+            item.setEmployeeDocumentUuid(doc.getUuid());
+            item.persist();
         }
         try {
-            return walkerService.downloadItemBytes(item.getDriveId(), item.getSharepointItemId());
+            return storageAdapter.get(doc.getS3Key()).bytes();
         } catch (Exception e) {
-            log.warnf("Backfill document download failed for item %s: %s", itemUuid, e.getMessage());
-            throw new WebApplicationException("Document could not be fetched from SharePoint", 502);
+            log.warnf("Backfill S3 download failed for item %s: %s", itemUuid, e.getMessage());
+            throw new WebApplicationException("Document could not be fetched from storage", 502);
         }
     }
 
@@ -294,7 +298,8 @@ public class AgreementBackfillService {
         row.setValidFrom(record.validFrom());
         row.setValidTo(record.validTo());
         row.setEffectiveDate(record.effectiveDate());
-        row.setDocumentUrl(safeDocumentUrl(item.getWebUrl()));
+        // No document_url for backfilled rows: the registry links to the
+        // signed PDF through the item's employee document, not a URL.
         row.setSource(AgreementSource.BACKFILL.name());
         // Historical terms whose window already closed enter as EXPIRED —
         // the nightly sweep would flip them anyway, but must never alert.
@@ -304,15 +309,6 @@ public class AgreementBackfillService {
         row.setConfirmedBy(actor);
         row.persist();
         return row.getUuid();
-    }
-
-    /** A malformed stored URL must not block a confirm — drop it instead. */
-    private static String safeDocumentUrl(String webUrl) {
-        try {
-            return AgreementService.validateDocumentUrl(webUrl);
-        } catch (WebApplicationException e) {
-            return null;
-        }
     }
 
     // ── Mapping ────────────────────────────────────────────────────────────
@@ -368,7 +364,7 @@ public class AgreementBackfillService {
                 .userName(names.userName(item.getUserUuid()))
                 .fileName(item.getFileName())
                 .fileSize(item.getFileSize())
-                .webUrl(item.getWebUrl())
+                .employeeDocumentUuid(item.getEmployeeDocumentUuid())
                 .status(item.getStatus())
                 .proposals(parseProposals(item.getProposalJson()))
                 .extractionNote(item.getExtractionNote())
