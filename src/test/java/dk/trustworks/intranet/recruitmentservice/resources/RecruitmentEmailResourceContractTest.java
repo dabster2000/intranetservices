@@ -5,6 +5,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -38,6 +39,9 @@ class RecruitmentEmailResourceContractTest {
     @Test
     void readEndpoints_inheritTheClassReadScope() {
         assertRead("listTemplates", GET.class, "/email-templates");
+        // A literal path, so it beats no template — but there is no
+        // /email-templates/{uuid} GET to beat, and the lock keeps it that way.
+        assertRead("coverage", GET.class, "/email-templates/coverage");
         assertRead("render", POST.class, "/candidates/{uuid}/emails/render");
         assertRead("listPending", GET.class, "/emails/pending");
     }
@@ -50,6 +54,23 @@ class RecruitmentEmailResourceContractTest {
         assertWrite("draft", POST.class, "/candidates/{uuid}/emails/draft");
         assertWrite("approve", POST.class, "/emails/pending/{uuid}/approve");
         assertWrite("dismiss", POST.class, "/emails/pending/{uuid}/dismiss");
+        // The preview writes nothing, but it belongs to the template-authoring
+        // surface and nothing else has a reason to call it.
+        assertWrite("previewTemplate", POST.class, "/email-templates/preview");
+        assertWrite("testSendTemplate", POST.class, "/email-templates/{uuid}/test-send");
+    }
+
+    @Test
+    void theTestSendTakesNoBody_soNoCallerCanNameTheRecipient() {
+        // Not a style point. The address is the calling user's own, resolved
+        // server-side from X-Requested-By; a recipient parameter would turn
+        // this into an authenticated open relay sending from the company's
+        // SES-verified identity. The signature is the guarantee.
+        Method method = method("testSendTemplate");
+        assertEquals(1, method.getParameterCount(),
+                "test-send must take the template uuid and nothing else");
+        assertNotNull(method.getParameters()[0].getAnnotation(PathParam.class),
+                "its one parameter must be the {uuid} path segment");
     }
 
     private static void assertRead(String name, Class<? extends java.lang.annotation.Annotation> verb,

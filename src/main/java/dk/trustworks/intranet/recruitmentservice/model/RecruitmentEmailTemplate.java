@@ -24,12 +24,15 @@ import java.util.UUID;
 /**
  * One Danish candidate-email template with merge fields (ATS plan §P15).
  * <p>
- * {@link #templateKey} is the stable identity AND the trigger: the reserved
- * keys ({@code ACKNOWLEDGEMENT}, {@code REJECTION_SCREENING},
- * {@code REJECTION_POST_INTERVIEW}, {@code STAGE_<stage>}) are picked up by
- * {@code CandidateMailerReactor}; any other key is a manual-send-only
- * template. Keys are never renamed once {@code EMAIL_SENT} events reference
- * them (reporting joins on the key).
+ * {@link #templateKey} is the stable identity. Keys are never renamed once
+ * {@code EMAIL_SENT} events reference them (reporting joins on the key).
+ * {@link #triggerKey} is the routing: which pipeline moment this letter
+ * answers. A row that has claimed no trigger still answers its own
+ * {@code templateKey} when that key is one of the reserved ones
+ * ({@code ACKNOWLEDGEMENT}, {@code REJECTION_*}, {@code STAGE_<stage>},
+ * {@code POOLED*}) — which is what makes the split additive, and every row
+ * predating it behave exactly as it did. Resolution lives in
+ * {@code RecruitmentEmailService.findFirstActiveByTrigger}.
  * <p>
  * {@link #body} is read according to {@link #bodyFormat}: legacy {@code PLAIN}
  * text (HTML-escaped and newline-converted at send time, as before rich text)
@@ -51,9 +54,27 @@ public class RecruitmentEmailTemplate extends PanacheEntityBase implements Audit
     @Column(name = "uuid", length = 36, nullable = false, updatable = false)
     private String uuid;
 
-    /** Stable identity + reactor trigger; immutable after create. */
+    /** Stable identity; immutable after create ({@code updatable = false}). */
     @Column(name = "template_key", length = 60, nullable = false, updatable = false)
     private String templateKey;
+
+    /**
+     * The pipeline moment this letter answers, or {@code null} when it has
+     * claimed none.
+     * <p>
+     * Deliberately MUTABLE, unlike {@link #templateKey} — that is the entire
+     * point of the column. The key is identity and carries no updates
+     * because reporting joins on it; the trigger is routing, and TA has to be
+     * able to point a different letter at a moment without a deploy and
+     * without renaming anything reporting reads.
+     * <p>
+     * {@code null} is what every pre-existing row carries (V562 backfills
+     * nothing), and resolution falls back to {@link #templateKey} for exactly
+     * those rows. The unique index permits many NULLs — "unassigned" is not a
+     * claim — but forbids two letters claiming the same moment.
+     */
+    @Column(name = "trigger_key", length = 60)
+    private String triggerKey;
 
     @Column(name = "name", length = 120, nullable = false)
     private String name;

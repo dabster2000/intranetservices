@@ -210,8 +210,7 @@ public class RecruitmentCommunicationPlanService {
                 manualDelivery,
                 reviewRequired,
                 includeCopyNames,
-                key -> RecruitmentEmailTemplate
-                        .<RecruitmentEmailTemplate>find("templateKey", key).firstResult(),
+                emailService::findByTriggerIncludingInactive,
                 template -> emailService.copiesFor(template, candidate, applicationUuid, null),
                 reasonCode,
                 templateKeyOverride == null || templateKeyOverride.isBlank()
@@ -399,8 +398,12 @@ public class RecruitmentCommunicationPlanService {
 
     /**
      * The chain form (2026-09-02): the first key with an active template
-     * wins, exactly as {@link RecruitmentEmailService#findFirstActiveByKey}
-     * resolves it in the mailer.
+     * wins, as {@link RecruitmentEmailService#findFirstActiveByTrigger}
+     * resolves it in the mailer. The caller's lookup is
+     * {@link RecruitmentEmailService#findByTriggerIncludingInactive}, which
+     * applies the same trigger-then-legacy precedence, so a letter re-pointed
+     * at a moment with {@code trigger_key} is previewed exactly as it will be
+     * sent.
      * <p>
      * When nothing in the chain is sendable the step has to name ONE key,
      * and which one is a usability decision: an inactive row is reported in

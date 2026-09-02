@@ -12,9 +12,11 @@ import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.EmailTemplatesResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingEmailResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingEmailsResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.PreviewTemplateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RenderEmailRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.RenderedEmailResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.SendEmailRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.TemplateCoverageResponse;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentEmailTemplate;
@@ -26,6 +28,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentEmailCop
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentAiVoiceCard;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentCommsCoverageService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailCopyResolver;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailHtmlSanitizer;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
@@ -127,6 +130,9 @@ public class RecruitmentEmailResource {
     @Inject
     RecruitmentAiVoiceCard voiceCard;
 
+    @Inject
+    RecruitmentCommsCoverageService coverageService;
+
     // ---- Templates -------------------------------------------------------------
 
     @GET
@@ -162,7 +168,8 @@ public class RecruitmentEmailResource {
                 RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
                 Boolean.TRUE.equals(request.active()),
-                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
+                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()),
+                request.triggerKey());
         return Response.status(Response.Status.CREATED)
                 .entity(EmailTemplateResponse.of(template))
                 .build();
@@ -179,17 +186,104 @@ public class RecruitmentEmailResource {
         requireTemplateFields(request);
         // Absent active keeps the stored state (F9): an update that does not
         // speak about activation must never flip an inactive template live.
+        // Absent triggerKey does the opposite and DISCONNECTS the letter —
+        // routing is editorial and reversible, activation is not.
         RecruitmentEmailTemplate template = emailService.updateTemplate(uuid.toString(),
                 request.name(), request.subject(), request.body(),
                 request.bodyFormat() == null || request.bodyFormat().isBlank()
                         ? null : RecruitmentEmailBodyFormat.parse(request.bodyFormat()),
                 Boolean.TRUE.equals(request.autoSend()),
                 request.active(),
-                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()));
+                copyRolesOf(request.copyRoles()), copyModeOf(request.copyMode()),
+                request.triggerKey());
         if (template == null) {
             throw new NotFoundException("Resource not found");
         }
         return EmailTemplateResponse.of(template);
+    }
+
+    /**
+     * The communications editor's live preview: draft text in, rendered text
+     * out. Nothing is written and no candidate is touched — the render runs
+     * against the invented sample candidate through the very method the send
+     * path uses, so what the recruiter sees here is what the letter will say.
+     * <p>
+     * Recruiter-tier and {@code recruitment:write} even though it changes
+     * nothing, because it is part of the template-authoring surface and
+     * nothing else has a reason to call it.
+     */
+    @POST
+    @Path("/email-templates/preview")
+    @RolesAllowed({"recruitment:write"})
+    public RenderedEmailResponse previewTemplate(PreviewTemplateRequest request) {
+        enforceFlag();
+        requireRecruiterTier(currentActor());
+        Objects.requireNonNull(request, "request body must not be null");
+        RecruitmentEmailBodyFormat format =
+                RecruitmentEmailBodyFormat.parse(request.bodyFormat());
+        requireSubjectAndBody(request.subject(), request.body(), format);
+        RecruitmentEmailRenderer.Rendered rendered =
+                emailService.preview(request.subject(), request.body(), format);
+        return new RenderedEmailResponse(rendered.subject(), rendered.body(),
+                format.name(), List.copyOf(rendered.unresolvedFields()));
+    }
+
+    /**
+     * Mail one stored template to the caller's own inbox so they can see it
+     * in a real mail client.
+     * <p>
+     * <b>There is no recipient field and there must never be one.</b> The
+     * address is the calling user's own, resolved server-side from
+     * {@code X-Requested-By} — an endpoint that let a recruiter name the
+     * recipient would be an authenticated open relay wearing the company's
+     * verified sender identity. A caller with no address on file therefore
+     * has nowhere to send to, and gets a 400 saying so rather than a silent
+     * no-op.
+     * <p>
+     * 202, not 201: the mail row goes onto the JBeret {@code mail-send}
+     * outbox and nothing is created that the caller can go and read.
+     */
+    @POST
+    @Path("/email-templates/{uuid}/test-send")
+    @RolesAllowed({"recruitment:write"})
+    public Response testSendTemplate(@PathParam("uuid") UUID uuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        requireRecruiterTier(actor);
+        String recipient = emailService.ownAddress(actor.toString());
+        if (recipient == null) {
+            throw badRequest("You have no email address on file, so there is nowhere to send "
+                    + "the test — a test send always goes to the person who asked for it.");
+        }
+        if (emailService.sendTest(uuid.toString(), recipient, actor.toString()) == null) {
+            throw new NotFoundException("Resource not found");
+        }
+        return Response.accepted().build();
+    }
+
+    /**
+     * The Journey tab's read model: every curated pipeline moment, whether
+     * a letter answers it, and how often it has fired lately. Read-only and
+     * side-effect free.
+     * <p>
+     * Judged through the mailer's own chain resolution
+     * ({@link RecruitmentCommsCoverageService}), so the screen cannot report
+     * a moment as covered that the runtime would leave silent. Counts come
+     * from a nightly rollup and read as zeroes until it has run — the page
+     * has to be usable on a cold database.
+     * <p>
+     * Hiring tier, not recruiter tier, and deliberately: this is the read
+     * half of the communications page, whose template list
+     * ({@link #listTemplates()}) is already on that tier, and the FE↔BE
+     * contract puts the BFF route on HIRING_TIER. Everything that CHANGES a
+     * letter stays recruiter-tier.
+     */
+    @GET
+    @Path("/email-templates/coverage")
+    public TemplateCoverageResponse coverage() {
+        enforceFlag();
+        requireCandidateEmailTier(currentActor());
+        return coverageService.coverage();
     }
 
     // ---- Compose: render + send --------------------------------------------------

@@ -146,8 +146,8 @@ public class CandidateMailerReactor extends RecruitmentReactor {
             return; // side effects gated; offset advances, no backfill on later enable
         }
         Map<String, Object> payload = parse(event.getPayload());
-        // A CHAIN, not a key: the first rung with an active template wins,
-        // and the last rung is always what this reactor sent before the
+        // A CHAIN, not a key: the first rung answered by an active template
+        // wins, and the last rung is always what this reactor sent before the
         // chain existed — so a pipeline with no specific templates behaves
         // exactly as it did.
         List<String> templateKeys = switch (event.getEventType()) {
@@ -164,7 +164,10 @@ public class CandidateMailerReactor extends RecruitmentReactor {
         if (templateKeys.isEmpty()) {
             return;
         }
-        RecruitmentEmailTemplate template = emailService.findFirstActiveByKey(templateKeys);
+        // Resolved by TRIGGER, not by key: a letter TA has pointed at this
+        // moment answers it whatever the letter's own key happens to be, and
+        // a letter that has claimed no moment still answers its own key.
+        RecruitmentEmailTemplate template = emailService.findFirstActiveByTrigger(templateKeys);
         if (template == null) {
             log.debugf("Candidate mailer: no active template in %s for event seq %d — skipping",
                     templateKeys, event.getSeq());
@@ -190,9 +193,14 @@ public class CandidateMailerReactor extends RecruitmentReactor {
         // asked. The mint commits with the mail row and the event, exactly as
         // it does in the GDPR sweep — a failed delivery mints nothing.
         Map<String, String> extras = consentExtras(template, candidate);
-        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
-                template.getSubject(), template.getBody(), candidate, position, extras,
-                template.getBodyFormat());
+        // Through the SERVICE, not the renderer: the house merge values
+        // (visiting address, company name, recruiter) are lookups the
+        // renderer deliberately does not do, and an automatic send needs
+        // them resolved — to empty, in the recruiter's case — exactly as a
+        // manual one does. The consent link the mint just produced wins on
+        // top.
+        RecruitmentEmailRenderer.Rendered rendered =
+                emailService.render(template, candidate, position, extras);
 
         // The template's copy policy applies to automatic sends too — an
         // auto-rejection BCCs the panel that met the candidate, which is
