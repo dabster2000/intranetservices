@@ -11,6 +11,8 @@ import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralAiSuggestion
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralRow;
 import dk.trustworks.intranet.recruitmentservice.dto.PendingReferralsResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.ReferralCvDownload;
+import dk.trustworks.intranet.recruitmentservice.dto.ReferralCvResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralCreateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralTriageRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ReferralTriageResponse;
@@ -114,6 +116,9 @@ public class ReferralService {
     RecruitmentAiDirectory aiDirectory;
 
     @Inject
+    RecruitmentS3StorageService storageService;
+
+    @Inject
     ObjectMapper objectMapper;
 
     // ---- Submit ---------------------------------------------------------------
@@ -121,6 +126,14 @@ public class ReferralService {
     /** Event-payload origin markers (spec §3.4 provenance). */
     public static final String ORIGIN_WEB = "web";
     public static final String ORIGIN_SLACK = "slack";
+    /**
+     * {@code DOCUMENT_UPLOADED.origin} for the CV a referral hands to the
+     * candidate it becomes — distinct from {@code public_form} (the
+     * applicant uploaded it themselves) and {@code manual} (a recruiter
+     * attached it on the Documents tab), because who supplied a CV is a
+     * fact the recruiter reads off the timeline.
+     */
+    public static final String ORIGIN_REFERRAL = "referral";
 
     /**
      * Persist a new referral (status {@code SUBMITTED}) and append
@@ -186,6 +199,119 @@ public class ReferralService {
         log.infof("Referral submitted: %s (relation=%s) by actor=%s",
                 referral.getUuid(), relation, actor);
         return new ReferralCreateResponse(referral.getUuid());
+    }
+
+    // ---- CV attachment ---------------------------------------------------------
+
+    /**
+     * Attach the OPTIONAL CV the referrer uploaded straight after submitting
+     * (2026-09-02). The refer form posts it as a second request — the file is
+     * an afterthought to the referral, never a precondition for it, so a
+     * failed upload must not cost the employee their referral.
+     * <p>
+     * Rules, all enforced here because the module has no active
+     * bean-validation extension (findings §P4):
+     * <ul>
+     *   <li>only the submitting employee may attach — a referral is that
+     *       person's statement about someone they know, and nobody else gets
+     *       to add a document to it (404, not 403: a stranger must not learn
+     *       that this referral uuid exists);</li>
+     *   <li>only while {@code SUBMITTED} — once triaged, the file belongs on
+     *       the candidate (Documents tab) or nowhere (409);</li>
+     *   <li>re-attaching REPLACES: the referral carries at most one CV, and
+     *       the superseded S3 object is deleted rather than orphaned.</li>
+     * </ul>
+     * Bytes, MIME type and magic bytes are validated by the resource against
+     * {@link dk.trustworks.intranet.recruitmentservice.util.PublicApplyDocuments}
+     * — the same guard the public apply forms and the Documents-tab upload
+     * share — so this method receives an already-vetted file.
+     *
+     * @param safeFilename sanitised filename (stored, and served back in
+     *                     Content-Disposition)
+     * @param piiFilename  the filename as the employee's machine had it —
+     *                     event pii only, never a path component
+     */
+    @Transactional
+    public ReferralCvResponse attachCv(UUID referralUuid, UUID actor,
+                                       byte[] bytes, String contentType,
+                                       String safeFilename, String piiFilename) {
+        Objects.requireNonNull(referralUuid, "referralUuid must not be null");
+        Objects.requireNonNull(actor, "actor must not be null");
+        Objects.requireNonNull(bytes, "bytes must not be null");
+
+        RecruitmentReferral referral = requireOwnReferral(referralUuid, actor);
+        if (referral.getStatus() != RecruitmentReferralStatus.SUBMITTED) {
+            throw new BusinessRuleViolation(
+                    "Referral %s is already %s — a CV can only be attached while it awaits triage"
+                            .formatted(referral.getUuid(), referral.getStatus()));
+        }
+
+        String fileUuid = storageService.storeReferralCv(bytes, safeFilename, referralUuid);
+        String replaced = referral.attachCv(fileUuid, safeFilename, contentType, bytes.length);
+        if (replaced != null) {
+            // Best-effort: the row now points at the new file either way, and
+            // an undeleted predecessor is a stray object, not a data fault.
+            try {
+                storageService.deleteReferralCv(replaced);
+            } catch (RuntimeException e) {
+                log.warnf(e, "Could not delete superseded referral CV fileUuid=%s (referral=%s)",
+                        replaced, referral.getUuid());
+            }
+        }
+
+        eventRecorder.record(RecruitmentEventBuilder
+                .event(RecruitmentEventType.REFERRAL_CV_ATTACHED)
+                .actorUser(actor.toString())
+                .payload("referral_uuid", referral.getUuid())
+                .payload("file_uuid", fileUuid)
+                .payload("content_type", contentType)
+                .payload("size_bytes", bytes.length)
+                .payload("origin", ORIGIN_WEB)
+                .pii("filename", piiFilename == null || piiFilename.isBlank()
+                        ? safeFilename : piiFilename));
+
+        log.infof("Referral CV attached: referral=%s fileUuid=%s size=%d by actor=%s",
+                referral.getUuid(), fileUuid, bytes.length, actor);
+        return new ReferralCvResponse(fileUuid, safeFilename, contentType, bytes.length);
+    }
+
+    /**
+     * The attached CV's bytes for the triage queue's read/download control.
+     * Recruiter-tier only ({@link #requireInboxTier}) — the same people who
+     * may see the referral at all.
+     *
+     * @throws NotFoundException when the referral does not exist or carries
+     *         no CV (one answer for both — a missing file is not worth a
+     *         separate status to a UI that only ever asks when it saw one)
+     */
+    public ReferralCvDownload readCv(UUID referralUuid, UUID actor) {
+        Objects.requireNonNull(referralUuid, "referralUuid must not be null");
+        requireInboxTier(actor);
+        RecruitmentReferral referral = RecruitmentReferral.findById(referralUuid.toString());
+        if (referral == null || !referral.hasCv()) {
+            throw new NotFoundException("No CV attached to referral: " + referralUuid);
+        }
+        byte[] bytes = storageService.fetchReferralCv(referral.getCvFileUuid());
+        String contentType = referral.getCvContentType() == null
+                ? "application/octet-stream"
+                : referral.getCvContentType();
+        String filename = referral.getCvFilename() == null
+                ? "cv" : referral.getCvFilename();
+        return new ReferralCvDownload(bytes, contentType, filename);
+    }
+
+    /**
+     * Resolve a referral the actor actually submitted. A referral belonging
+     * to someone else answers the same 404 as a nonexistent one — the
+     * module's standing convention for "you cannot see this" (spec §7.1),
+     * and the reason a guessed uuid buys nothing.
+     */
+    private RecruitmentReferral requireOwnReferral(UUID referralUuid, UUID actor) {
+        RecruitmentReferral referral = RecruitmentReferral.findById(referralUuid.toString());
+        if (referral == null || !actor.toString().equals(referral.getReferrerUuid())) {
+            throw new NotFoundException("Referral not found: " + referralUuid);
+        }
+        return referral;
     }
 
     // ---- My referrals ---------------------------------------------------------
@@ -489,7 +615,10 @@ public class ReferralService {
                         r.getEmail(),
                         r.getWhyText(),
                         r.getSubmittedAt(),
-                        aiSuggestions.get(r.getUuid())))
+                        aiSuggestions.get(r.getUuid()),
+                        r.getCvFilename(),
+                        r.getCvContentType(),
+                        r.getCvSizeBytes()))
                 .toList();
         return new PendingReferralsResponse(rows, rows.size());
     }
@@ -783,6 +912,8 @@ public class ReferralService {
                 .payload("outcome", "CANDIDATE_CREATED")
                 .payload("origin", origin));
 
+        handoverCvToCandidate(referral, candidate.uuid(), actor);
+
         log.infof("Referral %s triaged into candidate %s (source=%s, attached=%s) by actor=%s",
                 referral.getUuid(), candidate.uuid(), source, attached, actor);
         return new ReferralTriageResponse(referral.getUuid(), referral.getStatus(), candidate.uuid());
@@ -803,8 +934,80 @@ public class ReferralService {
                 .payload("dismiss_reason", reason.name())
                 .payload("origin", origin));
 
+        discardCvOnDismiss(referral);
+
         log.infof("Referral %s dismissed (%s) by actor=%s", referral.getUuid(), reason, actor);
         return new ReferralTriageResponse(referral.getUuid(), referral.getStatus(), null);
+    }
+
+    // ---- CV hand-over at triage -------------------------------------------------
+
+    /**
+     * Hand the referrer's CV to the candidate the triage just created: the
+     * {@code files} row is re-pointed at the candidate and a
+     * {@code DOCUMENT_UPLOADED} is appended so the P8 Documents tab lists it
+     * as a CV, exactly like one that arrived through the public apply form.
+     * <p>
+     * Re-pointing rather than copying is what puts the file inside the GDPR
+     * anonymizer's {@code deleteAllCandidateFiles} reach and inside the
+     * conversion promotion — both of which address files by
+     * {@code relateduuid}. The referral row keeps its {@code cv_*} columns as
+     * provenance ("this referral came with a CV"); the bytes are the
+     * candidate's from here on.
+     * <p>
+     * The uploader — not the triaging recruiter — is the event's actor: the
+     * referrer is who produced this document.
+     */
+    private void handoverCvToCandidate(RecruitmentReferral referral, String candidateUuid, UUID actor) {
+        if (!referral.hasCv()) {
+            return;
+        }
+        String fileUuid = referral.getCvFileUuid();
+        UUID candidate = UUID.fromString(candidateUuid);
+        if (!storageService.relinkFileToCandidate(fileUuid, candidate)) {
+            // The referral row pointed at a files row that is gone. Nothing to
+            // hand over and nothing the triage can do about it — the candidate
+            // was still created correctly, which is what the recruiter asked
+            // for. Logged by the storage service.
+            return;
+        }
+        eventRecorder.record(RecruitmentEventBuilder
+                .event(RecruitmentEventType.DOCUMENT_UPLOADED)
+                .candidate(candidateUuid)
+                .actorUser(referral.getReferrerUuid())
+                .payload("file_uuid", fileUuid)
+                .payload("kind", CandidateDocumentClassifier.KIND_CV)
+                .payload("content_type", referral.getCvContentType())
+                .payload("size_bytes", referral.getCvSizeBytes() == null ? 0 : referral.getCvSizeBytes())
+                .payload("origin", ORIGIN_REFERRAL)
+                .payload("referral_uuid", referral.getUuid())
+                .pii("filename", referral.getCvFilename()));
+        log.infof("Referral %s handed its CV (fileUuid=%s) to candidate %s at triage by actor=%s",
+                referral.getUuid(), fileUuid, candidateUuid, actor);
+    }
+
+    /**
+     * Delete the attached CV when a referral is dismissed. No candidate will
+     * ever exist, so there is no basis to keep a third party's CV — and no
+     * retention sweep watches referral rows that never became candidates.
+     * <p>
+     * Deliberately best-effort: a failed S3 delete must not roll back the
+     * recruiter's decision. The row's {@code cv_*} columns are cleared either
+     * way, so the file stops being reachable through any endpoint.
+     */
+    private void discardCvOnDismiss(RecruitmentReferral referral) {
+        if (!referral.hasCv()) {
+            return;
+        }
+        String fileUuid = referral.getCvFileUuid();
+        referral.clearCv();
+        try {
+            storageService.deleteReferralCv(fileUuid);
+        } catch (RuntimeException e) {
+            log.errorf(e, "Could not delete the CV of dismissed referral %s (fileUuid=%s) — "
+                            + "the row no longer references it, so it is unreachable but not yet erased",
+                    referral.getUuid(), fileUuid);
+        }
     }
 
     /**

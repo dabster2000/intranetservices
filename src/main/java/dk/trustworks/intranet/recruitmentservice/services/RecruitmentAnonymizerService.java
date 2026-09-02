@@ -61,8 +61,8 @@ import java.util.UUID;
  * <ul>
  *   <li><b>Referral rows</b> — a referral's own PII columns
  *       (candidate_name, linkedin_url, email, why_text,
- *       external_referrer_name) are scrubbed for referrals linked to this
- *       candidate (findings §P6).</li>
+ *       external_referrer_name, and the attached CV's cv_filename) are
+ *       scrubbed for referrals linked to this candidate (findings §P6).</li>
  *   <li><b>Pending-email rows</b> — rendered snapshots (to_email, subject,
  *       body) are scrubbed in every status; still-PENDING rows are
  *       dismissed so nobody can approve a mail to an erased candidate
@@ -302,6 +302,11 @@ public class RecruitmentAnonymizerService {
             referral.setEmail(null);
             referral.setWhyText(SCRUBBED_TEXT);
             referral.setExternalReferrerName(null);
+            // The attached CV (if any) moved onto the candidate at triage and
+            // has just been deleted with the rest of its files; the filename
+            // that stays behind here is PII in its own right — it routinely
+            // contains the person's name.
+            referral.clearCv();
         }
         return referrals.size();
     }

@@ -117,6 +117,16 @@ class RecruitmentEventTypeCatalogTest {
         // dedupes against via NOTIFIED — the same "reactors' own side
         // effects are recorded as events" rule that added
         // REFERRAL_OUTCOME_NOTIFIED.
+        // REFERRAL_CV_ATTACHED is the referral-CV addition (2026-09-02):
+        // the refer form may now carry an optional CV, and it arrives AFTER
+        // REFERRAL_SUBMITTED (the form creates the referral, then uploads),
+        // so no existing type could carry it. DOCUMENT_UPLOADED could not
+        // either — it is candidate-subject, and at this point there is no
+        // candidate. Found by the anonymizer through payload.referral_uuid,
+        // the same leg REFERRAL_SUBMITTED uses. When the referral is triaged
+        // into a candidate the file is re-pointed at it and gets its own
+        // DOCUMENT_UPLOADED with origin=referral, so the document's story
+        // reads correctly from both ends.
         // FACT_REDACTED is the fact-retraction addition (change request
         // 2026-08-28): withdrawing a fact-bearing NOTE_ADDED is a mutating
         // command per spec §6.2, and the append-only ledger had no way to
@@ -139,6 +149,7 @@ class RecruitmentEventTypeCatalogTest {
                 "APPLICATION_REJECTED", "APPLICATION_WITHDRAWN",
                 "UNSOLICITED_APPLICATION_RECEIVED", "DUPLICATE_APPLICATION_RECEIVED",
                 "REFERRAL_SUBMITTED", "REFERRAL_TRIAGED", "REFERRAL_OUTCOME_NOTIFIED",
+                "REFERRAL_CV_ATTACHED",
                 "APPLICANT_REFERRER_CLAIMED", "APPLICANT_REFERRER_NOTIFIED",
                 "APPLICANT_REFERRER_BACKFILLED",
                 "INTERVIEW_SCHEDULED", "INTERVIEW_RESCHEDULED", "INTERVIEW_CANCELLED",
@@ -193,8 +204,11 @@ class RecruitmentEventTypeCatalogTest {
                         + "unverified claim that they know a colleague, the notice "
                         + "sent to that colleague, and the BACKFILLED type the "
                         + "one-off sweep over already-collected names uses so it "
-                        + "structurally cannot trigger that notice)");
-        assertEquals(91, RecruitmentEventType.values().length);
+                        + "structurally cannot trigger that notice), plus "
+                        + "REFERRAL_CV_ATTACHED (the optional CV a referrer attaches "
+                        + "after submitting \u2014 pre-candidate, so DOCUMENT_UPLOADED "
+                        + "could not carry it)");
+        assertEquals(92, RecruitmentEventType.values().length);
     }
 
     @Test

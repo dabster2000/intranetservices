@@ -9,6 +9,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -191,6 +192,91 @@ public class RecruitmentS3StorageService {
         log.infof("Stored public application document candidate=%s fileUuid=%s size=%d",
                 candidateUuid, fileUuid, bytes.length);
         return fileUuid;
+    }
+
+    /**
+     * Store the CV an employee attached to a REFERRAL — the one recruitment
+     * file that exists before any candidate does. {@code relateduuid} is
+     * therefore the referral's uuid, not a candidate's; the referral row
+     * carries the returned {@code fileUuid}.
+     * <p>
+     * The linkage is not permanent: {@link #relinkFileToCandidate} moves it
+     * onto the candidate at triage (which is what puts it on the P8
+     * Documents tab and inside {@link #deleteAllCandidateFiles}'s reach),
+     * and {@link #deleteReferralCv} removes it outright when the referral
+     * is dismissed instead.
+     *
+     * @return the new {@code fileUuid} persisted on the referral row
+     */
+    public String storeReferralCv(byte[] bytes, String filename, UUID referralUuid) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        Objects.requireNonNull(referralUuid, "referralUuid must not be null");
+
+        String fileUuid = UUID.randomUUID().toString();
+        File file = new File(
+                fileUuid,
+                referralUuid.toString(),
+                "DOCUMENT",
+                filename,
+                filename,
+                LocalDate.now(),
+                bytes);
+        s3FileService.save(file);
+        log.infof("Stored referral CV referral=%s fileUuid=%s size=%d",
+                referralUuid, fileUuid, bytes.length);
+        return fileUuid;
+    }
+
+    /**
+     * The bytes of a referral's attached CV.
+     *
+     * @throws IllegalStateException if the object is gone from S3 — the
+     *         referral row still points at it, so this is a real fault, not
+     *         a "no CV" answer (that case is {@code cvFileUuid == null}).
+     */
+    public byte[] fetchReferralCv(String fileUuid) {
+        Objects.requireNonNull(fileUuid, "fileUuid must not be null");
+        File file = s3FileService.findOne(fileUuid);
+        if (file == null || file.getFile() == null || file.getFile().length == 0) {
+            throw new IllegalStateException("Referral CV not found in S3: " + fileUuid);
+        }
+        return file.getFile();
+    }
+
+    /** Delete a referral's attached CV (dismiss leg, and replace-on-reupload). */
+    public void deleteReferralCv(String fileUuid) {
+        Objects.requireNonNull(fileUuid, "fileUuid must not be null");
+        s3FileService.delete(fileUuid);
+        log.infof("Deleted referral CV fileUuid=%s", fileUuid);
+    }
+
+    /**
+     * Re-point a stored file at a candidate by rewriting its
+     * {@code relateduuid}. The S3 object is untouched — only the
+     * {@code files} row moves — which is exactly what the rest of the
+     * module keys on: the Documents tab lists by {@code relateduuid}, and
+     * so does the GDPR anonymizer's {@link #deleteAllCandidateFiles}.
+     * <p>
+     * Used by the referral triage create leg to hand the referrer's CV to
+     * the candidate it just created. Runs in the caller's transaction.
+     *
+     * @return true when a row was actually moved
+     */
+    @Transactional(Transactional.TxType.MANDATORY)
+    public boolean relinkFileToCandidate(String fileUuid, UUID candidateUuid) {
+        Objects.requireNonNull(fileUuid, "fileUuid must not be null");
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        int moved = File.update("relateduuid = ?1 where uuid = ?2",
+                candidateUuid.toString(), fileUuid);
+        if (moved == 0) {
+            log.warnf("Re-link found no files row fileUuid=%s (candidate=%s) — "
+                    + "the S3 object is orphaned but the candidate is unaffected",
+                    fileUuid, candidateUuid);
+            return false;
+        }
+        log.infof("Re-linked fileUuid=%s to candidate=%s", fileUuid, candidateUuid);
+        return true;
     }
 
     /**

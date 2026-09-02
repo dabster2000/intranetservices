@@ -91,6 +91,32 @@ public class RecruitmentReferral extends PanacheEntityBase implements Auditable 
     @Column(name = "why_text", columnDefinition = "TEXT", nullable = false)
     private String whyText;
 
+    /**
+     * Soft FK to {@code files.uuid} — the optional CV the referrer
+     * attached. The S3 object's {@code relateduuid} is THIS referral
+     * while the referral is pre-candidate; the triage create leg
+     * re-points it at the new candidate, the dismiss leg deletes it.
+     */
+    @Column(name = "cv_file_uuid", length = 36)
+    private String cvFileUuid;
+
+    /** PII. Sanitised original filename of the attached CV. */
+    @Column(name = "cv_filename", length = 255)
+    private String cvFilename;
+
+    /** Stored MIME type of the attached CV. */
+    @Column(name = "cv_content_type", length = 100)
+    private String cvContentType;
+
+    /** Size in bytes of the attached CV. */
+    @Column(name = "cv_size_bytes")
+    private Integer cvSizeBytes;
+
+    /** UTC. When the CV was attached. */
+    @Column(name = "cv_uploaded_at")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime cvUploadedAt;
+
     /** FK to {@code recruitment_candidates.uuid} — set by the triage create leg. */
     @Column(name = "candidate_uuid", length = 36)
     private String candidateUuid;
@@ -203,6 +229,48 @@ public class RecruitmentReferral extends PanacheEntityBase implements Auditable 
         this.status = RecruitmentReferralStatus.CLOSED;
         this.closedReason = reason;
         stampTriage(actor);
+    }
+
+    /**
+     * Record the optional CV the referrer attached. Only a referral still
+     * awaiting triage accepts one — once a recruiter has decided, the
+     * file belongs on the candidate (or nowhere), never back here.
+     *
+     * @return the {@code fileUuid} that was previously attached and must
+     *         now be deleted from S3, or {@code null} when this is the
+     *         first attachment (re-attaching replaces, it does not
+     *         accumulate — the referral carries at most one CV)
+     * @throws BusinessRuleViolation if the referral is not SUBMITTED
+     */
+    public String attachCv(String fileUuid, String filename, String contentType, int sizeBytes) {
+        Objects.requireNonNull(fileUuid, "fileUuid must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        guardSubmitted("attach a CV to");
+        String replaced = this.cvFileUuid;
+        this.cvFileUuid = fileUuid;
+        this.cvFilename = filename;
+        this.cvContentType = contentType;
+        this.cvSizeBytes = sizeBytes;
+        this.cvUploadedAt = LocalDateTime.now(ZoneOffset.UTC);
+        return replaced;
+    }
+
+    /** Whether a CV is attached. */
+    public boolean hasCv() {
+        return cvFileUuid != null && !cvFileUuid.isBlank();
+    }
+
+    /**
+     * Forget the attached CV — the caller is responsible for deleting the
+     * S3 object it points at. Used by the dismiss leg, where no candidate
+     * will ever exist to own the file.
+     */
+    public void clearCv() {
+        this.cvFileUuid = null;
+        this.cvFilename = null;
+        this.cvContentType = null;
+        this.cvSizeBytes = null;
+        this.cvUploadedAt = null;
     }
 
     private void stampTriage(UUID actor) {
