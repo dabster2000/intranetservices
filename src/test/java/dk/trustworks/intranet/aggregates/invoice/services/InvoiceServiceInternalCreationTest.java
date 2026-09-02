@@ -234,7 +234,7 @@ class InvoiceServiceInternalCreationTest {
         em.createNativeQuery("""
                 INSERT INTO client (uuid, contactname, name, crmid, accountmanager,
                                     managed, type, cvr, billing_country, currency, created)
-                VALUES (:uuid, 1, 't', :name, '', '', 'INTRA', 'CLIENT', :cvr, 'DK', 'DKK', NOW())
+                VALUES (:uuid, 't', :name, '', '', 'INTRA', 'CLIENT', :cvr, 'DK', 'DKK', NOW())
                 """)
                 .setParameter("uuid", fx.intercompanyClientUuid)
                 .setParameter("name", "Intercompany " + prefix)
