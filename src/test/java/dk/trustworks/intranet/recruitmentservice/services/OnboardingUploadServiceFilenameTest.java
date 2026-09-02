@@ -142,14 +142,43 @@ class OnboardingUploadServiceFilenameTest {
         // Reflection because aiRejected is private; we still want to verify
         // the response shape is consistent across maintenance.
         java.lang.reflect.Method m = OnboardingUploadService.class
-                .getDeclaredMethod("aiRejected", String.class);
+                .getDeclaredMethod("aiRejected", String.class, boolean.class);
         m.setAccessible(true);
         jakarta.ws.rs.WebApplicationException ex = (jakarta.ws.rs.WebApplicationException) m.invoke(
-                null, "test reason");
+                null, "test reason", false);
         jakarta.ws.rs.core.Response r = ex.getResponse();
         assertEquals(422, r.getStatus());
         String body = (String) r.getEntity();
         assertTrue(body.contains("\"AI_REJECTED\""));
         assertTrue(body.contains("\"test reason\""));
+        // The page reads this flag to decide whether to offer submit-anyway.
+        assertTrue(body.contains("\"canSubmitAnyway\":false"));
+    }
+
+    @Test
+    void aiRejected_advertisesTheOverrideOnceEarned() throws Exception {
+        java.lang.reflect.Method m = OnboardingUploadService.class
+                .getDeclaredMethod("aiRejected", String.class, boolean.class);
+        m.setAccessible(true);
+        jakarta.ws.rs.WebApplicationException ex = (jakarta.ws.rs.WebApplicationException) m.invoke(
+                null, "still cannot read it", true);
+        String body = (String) ex.getResponse().getEntity();
+        assertTrue(body.contains("\"canSubmitAnyway\":true"));
+    }
+
+    @Test
+    void aiRejected_bodyStaysValidJsonWhenTheModelQuotes() throws Exception {
+        // The reason is model-written text pasted into a hand-built JSON
+        // string, so a quote in it must not be able to end the field early.
+        java.lang.reflect.Method m = OnboardingUploadService.class
+                .getDeclaredMethod("aiRejected", String.class, boolean.class);
+        m.setAccessible(true);
+        jakarta.ws.rs.WebApplicationException ex = (jakarta.ws.rs.WebApplicationException) m.invoke(
+                null, "the field marked \"navn\" is blurred", true);
+        String body = (String) ex.getResponse().getEntity();
+        com.fasterxml.jackson.databind.JsonNode parsed =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+        assertEquals("the field marked \"navn\" is blurred", parsed.get("reason").asText());
+        assertEquals(true, parsed.get("canSubmitAnyway").asBoolean());
     }
 }

@@ -128,7 +128,11 @@ class RecruitmentCandidateCascadeCoverageTest {
                 "recruitment_slack_threads",          // V451, keyed by application
                 "recruitment_airtable_records",       // V483 — unlinked, row kept
                 "onboarding_upload_tokens",           // V322
-                "onboarding_upload_submissions");     // V327
+                "onboarding_upload_submissions",      // V327
+                // V561. Keyed by token_uuid, not candidate_uuid, so it has to
+                // be resolved through the tokens BEFORE they are deleted —
+                // hence its position above the other two in the cascade.
+                "onboarding_upload_attempts");        // V561
 
         for (String table : soft) {
             assertTrue(source.contains("counts.put(\"" + table),

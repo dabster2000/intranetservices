@@ -14,6 +14,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.LocalDate;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Synchronous AI validator for the public onboarding upload endpoint.
@@ -56,13 +57,47 @@ public class OnboardingDocumentValidationService {
     /** Hard cap applied in Java — see {@link #buildSchema()} for why not in the schema. */
     static final int REASON_MAX_LENGTH = 240;
 
-    /** Used when the model config property is absent OR present-but-empty. */
-    static final String DEFAULT_ONBOARDING_DOC_MODEL = "gpt-4o-mini";
+    /**
+     * Used when the model config property is absent OR present-but-empty.
+     *
+     * <p>Was {@code gpt-4o-mini} between 2026-08-25 and 2026-09-02. That model
+     * answered every single request with a rejection: <b>20 validations, 20
+     * refusals, 0 approvals</b> across two unrelated candidates and both
+     * document types, against 39/54 approved on the model it replaced. It is
+     * not strong enough to read a phone photo of a kørekort or sundhedskort
+     * confidently, and the prompts below demand confidence
+     * ("true ONLY if … clearly legible without guessing"), so it answered
+     * {@code isReadable=false} every time. On a fail-closed gate that is a
+     * total outage of the onboarding upload page — no new hire could submit
+     * anything for eight days. Keep this on a full vision model.</p>
+     */
+    static final String DEFAULT_ONBOARDING_DOC_MODEL = "gpt-4o";
 
     /** Used when the token-budget config property is absent OR present-but-empty. */
     static final int DEFAULT_ONBOARDING_DOC_MAX_OUTPUT_TOKENS = 8192;
 
-    public record ValidationDecision(boolean approved, String reason) {}
+    /**
+     * The four per-check booleans the model answered with, carried alongside
+     * the verdict purely so the INFO line can say WHICH check failed.
+     *
+     * <p>Before this existed the gate logged only {@code reasonLen}, so when
+     * gpt-4o-mini started refusing every document in August 2026 there was
+     * nothing in eight days of logs that said why — the reason text lives only
+     * in the 422 body the candidate sees. Never worth repeating.</p>
+     *
+     * <p>{@code null} on the paths that never reached a model verdict
+     * (transport failure, refusal, unparsable body) — those already log at
+     * ERROR with their own message.</p>
+     */
+    public record Checks(boolean correctDocumentType, boolean danish,
+                         boolean readable, boolean valid) {}
+
+    public record ValidationDecision(boolean approved, String reason, Checks checks) {
+        /** No model verdict was reached — see {@link Checks}. */
+        public ValidationDecision(boolean approved, String reason) {
+            this(approved, reason, null);
+        }
+    }
 
     /**
      * Schema-conformant fallback returned when OpenAI refuses or fails.
@@ -385,10 +420,15 @@ public class OnboardingDocumentValidationService {
             return new ValidationDecision(false,
                     "AI validation returned an incomplete response — please try again.");
         }
-        boolean expected = checks.path("isCorrectDocumentType").asBoolean(false)
-                && checks.path("isDanish").asBoolean(false)
-                && checks.path("isReadable").asBoolean(false)
-                && checks.path("isValid").asBoolean(false);
+        Checks parsed = new Checks(
+                checks.path("isCorrectDocumentType").asBoolean(false),
+                checks.path("isDanish").asBoolean(false),
+                checks.path("isReadable").asBoolean(false),
+                checks.path("isValid").asBoolean(false));
+        boolean expected = parsed.correctDocumentType()
+                && parsed.danish()
+                && parsed.readable()
+                && parsed.valid();
         boolean approved = node.path("approved").asBoolean(false);
         // Length is enforced here, NOT by the wire schema — see buildSchema().
         String reason = capReason(node.path("reason").asText(""), expected);
@@ -396,10 +436,41 @@ public class OnboardingDocumentValidationService {
             // Guardrail: trust the per-check booleans, not the top-level claim.
             log.warnf("[OnboardingValidate] approved/checks mismatch: approved=%s expected=%s",
                     approved, expected);
+            // Checks are still carried: a mismatch is exactly when we most want
+            // to see what the model actually answered.
             return new ValidationDecision(false,
-                    "Validation inconsistency — please re-upload the document.");
+                    "Validation inconsistency — please re-upload the document.", parsed);
         }
-        return new ValidationDecision(approved, reason);
+        return new ValidationDecision(approved, reason, parsed);
+    }
+
+    /** Digit shapes that must never reach a log group: CPR first, then any long run. */
+    private static final Pattern CPR_LIKE = Pattern.compile("\\d{6}-?\\d{4}");
+    private static final Pattern LONG_DIGIT_RUN = Pattern.compile("\\d{5,}");
+
+    /**
+     * Make a model-written reason safe to log.
+     *
+     * <p>The reason is free text from a model that has just been shown a
+     * photograph of a passport, kørekort or sundhedskort, so it can quote a
+     * CPR number back at us. {@code store=false} is set on the OpenAI call for
+     * exactly that reason, and CloudWatch log groups here never expire, so a
+     * verbatim reason in the log would outlive every other copy of it.</p>
+     *
+     * <p>Redacts CPR-shaped digits ({@code DDMMYY-XXXX} and the unhyphenated
+     * form) and any run of five or more digits — which also covers licence and
+     * card numbers. ISO dates survive (max run of four digits), because
+     * "expired 2024-03-11" is the diagnostic we want to keep.</p>
+     *
+     * <p>Also collapses whitespace: a reason with a newline in it could
+     * otherwise forge a second log line.</p>
+     */
+    static String scrubReasonForLog(String reason) {
+        if (reason == null || reason.isBlank()) return "";
+        String flat = reason.replaceAll("\\s+", " ").trim();
+        flat = CPR_LIKE.matcher(flat).replaceAll("[redacted]");
+        flat = LONG_DIGIT_RUN.matcher(flat).replaceAll("[redacted]");
+        return flat;
     }
 
     /**
@@ -483,8 +554,20 @@ public class OnboardingDocumentValidationService {
             return new ValidationDecision(false, SERVICE_UNAVAILABLE_REASON);
         }
         ValidationDecision d = parseDecision(raw);
-        log.infof("[OnboardingValidate] type=%s approved=%s reasonLen=%d model=%s",
-                type, d.approved(), d.reason() == null ? 0 : d.reason().length(), model);
+        // One line carrying the whole verdict. The four booleans are the part
+        // that was missing for the eight days gpt-4o-mini refused everything:
+        // with them, "readable=false on 20/20" is a CloudWatch Insights query
+        // rather than a guess. The reason is scrubbed — see scrubReasonForLog.
+        Checks c = d.checks();
+        log.infof("[OnboardingValidate] type=%s approved=%s model=%s "
+                        + "correctType=%s danish=%s readable=%s valid=%s reasonLen=%d reason=%s",
+                type, d.approved(), model,
+                c == null ? "?" : c.correctDocumentType(),
+                c == null ? "?" : c.danish(),
+                c == null ? "?" : c.readable(),
+                c == null ? "?" : c.valid(),
+                d.reason() == null ? 0 : d.reason().length(),
+                scrubReasonForLog(d.reason()));
         return d;
     }
 }

@@ -331,7 +331,18 @@ public class RecruitmentCandidateDeleteCascade {
                 (int) dk.trustworks.intranet.agreementservice.model.EmployeeAgreement
                         .delete("candidateUuid = ?1", candidateUuid));
 
-        // ---- Onboarding upload family (soft FKs, V322/V327) --------------------
+        // ---- Onboarding upload family (soft FKs, V322/V327/V561) ---------------
+        // Order matters: onboarding_upload_attempts is keyed by token_uuid, not
+        // candidate_uuid, so its rows have to be found through the tokens while
+        // those still exist. Deleting the tokens first would strand them.
+        List<String> onboardingTokenUuids = OnboardingUploadToken
+                .<OnboardingUploadToken>list("candidateUuid = ?1", candidateUuid)
+                .stream().map(OnboardingUploadToken::getUuid).toList();
+        counts.put("onboarding_upload_attempts", onboardingTokenUuids.isEmpty() ? 0
+                : em.createNativeQuery(
+                        "DELETE FROM onboarding_upload_attempts WHERE token_uuid IN (:tokens)")
+                .setParameter("tokens", onboardingTokenUuids)
+                .executeUpdate());
         counts.put("onboarding_upload_submissions",
                 (int) OnboardingUploadSubmission.delete("candidateUuid = ?1", candidateUuid));
         counts.put("onboarding_upload_tokens",
