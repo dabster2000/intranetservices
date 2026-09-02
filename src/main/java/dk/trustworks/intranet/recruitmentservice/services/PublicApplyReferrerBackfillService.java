@@ -118,7 +118,7 @@ public class PublicApplyReferrerBackfillService {
      *
      * @param dryRun when true, resolve and report but write nothing
      */
-    public BackfillReport backfill(boolean dryRun, UUID actor) {
+    public BackfillReport backfill(boolean dryRun, boolean useAi, UUID actor) {
         List<AirtableReferrerMatcher.DirectoryUser> directory =
                 QuarkusTransaction.requiringNew().call(this::loadDirectory);
         List<Candidate> candidates =
@@ -129,29 +129,125 @@ public class PublicApplyReferrerBackfillService {
         int ambiguous = 0;
         List<String> examples = new ArrayList<>();
         for (Candidate candidate : candidates) {
+            // Tiers 1-2 only: never let resolve() run its own AI leg, because
+            // its first-match-wins rule is the thing this sweep must not do.
             AirtableReferrerMatcher.Resolution resolution =
                     referrerMatcher.resolve(candidate.claimedName(), directory, false);
             if (resolution.userUuid() != null) {
                 pending.add(new Pending(candidate.uuid(), candidate.claimedName(),
                         resolution.userUuid(), resolution.matchMethod()));
                 addExample(examples, candidate.claimedName(), "matched");
-            } else if (isAmbiguous(candidate.claimedName(), directory)) {
+                continue;
+            }
+            if (isAmbiguous(candidate.claimedName(), directory)) {
                 ambiguous++;
                 addExample(examples, candidate.claimedName(), "ambiguous — left alone");
-            } else {
+                continue;
+            }
+            if (!useAi) {
                 unmatched++;
                 addExample(examples, candidate.claimedName(), "no employee of that name");
+                continue;
+            }
+            AiOutcome ai = matchViaExtraction(candidate.claimedName(), directory);
+            switch (ai.kind()) {
+                case MATCHED -> {
+                    pending.add(new Pending(candidate.uuid(), candidate.claimedName(),
+                            ai.userUuid(), "ai_extraction"));
+                    addExample(examples, candidate.claimedName(), "matched (via extraction)");
+                }
+                case SEVERAL -> {
+                    ambiguous++;
+                    addExample(examples, candidate.claimedName(),
+                            "names " + ai.hitNames().size() + " colleagues ("
+                                    + String.join("; ", ai.hitNames())
+                                    + ") — one column holds one person, so set it by hand");
+                }
+                case NONE -> {
+                    unmatched++;
+                    addExample(examples, candidate.claimedName(), "no employee of that name");
+                }
             }
         }
 
         if (!dryRun && !pending.isEmpty()) {
             QuarkusTransaction.requiringNew().run(() -> writeAll(pending, actor));
         }
-        log.infof("Referrer backfill (%s): %d scanned, %d matched, %d unmatched, %d ambiguous",
-                dryRun ? "dry run" : "applied", candidates.size(), pending.size(),
+        log.infof("Referrer backfill (%s, ai=%s): %d scanned, %d matched, %d unmatched, %d ambiguous",
+                dryRun ? "dry run" : "applied", useAi, candidates.size(), pending.size(),
                 unmatched, ambiguous);
         return new BackfillReport(candidates.size(), pending.size(), unmatched, ambiguous,
                 dryRun, List.copyOf(examples));
+    }
+
+    /** What the extraction leg concluded about one answer. */
+    private enum AiKind { MATCHED, SEVERAL, NONE }
+
+    private record AiOutcome(AiKind kind, String userUuid, List<String> hitNames) {
+        static final AiOutcome NOTHING = new AiOutcome(AiKind.NONE, null, List.of());
+    }
+
+    /**
+     * Ask the model which person-names are in the answer, then match each one
+     * deterministically.
+     * <p>
+     * The reason this exists rather than a call to
+     * {@code referrerMatcher.resolve(…, true)}: that method returns the FIRST
+     * extracted name that matches, which on a historical answer naming three
+     * colleagues would pick one arbitrarily and drop the rest. A referrer
+     * column holds one person, so the honest outcome for "Kasper …, Simon …,
+     * Mia …" is to leave it for a human — the same "never guess on ambiguity"
+     * rule the deterministic tiers already follow. One distinct hit links;
+     * more than one does not.
+     * <p>
+     * Note this fixes MULTI-NAME answers, not misspelled ones: the model
+     * returns names as written, so a typo still has to survive the token
+     * match to resolve.
+     */
+    private AiOutcome matchViaExtraction(String claimedName,
+                                         List<AirtableReferrerMatcher.DirectoryUser> directory) {
+        List<String> names;
+        try {
+            names = referrerMatcher.extractNames(claimedName);
+        } catch (Exception e) {
+            // A model hiccup must not fail the sweep; the row simply stays
+            // as it was and can be re-run later.
+            log.warnf("Referrer backfill: name extraction failed (%s) — leaving the row alone",
+                    e.getClass().getSimpleName());
+            return AiOutcome.NOTHING;
+        }
+        List<String> hits = new ArrayList<>();
+        for (String name : names) {
+            String uuid = AirtableReferrerMatcher.deterministicMatch(name, directory);
+            if (uuid != null && !hits.contains(uuid)) {
+                hits.add(uuid);
+            }
+        }
+        if (hits.size() == 1) {
+            return new AiOutcome(AiKind.MATCHED, hits.get(0), namesOf(hits, directory));
+        }
+        if (hits.size() > 1) {
+            // Name them. "3 different colleagues" tells an operator there is
+            // something to do; WHICH three tells them how to do it, and this
+            // is the one outcome that needs a human.
+            return new AiOutcome(AiKind.SEVERAL, null, namesOf(hits, directory));
+        }
+        return AiOutcome.NOTHING;
+    }
+
+    /** uuids back to readable names, for the report only. */
+    private static List<String> namesOf(List<String> uuids,
+                                        List<AirtableReferrerMatcher.DirectoryUser> directory) {
+        List<String> names = new ArrayList<>();
+        for (String uuid : uuids) {
+            directory.stream()
+                    .filter(u -> u.uuid().equals(uuid))
+                    .findFirst()
+                    .ifPresent(u -> names.add(
+                            ((u.firstname() == null ? "" : u.firstname()) + " "
+                                    + (u.lastname() == null ? "" : u.lastname())).trim()));
+        }
+        return names;
     }
 
     /** A candidate row reduced to what the match needs. */
