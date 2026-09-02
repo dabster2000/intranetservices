@@ -34,6 +34,7 @@ public class RecruitmentSlaThresholds {
     static final String MAX_SCORECARD_NUDGES_KEY = "recruitment.sla.max-scorecard-nudges";
     static final String SCORECARD_PROMPT_MINUTES_KEY = "recruitment.sla.scorecard-prompt-minutes";
     static final String BRIEF_LEAD_DAYS_KEY = "recruitment.brief.lead-days";
+    static final String EMAIL_REVIEW_STALE_HOURS_KEY = "recruitment.sla.email-review-stale-hours";
 
     static final int DEFAULT_SCORECARD_OVERDUE_HOURS = 24;
     static final int DEFAULT_CANDIDATE_IDLE_DAYS = 7;
@@ -41,6 +42,7 @@ public class RecruitmentSlaThresholds {
     static final int DEFAULT_MAX_SCORECARD_NUDGES = 2;
     static final int DEFAULT_SCORECARD_PROMPT_MINUTES = 20;
     static final int DEFAULT_BRIEF_LEAD_DAYS = 1;
+    static final int DEFAULT_EMAIL_REVIEW_STALE_HOURS = 48;
 
     @Inject
     AppSettingService appSettingService;
@@ -98,6 +100,21 @@ public class RecruitmentSlaThresholds {
      * Friday. A brief delivered on a Sunday is a brief nobody reads, which
      * is the failure this whole change exists to fix.
      */
+    /**
+     * How long a candidate email may sit unapproved in the review queue
+     * before the recruiter tier is nudged. 48 hours by default: the
+     * acknowledgement letter promises an answer within four working days,
+     * so two days is the point at which the queue is the reason that
+     * promise is at risk rather than ordinary turnaround.
+     * <p>
+     * Deliberately NOT seeded by a migration — {@code readPositiveInt}
+     * already answers the default, and an unpushed Flyway number is not
+     * reserved (three collisions to date). Set the row only to override.
+     */
+    public int emailReviewStaleHours() {
+        return readPositiveInt(EMAIL_REVIEW_STALE_HOURS_KEY, DEFAULT_EMAIL_REVIEW_STALE_HOURS);
+    }
+
     public int briefLeadDays() {
         return readPositiveInt(BRIEF_LEAD_DAYS_KEY, DEFAULT_BRIEF_LEAD_DAYS);
     }

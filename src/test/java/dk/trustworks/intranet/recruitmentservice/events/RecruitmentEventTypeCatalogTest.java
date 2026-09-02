@@ -157,6 +157,9 @@ class RecruitmentEventTypeCatalogTest {
                 "INTERVIEW_DECISION_RECORDED", "INTERVIEW_DECISION_CLEARED",
                 "SCORECARD_SUBMITTED", "SCORECARD_NUDGED", "SCORECARD_PROMPTED",
                 "CANDIDATE_IDLE_NUDGED", "DEBRIEF_STALLED_NUDGED", "MORNING_BRIEF_SENT",
+                // 2026-09-02: the fourth SLA nudge, and the only one about a
+                // QUEUE rather than a record — recipient-keyed, no candidate.
+                "EMAIL_REVIEW_STALE_NUDGED",
                 "EVE_BRIEF_SENT",
                 "DPO_DIGEST_SENT",
                 "EMAIL_SENT", "NOTE_ADDED", "NOTE_EDITED", "FACT_REDACTED",
@@ -208,7 +211,7 @@ class RecruitmentEventTypeCatalogTest {
                         + "REFERRAL_CV_ATTACHED (the optional CV a referrer attaches "
                         + "after submitting \u2014 pre-candidate, so DOCUMENT_UPLOADED "
                         + "could not carry it)");
-        assertEquals(92, RecruitmentEventType.values().length);
+        assertEquals(93, RecruitmentEventType.values().length);
     }
 
     @Test
