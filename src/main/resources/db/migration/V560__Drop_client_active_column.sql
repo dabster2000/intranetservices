@@ -1,0 +1,22 @@
+-- Remove the client activate/deactivate feature (release 3 of 3).
+--
+-- Sequencing that makes this safe against the ECS Express canary:
+--   * Release 1 (V558) removed the application's reads and writes of
+--     `client.active` and backfilled every row to 1.
+--   * Release 2 removed the two remaining `c.active` reads in
+--     CxoClientService that release 1 had missed.
+-- Both are live in production, so the old task the canary keeps serving
+-- during cutover no longer names this column in any statement.
+--
+-- Verified before writing this migration:
+--   * no view, stored procedure or trigger references client.active
+--   * V287 INSERTs the column but runs long before this point, so a chain
+--     replayed from scratch on an empty database still succeeds
+--   * the four @QuarkusTest fixtures that INSERT INTO client (uuid, active, …)
+--     were updated in release 1
+--
+-- client_activity_log rows with field_name = 'active' are deliberately left in
+-- place: they are a factual record of changes that did happen, and are still
+-- rendered by GET /clients/{clientuuid}/activity.
+
+ALTER TABLE client DROP COLUMN active;
