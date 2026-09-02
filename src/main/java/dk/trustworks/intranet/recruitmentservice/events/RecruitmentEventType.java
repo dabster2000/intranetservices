@@ -225,6 +225,19 @@ public enum RecruitmentEventType {
      */
     CANDIDATE_IDLE_NUDGED,
     /**
+     * The candidate-email review queue has gone unattended (2026-09-02).
+     * Recipient-keyed like {@code DPO_DIGEST_SENT}, not candidate-keyed:
+     * the nudge is about a queue, not about one candidate, and naming a
+     * candidate on it would leak whichever one happened to be oldest to
+     * every recruiter the DM reaches.
+     * <p>
+     * This trigger exists because review-first failed silently once: in
+     * August 2026 four rejection letters were queued, none approved, and
+     * the templates were eventually switched off — while the
+     * acknowledgement letter kept promising an answer in four working days.
+     */
+    EMAIL_REVIEW_STALE_NUDGED,
+    /**
      * The SLA sweep pinged the decision owner about a debrief-ready round
      * (all scorecards in) left unactioned beyond the configured threshold.
      * Catalog addition made in P17 (findings §P17).
