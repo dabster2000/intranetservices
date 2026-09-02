@@ -13,12 +13,15 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateSource;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailReason;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPendingEmailStatus;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailRenderer;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentConsentService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentEmailService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -62,6 +65,12 @@ import java.util.Map;
  * </ul>
  * Rules enforced here:
  * <ul>
+ *   <li><b>Consent links are minted, not left dangling:</b> a letter whose
+ *       text carries {@code {{consent_link}}} gets a real token minted for
+ *       this candidate before it renders. Without that the talent-pool
+ *       letter could only ask "may we keep your profile?" rhetorically —
+ *       there was no way for the candidate to answer, and the answer is
+ *       exactly what GDPR wants on the record.</li>
  *   <li><b>Flag:</b> {@code recruitment.interviews.enabled} (spec §11 puts
  *       candidate comms under core flag 2) checked per event — off ⇒
  *       silent PROCESSED advance, no backfill on later enable.</li>
@@ -89,6 +98,9 @@ public class CandidateMailerReactor extends RecruitmentReactor {
 
     public static final String NAME = "candidate-mailer";
 
+    /** The one merge field this reactor has to resolve itself. */
+    private static final String CONSENT_LINK_TOKEN = "consent_link";
+
     private static final com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>> JSON_OBJECT =
             new com.fasterxml.jackson.core.type.TypeReference<>() {
             };
@@ -101,6 +113,9 @@ public class CandidateMailerReactor extends RecruitmentReactor {
 
     @Inject
     RecruitmentEmailService emailService;
+
+    @Inject
+    RecruitmentConsentService consentService;
 
     @Override
     public String name() {
@@ -169,8 +184,15 @@ public class CandidateMailerReactor extends RecruitmentReactor {
         }
         RecruitmentPosition position = event.getPositionUuid() == null ? null
                 : RecruitmentPosition.findById(event.getPositionUuid());
-        RecruitmentEmailRenderer.Rendered rendered =
-                emailService.render(template, candidate, position);
+        // Minted only when the letter actually asks for one. Minting on every
+        // pooling would stamp a token onto candidates whose letter never
+        // offers a choice, which is a consent record of a question nobody was
+        // asked. The mint commits with the mail row and the event, exactly as
+        // it does in the GDPR sweep — a failed delivery mints nothing.
+        Map<String, String> extras = consentExtras(template, candidate);
+        RecruitmentEmailRenderer.Rendered rendered = RecruitmentEmailRenderer.render(
+                template.getSubject(), template.getBody(), candidate, position, extras,
+                template.getBodyFormat());
 
         // The template's copy policy applies to automatic sends too — an
         // auto-rejection BCCs the panel that met the candidate, which is
@@ -279,6 +301,32 @@ public class CandidateMailerReactor extends RecruitmentReactor {
             return List.of();
         }
         return RecruitmentEmailService.pooledKeyChain(asString(payload.get("pool_status")));
+    }
+
+    /**
+     * {@code {{consent_link}}} for a letter that uses it, empty otherwise.
+     * <p>
+     * The token is minted at THIS point even on the review-first path, where
+     * the letter then waits in the queue: {@code queueForReview} stores the
+     * rendered text and {@code approve} sends it verbatim, so a link filled
+     * any later would never reach the body. That is why the expiry is a
+     * retention-length window rather than a short one — see
+     * {@link RecruitmentConsentService#poolTokenExpiry}.
+     */
+    private Map<String, String> consentExtras(RecruitmentEmailTemplate template,
+                                              RecruitmentCandidate candidate) {
+        if (!RecruitmentEmailRenderer.usesToken(template.getSubject(), template.getBody(),
+                template.getBodyFormat(), CONSENT_LINK_TOKEN)) {
+            return Map.of();
+        }
+        RecruitmentConsentService.MintedToken minted = consentService.mintToken(
+                candidate.getUuid(),
+                RecruitmentConsentService.poolTokenExpiry(
+                        candidate, LocalDateTime.now(ZoneOffset.UTC)));
+        log.infof("Candidate mailer: minted a talent-pool consent link for candidate %s "
+                + "(consent=%s, template=%s)", candidate.getUuid(), minted.consentUuid(),
+                template.getTemplateKey());
+        return Map.of(CONSENT_LINK_TOKEN, consentService.consentLinkFor(minted.token()));
     }
 
     private static String asString(Object value) {

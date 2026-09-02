@@ -1,5 +1,5 @@
 -- ===========================================================================
--- Rejection routing — template data repair and re-keying
+-- Rejection routing, part A — repair the letters (no deploy needed)
 -- Author: rejection-reason routing work, 2026-09-02
 -- Target: twservices4 (PRODUCTION). The five rows below exist ONLY in prod;
 --         staging's template library never received them.
@@ -10,9 +10,14 @@
 -- Rows are addressed by uuid, not by template_key: section B renames keys,
 -- and the keys were being edited by hand in the ATS while this was written.
 --
--- Section A is safe on its own and needs no deploy.
--- Section B only becomes meaningful once the reason-routing backend is live
--- (CandidateMailerReactor key fall-through + the CANDIDATE_POOLED trigger).
+-- THIS FILE IS SAFE TO RUN NOW, against the prod backend as it stands.
+-- It repairs three letters that would open with a dangling greeting, and
+-- re-arms the two catch-all rejection letters that have been switched off
+-- since 2026-08-22 — so a rejection produces an email again.
+--
+-- Part B (rejection-routing-b-rekey-2026-09-02.sql) re-keys the custom
+-- letters onto the routing triggers and gives the pool letter its consent
+-- link. Run that one only AFTER the reason-routing backend reaches prod.
 -- ===========================================================================
 
 SET NAMES utf8mb4;
@@ -53,6 +58,8 @@ START TRANSACTION;
 --     Body opened "Hej ," — no merge field at all — and hard-coded the
 --     position "Forretningsudvikler", which is wrong for every other role
 --     and meaningless for an unsolicited applicant (who has no position).
+--     Its "Er det ok for dig?" stays rhetorical for now — there is nothing
+--     to click until part B gives it a consent link.
 UPDATE recruitment_email_templates
 SET body = '<p>Hej {{candidate_first_name}}</p><p>Tak for din ansøgning til Trustworks.</p><p>Vi er lige nu et sted, hvor vi i højere grad har brug for senior-profiler til at løse de opgaver, vi har hos vores kunder.</p><p>Du har en interessant baggrund, og vi vil derfor meget gerne have lov til at gemme dine oplysninger i vores database, så vi på et senere tidspunkt eventuelt kan tage fat i dig. Er det ok for dig?</p><p>Vi takker dig for din interesse og ønsker dig held og lykke med jobsøgningen.</p><p>Mange hilsner</p><p>Trustworks</p>',
     updated_at = NOW()
@@ -74,8 +81,8 @@ WHERE uuid = '83c2df7c-c871-40d7-91aa-f378f942211e';
 --     span the merge field was pasted into. Subject was "Trustworks".
 --     The empty <div> scaffolding around the text is dropped with it.
 --     This row is LIVE: it was activated and sent by hand at 10:50 on
---     2026-09-02, so the repair below is all it gets — see B3 for why it is
---     not re-keyed.
+--     2026-09-02, so the repair below is all it gets — part B explains why
+--     it is copied rather than re-keyed.
 UPDATE recruitment_email_templates
 SET subject = 'Your application to Trustworks',
     body = '<p>Dear {{candidate_first_name}},</p><p>Thank you for your application to Trustworks.</p><p>Unfortunately, we do not hire candidates who are based outside Denmark or who are not fluent in Danish, both spoken and written.</p><p>Thank you for your interest, and good luck with your continued job search.</p><p>Best regards,</p><p>Trustworks</p>',
@@ -95,75 +102,12 @@ WHERE uuid IN ('4c7ea434-86c0-11f1-9503-027533d3d1d3',   -- REJECTION_SCREENING
                '4c7ea552-86c0-11f1-9503-027533d3d1d3');  -- REJECTION_POST_INTERVIEW
 
 -- ---------------------------------------------------------------------------
--- SECTION B — re-key onto the routing triggers (needs the backend deployed)
---
--- template_key is immutable through the API by design, so raw SQL is the
--- only route. The column comment sets the limit: "Never rename a key that
--- has EMAIL_SENT events" — the key is what the candidate's timeline prints,
--- and it reads the key out of the event, never out of the template row, so
--- a rename leaves history naming a key no row has.
---
--- Checked 2026-09-02, and it split the three:
---   SELECT COUNT(*) FROM recruitment_events WHERE event_type = 'EMAIL_SENT'
---     AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.template_key'))
---         IN ('DATABASE','NEJ_TAK_NYUDDANNEDE','NO_THANKS_OUTSIDE_DK');
---   → 1, and it is NO_THANKS_OUTSIDE_DK (sent by hand at 10:50 that morning,
---     while this script was being written). So B1 and B2 rename; B3 does not.
---
--- Every letter here stays active = 0. Activating one is HR's explicit act
--- after reading the repaired text — the posture the create dialog takes for
--- every new template.
--- ---------------------------------------------------------------------------
-
--- B1. DATABASE → POOLED.
---     This one was never a rejection: it is "not now, may we keep you on
---     file", which is the talent pool. That mismatch is exactly why it never
---     fitted the rejection trigger. As POOLED it also becomes the only
---     letter an unsolicited applicant can receive after the receipt — their
---     submission creates no application, so no rejection can ever reach them.
-UPDATE recruitment_email_templates
-SET template_key = 'POOLED', updated_at = NOW()
-WHERE uuid = '82aab230-7f2d-451f-b30f-aa964fef1da2';
-
--- B2. NEJ_TAK_NYUDDANNEDE → REJECTION_EXPERIENCE_LEVEL.
-UPDATE recruitment_email_templates
-SET template_key = 'REJECTION_EXPERIENCE_LEVEL', updated_at = NOW()
-WHERE uuid = '83c2df7c-c871-40d7-91aa-f378f942211e';
-
--- B3. NO_THANKS_OUTSIDE_DK stays exactly where it is; the routing gets a
---     COPY under the trigger key instead.
---     Two reasons, either sufficient: it has an EMAIL_SENT event (see
---     above), and it is a letter someone activated and used this morning —
---     renaming it would pull it out from under them mid-use. The copy needs
---     the new LOCATION_LANGUAGE reason code, which ships with the backend;
---     until then these applicants are filed under PROFILE_MISMATCH or OTHER
---     and nothing can select this letter automatically.
---     created_by mirrors the source row's author: this is their text.
-INSERT INTO recruitment_email_templates
-    (uuid, template_key, name, subject, body, body_format,
-     auto_send, active, created_at, updated_at, created_by, modified_by,
-     copy_roles, copy_mode)
-VALUES (
-    '2a556f8b-92b1-4f29-a5b2-d4fd02ea7084',
-    'REJECTION_LOCATION_LANGUAGE',
-    'Afslag – uden for Danmark eller uden dansk',
-    'Your application to Trustworks',
-    '<p>Dear {{candidate_first_name}},</p><p>Thank you for your application to Trustworks.</p><p>Unfortunately, we do not hire candidates who are based outside Denmark or who are not fluent in Danish, both spoken and written.</p><p>Thank you for your interest, and good luck with your continued job search.</p><p>Best regards,</p><p>Trustworks</p>',
-    'HTML',
-    0,   -- review-first, like every other rejection letter
-    0,   -- HR activates it once they have read it
-    NOW(), NOW(),
-    '4c77d3a8-4631-408b-bc5f-a8cf570ce06d', NULL,
-    'SENDER', 'BCC');
-
--- ---------------------------------------------------------------------------
--- Verify before committing. Expect exactly 6 rows:
---   NO_THANKS_OUTSIDE_DK         active=1 auto=0   repaired, key untouched
---   POOLED                       active=0 auto=0   body starts "<p>Hej {{candidate_first_name}}"
---   REJECTION_EXPERIENCE_LEVEL   active=0 auto=0   subject "Afslag på din ansøgning"
---   REJECTION_LOCATION_LANGUAGE  active=0 auto=0   subject "Your application to Trustworks"
---   REJECTION_POST_INTERVIEW     active=1 auto=0
---   REJECTION_SCREENING          active=1 auto=0
+-- Verify before committing. Expect 5 rows:
+--   DATABASE                     active=0 auto=0   body opens "<p>Hej {{candidate_first_name}}"
+--   NEJ_TAK_NYUDDANNEDE          active=0 auto=0   subject "Afslag på din ansøgning"
+--   NO_THANKS_OUTSIDE_DK         active=1 auto=0   subject "Your application to Trustworks"
+--   REJECTION_POST_INTERVIEW     active=1 auto=0   ← re-armed
+--   REJECTION_SCREENING          active=1 auto=0   ← re-armed
 -- Every body must open with a merge field, never a dangling greeting.
 -- ---------------------------------------------------------------------------
 SELECT template_key, active, auto_send, subject, LEFT(body, 40) AS body_head
@@ -172,8 +116,7 @@ WHERE uuid IN ('82aab230-7f2d-451f-b30f-aa964fef1da2',
                '83c2df7c-c871-40d7-91aa-f378f942211e',
                '0783f87e-1e52-48e7-8383-289c43eb3b5f',
                '4c7ea434-86c0-11f1-9503-027533d3d1d3',
-               '4c7ea552-86c0-11f1-9503-027533d3d1d3',
-               '2a556f8b-92b1-4f29-a5b2-d4fd02ea7084')
+               '4c7ea552-86c0-11f1-9503-027533d3d1d3')
 ORDER BY template_key;
 
 -- COMMIT;    -- uncomment once the SELECT above reads correctly
