@@ -368,14 +368,6 @@ public class EmployeeDocumentResource {
                 "documentCount", documentCount,
                 "userCount", userCount == null ? 0L : userCount,
                 "needsReviewCount", needsReviewCount,
-                // The writer toggles are gone — every writer is S3-only now.
-                // Hard-coded true for this ONE release so an older frontend
-                // still reading them during the pipelined deploy renders
-                // "on"; the next release removes the object.
-                "writers", Map.of(
-                        "signing", true,
-                        "promotion", true,
-                        "onboarding", true),
                 "ui", Map.of(
                         "hrTab", featureFlag.isHrTabEnabled(),
                         "selfService", featureFlag.isSelfServiceEnabled()),
