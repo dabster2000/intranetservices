@@ -623,7 +623,16 @@ dk:
         # and that empty output parses as a rejection of a perfectly valid document.
         # Hence the proven non-reasoning gpt-4o-family vision default. Override per
         # env with DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MODEL.
-        onboarding-doc-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MODEL:gpt-4o-mini}
+        #
+        # SIZE MATTERS TOO, not just the family. This sat on gpt-4o-mini from
+        # 2026-08-25 to 2026-09-02 and rejected 20 of 20 uploads — every
+        # candidate, both document types, zero approvals — because mini cannot
+        # read a phone photo of a kørekort confidently enough to answer
+        # isReadable=true against the prompts in OnboardingDocumentValidationService.
+        # Fail-closed gate + always-false model = an eight-day outage of the
+        # onboarding upload page. Do not downgrade to a mini/nano tier here; if
+        # cost is the motive, measure the approval rate first.
+        onboarding-doc-model: ${DK_TRUSTWORKS_RECRUITMENT_AI_ONBOARDING_DOC_MODEL:gpt-4o}
         # max_output_tokens for that call.
         #
         # WARNING: this and onboarding-doc-model move TOGETHER (and with a

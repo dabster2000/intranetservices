@@ -3,6 +3,8 @@ package dk.trustworks.intranet.recruitmentservice.notifications;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
+import dk.trustworks.intranet.recruitmentservice.services.OnboardingUploadService;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
@@ -459,15 +461,32 @@ public class RecruitmentHrSlackNotifier {
                                            List<OnboardingUploadSubmission> submissions,
                                            String displayName,
                                            String linkUrl) {
-        int count = submissions.size();
-        if (token.getCandidateUuid() != null) {
-            return ":file_folder: Candidate " + displayName
-                    + " has uploaded all required onboarding identity documents ("
-                    + count + " file(s)). " + linkUrl;
-        }
-        // User flow: the files land in the employee document store.
-        return ":file_folder: " + displayName
+        List<OnboardingUploadSubmission> displaySubmissions =
+                submissions == null ? List.of() : submissions;
+        int count = displaySubmissions.size();
+        String who = token.getCandidateUuid() != null ? "Candidate " + displayName : displayName;
+        return ":file_folder: " + who
                 + " has uploaded all required onboarding identity documents ("
-                + count + " file(s)). " + linkUrl;
+                + count + " file(s)). " + linkUrl
+                + manualReviewSuffix(displaySubmissions);
+    }
+
+    /**
+     * Trailing warning naming any document stored through the candidate's
+     * "submit anyway" route (V561) — those bytes were never approved by the
+     * AI gate, so this message is the only thing that tells HR to open them.
+     *
+     * <p>Empty string when the gate approved everything, which is the normal
+     * case: the notification should not grow a permanent scary sentence.</p>
+     */
+    private static String manualReviewSuffix(List<OnboardingUploadSubmission> submissions) {
+        List<OnboardingDocumentType> needsReview =
+                OnboardingUploadSubmission.manualReviewTypes(submissions);
+        if (needsReview.isEmpty()) return "";
+        String names = needsReview.stream()
+                .map(OnboardingUploadService::humanDocumentTypeLabel)
+                .collect(java.util.stream.Collectors.joining(", "));
+        return "\n:warning: Not checked by automatic validation — please review manually: "
+                + names + ". (The candidate submitted after repeated automatic rejections.)";
     }
 }

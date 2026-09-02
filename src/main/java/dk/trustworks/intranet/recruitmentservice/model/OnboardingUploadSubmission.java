@@ -85,6 +85,18 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     @Column(name = "uploaded_at", nullable = false, updatable = false)
     private LocalDateTime uploadedAt;
 
+    /**
+     * True when the candidate stored this document through "submit anyway"
+     * after the AI gate had already refused it twice (V561). The bytes were
+     * never approved by the model, so a human needs to look at them — the HR
+     * Slack notification calls the document out by name.
+     *
+     * <p>False for everything the gate approved, and for every row written
+     * before the override existed.</p>
+     */
+    @Column(name = "manual_review_required", nullable = false)
+    private boolean manualReviewRequired;
+
     @PrePersist
     protected void onCreate() {
         if (uuid == null) {
@@ -98,6 +110,15 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     /** All submissions made for the given token, ordered by upload time. */
     public static List<OnboardingUploadSubmission> findByToken(String tokenUuid) {
         return list("tokenUuid = ?1 ORDER BY uploadedAt", tokenUuid);
+    }
+
+    /** Document types on this token that skipped AI approval, in a stable order. */
+    public static List<OnboardingDocumentType> manualReviewTypes(List<OnboardingUploadSubmission> submissions) {
+        return submissions.stream()
+                .filter(OnboardingUploadSubmission::isManualReviewRequired)
+                .map(OnboardingUploadSubmission::getDocumentType)
+                .sorted()
+                .toList();
     }
 
     /** Whether the {@code (token, type)} pair already has a submission row. */
