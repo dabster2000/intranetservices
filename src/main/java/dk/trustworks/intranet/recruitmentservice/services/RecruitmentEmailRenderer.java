@@ -215,6 +215,29 @@ public final class RecruitmentEmailRenderer {
     }
 
     /**
+     * Whether a template asks for one particular merge field, judged the way
+     * {@link #substitute} will read it — so a token the rich editor split
+     * across markup still counts, exactly as in
+     * {@link #unresolvedLinkTokens}.
+     * <p>
+     * The candidate mailer asks this before minting a consent token: a mint
+     * is a GDPR record, and recording that a candidate was asked for consent
+     * by a letter that never asks would be worse than the dangling
+     * placeholder it replaces.
+     *
+     * @param format how {@code body} is to be read; null is treated as PLAIN
+     */
+    public static boolean usesToken(String subject, String body,
+                                    RecruitmentEmailBodyFormat format, String token) {
+        if (token == null) {
+            return false;
+        }
+        boolean html = format != null && format.isHtml();
+        return tokensIn(subject).contains(token)
+                || tokensIn(html ? healSplitTokens(body) : body).contains(token);
+    }
+
+    /**
      * All merge-field-shaped tokens ({@code {{token}}}) still present in a
      * text — the compose dialog's unresolved-token warning for content
      * that was not produced by {@link #render} (the P16 AI draft, which is

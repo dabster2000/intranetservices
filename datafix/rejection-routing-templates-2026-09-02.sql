@@ -53,8 +53,21 @@ START TRANSACTION;
 --     Body opened "Hej ," — no merge field at all — and hard-coded the
 --     position "Forretningsudvikler", which is wrong for every other role
 --     and meaningless for an unsolicited applicant (who has no position).
+--
+--     It also asked "Er det ok for dig?" with nothing to click, so the
+--     answer could only ever arrive as an email someone had to notice and
+--     act on. {{consent_link}} replaces the rhetorical question with the
+--     real one: the candidate mailer mints a token for this letter, the
+--     candidate's yes lands in recruitment_consents as a dated, withdrawable
+--     record, and granting it starts their retention clock.
+--
+--     Deliberately NOT promising deletion on silence. The retention sweep
+--     only reaches candidates who HAVE a retention deadline, and
+--     CandidateService.pool sets none — so "we delete you if you do not
+--     answer" would be untrue for exactly the unsolicited applicants this
+--     letter is mostly for. See the PR notes for that gap.
 UPDATE recruitment_email_templates
-SET body = '<p>Hej {{candidate_first_name}}</p><p>Tak for din ansøgning til Trustworks.</p><p>Vi er lige nu et sted, hvor vi i højere grad har brug for senior-profiler til at løse de opgaver, vi har hos vores kunder.</p><p>Du har en interessant baggrund, og vi vil derfor meget gerne have lov til at gemme dine oplysninger i vores database, så vi på et senere tidspunkt eventuelt kan tage fat i dig. Er det ok for dig?</p><p>Vi takker dig for din interesse og ønsker dig held og lykke med jobsøgningen.</p><p>Mange hilsner</p><p>Trustworks</p>',
+SET body = '<p>Hej {{candidate_first_name}}</p><p>Tak for din ansøgning til Trustworks.</p><p>Vi er lige nu et sted, hvor vi i højere grad har brug for senior-profiler til at løse de opgaver, vi har hos vores kunder.</p><p>Du har en interessant baggrund, og vi vil derfor meget gerne have lov til at gemme dine oplysninger i vores kandidatbank, så vi kan tage fat i dig, hvis den rette mulighed dukker op. Sig ja via linket herunder — det tager under et minut:</p><p>{{consent_link}}</p><p>Du kan altid bruge det samme link til at trække dit samtykke tilbage igen.</p><p>Vi takker dig for din interesse og ønsker dig held og lykke med jobsøgningen.</p><p>Mange hilsner</p><p>Trustworks</p>',
     updated_at = NOW()
 WHERE uuid = '82aab230-7f2d-451f-b30f-aa964fef1da2';
 
@@ -160,13 +173,15 @@ VALUES (
 -- Verify before committing. Expect exactly 6 rows:
 --   NO_THANKS_OUTSIDE_DK         active=1 auto=0   repaired, key untouched
 --   POOLED                       active=0 auto=0   body starts "<p>Hej {{candidate_first_name}}"
+--                                                  and CONTAINS {{consent_link}}
 --   REJECTION_EXPERIENCE_LEVEL   active=0 auto=0   subject "Afslag på din ansøgning"
 --   REJECTION_LOCATION_LANGUAGE  active=0 auto=0   subject "Your application to Trustworks"
 --   REJECTION_POST_INTERVIEW     active=1 auto=0
 --   REJECTION_SCREENING          active=1 auto=0
 -- Every body must open with a merge field, never a dangling greeting.
 -- ---------------------------------------------------------------------------
-SELECT template_key, active, auto_send, subject, LEFT(body, 40) AS body_head
+SELECT template_key, active, auto_send, subject, LEFT(body, 40) AS body_head,
+       body LIKE '%{{consent_link}}%' AS asks_for_consent
 FROM recruitment_email_templates
 WHERE uuid IN ('82aab230-7f2d-451f-b30f-aa964fef1da2',
                '83c2df7c-c871-40d7-91aa-f378f942211e',

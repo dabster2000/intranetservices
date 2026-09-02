@@ -10,6 +10,7 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentK
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentConsentStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -68,6 +69,15 @@ public class RecruitmentConsentService {
      */
     public static final int CONSENT_MONTHS = 12;
 
+    /**
+     * Fallback lifetime for a talent-pool consent link when the candidate has
+     * no retention deadline to pin it to. Mirrors
+     * {@code RecruitmentApplicationService.RETENTION_MONTHS} — the window the
+     * rest of the system already treats as "how long we keep an unanswered
+     * candidate".
+     */
+    static final int DEFAULT_POOL_TOKEN_MONTHS = 6;
+
     /** 32 random bytes, base64url without padding = 43 chars. */
     private static final Pattern TOKEN_SHAPE = Pattern.compile("[A-Za-z0-9_-]{43}");
 
@@ -81,6 +91,20 @@ public class RecruitmentConsentService {
 
     @Inject
     RecruitmentEmailService emailService;
+
+    /**
+     * Public base URL the consent links are built on. The consent page is
+     * served by the intranet frontend but excluded from its auth gate
+     * (public page, P5 {@code /apply} pattern).
+     * <p>
+     * It lives here rather than on a caller because two senders now build
+     * these links — the GDPR sweep's renewal and the candidate mailer's
+     * talent-pool letter — and a link assembled two different ways is a
+     * link that works from one of them.
+     */
+    @ConfigProperty(name = "dk.trustworks.recruitment.consent.base-url",
+            defaultValue = "https://intra.trustworks.dk")
+    String consentBaseUrl;
 
     /** What the public page needs to render — nothing more. */
     public record ConsentView(String candidateFirstName, RecruitmentConsentKind kind,
@@ -136,6 +160,36 @@ public class RecruitmentConsentService {
     // ------------------------------------------------------------------
     // Public page reads / actions (token-addressed)
     // ------------------------------------------------------------------
+
+    /**
+     * The public consent page URL for a freshly minted token — the value
+     * every {@code {{consent_link}}} merge field is filled with.
+     *
+     * @param token the raw token from {@link MintedToken#token()}
+     */
+    public String consentLinkFor(String token) {
+        return consentBaseUrl + "/consent/" + token;
+    }
+
+    /**
+     * How long a consent link stays answerable for a candidate being put in
+     * the pool. The renewal sweep pins its tokens to the retention deadline
+     * it is racing, and reuses that here whenever the candidate has one.
+     * <p>
+     * A candidate pooled by hand often does NOT: {@code CandidateService.pool}
+     * sets no deadline, and an unsolicited applicant has never had an
+     * application terminate to start the clock. Their link falls back to the
+     * standard six-month retention window — long enough that the answer is
+     * not lost while the letter sits in the review queue, and bounded so a
+     * token cannot outlive the data it is about.
+     */
+    public static LocalDateTime poolTokenExpiry(RecruitmentCandidate candidate,
+                                                LocalDateTime now) {
+        LocalDateTime deadline = candidate == null ? null : candidate.getRetentionDeadline();
+        return deadline != null && deadline.isAfter(now)
+                ? deadline
+                : now.plusMonths(DEFAULT_POOL_TOKEN_MONTHS);
+    }
 
     /** Resolve a presented token; {@code null} on every invalid case. */
     public ConsentView findByToken(String rawToken) {
