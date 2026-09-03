@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.bugreport.services.AiSuggestionExceptio
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportAutoFixService;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportS3Service;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportService;
+import dk.trustworks.intranet.security.EffectivePermissionService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.utils.TemporalParams;
@@ -56,6 +57,9 @@ public class BugReportResource {
     @Inject
     ScopeContext scopeContext;
 
+    @Inject
+    EffectivePermissionService effectivePermissionService;
+
     // ---- 1. POST /bug-reports — Create draft ----
     @POST
     @RolesAllowed({"bugreports:write"})
@@ -80,8 +84,22 @@ public class BugReportResource {
                     .entity("{\"error\":\"reporterUuid query parameter is required\"}")
                     .build();
         }
-        var result = bugReportService.findByReporter(reporterUuid, page, size);
-        return Response.ok(result).build();
+        // IDOR fix: reporterUuid is client-supplied and the class-level scope gates nothing here
+        // -- the BFF's system token carries it for every user. Non-admins may only list their own.
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        if (!reporterUuid.equals(callerUuid) && !hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
+        try {
+            var result = bugReportService.findByReporter(reporterUuid, status, page, size);
+            return Response.ok(result).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        }
     }
 
     // ---- 3. GET /bug-reports/all — Admin: list all reports ----
@@ -129,6 +147,10 @@ public class BugReportResource {
         try {
             var updated = bugReportService.update(uuid, userUuid, request, ifMatch);
             return Response.ok(updated).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
         } catch (IllegalStateException e) {
             return Response.status(409)
                     .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
@@ -199,6 +221,10 @@ public class BugReportResource {
         try {
             var updated = bugReportService.changeStatus(uuid, request.status(), actorUuid, ifMatch, request.reason());
             return Response.ok(updated).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
         } catch (IllegalStateException e) {
             return Response.status(409)
                     .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
@@ -210,6 +236,19 @@ public class BugReportResource {
     @GET
     @Path("/{uuid}/comments")
     public Response listComments(@PathParam("uuid") String uuid) {
+        // IDOR fix: comments inherit the report's visibility -- same rule as getByUuid.
+        var report = bugReportService.findByUuid(uuid);
+        if (report.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"Bug report not found\"}")
+                    .build();
+        }
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        if (!report.get().reporterUuid().equals(callerUuid) && !hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
         var comments = bugReportService.findComments(uuid);
         return Response.ok(comments).build();
     }
@@ -331,9 +370,7 @@ public class BugReportResource {
     @GET
     @Path("/notifications")
     public Response getNotifications(@QueryParam("userUuid") String userUuid) {
-        String effectiveUuid = (userUuid != null && !userUuid.isBlank())
-                ? userUuid : requestHeaderHolder.getUserUuid();
-        var result = bugReportService.findNotifications(effectiveUuid);
+        var result = bugReportService.findNotifications(resolveNotificationOwner(userUuid));
         return Response.ok(result).build();
     }
 
@@ -342,8 +379,21 @@ public class BugReportResource {
     @Path("/notifications/{uuid}/read")
     @RolesAllowed({"bugreports:write"})
     public Response markNotificationAsRead(@PathParam("uuid") String uuid) {
-        bugReportService.markNotificationAsRead(uuid);
-        return Response.ok().build();
+        // IDOR fix: the notification uuid is not an authorization token -- the service verifies
+        // the notification belongs to the caller before marking it.
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        try {
+            bugReportService.markNotificationAsRead(uuid, callerUuid);
+            return Response.ok().build();
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        } catch (SecurityException e) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
     }
 
     // ---- 15. PUT /bug-reports/notifications/read-all — Mark all as read ----
@@ -351,9 +401,7 @@ public class BugReportResource {
     @Path("/notifications/read-all")
     @RolesAllowed({"bugreports:write"})
     public Response markAllNotificationsAsRead(@QueryParam("userUuid") String userUuid) {
-        String effectiveUuid = (userUuid != null && !userUuid.isBlank())
-                ? userUuid : requestHeaderHolder.getUserUuid();
-        bugReportService.markAllNotificationsAsRead(effectiveUuid);
+        bugReportService.markAllNotificationsAsRead(resolveNotificationOwner(userUuid));
         return Response.ok().build();
     }
 
@@ -521,8 +569,49 @@ public class BugReportResource {
 
     // ---- Helpers ----
 
+    /**
+     * True when the <em>human</em> behind this request may act on other people's bug reports.
+     *
+     * <p><b>Why this cannot read the token's scopes.</b> Every request from the Next.js BFF
+     * arrives on ONE shared client-credentials token, and that client holds {@code admin:*} —
+     * {@link dk.trustworks.intranet.security.AdminScopeAugmentor} expands it to every scope in
+     * the catalogue on every request, and {@link ScopeContext#hasScope} short-circuits on the
+     * wildcard. So {@code scopeContext.hasScope("bugreports:admin")} is <b>true for every
+     * logged-in employee</b>, and an ownership check written against it is inert. That is not
+     * hypothetical: on 2026-09-03 a {@code GET /bug-reports/{uuid}} carrying one employee's
+     * {@code X-Requested-By} returned another employee's draft — description, console errors,
+     * page URL — with HTTP 200, and the screenshot endpoint behaved the same way.
+     *
+     * <p>The only thing that identifies WHICH employee is on the other end is the
+     * {@code X-Requested-By} header, so the decision is resolved against that user's own
+     * effective permissions ({@code user → roles → role_permission → permission}), which are
+     * cached for 30 s and version-flushed, so this stays cheap on the read path.
+     *
+     * <p>When the header is absent the caller is a machine client acting for itself (the
+     * auto-fix worker), not a person; there is no user to resolve, so the token's own scopes
+     * are the correct and only signal.
+     */
     private boolean hasAdminScope() {
-        return scopeContext.hasScope("bugreports:admin");
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        if (callerUuid == null || callerUuid.isBlank()) {
+            return scopeContext.hasScope("bugreports:admin");
+        }
+        return effectivePermissionService.effectivePermissions(callerUuid)
+                .contains("bugreports:admin");
+    }
+
+    /**
+     * Resolves whose notifications a request addresses.
+     *
+     * <p>The authenticated identity WINS. A client-supplied {@code userUuid} is only honoured
+     * for admin-scope callers -- it used to take precedence unconditionally, which let any
+     * authenticated user read and clear anyone else's notification feed.
+     */
+    private String resolveNotificationOwner(String requestedUserUuid) {
+        if (requestedUserUuid != null && !requestedUserUuid.isBlank() && hasAdminScope()) {
+            return requestedUserUuid;
+        }
+        return requestHeaderHolder.getUserUuid();
     }
 
     /**
