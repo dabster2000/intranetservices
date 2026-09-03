@@ -587,13 +587,15 @@ public class BugReportResource {
      * effective permissions ({@code user → roles → role_permission → permission}), which are
      * cached for 30 s and version-flushed, so this stays cheap on the read path.
      *
-     * <p>When the header is absent the caller is a machine client acting for itself (the
-     * auto-fix worker), not a person; there is no user to resolve, so the token's own scopes
-     * are the correct and only signal.
+     * <p>When the header is absent, or carries a {@code system:} actor rather than a user uuid
+     * (the auto-fix worker stamps its tasks that way, and fetches screenshots through
+     * {@code ?format=url}), the caller is a machine client acting for itself. There is no
+     * employee to resolve, so the token's own scopes are the correct and only signal — and a
+     * machine client's token is not the BFF's, so reading its scopes is meaningful.
      */
     private boolean hasAdminScope() {
         String callerUuid = requestHeaderHolder.getUserUuid();
-        if (callerUuid == null || callerUuid.isBlank()) {
+        if (callerUuid == null || callerUuid.isBlank() || callerUuid.startsWith("system:")) {
             return scopeContext.hasScope("bugreports:admin");
         }
         return effectivePermissionService.effectivePermissions(callerUuid)
