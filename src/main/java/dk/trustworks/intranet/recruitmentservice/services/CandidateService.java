@@ -703,6 +703,7 @@ public class CandidateService {
         LocalDateTime deadline = null;
         if (enteredPool) {
             deadline = retentionDeadlineOnPooling(candidate.getRetentionDeadline(),
+                    RecruitmentConsentService.latestStandingConsentExpiry(candidate.getUuid()),
                     LocalDateTime.now(ZoneOffset.UTC));
             candidate.setRetentionDeadline(deadline);
         }
@@ -728,17 +729,38 @@ public class CandidateService {
      * grew — the renewal sweep skips a candidate with no deadline, so nobody
      * was ever asked to renew and nobody was ever swept.
      * <p>
-     * Never shortens an existing deadline. A candidate who has already
-     * granted consent holds a 12-month one ({@code CONSENT_MONTHS}), and
-     * pooling them again is not a reason to bring their data's life forward.
+     * Never shortens. Pooling a candidate is not a reason to bring their
+     * data's life forward, so the fresh six months only ever wins by being
+     * the latest of the three dates in play — and the third one is the point.
+     * <p>
+     * The deadline column is not the whole promise. A candidate who granted
+     * talent-pool consent holds a 12-month one ({@code CONSENT_MONTHS}), and
+     * that lives in {@code recruitment_consents.expires_at}; the candidate's
+     * own {@code retention_deadline} is frequently NULL beside it, because
+     * only the paths that own that column ever write it. Comparing against
+     * the column alone therefore read a granted 12-month consent as no
+     * constraint at all and stamped {@code now + 6 months} over it — five or
+     * six months of data destroyed on the strength of a consent the candidate
+     * gave us. Measured against production on 2026-09-02: 37 candidates one
+     * pooling away from exactly that, and 11 already past it.
      *
-     * @param existing the candidate's current deadline, or null
-     * @param now       UTC now
+     * @param existing      the candidate's current deadline, or null
+     * @param consentExpiry the latest standing consent's expiry, or null —
+     *                      see {@link RecruitmentConsentService#latestStandingConsentExpiry}
+     * @param now           UTC now
      * @return the deadline that should be in force after pooling
      */
-    static LocalDateTime retentionDeadlineOnPooling(LocalDateTime existing, LocalDateTime now) {
-        LocalDateTime fresh = now.plusMonths(RecruitmentApplicationService.RETENTION_MONTHS);
-        return existing != null && existing.isAfter(fresh) ? existing : fresh;
+    static LocalDateTime retentionDeadlineOnPooling(LocalDateTime existing,
+                                                    LocalDateTime consentExpiry,
+                                                    LocalDateTime now) {
+        LocalDateTime deadline = now.plusMonths(RecruitmentApplicationService.RETENTION_MONTHS);
+        if (existing != null && existing.isAfter(deadline)) {
+            deadline = existing;
+        }
+        if (consentExpiry != null && consentExpiry.isAfter(deadline)) {
+            deadline = consentExpiry;
+        }
+        return deadline;
     }
 
     /** Bring a pooled candidate back to ACTIVE. Appends {@code CANDIDATE_UNPOOLED}. */

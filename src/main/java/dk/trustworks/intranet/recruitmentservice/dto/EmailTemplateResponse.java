@@ -15,10 +15,22 @@ import java.util.List;
  * compose picker hides because their merge fields only resolve inside
  * that job. {@code copyRoles} and {@code copyMode} carry the template's
  * internal-copy policy.
+ * <p>
+ * The three routing fields answer "what is this letter FOR": the explicit
+ * {@code triggerKey} assignment, the {@code effectiveTrigger} the mailer
+ * would actually resolve it on (the assignment, else the letter's own key
+ * when that key is a reserved trigger), and {@code connected} — false
+ * meaning nothing in the pipeline will ever reach this letter.
  */
 public record EmailTemplateResponse(
         String uuid,
         String templateKey,
+        /** The explicit assignment, or null when this letter has claimed no moment. */
+        String triggerKey,
+        /** triggerKey, else templateKey when that is a trigger, else null. */
+        String effectiveTrigger,
+        /** {@code effectiveTrigger != null} — false means nothing fires this letter. */
+        boolean connected,
         String name,
         String subject,
         String body,
@@ -32,9 +44,13 @@ public record EmailTemplateResponse(
         LocalDateTime updatedAt
 ) {
     public static EmailTemplateResponse of(RecruitmentEmailTemplate template) {
+        String effectiveTrigger = RecruitmentEmailService.effectiveTrigger(template);
         return new EmailTemplateResponse(
                 template.getUuid(),
                 template.getTemplateKey(),
+                template.getTriggerKey(),
+                effectiveTrigger,
+                effectiveTrigger != null,
                 template.getName(),
                 template.getSubject(),
                 template.getBody(),

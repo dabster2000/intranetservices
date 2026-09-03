@@ -30,6 +30,15 @@ import java.util.regex.Pattern;
  *       stays visible as an unresolved placeholder (by design: a manual
  *       send of the renewal template cannot mint a token)</li>
  * </ul>
+ * Four more tokens are part of the same vocabulary but are NOT resolved
+ * here, because they are lookups rather than functions of the text:
+ * {@code {{visiting_address}}}, {@code {{company_name}}},
+ * {@code {{recruiter_name}}} and {@code {{recruiter_email}}}.
+ * {@code RecruitmentEmailService.standardExtras()} supplies all four through
+ * the extras overload below, which is what keeps this class a pure function
+ * the DB-free tier can pin. The two {@code recruiter_*} are empty on an
+ * automatic send — nobody acted.
+ * <p>
  * Unknown tokens are left untouched so they stay VISIBLE in the compose
  * preview and the review queue — a recruiter sees the problem instead of
  * the candidate receiving a silently half-rendered email.
