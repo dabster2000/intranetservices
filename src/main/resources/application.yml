@@ -867,7 +867,29 @@ bonus:
 
 bug-report:
   ai:
-    model: ${BUGREPORT_AI_MODEL:gpt-5}
+    # Triage model for POST /bug-reports/{uuid}/analyze (vision + strict schema + file_search).
+    #
+    # WAS gpt-5, which measured 30-42 s on a synthetic screenshot and 41-60+ s in production —
+    # against the shared gateway ALB's 60 s idle timeout. 16 of 26 production triage calls over
+    # the 45 days to 2026-09-03 were killed at exactly 60,00x ms and returned 504; not one
+    # completed under 40 s. That timeout is what pushed users onto the modal's ai-failed path,
+    # where a stale If-Match made every submit a permanent 409 and stranded the report in DRAFT.
+    #
+    # gpt-5.6-terra measured 9-13 s on the same request shape (~4x faster, because it spends
+    # far fewer reasoning tokens for the same verdict), and was chosen over gpt-5.6-luna and
+    # gpt-5.6-sol on two behaviours that matter here: it answers in the REPORTER'S language
+    # (luna replies in English to a Danish report, and the explanation is shown to the reporter
+    # verbatim), and it held severity at MEDIUM on a prompt-injection probe that talked sol up
+    # to HIGH. All three refused the injection itself. Same family as
+    # openai.consultant-profile-model, so it is already exercised in this codebase.
+    #
+    # The call is additionally bounded by bug-report.ai.timeout-seconds below, so a future model
+    # or prompt regression degrades into a clean 502 the UI can recover from, never a 504.
+    model: ${BUGREPORT_AI_MODEL:gpt-5.6-terra}
+    # Hard ceiling on the triage call, deliberately below the 60 s ALB idle timeout. A triage
+    # that overruns this must fail as OUR error (502, with a message inviting the user to submit
+    # anyway) rather than as the gateway's (504, which the BFF cannot distinguish from a crash).
+    timeout-seconds: ${BUGREPORT_AI_TIMEOUT_SECONDS:45}
     vector-store-id: ${BUGREPORT_VECTOR_STORE_ID:vs_69b732518c0081918dcd98133a178742}
   cloudwatch:
     # Log-group PREFIXES, never full names: ECS Express names each group
