@@ -416,6 +416,14 @@ public class BugReportResource {
                     .entity("{\"error\":\"Missing X-Requested-By header\"}")
                     .build();
         }
+        // The class-level scope gates nothing here: the BFF's shared client-credentials
+        // token carries admin:* for every logged-in employee, so @RolesAllowed is inert
+        // for BFF traffic. Queueing an auto-fix spends real money -- resolve the HUMAN.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
 
         try {
             AutoFixTaskDTO task = autoFixService.requestAutoFix(uuid, requestedBy);
@@ -444,6 +452,13 @@ public class BugReportResource {
     @RolesAllowed({"bugreports:admin"})
     public Response mergePullRequest(@PathParam("uuid") String uuid,
                                      @PathParam("taskId") String taskId) {
+        // Inert @RolesAllowed for BFF traffic (see requestAutoFix) -- merging a PR into
+        // a deployable branch must resolve the human, not the shared client token.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
         try {
             var result = autoFixService.mergePullRequest(uuid, taskId);
             return Response.ok(result).build();
@@ -516,6 +531,14 @@ public class BugReportResource {
     @RolesAllowed({"bugreports:admin"})
     @Transactional
     public Response updateAutoFixConfig(Map<String, Object> config) {
+        // Inert @RolesAllowed for BFF traffic (see requestAutoFix). Without this, ANY
+        // logged-in employee could change the model, raise the per-run budget to $50,
+        // or flip the master kill switch off.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
         String requestedBy = requestHeaderHolder.getUserUuid();
         Map<String, String> updates = new LinkedHashMap<>();
 
