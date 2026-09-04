@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.bugreport.resources;
 
 import dk.trustworks.intranet.aggregates.bugreport.dto.*;
 import dk.trustworks.intranet.aggregates.bugreport.services.AiSuggestionException;
+import dk.trustworks.intranet.aggregates.bugreport.services.AutoFixModelCatalogService;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportAutoFixService;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportS3Service;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportService;
@@ -23,7 +24,9 @@ import lombok.extern.jbosslog.JBossLog;
 import java.net.URI;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +62,9 @@ public class BugReportResource {
 
     @Inject
     EffectivePermissionService effectivePermissionService;
+
+    @Inject
+    AutoFixModelCatalogService modelCatalog;
 
     // ---- 1. POST /bug-reports — Create draft ----
     @POST
@@ -416,6 +422,14 @@ public class BugReportResource {
                     .entity("{\"error\":\"Missing X-Requested-By header\"}")
                     .build();
         }
+        // The class-level scope gates nothing here: the BFF's shared client-credentials
+        // token carries admin:* for every logged-in employee, so @RolesAllowed is inert
+        // for BFF traffic. Queueing an auto-fix spends real money -- resolve the HUMAN.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
 
         try {
             AutoFixTaskDTO task = autoFixService.requestAutoFix(uuid, requestedBy);
@@ -444,6 +458,13 @@ public class BugReportResource {
     @RolesAllowed({"bugreports:admin"})
     public Response mergePullRequest(@PathParam("uuid") String uuid,
                                      @PathParam("taskId") String taskId) {
+        // Inert @RolesAllowed for BFF traffic (see requestAutoFix) -- merging a PR into
+        // a deployable branch must resolve the human, not the shared client token.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
         try {
             var result = autoFixService.mergePullRequest(uuid, taskId);
             return Response.ok(result).build();
@@ -480,12 +501,11 @@ public class BugReportResource {
         return Response.ok(stats).build();
     }
 
-    // Allowed values for the tunable auto-fix worker settings (validated on write).
-    // Model strings must be exact CLI model ids; effort must be a valid --effort level.
-    private static final Set<String> ALLOWED_EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
-    private static final Set<String> ALLOWED_MODELS = Set.of(
-            "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001");
-    private static final String DEFAULT_MODEL = "claude-opus-4-8";
+    // Effort levels the CLI accepts. Kept as an ordered List, not a Set.of: Set.of
+    // iteration order is salted per JVM boot, so the old constant rendered the effort
+    // dropdown in a different order after every restart. Which levels a GIVEN model
+    // accepts is per-model and comes from the catalogue, not from this list.
+    private static final List<String> ALLOWED_EFFORTS = AutoFixModelCatalogService.ALL_EFFORTS;
     private static final String DEFAULT_EFFORT = "xhigh";
     private static final String DEFAULT_MAX_TURNS = "150";
     private static final String DEFAULT_MAX_BUDGET_USD = "10.00";
@@ -496,14 +516,29 @@ public class BugReportResource {
     @RolesAllowed({"bugreports:admin"})
     public Response getAutoFixConfig() {
         Map<String, Object> cfg = new LinkedHashMap<>();
+        String model = autoFixService.getConfigValue(
+                "autofix.model", AutoFixModelCatalogService.DEFAULT_MODEL);
         cfg.put("enabled", Boolean.parseBoolean(autoFixService.getConfigValue("autofix.enabled", "true")));
-        cfg.put("model", autoFixService.getConfigValue("autofix.model", DEFAULT_MODEL));
+        cfg.put("model", model);
         cfg.put("effort", autoFixService.getConfigValue("autofix.effort", DEFAULT_EFFORT));
         cfg.put("maxTurns", safeInt(autoFixService.getConfigValue("autofix.max_turns", DEFAULT_MAX_TURNS), 150));
         cfg.put("maxBudgetUsd", autoFixService.getConfigValue("autofix.max_budget_usd", DEFAULT_MAX_BUDGET_USD));
-        // Surfaced so the Settings UI can render dropdowns without hardcoding choices.
-        cfg.put("allowedModels", ALLOWED_MODELS);
+
+        // Surfaced so the Settings UI renders dropdowns without hardcoding choices.
+        // `models` carries the per-model metadata (labels, cost tier, which efforts the
+        // model accepts, whether the deployed worker recognises it); `allowedModels`
+        // stays a flat string array so a browser on the previous frontend bundle keeps
+        // working and the two repos can deploy in either order.
+        List<AutoFixModelDTO> models = modelCatalog.listModels();
+        List<String> modelIds = new ArrayList<>(models.size());
+        for (AutoFixModelDTO m : models) modelIds.add(m.id());
+        // The stored value is always offered, even if it has since left the catalogue —
+        // otherwise the dropdown would silently jump to another model on first render.
+        if (!modelIds.contains(model)) modelIds.add(model);
+
+        cfg.put("allowedModels", modelIds);
         cfg.put("allowedEfforts", ALLOWED_EFFORTS);
+        cfg.put("models", models);
         return Response.ok(cfg).build();
     }
 
@@ -516,6 +551,14 @@ public class BugReportResource {
     @RolesAllowed({"bugreports:admin"})
     @Transactional
     public Response updateAutoFixConfig(Map<String, Object> config) {
+        // Inert @RolesAllowed for BFF traffic (see requestAutoFix). Without this, ANY
+        // logged-in employee could change the model, raise the per-run budget to $50,
+        // or flip the master kill switch off.
+        if (!hasAdminScope()) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"Access denied\"}")
+                    .build();
+        }
         String requestedBy = requestHeaderHolder.getUserUuid();
         Map<String, String> updates = new LinkedHashMap<>();
 
@@ -524,14 +567,33 @@ public class BugReportResource {
             if (!(v instanceof Boolean)) return badRequest("'enabled' must be a boolean");
             updates.put("autofix.enabled", v.toString());
         }
+        // The model currently stored, needed to validate a partial body: a PUT of just
+        // {enabled:false} (the kill switch) must never be rejected because the stored
+        // model has since been retired from the catalogue.
+        String storedModel = autoFixService.getConfigValue(
+                "autofix.model", AutoFixModelCatalogService.DEFAULT_MODEL);
+
         if (config.containsKey("model")) {
             String model = String.valueOf(config.get("model"));
-            if (!ALLOWED_MODELS.contains(model)) return badRequest("Invalid model: " + model);
+            if (!modelCatalog.validModelIds(storedModel).contains(model)) {
+                return badRequest("Invalid model: " + model);
+            }
             updates.put("autofix.model", model);
         }
         if (config.containsKey("effort")) {
             String effort = String.valueOf(config.get("effort"));
             if (!ALLOWED_EFFORTS.contains(effort)) return badRequest("Invalid effort: " + effort);
+            // Effort is per-model: Sonnet 4.6 predates xhigh, and some models take no
+            // effort flag at all. Validate against whichever model this PUT lands on.
+            String targetModel = updates.getOrDefault("autofix.model", storedModel);
+            List<String> supported = modelCatalog.supportedEfforts(targetModel);
+            if (supported.isEmpty()) {
+                return badRequest("Model " + targetModel + " does not take a reasoning effort");
+            }
+            if (!supported.contains(effort)) {
+                return badRequest("Model " + targetModel + " does not support effort " + effort
+                        + " (supported: " + String.join(", ", supported) + ")");
+            }
             updates.put("autofix.effort", effort);
         }
         if (config.containsKey("maxTurns")) {
