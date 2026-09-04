@@ -9,16 +9,23 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.domain.user.entity.User;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Application service for the Bug Report bounded context.
@@ -57,11 +64,45 @@ public class BugReportService {
     @Inject
     UserService userService;
 
+    @Inject
+    ManagedExecutor managedExecutor;
+
+    @Inject
+    MeterRegistry registry;
+
     @ConfigProperty(name = "bug-report.ai.model", defaultValue = "gpt-5-mini-2025-08-07")
     String triageModel;
 
+    /**
+     * Hard ceiling on the OpenAI triage call. Must stay comfortably below the ALB's 60s idle
+     * timeout (shared infra, not tunable by us): an unbounded call returns a 504 the frontend
+     * cannot distinguish from anything else, whereas a bounded one returns a clean 502 with a
+     * message telling the user they can still submit.
+     *
+     * <p>Worker-thread overhang, deliberately accepted: the deadline releases the CALLER, it does
+     * not abort the HTTP call. {@code triage.cancel(true)} interrupts the worker thread, but the
+     * openai-api REST client is configured with {@code read-timeout: 110000} (application.yml)
+     * and a blocking socket read does not respond to an interrupt, so one ManagedExecutor worker
+     * can stay busy for up to ~110s after this method has already returned its 502. The overhang
+     * is bounded (~110s) and acceptable at the current volume -- the rate limiter caps a user at
+     * 10 reports/hour -- but it is the first thing to revisit if triage timeouts stop being rare,
+     * because enough concurrently overhanging workers would starve the pool. Do NOT "fix" it by
+     * lowering the global openai-api read-timeout: that client is shared with long-running batch
+     * AI jobs which legitimately need the full 110s.
+     */
+    @ConfigProperty(name = "bug-report.ai.timeout-seconds", defaultValue = "45")
+    int triageTimeoutSeconds;
+
     @ConfigProperty(name = "bug-report.ai.vector-store-id", defaultValue = "vs_69b732518c0081918dcd98133a178742")
     String triageVectorStoreId;
+
+    /**
+     * Floor on the wait handed to {@code triage.get}. Anything below this is not worth starting.
+     */
+    private static final long MIN_TRIAGE_WAIT_MS = 500L;
+
+    private static final String TRIAGE_TIMEOUT_MESSAGE = "AI analysis took too long. You can "
+            + "describe the expected behaviour yourself and submit the report.";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -116,8 +157,19 @@ public class BugReportService {
                 .map(this::toDTO);
     }
 
-    public BugReportListResponse findByReporter(String reporterUuid, int page, int size) {
-        var query = BugReport.find("reporterUuid = ?1 ORDER BY createdAt DESC", reporterUuid);
+    public BugReportListResponse findByReporter(String reporterUuid, String status, int page, int size) {
+        var queryStr = new StringBuilder("reporterUuid = :reporterUuid");
+        var params = new java.util.HashMap<String, Object>();
+        params.put("reporterUuid", reporterUuid);
+
+        if (status != null && !status.isBlank()) {
+            // Validate enum to prevent injection
+            params.put("status", parseStatus(status));
+            queryStr.append(" AND status = :status");
+        }
+        queryStr.append(" ORDER BY createdAt DESC");
+
+        var query = BugReport.find(queryStr.toString(), params);
         long total = query.count();
         List<BugReportDTO> data = query.page(page, size).list()
                 .stream()
@@ -164,15 +216,31 @@ public class BugReportService {
                 request.stepsToReproduce(), request.expectedBehavior(),
                 request.actualBehavior(), request.severity());
 
-        // Handle status transition if provided
+        // Handle status transition if provided.
+        //
+        // A transition to the status the report is ALREADY in is a no-op, not an error: the
+        // entity invariant (canTransitionTo returns false when status == target) still refuses
+        // genuinely illegal transitions, but "already there" is the application service's call
+        // to make. Without this guard a submit whose 200 was lost in transit -- which is the
+        // common case, because the AI triage call ahead of it routinely outlives the gateway --
+        // could never be retried: every retry hit IllegalStateException -> 409, forever.
+        //
+        // The no-op path is not a no-op at the persistence level: updateFields() above stamps
+        // updatedAt unconditionally, so an idempotent re-submit still issues an UPDATE and hands
+        // back a NEW concurrency token. Harmless -- the client echoes back whatever it last
+        // received -- but the row IS touched, so any concurrent holder of the older token gets a
+        // 409 on its next write.
         if (request.status() != null) {
-            var targetStatus = BugReportStatus.valueOf(request.status());
-            String oldStatus = report.getStatus().name();
-            report.transitionTo(targetStatus);
-            addSystemComment(report, userUuid, oldStatus, targetStatus.name());
-            createStatusChangeNotification(report, oldStatus, targetStatus.name());
+            var targetStatus = parseStatus(request.status());
+            if (targetStatus != report.getStatus()) {
+                String oldStatus = report.getStatus().name();
+                report.transitionTo(targetStatus);
+                addSystemComment(report, userUuid, oldStatus, targetStatus.name());
+                createStatusChangeNotification(report, oldStatus, targetStatus.name());
+            }
         }
 
+        flushAndRefresh(report);
         return toDTO(report);
     }
 
@@ -190,6 +258,7 @@ public class BugReportService {
                 "You were assigned to bug report '%s'".formatted(title));
         notification.persist();
 
+        flushAndRefresh(report);
         return toDTO(report);
     }
 
@@ -203,7 +272,18 @@ public class BugReportService {
         var report = findOrThrow(uuid);
         checkOptimisticLock(report, ifMatch);
 
-        var targetStatus = BugReportStatus.valueOf(newStatus);
+        var targetStatus = parseStatus(newStatus);
+
+        // Same idempotency guard as update(), for the same reason. AutoFixTaskReaper's
+        // revertBugReportStatus reverts a report to its previous status with no If-Match, and a
+        // report ALREADY in that status is its normal steady state -- the entity's
+        // canTransitionTo refuses status == target, so every sweep threw IllegalStateException,
+        // which the reaper swallows with a WARN: pure log noise for a no-op. Genuinely illegal
+        // transitions are still refused by the entity below.
+        if (targetStatus == report.getStatus()) {
+            return toDTO(report);
+        }
+
         String oldStatus = report.getStatus().name();
         report.transitionTo(targetStatus);
 
@@ -216,6 +296,7 @@ public class BugReportService {
             reasonComment.persist();
         }
 
+        flushAndRefresh(report);
         return toDTO(report);
     }
 
@@ -319,11 +400,23 @@ public class BugReportService {
         return new BugReportNotificationListResponse(notifications, unread);
     }
 
+    /**
+     * Marks a single notification as read. A notification is strictly personal, so only its
+     * owner may mark it -- the uuid alone is not an authorization token.
+     *
+     * @throws jakarta.ws.rs.NotFoundException if the notification does not exist
+     * @throws SecurityException               if the notification belongs to another user
+     */
     @Transactional
-    public void markNotificationAsRead(String notificationUuid) {
-        BugReportNotification.<BugReportNotification>find("uuid", notificationUuid)
+    public void markNotificationAsRead(String notificationUuid, String userUuid) {
+        var notification = BugReportNotification.<BugReportNotification>find("uuid", notificationUuid)
                 .firstResultOptional()
-                .ifPresent(BugReportNotification::markAsRead);
+                .orElseThrow(() -> new jakarta.ws.rs.NotFoundException(
+                        "Notification not found: " + notificationUuid));
+        if (!notification.getUserUuid().equals(userUuid)) {
+            throw new SecurityException("Only the recipient can mark this notification as read");
+        }
+        notification.markAsRead();
     }
 
     @Transactional
@@ -395,6 +488,13 @@ public class BugReportService {
      * @throws AiSuggestionException           if the AI call fails or returns empty/unparseable response
      */
     public TriageResponse analyzeReport(String reportUuid, String callerUuid, AnalyzeRequest request) {
+        // The budget covers the WHOLE endpoint, not just the OpenAI call: the S3 fetch and the
+        // Base64 encode below are themselves unbounded, and a slow S3 was enough on its own to
+        // push the response past the ALB's 60s idle timeout -- the exact 504 this bounded path
+        // exists to eliminate.
+        long startedAt = System.currentTimeMillis();
+        long deadlineAt = startedAt + triageTimeoutSeconds * 1000L;
+
         var report = findOrThrow(reportUuid);
 
         // Only the reporter can request triage analysis
@@ -421,27 +521,71 @@ public class BugReportService {
         // Build the JSON schema for the triage response
         ObjectNode schema = buildTriageSchema();
 
-        // Call OpenAI with file_search + vision + structured output
+        // Call OpenAI with file_search + vision + structured output.
+        //
+        // Bounded on purpose: this is the slowest call in the bug report flow and it regularly
+        // outlives the ALB's 60s idle timeout, which the caller sees as a 504 it cannot act on.
+        // Failing fast with a 502 and a message that invites the user to submit anyway is
+        // strictly better than a gateway timeout.
         String aiResponse;
+        long remainingMs = deadlineAt - System.currentTimeMillis();
+        if (remainingMs < MIN_TRIAGE_WAIT_MS) {
+            // Setup already ate the budget. Starting a call we would abandon milliseconds later
+            // only burns an OpenAI request, so fail fast down the timeout path -- and count it as
+            // a timeout, because from the caller's point of view that is exactly what it is.
+            log.warnf("AI triage for report %s skipped: setup took %d ms, no budget left (limit %ds)",
+                    reportUuid, System.currentTimeMillis() - startedAt, triageTimeoutSeconds);
+            registry.counter("bugreport.triage.failure", "cause", "timeout").increment();
+            throw new AiSuggestionException(TRIAGE_TIMEOUT_MESSAGE);
+        }
+        CompletableFuture<String> triage = managedExecutor.supplyAsync(() ->
+                openAIService.askWithSchemaImageAndFileSearch(
+                        triageModel,
+                        systemPrompt,
+                        userMessage,
+                        screenshotBase64,
+                        "image/png",
+                        schema,
+                        "bug_report_triage",
+                        triageVectorStoreId,
+                        null));
         try {
-            aiResponse = openAIService.askWithSchemaImageAndFileSearch(
-                    triageModel,
-                    systemPrompt,
-                    userMessage,
-                    screenshotBase64,
-                    "image/png",
-                    schema,
-                    "bug_report_triage",
-                    triageVectorStoreId,
-                    null);
+            aiResponse = triage.get(remainingMs, TimeUnit.MILLISECONDS);
+            log.infof("AI triage for report %s completed in %d ms",
+                    reportUuid, System.currentTimeMillis() - startedAt);
+        } catch (TimeoutException e) {
+            // cancel(true) interrupts the worker. The in-flight HTTP call may still run to
+            // completion in the background, but the caller is released immediately, which is
+            // the whole point. See {@link #triageTimeoutSeconds} for why that overhang is
+            // bounded at ~110s and why it is accepted.
+            triage.cancel(true);
+            log.warnf("AI triage for report %s timed out after %d ms (limit %ds)",
+                    reportUuid, System.currentTimeMillis() - startedAt, triageTimeoutSeconds);
+            registry.counter("bugreport.triage.failure", "cause", "timeout").increment();
+            throw new AiSuggestionException(TRIAGE_TIMEOUT_MESSAGE);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            triage.cancel(true);
+            // Its own tag value: this is the CALLER being interrupted (request cancelled, worker
+            // shutdown), not OpenAI failing. Folding it into api_error would poison the only
+            // signal we have for judging whether the timeout budget is set right.
+            registry.counter("bugreport.triage.failure", "cause", "interrupted").increment();
+            throw new AiSuggestionException("AI analysis was interrupted. You can describe the "
+                    + "expected behaviour yourself and submit the report.");
         } catch (Exception e) {
-            log.errorf(e, "AI triage failed for report %s: %s", reportUuid, e.getMessage());
-            throw new AiSuggestionException("AI analysis is temporarily unavailable. Please try again.");
+            triage.cancel(true);
+            log.errorf(e, "AI triage failed for report %s after %d ms: %s",
+                    reportUuid, System.currentTimeMillis() - startedAt, e.getMessage());
+            registry.counter("bugreport.triage.failure", "cause", "api_error").increment();
+            throw new AiSuggestionException("AI analysis is temporarily unavailable. You can "
+                    + "describe the expected behaviour yourself and submit the report.");
         }
 
         // Parse the response
         if (aiResponse == null || aiResponse.isBlank() || "{}".equals(aiResponse)) {
-            throw new AiSuggestionException("AI analysis did not return a result. Please try again.");
+            registry.counter("bugreport.triage.failure", "cause", "empty").increment();
+            throw new AiSuggestionException("AI analysis did not return a result. You can "
+                    + "describe the expected behaviour yourself and submit the report.");
         }
 
         try {
@@ -483,7 +627,9 @@ public class BugReportService {
             throw e;
         } catch (Exception e) {
             log.errorf(e, "Failed to parse AI triage response for report %s: %s", reportUuid, e.getMessage());
-            throw new AiSuggestionException("AI analysis returned an unexpected format. Please try again.");
+            registry.counter("bugreport.triage.failure", "cause", "parse").increment();
+            throw new AiSuggestionException("AI analysis returned an unexpected format. You can "
+                    + "describe the expected behaviour yourself and submit the report.");
         }
     }
 
@@ -691,13 +837,76 @@ public class BugReportService {
                 .orElseThrow(() -> new jakarta.ws.rs.NotFoundException("Bug report not found: " + uuid));
     }
 
+    /**
+     * Compares the caller's {@code If-Match} precondition against the persisted concurrency
+     * token.
+     *
+     * <p>Both sides are cut to whole seconds because {@code bug_reports.updated_at} is a
+     * {@code DATETIME} with no fractional-seconds precision (V247). Dropping the sub-second part
+     * loses nothing the database could ever have stored, and it NORMALISES a token that has
+     * ALREADY round-tripped through the column -- a client that re-serialises it with a trailing
+     * {@code .000}, or through a type that re-attaches sub-second noise, still matches.
+     *
+     * <p>It does NOT rescue a token that never went through the column, and must never be read as
+     * making {@link #flushAndRefresh} redundant. MariaDB ROUNDS rather than cuts when storing
+     * fractional seconds into a {@code DATETIME(0)}: an in-memory 12:00:57.7 persists as
+     * 12:00:58 while the client-side second-precision token is 12:00:57, and this method sees a
+     * mismatch. Handing back the PERSISTED value is what actually makes the check work; the
+     * normalisation here is belt-and-braces alongside it, never a substitute for it.
+     */
     private void checkOptimisticLock(BugReport report, LocalDateTime ifMatch) {
-        if (ifMatch != null && !report.getUpdatedAt().equals(ifMatch)) {
-            throw new jakarta.ws.rs.WebApplicationException(
-                    jakarta.ws.rs.core.Response.status(409)
-                            .entity(toDTO(report))
-                            .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON_TYPE)
-                            .build());
+        if (ifMatch == null) {
+            return;
+        }
+        var persisted = report.getUpdatedAt().truncatedTo(ChronoUnit.SECONDS);
+        var supplied = ifMatch.truncatedTo(ChronoUnit.SECONDS);
+        if (persisted.equals(supplied)) {
+            return;
+        }
+        // Both tokens on one line: a 409 loop is otherwise invisible in the logs and can only be
+        // diagnosed by reproducing it against production.
+        log.warnf("Optimistic lock conflict on bug report %s: If-Match=%s, persisted=%s",
+                report.getUuid(), supplied, persisted);
+        registry.counter("bugreport.optimistic_lock.conflict").increment();
+        throw new jakarta.ws.rs.WebApplicationException(
+                jakarta.ws.rs.core.Response.status(409)
+                        .entity(toDTO(report))
+                        .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON_TYPE)
+                        .build());
+    }
+
+    /**
+     * Flushes the pending writes and re-reads the row, so the returned DTO carries the
+     * PERSISTED {@code updatedAt} rather than the in-memory one. Mirrors {@link #createDraft}.
+     *
+     * <p>This matters because clients echo that value straight back as the {@code If-Match}
+     * precondition of their next write. The in-memory value set by {@code @PreUpdate} is a
+     * {@code LocalDateTime.now()} with nanosecond precision, while the column is a
+     * {@code DATETIME} with none (V247). Handing back the in-memory value therefore hands back a
+     * token that can never equal what the next request reads.
+     *
+     * <p>Ordering is deliberate: flush FIRST, refresh second. The comments and notifications
+     * collections are mapped {@code CascadeType.ALL}, so {@code refresh} cascades REFRESH into
+     * them, and cascading into a comment that is persistent but not yet INSERTed would look for
+     * a row that does not exist. After the flush every such row is in the database, so the
+     * cascade degrades to a harmless re-read and nothing added earlier in the method is lost.
+     */
+    private void flushAndRefresh(BugReport report) {
+        report.flush();
+        report.getEntityManager().refresh(report);
+    }
+
+    /**
+     * Parses a client-supplied status. A bare {@code BugReportStatus.valueOf} would surface as a
+     * 500; an {@code IllegalArgumentException} carrying a usable message is mapped to 400 by the
+     * resource.
+     */
+    private BugReportStatus parseStatus(String status) {
+        try {
+            return BugReportStatus.valueOf(status);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid status '%s'. Must be one of: %s"
+                    .formatted(status, Arrays.toString(BugReportStatus.values())));
         }
     }
 
@@ -800,7 +1009,8 @@ public class BugReportService {
     private static final java.util.Map<String, String> SYSTEM_ACTOR_NAMES = java.util.Map.of(
             "system:autofix-worker", "Auto-Fix Worker",
             "system:autofix-reaper", "Auto-Fix Reaper",
-            "system:autofix-policy", "Auto-Fix Policy"
+            "system:autofix-policy", "Auto-Fix Policy",
+            "system:cleanup-job", "Cleanup Job"
     );
 
     String resolveUserName(String userUuid) {
