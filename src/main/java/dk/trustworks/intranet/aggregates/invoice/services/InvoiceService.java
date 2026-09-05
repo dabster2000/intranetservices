@@ -906,7 +906,23 @@ public class InvoiceService {
             newItem.setRuleId(sourceItem.getRuleId());
             newItem.setLabel(sourceItem.getLabel());
         }
+        // A no-charge line (WP4b) survives credit-note generation unchanged.
+        copyNoChargeFields(sourceItem, newItem);
         return newItem;
+    }
+
+    /**
+     * Carries the no-charge marker and its printed facts (JK Team 2.0 WP4b, D2) from one
+     * line to a derived one — internal invoice or credit note — so the giveaway stays
+     * visible wherever the line travels. No-op for ordinary lines.
+     */
+    static void copyNoChargeFields(InvoiceItem source, InvoiceItem target) {
+        if (source == null || target == null || !source.isNoCharge()) {
+            return;
+        }
+        target.noChargeReason = source.noChargeReason;
+        target.listRate = source.listRate;
+        target.rateReviewDate = source.rateReviewDate;
     }
 
     /**
@@ -1010,7 +1026,8 @@ public class InvoiceService {
         internalInvoice.setVat(invoice.getVat());
         int position = 1;
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
-            if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
+            // A declared no-charge line (WP4b) is carried over at 0 kr; an undeclared rate-0 item is still skipped.
+            if((invoiceitem.getRate() == 0.0 && !invoiceitem.isNoCharge()) || invoiceitem.hours == 0.0) continue;
             InvoiceItem newItem = new InvoiceItem(
                 invoiceitem.consultantuuid,
                 invoiceitem.getItemname(),
@@ -1021,6 +1038,7 @@ public class InvoiceService {
                 internalInvoice.getUuid(),
                 invoiceitem.getOrigin()
             );
+            copyNoChargeFields(invoiceitem, newItem);
             internalInvoice.getInvoiceitems().add(newItem);
         }
         Invoice.persist(internalInvoice);
@@ -1160,7 +1178,8 @@ public class InvoiceService {
         // 5. Filter items: keep BASE items for issuer's consultants + all CALCULATED items
         int position = 1;
         for (InvoiceItem item : clientInvoice.getInvoiceitems()) {
-            if (item.getRate() == 0.0 || item.hours == 0.0) continue;
+            // A declared no-charge line (WP4b) is carried over at 0 kr; an undeclared rate-0 item is still skipped.
+            if ((item.getRate() == 0.0 && !item.isNoCharge()) || item.hours == 0.0) continue;
 
             boolean include = false;
             if (item.getOrigin() == InvoiceItemOrigin.CALCULATED) {
@@ -1188,6 +1207,7 @@ public class InvoiceService {
                 // CALCULATED passthrough now handled by InternalInvoiceLineGenerator
                 // (attribution-driven path). Legacy fallback keeps a bare copy — the flag
                 // should never be flipped back except in emergencies.
+                copyNoChargeFields(item, newItem);
                 internalInvoice.getInvoiceitems().add(newItem);
             }
         }

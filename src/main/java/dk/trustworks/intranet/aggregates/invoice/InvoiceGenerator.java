@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice;
 import com.google.common.collect.Lists;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.Contract;
+import dk.trustworks.intranet.contracts.model.ContractConsultant;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
@@ -219,14 +220,23 @@ public class InvoiceGenerator {
                         log.info("Created new invoice: " + invoice);
                     }
 
+                    // A rate of 0 is either a DECLARED zero-rate line (JK Team 2.0 WP4b, D2) —
+                    // which prints as a no-charge line carrying the list value — or an
+                    // unresolved rate, which is still a 400 exactly as before.
+                    ContractConsultant noChargeLine = null;
                     if (workFull.getRate() == 0) {
-                        log.error("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
-                        Response response = Response
-                                .status(Response.Status.BAD_REQUEST)
-                                .entity("Rate could not be found for " + user.getFullname() + " on the project '"+project.getName()+"' and task '" + task.getName() + "'")
-                                .type(MediaType.TEXT_PLAIN) // or MediaType.APPLICATION_JSON for JSON response
-                                .build();
-                        throw new WebApplicationException(response);
+                        ContractConsultant line = contract.findByUserAndDate(user, workFull.getRegistered());
+                        if (line != null && line.isDeclaredZeroRate()) {
+                            noChargeLine = line;
+                        } else {
+                            log.error("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
+                            Response response = Response
+                                    .status(Response.Status.BAD_REQUEST)
+                                    .entity("Rate could not be found for " + user.getFullname() + " on the project '"+project.getName()+"' and task '" + task.getName() + "'")
+                                    .type(MediaType.TEXT_PLAIN) // or MediaType.APPLICATION_JSON for JSON response
+                                    .build();
+                            throw new WebApplicationException(response);
+                        }
                     }
                     if (!invoiceItemMap.containsKey(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid())) {
                         String invoiceItemName = (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFullname();
@@ -237,10 +247,16 @@ public class InvoiceGenerator {
                         }
                         int nextPos = invoice.getInvoiceitems().size() + 1;
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
-                                task.getName(),
+                                noChargeLine != null ? noChargeDescription(task.getName(), noChargeLine) : task.getName(),
                                 workFull.getRate(),
                                 0.0, nextPos, invoice.uuid);
                         invoiceItem.uuid = UUID.randomUUID().toString();
+                        if (noChargeLine != null) {
+                            // Quantity accrues below; the line total stays 0 because rate is 0.
+                            invoiceItem.noChargeReason = noChargeLine.getZeroRateReason();
+                            invoiceItem.listRate = noChargeLine.getListRate();
+                            invoiceItem.rateReviewDate = noChargeLine.getRateReviewDate();
+                        }
                         invoiceItemMap.put(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid(), invoiceItem);
                         invoice.invoiceitems.add(invoiceItem);
                         log.info("Created new invoice item: " + invoiceItem);
@@ -288,6 +304,39 @@ public class InvoiceGenerator {
      * <p>Extracted as a package-private helper so unit tests can exercise the
      * currency + VAT logic without spinning up the full work-item loop.
      */
+    /**
+     * The printed copy of a no-charge line (JK Team 2.0 WP4b, D2): the task, the reason, the
+     * list value the hours would have cost, and the step-up deadline. The whole point is that
+     * the client reads what they are receiving for free — "the step-up conversation, printed".
+     * Package-private so the copy is a unit test.
+     */
+    static String noChargeDescription(String taskName, ContractConsultant line) {
+        StringBuilder sb = new StringBuilder(taskName == null ? "" : taskName);
+        sb.append(" — No charge");
+        String reason = noChargeReasonLabel(line.getZeroRateReason());
+        if (reason != null) {
+            sb.append(" (").append(reason).append(")");
+        }
+        if (line.getListRate() != null && line.getListRate() > 0) {
+            sb.append(", list value ").append(String.format(java.util.Locale.ROOT, "%,.0f", line.getListRate())).append(" kr/h");
+        }
+        if (line.getRateReviewDate() != null) {
+            sb.append(", price review ").append(DateUtils.stringIt(line.getRateReviewDate(), "d MMM yyyy"));
+        }
+        return sb.toString();
+    }
+
+    static String noChargeReasonLabel(String reason) {
+        if (reason == null) return null;
+        return switch (reason) {
+            case "PILOT_FREE" -> "pilot period";
+            case "GOODWILL" -> "goodwill";
+            case "INTERNAL_TRANSFER" -> "internal transfer";
+            case "OTHER" -> "agreed no charge";
+            default -> reason.toLowerCase(java.util.Locale.ROOT).replace('_', ' ');
+        };
+    }
+
     Invoice buildInitialInvoice(Contract contract, Project project, Client billingClient, YearMonth month) {
         // Invoice date defaults to today. The due date is a placeholder —
         // e-conomics calculates the real due date from the customer's payment
