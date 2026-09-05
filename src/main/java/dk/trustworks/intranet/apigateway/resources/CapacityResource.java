@@ -30,6 +30,22 @@ public class CapacityResource {
     @Inject
     CapacityService capacityService;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.finance.services.JuniorTalentService juniorTalentService;
+
+    /**
+     * JK Team 2.0 WP7 (spec §4.7): Junior Talent — every active STUDENT with declared
+     * availability over the next weeks, faglighed, tags, graduation and the step-up
+     * watchlist. Read-only; same {@code capacity:read} audience as Staffing. Excludes the
+     * declaration note and the free-text education field by construction (§4.7.3).
+     */
+    @GET
+    @Path("/junior-talent")
+    public dk.trustworks.intranet.aggregates.finance.dto.JuniorTalentDTO juniorTalent(
+            @QueryParam("weeks") @DefaultValue("4") int weeks) {
+        return juniorTalentService.build(LocalDate.now(), weeks);
+    }
+
     @GET
     public List<Capacity> calculateCapacityByPeriod(@QueryParam("fromdate") Optional<String> fromDateString, @QueryParam("todate") Optional<String> toDateString) {
         return capacityService.calculateCapacityByPeriod(
