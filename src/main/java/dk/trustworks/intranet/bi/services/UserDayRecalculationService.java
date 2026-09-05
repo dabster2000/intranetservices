@@ -49,6 +49,9 @@ public class UserDayRecalculationService {
     BudgetCalculatingExecutor budgetCalculatingExecutor;
 
     @Inject
+    InternalBudgetCalculatingExecutor internalBudgetCalculatingExecutor;
+
+    @Inject
     UserSalaryCalculatorService userSalaryCalculatorService;
 
     @Inject
@@ -79,6 +82,8 @@ public class UserDayRecalculationService {
         availabilityService.updateUserAvailabilityByDay(useruuid, day, declaredByDay);
         workAggregateService.recalculateWork(useruuid, day);
         budgetCalculatingExecutor.recalculateUserDailyBudgets(useruuid, day);
+        // After the contract budgets: internal demand stacks on what they left (WP3).
+        internalBudgetCalculatingExecutor.recalculateUserDailyInternalBudgets(useruuid, day);
         userSalaryCalculatorService.recalculateSalary(useruuid, day);
     }
 
