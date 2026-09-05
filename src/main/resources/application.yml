@@ -329,6 +329,21 @@ feature:
   timesheet:
     rule-enforcement:
       mode: ${FEATURE_TIMESHEET_RULE_ENFORCEMENT_MODE:OFF}
+  # Declared availability (JK Team 2.0 WP1, spec §4.1.3).
+  # SHADOW: declarations are written and shown, the coverage strip counts them,
+  #         but the availability resolver keeps allocation / 5 for everyone.
+  # LIVE:   for userstatus.type = STUDENT on days >= floor-date the resolver
+  #         uses the declaration (missing = 0 h). Days before the floor keep
+  #         today's maths forever so nothing already computed moves.
+  # Cut-over: set the floor date first, watch plan coverage, then flip to LIVE.
+  # Reverting is the same config change back to SHADOW — no deploy either way.
+  declared-availability:
+    mode: ${FEATURE_DECLARED_AVAILABILITY_MODE:SHADOW}
+    floor-date: ${DECLARED_AVAILABILITY_FLOOR_DATE:2026-10-01}
+    # Monday 08:00 Slack DM to juniors whose declared horizon ends within 14
+    # days. Ships dark for the same reason as the expense notifier: staging
+    # cannot DM employees (slackusername is nulled by the prod→staging sync).
+    reminder-enabled: ${DECLARED_AVAILABILITY_REMINDER_ENABLED:false}
   # Contract Rule Override System feature flags
   contract:
     overrides:

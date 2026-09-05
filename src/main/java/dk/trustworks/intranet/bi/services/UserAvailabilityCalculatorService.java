@@ -1,11 +1,12 @@
 package dk.trustworks.intranet.bi.services;
 
+import dk.trustworks.intranet.aggregates.availability.config.DeclaredAvailabilityPolicy;
+import dk.trustworks.intranet.aggregates.availability.model.UserDeclaredAvailability;
 import dk.trustworks.intranet.aggregates.bidata.repositories.BiDataPerDayRepository;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
-import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -14,6 +15,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.SICKNESS;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
@@ -30,8 +32,23 @@ public class UserAvailabilityCalculatorService {
     @Inject
     BiDataPerDayRepository biDataRepository;
 
+    @Inject
+    DeclaredAvailabilityPolicy declaredAvailabilityPolicy;
+
+    /** Single-day entry point: looks the day's declaration up itself when it is needed. */
     @Transactional
     public void updateUserAvailabilityByDay(String useruuid, LocalDate testDay) {
+        updateUserAvailabilityByDay(useruuid, testDay, null);
+    }
+
+    /**
+     * @param declaredByDay declarations preloaded for a range containing {@code testDay}
+     *                      ({@code UserDayRecalculationService#preloadDeclarations}), or
+     *                      {@code null} to look the single day up. Only consulted when the
+     *                      person is declaring on that day (spec §4.1.3, D7).
+     */
+    @Transactional
+    public void updateUserAvailabilityByDay(String useruuid, LocalDate testDay, Map<LocalDate, BigDecimal> declaredByDay) {
         if (useruuid == null || testDay == null) {
             log.warnf("updateUserAvailabilityByDay called with nulls user=%s date=%s", useruuid, testDay);
             return;
@@ -56,8 +73,21 @@ public class UserAvailabilityCalculatorService {
         List<WorkFull> workList = WorkFull.list("useruuid = ?1 and registered = ?2", user.getUuid(), testDay);
 
         int weeklyAllocation = userStatus.getAllocation();
-        double fullAvailability = weeklyAllocation / 5.0;
-        if (DateUtils.isWeekend(testDay)) fullAvailability = 0.0;
+
+        // Declaring population (STUDENT ∧ day ≥ floor ∧ LIVE): the declaration, or 0 when
+        // none, replaces allocation / 5 and the two full-timer deductions do not apply.
+        // Everyone else keeps today's maths byte for byte — see AvailabilityDayResolver.
+        boolean declaring = declaredAvailabilityPolicy.isDeclaring(userStatus.getType(), testDay);
+        BigDecimal declaredHours = null;
+        if (declaring) {
+            declaredHours = declaredByDay != null
+                    ? declaredByDay.get(testDay)
+                    : UserDeclaredAvailability.findForDay(user.getUuid(), testDay)
+                            .map(UserDeclaredAvailability::getHours).orElse(null);
+        }
+        AvailabilityDayResolver.DayAvailability resolved =
+                AvailabilityDayResolver.resolve(declaring, weeklyAllocation, testDay, declaredHours);
+        double fullAvailability = resolved.fullAvailability();
 
         double nonPaidLeaveHours = userStatus.getStatus().equals(NON_PAY_LEAVE) ? fullAvailability : 0.0;
         double paidLeaveHours = userStatus.getStatus().equals(PAID_LEAVE) ? fullAvailability : 0.0;
@@ -75,10 +105,8 @@ public class UserAvailabilityCalculatorService {
                 .mapToDouble(WorkFull::getWorkduration).sum();
         double maternityLeaveHours = Math.min(fullAvailability, maternityStatusHours + registeredMatLeave);
 
-        double unavailableHours = DateUtils.isFriday(testDay) ? Math.min(2.0, fullAvailability) : 0.0;
-        unavailableHours = DateUtils.isFirstThursdayOrFridayInOctober(testDay)
-                ? Math.min(7.4, fullAvailability)
-                : unavailableHours;
+        // Friday 2 h and the October shutdown, suppressed only for the declaring population.
+        double unavailableHours = resolved.unavailableHours();
 
         biDataRepository.insertOrUpdateData(
                 user.getUuid(),

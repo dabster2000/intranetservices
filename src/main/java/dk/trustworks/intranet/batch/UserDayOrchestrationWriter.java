@@ -1,10 +1,7 @@
 package dk.trustworks.intranet.batch;
 
 import dk.trustworks.intranet.batch.model.UserDay;
-import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
-import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
-import dk.trustworks.intranet.bi.services.UserSalaryCalculatorService;
-import dk.trustworks.intranet.bi.services.WorkAggregateService;
+import dk.trustworks.intranet.bi.services.UserDayRecalculationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import jakarta.batch.api.BatchProperty;
@@ -16,19 +13,24 @@ import jakarta.inject.Named;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.io.Serializable;
-import java.time.Duration;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Properties;
+import java.util.Map;
 
+/**
+ * Runs every {@link UserDay} of a chunk through the shared per-day pipeline in
+ * {@link UserDayRecalculationService} (availability → work → budget → internal budget →
+ * salary). Declared availability is batch-loaded once per user per chunk and handed to the
+ * availability step, so the resolver never issues one query per day inside the loop.
+ */
 @JBossLog
 @Named("userDayOrchestrationWriter")
 @Dependent
 public class UserDayOrchestrationWriter implements ItemWriter {
 
-    @Inject UserAvailabilityCalculatorService availabilityService;
-    @Inject WorkAggregateService workAggregateService;
-    @Inject BudgetCalculatingExecutor budgetCalculatingExecutor;
-    @Inject UserSalaryCalculatorService userSalaryCalculatorService;
+    @Inject UserDayRecalculationService recalculationService;
     @Inject MeterRegistry registry;
     @Inject StepContext stepContext; // optional
 
@@ -58,14 +60,30 @@ public class UserDayOrchestrationWriter implements ItemWriter {
         var success = registry.counter("batch.budget_agg.user_day", "result", "success");
         var error = registry.counter("batch.budget_agg.user_day", "result", "error");
 
+        // One declaration lookup per user per chunk (empty in SHADOW mode) — never per day.
+        Map<String, LocalDate> minDay = new HashMap<>();
+        Map<String, LocalDate> maxDay = new HashMap<>();
+        for (Object o : items) {
+            if (!(o instanceof UserDay ud)) continue;
+            minDay.merge(ud.getUseruuid(), ud.getDay(), (a, b) -> a.isBefore(b) ? a : b);
+            maxDay.merge(ud.getUseruuid(), ud.getDay(), (a, b) -> a.isAfter(b) ? a : b);
+        }
+        Map<String, Map<LocalDate, BigDecimal>> declaredByUser = new HashMap<>();
+        for (String useruuid : minDay.keySet()) {
+            try {
+                declaredByUser.put(useruuid,
+                        recalculationService.preloadDeclarations(useruuid, minDay.get(useruuid), maxDay.get(useruuid)));
+            } catch (Exception ex) {
+                log.errorf(ex, "UserDayOrchestrationWriter could not preload declarations user=%s", useruuid);
+                declaredByUser.put(useruuid, Map.of());
+            }
+        }
+
         for (Object o : items) {
             if (!(o instanceof UserDay ud)) continue;
             Timer.Sample sample = Timer.start(registry);
             try {
-                availabilityService.updateUserAvailabilityByDay(ud.getUseruuid(), ud.getDay());
-                workAggregateService.recalculateWork(ud.getUseruuid(), ud.getDay());
-                budgetCalculatingExecutor.recalculateUserDailyBudgets(ud.getUseruuid(), ud.getDay());
-                userSalaryCalculatorService.recalculateSalary(ud.getUseruuid(), ud.getDay());
+                recalculationService.recalculateDay(ud.getUseruuid(), ud.getDay(), declaredByUser.get(ud.getUseruuid()));
                 processed++; success.increment();
             } catch (Exception ex) {
                 errors++; error.increment();
