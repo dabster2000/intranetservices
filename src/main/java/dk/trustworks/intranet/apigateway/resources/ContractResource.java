@@ -4,8 +4,12 @@ import dk.trustworks.intranet.aggregates.invoice.economics.customer.EconomicsCus
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.contracts.dto.PricingModelDTO;
 import dk.trustworks.intranet.contracts.dto.ValidationReport;
 import dk.trustworks.intranet.contracts.dto.ContractTypeItemDTO;
+import dk.trustworks.intranet.contracts.dto.ZeroRateWatchlistDTO;
+import dk.trustworks.intranet.contracts.model.PricingModelDefinition;
+import dk.trustworks.intranet.contracts.services.ZeroRateWatchlistService;
 import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -70,6 +74,34 @@ public class ContractResource {
 
     @Inject
     EconomicsCustomerContactSyncService economicsContactSyncService;
+
+    @Inject
+    ZeroRateWatchlistService zeroRateWatchlistService;
+
+    /**
+     * The active pricing models a consultant line may carry (JK Team 2.0 WP5, D11) —
+     * reference data from {@code pricing_model_definitions}, read by the contract editor's
+     * select. Declared before {@code /{contractuuid}} so the literal segment wins.
+     */
+    @GET
+    @Path("/pricing-models")
+    public List<PricingModelDTO> pricingModels() {
+        return PricingModelDefinition.findActive().stream().map(PricingModelDTO::from).toList();
+    }
+
+    /**
+     * Zero-rate step-up watchlist (JK Team 2.0 WP4b, spec §4.4.3): declared 0 kr consultant
+     * lines whose review date falls within {@code withinDays} (default 30) or has passed,
+     * with the value given away so far. {@code contracts:read}, like every other read here —
+     * list rates are visible to contract readers only.
+     */
+    @GET
+    @Path("/zero-rate/watchlist")
+    public List<ZeroRateWatchlistDTO> zeroRateWatchlist(@QueryParam("withinDays") Integer withinDays,
+                                                        @QueryParam("students") Boolean onlyStudents) {
+        int window = withinDays == null ? 30 : Math.min(Math.max(withinDays, 0), 365);
+        return zeroRateWatchlistService.watchlist(LocalDate.now(), window, Boolean.TRUE.equals(onlyStudents));
+    }
 
     @GET
     @Path("/{contractuuid}")
