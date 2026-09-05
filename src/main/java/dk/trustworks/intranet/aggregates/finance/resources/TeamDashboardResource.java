@@ -19,6 +19,28 @@ import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationHeatmapDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.UnprofitableConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.services.TeamDashboardService;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamBirthdayDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamCalendarDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamCapacityDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamJkProfitDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamMemberAssignmentsDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamPricingModelDistributionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamRegisteredVsInvoicedDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamSickHoursDTO;
+import dk.trustworks.intranet.aggregates.finance.services.HourlyTeamDashboardService;
+import dk.trustworks.intranet.aggregates.finance.services.TeamBirthdayService;
+import dk.trustworks.intranet.aggregates.finance.services.TeamCalendarService;
+import dk.trustworks.intranet.aggregates.userprofile.dto.UserProfileExtensionDTO;
+import dk.trustworks.intranet.aggregates.userprofile.services.UserProfileExtensionService;
+import dk.trustworks.intranet.contracts.dto.ZeroRateWatchlistDTO;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.NotFoundException;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.format.DateTimeParseException;
+import java.util.Set;
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.capToLastCompleteMonth;
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.getFiscalYearRange;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -62,6 +84,20 @@ public class TeamDashboardResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    // JK Team 2.0 WP6 — the kind-aware card set (§4.6.0), calendar (§4.6.5),
+    // birthdays (§4.6.6) and the profile extension read for the roster (§4.6.3)
+    @Inject
+    HourlyTeamDashboardService hourlyTeamDashboardService;
+
+    @Inject
+    TeamCalendarService teamCalendarService;
+
+    @Inject
+    TeamBirthdayService teamBirthdayService;
+
+    @Inject
+    UserProfileExtensionService userProfileExtensionService;
 
     // -----------------------------------------------------------------------
     // 1. Overview
@@ -300,6 +336,140 @@ public class TeamDashboardResource {
             throw new jakarta.ws.rs.BadRequestException("userId query parameter is required");
         }
         return teamDashboardService.getConsultantCompliance(teamId, userId);
+    }
+
+    // -----------------------------------------------------------------------
+    // 17. JK Team 2.0 WP6 — kind-aware cards, calendar, birthdays, profiles
+    // Every endpoint: dashboard:read + LEADER/SPONSOR of the team (validateTeamAccess).
+    // The hourly-only endpoints read the team's STUDENT members; a SALARIED team
+    // simply gets an empty result, never a widened CONSULTANT query.
+    // -----------------------------------------------------------------------
+
+    /** §4.6.6 (D5): upcoming birthdays among current members, both kinds. Day and month only. */
+    @GET
+    @Path("/{teamId}/birthdays")
+    public List<TeamBirthdayDTO> getBirthdays(@PathParam("teamId") String teamId,
+                                              @QueryParam("days") @DefaultValue("30") int days) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        return teamBirthdayService.upcoming(members, LocalDate.now(), Math.min(Math.max(days, 0), 366));
+    }
+
+    /** §4.6.5: members × months with contract, internal-assignment, ferie and orlov spans, both kinds. */
+    @GET
+    @Path("/{teamId}/calendar")
+    public TeamCalendarDTO getCalendar(@PathParam("teamId") String teamId,
+                                       @QueryParam("from") String from,
+                                       @QueryParam("months") @DefaultValue("12") int months) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        YearMonth start = from == null || from.isBlank() ? YearMonth.now().minusMonths(1) : parseMonth(from);
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        return teamCalendarService.getCalendar(members, start, months);
+    }
+
+    /** §4.6.4 / tab matrix "Capacity": declared vs registered per member per week, hourly kind. */
+    @GET
+    @Path("/{teamId}/capacity")
+    public TeamCapacityDTO getCapacity(@PathParam("teamId") String teamId,
+                                       @QueryParam("from") String from,
+                                       @QueryParam("weeks") @DefaultValue("12") int weeks) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        LocalDate start = from == null || from.isBlank() ? LocalDate.now().minusWeeks(4) : parseDate(from);
+        Set<String> members = teamDashboardService.getStudentMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.getCapacity(members, start, weeks, LocalDate.now());
+    }
+
+    /** §4.6.2 row 2.2.1: JK Profit per junior, month and FY-to-date, hourly kind. */
+    @GET
+    @Path("/{teamId}/jk-profit")
+    public TeamJkProfitDTO getJkProfit(@PathParam("teamId") String teamId,
+                                       @QueryParam("fiscalYear") Integer fiscalYear) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        var fy = getFiscalYearRange(effectiveFiscalYear(fiscalYear));
+        Set<String> members = teamDashboardService.getStudentMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.getJkProfit(members, fy, capToLastCompleteMonth(fy.end()));
+    }
+
+    /** §4.6.2: registered vs invoiced restricted to the team's junior members, trailing twelve months. */
+    @GET
+    @Path("/{teamId}/registered-vs-invoiced")
+    public TeamRegisteredVsInvoicedDTO getRegisteredVsInvoiced(@PathParam("teamId") String teamId,
+                                                               @QueryParam("end") String end) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        YearMonth endMonth = end == null || end.isBlank() ? YearMonth.now().minusMonths(1) : parseMonth(end);
+        Set<String> members = teamDashboardService.getStudentMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.getRegisteredVsInvoiced(members, endMonth);
+    }
+
+    /** WP5 §4.5 / Staffing (hourly): distinct juniors with an active line per pricing model in the FY. */
+    @GET
+    @Path("/{teamId}/pricing-model-distribution")
+    public TeamPricingModelDistributionDTO getPricingModelDistribution(@PathParam("teamId") String teamId,
+                                                                       @QueryParam("fiscalYear") Integer fiscalYear) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        var fy = getFiscalYearRange(effectiveFiscalYear(fiscalYear));
+        Set<String> members = teamDashboardService.getStudentMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.getPricingModelDistribution(members, fy.start(), fy.end());
+    }
+
+    /** WP4b §4.4.3: the step-up watchlist restricted to this team's members. */
+    @GET
+    @Path("/{teamId}/zero-rate-watchlist")
+    public List<ZeroRateWatchlistDTO> getZeroRateWatchlist(@PathParam("teamId") String teamId,
+                                                           @QueryParam("withinDays") @DefaultValue("30") int withinDays) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.watchlistFor(members, LocalDate.now(), Math.min(Math.max(withinDays, 0), 365));
+    }
+
+    /** People (hourly): sick leave in hours — the count, not the 120-day threshold. */
+    @GET
+    @Path("/{teamId}/sick-hours")
+    public List<TeamSickHoursDTO> getSickHours(@PathParam("teamId") String teamId) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        return hourlyTeamDashboardService.getSickHours(members, LocalDate.now());
+    }
+
+    /** §4.6.3: education & profile facts plus competence tags for every current member. */
+    @GET
+    @Path("/{teamId}/profiles")
+    public List<UserProfileExtensionDTO> getProfiles(@PathParam("teamId") String teamId) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        return userProfileExtensionService.getMany(members.stream().sorted().toList());
+    }
+
+    /** §4.6.4: one member's contract lines, internal assignments and declared-vs-actual per month. */
+    @GET
+    @Path("/{teamId}/members/{useruuid}/assignments")
+    public TeamMemberAssignmentsDTO getMemberAssignments(@PathParam("teamId") String teamId,
+                                                         @PathParam("useruuid") String useruuid,
+                                                         @QueryParam("from") String from,
+                                                         @QueryParam("months") @DefaultValue("6") int months) {
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        Set<String> members = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
+        if (!members.contains(useruuid)) {
+            throw new NotFoundException("Not a current member of this team");
+        }
+        YearMonth start = from == null || from.isBlank() ? YearMonth.now().minusMonths(2) : parseMonth(from);
+        return hourlyTeamDashboardService.getMemberAssignments(useruuid, start, months);
+    }
+
+    private static LocalDate parseDate(String value) {
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            throw new BadRequestException("Invalid date: " + value);
+        }
+    }
+
+    private static YearMonth parseMonth(String value) {
+        try {
+            return YearMonth.parse(value);
+        } catch (DateTimeParseException e) {
+            throw new BadRequestException("Invalid month: " + value);
+        }
     }
 
     // -----------------------------------------------------------------------
