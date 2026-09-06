@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.dto.EnrichedBonusLineDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus.ShareType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
+import dk.trustworks.intranet.aggregates.invoice.bonus.calculator.PartnerBonusCompanySplitMath;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
@@ -162,6 +163,123 @@ public class InvoiceBonusService {
                 .setParameter("to", to);
         List<?> raw = q.getResultList();
         return raw.stream().map(String::valueOf).toList();
+    }
+
+    /** Company key used when a company cannot be resolved (no issuing company, no status at the date). */
+    public static final String UNKNOWN_COMPANY_UUID = "unknown";
+
+    /**
+     * One selected invoice line of an APPROVED, un-consumed bonus row of a partner, as loaded by
+     * {@link #findApprovedUnconsumedBasisLines}. {@code selectedAmount} is the item's
+     * {@code hours × rate × pct/100}; {@code consultantUuid}, {@code origin} and {@code selectedAmount}
+     * are null/0 for a bonus row that has no line selections at all.
+     */
+    public record BasisLineRow(String bonusUuid, double computedAmount, String invoiceUuid,
+                               LocalDate invoiceDate, String invoiceCompanyUuid,
+                               String consultantUuid, String origin, double selectedAmount) {}
+
+    /**
+     * The partner's still-fundable sales basis attributed per company, keyed by company UUID.
+     *
+     * <p>Scope is exactly the sales-bonus basis: APPROVED rows with {@code payout_uuid IS NULL}, bucketed
+     * into the window by work period ({@link #WP_DATE_SQL}) and excluding invoices fully reversed by a
+     * live credit note ({@link #NOT_FULLY_CREDITED_SQL}) — the same rows {@link #findApprovedInvoiceIdsForUsers}
+     * and {@link #sumApprovedUnconsumed} count, so the values sum to the partner's un-consumed approved
+     * total.</p>
+     *
+     * <p>Attribution per bonus row ({@link PartnerBonusCompanySplitMath#attributeBonus}): each selected
+     * BASE consultant line follows the consultant's company at invoice date — the same resolution as the
+     * 0/80/100% line defaults and the approval-grid badges (unresolvable → the invoice's issuing company).
+     * The row's {@code computedAmount}, which already carries fee/discount lines without a consultant,
+     * CALCULATED adjustments, the invoice discount and the credit-note sign, is spread pro-rata over those
+     * company amounts. A row with no consultant line goes entirely to the issuing company.</p>
+     */
+    public Map<String, Double> approvedUnconsumedBasisByCompany(String userUuid, LocalDate from, LocalDate to) {
+        Map<String, Double> byCompany = new LinkedHashMap<>();
+        if (userUuid == null || userUuid.isBlank()) return byCompany;
+        List<BasisLineRow> rows = findApprovedUnconsumedBasisLines(userUuid, from, to);
+        if (rows == null || rows.isEmpty()) return byCompany;
+
+        Map<String, List<BasisLineRow>> byBonus = new LinkedHashMap<>();
+        for (BasisLineRow r : rows) byBonus.computeIfAbsent(r.bonusUuid(), k -> new ArrayList<>()).add(r);
+
+        Map<String, Map<LocalDate, UserStatus>> statusCache = new HashMap<>();
+        for (List<BasisLineRow> bonusRows : byBonus.values()) {
+            BasisLineRow head = bonusRows.get(0);
+            LocalDate date = head.invoiceDate() != null ? head.invoiceDate() : LocalDate.now();
+            String issuingCompany = head.invoiceCompanyUuid() != null && !head.invoiceCompanyUuid().isBlank()
+                    ? head.invoiceCompanyUuid() : UNKNOWN_COMPANY_UUID;
+
+            Map<String, Double> consultantSelected = new LinkedHashMap<>();
+            for (BasisLineRow r : bonusRows) {
+                if (r.consultantUuid() == null || r.consultantUuid().isBlank()) continue;   // fee/discount line
+                if (InvoiceItemOrigin.CALCULATED.name().equals(r.origin())) continue;        // pro-rated via computedAmount
+                if (r.selectedAmount() == 0.0) continue;                                     // 0% (own production) or empty
+                String company = companyUuidAt(r.consultantUuid(), date, statusCache);
+                consultantSelected.merge(company != null ? company : issuingCompany, r.selectedAmount(), Double::sum);
+            }
+            PartnerBonusCompanySplitMath.attributeBonus(head.computedAmount(), consultantSelected, issuingCompany)
+                    .forEach((company, amount) -> byCompany.merge(company, amount, Double::sum));
+        }
+        return byCompany;
+    }
+
+    /** The user's company UUID at {@code date} (null if unresolvable), resolved like the approval-grid badges. */
+    public String companyUuidAt(String userUuid, LocalDate date) {
+        return companyUuidAt(userUuid, date, new HashMap<>());
+    }
+
+    /**
+     * Hook for tests: loads a partner's APPROVED, un-consumed basis lines — one row per selected invoice
+     * line (LEFT JOIN, so a bonus row without line selections still yields one row with no item).
+     */
+    protected List<BasisLineRow> findApprovedUnconsumedBasisLines(String userUuid, LocalDate from, LocalDate to) {
+        String sql = "SELECT b.uuid, b.computed_amount, i.uuid, i.invoicedate, i.companyuuid,"
+                + " ii.consultantuuid, ii.origin,"
+                + " COALESCE(ii.hours * ii.rate * LEAST(GREATEST(l.percentage, 0), 100) / 100, 0)"
+                + " FROM invoice_bonuses b"
+                + " JOIN invoices i ON i.uuid = b.invoiceuuid"
+                + " LEFT JOIN invoice_bonus_lines l ON l.bonusuuid = b.uuid"
+                + " LEFT JOIN invoiceitems ii ON ii.uuid = l.invoiceitemuuid"
+                + " WHERE b.useruuid = :user"
+                + "   AND b.status = :approved"
+                + "   AND b.payout_uuid IS NULL"
+                + "   AND " + WP_DATE_SQL + " >= :from"
+                + "   AND " + WP_DATE_SQL + " <= :to"
+                + NOT_FULLY_CREDITED_SQL
+                + " ORDER BY b.uuid";
+        List<?> raw = Panache.getEntityManager().createNativeQuery(sql)
+                .setParameter("user", userUuid)
+                .setParameter("approved", SalesApprovalStatus.APPROVED.name())
+                .setParameter("from", from)
+                .setParameter("to", to)
+                .getResultList();
+        List<BasisLineRow> rows = new ArrayList<>(raw.size());
+        for (Object o : raw) {
+            Object[] r = (Object[]) o;
+            rows.add(new BasisLineRow(
+                    asString(r[0]), asDouble(r[1]), asString(r[2]), asLocalDate(r[3]), asString(r[4]),
+                    asString(r[5]), asString(r[6]), asDouble(r[7])));
+        }
+        return rows;
+    }
+
+    private static String asString(Object o) { return o == null ? null : String.valueOf(o); }
+
+    private static double asDouble(Object o) {
+        if (o == null) return 0.0;
+        if (o instanceof Number n) return n.doubleValue();
+        return Double.parseDouble(String.valueOf(o));
+    }
+
+    private static LocalDate asLocalDate(Object o) {
+        if (o == null) return null;
+        if (o instanceof LocalDate ld) return ld;
+        if (o instanceof java.sql.Date d) return d.toLocalDate();
+        if (o instanceof java.sql.Timestamp ts) return ts.toLocalDateTime().toLocalDate();
+        if (o instanceof java.time.LocalDateTime ldt) return ldt.toLocalDate();
+        String s = String.valueOf(o);
+        return LocalDate.parse(s.length() > 10 ? s.substring(0, 10) : s);
     }
 
     /**
@@ -748,9 +866,9 @@ public class InvoiceBonusService {
     /** Default percentage + reason for a single invoice line. */
     public record LineDefault(double percentage, String reason) {}
 
-    /** Resolve a user's company UUID at a date (null if unresolved), via the status cache. */
-    private String companyUuidAt(String userUuid, LocalDate date,
-                                 Map<String, Map<LocalDate, UserStatus>> cache) {
+    /** Resolve a user's company UUID at a date (null if unresolved), via the status cache. Hook for tests. */
+    protected String companyUuidAt(String userUuid, LocalDate date,
+                                   Map<String, Map<LocalDate, UserStatus>> cache) {
         UserStatus st = getUserStatusCached(userUuid, date, cache);
         return (st != null && st.getCompany() != null) ? st.getCompany().getUuid() : null;
     }

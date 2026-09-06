@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.dto;
 
+import java.util.List;
+
 public record ConsultantBonusDTO(
         String consultantUuid,
         String consultantName,
@@ -17,5 +19,7 @@ public record ConsultantBonusDTO(
         boolean productionBonusEligible,
         int invoiceCount,
         double approvalRate,
-        boolean payoutExists
+        boolean payoutExists,
+        /** Which company must pay which part of {@code salesBonus}; empty when no sales bonus is earned. */
+        List<CompanyBonusShareDTO> salesBonusByCompany
 ) {}
