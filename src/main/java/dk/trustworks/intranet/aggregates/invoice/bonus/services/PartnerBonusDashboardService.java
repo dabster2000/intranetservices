@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import dk.trustworks.intranet.aggregates.invoice.bonus.calculator.PartnerProductionBonusCalculator;
+import dk.trustworks.intranet.aggregates.invoice.bonus.calculator.PartnerBonusCompanySplitMath;
 import dk.trustworks.intranet.aggregates.invoice.bonus.calculator.PartnerSalesBonusCalculator;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
@@ -16,6 +17,7 @@ import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.dto.DateValueDTO;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.Panache;
 import io.quarkus.logging.Log;
@@ -47,6 +49,7 @@ public class PartnerBonusDashboardService {
 
     private Cache<String, PartnerDashboardDTO> dashboardCache;
     private final Map<String, User> userCache = new ConcurrentHashMap<>();
+    private final Map<String, Company> companyCache = new ConcurrentHashMap<>();
 
     @PostConstruct
     void init() {
@@ -191,7 +194,8 @@ public class PartnerBonusDashboardService {
                 0, 0, 0, false,  // sales bonus fields - filled later
                 0, 0, false,     // production bonus fields - filled later
                 bonuses.size(), round4(approvalRate),
-                false            // payout exists - filled later
+                false,           // payout exists - filled later
+                List.of()        // sales bonus split by company - filled later
         );
     }
 
@@ -243,6 +247,11 @@ public class PartnerBonusDashboardService {
 
                 boolean payoutExists = payoutService.hasExistingPayout(c.consultantUuid(), fiscalYear);
 
+                // Which company must pay which part of this partner's sales bonus (empty when none is earned)
+                List<CompanyBonusShareDTO> salesBonusByCompany = salesThresholdMet
+                        ? computeSalesBonusCompanySplit(c.consultantUuid(), salesBonusPerPartner.doubleValue(), fyStart, fyEnd)
+                        : List.of();
+
                 // Replace with enriched version
                 consultants.set(i, new ConsultantBonusDTO(
                         c.consultantUuid(), c.consultantName(),
@@ -251,7 +260,8 @@ public class PartnerBonusDashboardService {
                         salesBonusPerPartner.doubleValue(), groupSalesTotal, partnerCount, salesThresholdMet,
                         prodBonus.doubleValue(), round2(ownRevenue), prodEligible,
                         c.invoiceCount(), c.approvalRate(),
-                        payoutExists
+                        payoutExists,
+                        salesBonusByCompany
                 ));
             }
         }
@@ -339,6 +349,42 @@ public class PartnerBonusDashboardService {
         );
     }
 
+    /**
+     * Split the partner's sales bonus by the companies whose consultants delivered the partner's
+     * still-fundable sales (consultant's company at invoice date — see
+     * {@link InvoiceBonusService#approvedUnconsumedBasisByCompany}); fee-only invoices go to the
+     * issuing company. A partner without basis is attributed 100% to their own company, resolved at
+     * fiscal-year end (or today while the year is open). Display only: payouts are unaffected.
+     * Empty when the partner earns no sales bonus, or when the split cannot be computed.
+     */
+    private List<CompanyBonusShareDTO> computeSalesBonusCompanySplit(String userUuid, double salesBonus,
+                                                                     LocalDate fyStart, LocalDate fyEnd) {
+        if (salesBonus <= 0.0) return List.of();
+        try {
+            Map<String, Double> basisByCompany =
+                    invoiceBonusService.approvedUnconsumedBasisByCompany(userUuid, fyStart, fyEnd);
+
+            LocalDate today = LocalDate.now();
+            String ownCompany = invoiceBonusService.companyUuidAt(userUuid, today.isBefore(fyEnd) ? today : fyEnd);
+            if (ownCompany == null) ownCompany = InvoiceBonusService.UNKNOWN_COMPANY_UUID;
+
+            List<CompanyBonusShareDTO> result = new ArrayList<>();
+            for (PartnerBonusCompanySplitMath.Share s
+                    : PartnerBonusCompanySplitMath.split(salesBonus, basisByCompany, ownCompany)) {
+                Company company = getCachedCompany(s.companyUuid());
+                result.add(new CompanyBonusShareDTO(
+                        s.companyUuid(),
+                        company != null ? company.getName() : "Unknown company",
+                        company != null ? company.getAbbreviation() : "?",
+                        s.basisAmount(), s.sharePct(), s.bonusAmount()));
+            }
+            return result;
+        } catch (Exception e) {
+            Log.warnf("Failed to split sales bonus by company for %s: %s", userUuid, e.getMessage());
+            return List.of();
+        }
+    }
+
     // --- helpers ---
 
     private String buildCacheKey(int fiscalYear, Set<String> groupUuids) {
@@ -362,6 +408,11 @@ public class PartnerBonusDashboardService {
 
     private User getCachedUser(String uuid) {
         return userCache.computeIfAbsent(uuid, id -> userService.findById(id, true));
+    }
+
+    private Company getCachedCompany(String uuid) {
+        if (uuid == null || InvoiceBonusService.UNKNOWN_COMPANY_UUID.equals(uuid)) return null;
+        return companyCache.computeIfAbsent(uuid, id -> Company.findById(id));
     }
 
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
