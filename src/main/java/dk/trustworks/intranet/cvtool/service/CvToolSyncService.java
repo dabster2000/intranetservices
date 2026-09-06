@@ -64,6 +64,10 @@ public class CvToolSyncService {
     @RestClient
     CvToolClient cvToolClient;
 
+    /** JK Team 2.0 WP6 §4.6.3: CV competence titles become CV_TOOL competence tags on every sync. */
+    @Inject
+    dk.trustworks.intranet.aggregates.userprofile.services.UserProfileExtensionService profileExtensionService;
+
     @ConfigProperty(name = "cvtool.subscription-key")
     Optional<String> subscriptionKey;
 
@@ -393,6 +397,10 @@ public class CvToolSyncService {
                     newRecord.setCvLastUpdatedAt(cvLastUpdated);
                     newRecord.persist();
                 }
+                // Same transaction as the CV row: the competence tags can never be
+                // newer than the CV they were lifted from. Malformed documents are
+                // skipped inside, never thrown.
+                profileExtensionService.syncCvTags(employeeUuid, cvJson);
             });
         } catch (Exception e) {
             // Must throw, not return false: false means "unchanged", so a

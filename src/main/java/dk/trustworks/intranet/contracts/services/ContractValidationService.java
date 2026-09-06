@@ -8,6 +8,7 @@ import dk.trustworks.intranet.contracts.exceptions.ContractValidationException.V
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
 import dk.trustworks.intranet.contracts.model.ContractProject;
+import dk.trustworks.intranet.contracts.model.PricingModelDefinition;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.workservice.model.Work;
@@ -70,6 +71,23 @@ public class ContractValidationService {
 
         // 3. Check for work in affected period (for rate changes)
         checkForAffectedWork(consultant, report);
+
+        // 4. Pricing model must be an active definition when given (JK Team 2.0 WP5, D11)
+        String modelProblem = ConsultantLineRules.pricingModelProblem(
+                consultant.getPricingModelCode(), PricingModelDefinition.activeCodes());
+        if (modelProblem != null) {
+            report.setValid(false);
+            errors.add(new ValidationError("pricingModelCode", modelProblem, ErrorType.MISSING_REQUIRED));
+        }
+
+        // 5. A rate of 0 is legal only when declared — reason, review date and list rate
+        //    (JK Team 2.0 WP4b, spec §4.4.1). Same rule as chk_consultant_rate_declared,
+        //    surfaced as a structured error naming every missing field instead of a DB 409.
+        for (String problem : ConsultantLineRules.zeroRateProblems(consultant.getRate(),
+                consultant.getZeroRateReason(), consultant.getRateReviewDate(), consultant.getListRate())) {
+            report.setValid(false);
+            errors.add(new ValidationError("rate", problem, ErrorType.MISSING_REQUIRED));
+        }
 
         // Add all errors to report
         errors.forEach(report::addError);
@@ -217,9 +235,14 @@ public class ContractValidationService {
             return overlaps; // No projects, no conflicts possible
         }
 
-        // Find other consultants with overlapping dates on the same projects
+        // Find other consultants with overlapping dates on the same projects.
+        // Explicit column list, read by position below: `cc.*` would shift the appended
+        // contract_name / projectuuid / project_name whenever a column is added to
+        // contract_consultants (pricing_model_code, the zero-rate columns).
         String sql = """
-            SELECT DISTINCT cc.*, c.name as contract_name, cp.projectuuid, p.name as project_name
+            SELECT DISTINCT cc.uuid, cc.contractuuid, cc.useruuid, cc.name, cc.activefrom, cc.activeto,
+                            cc.rate, cc.hours, cc.created,
+                            c.name as contract_name, cp.projectuuid, p.name as project_name
             FROM contract_consultants cc
             JOIN contract_project cp ON cc.contractuuid = cp.contractuuid
             JOIN contracts c ON c.uuid = cc.contractuuid
@@ -251,7 +274,7 @@ public class ContractValidationService {
             overlap.setExistingActiveFrom((LocalDate) row[4]);
             overlap.setExistingActiveTo((LocalDate) row[5]);
             overlap.setExistingRate(((Number) row[6]).doubleValue());
-            overlap.setExistingContractName((String) row[10]);
+            overlap.setExistingContractName((String) row[9]);
 
             // New contract info
             overlap.setNewConsultantUuid(consultant.getUuid());
@@ -263,8 +286,8 @@ public class ContractValidationService {
             // Shared info
             overlap.setConsultantUuid(consultant.getUseruuid());
             overlap.setConsultantName(consultant.getName());
-            overlap.setProjectUuid((String) row[11]);
-            overlap.setProjectName((String) row[12]);
+            overlap.setProjectUuid((String) row[10]);
+            overlap.setProjectName((String) row[11]);
 
             overlap.calculateOverlap();
             overlaps.add(overlap);
@@ -279,8 +302,11 @@ public class ContractValidationService {
     private List<ContractOverlap> findProjectConsultantOverlaps(ContractConsultant consultant, String projectUuid) {
         List<ContractOverlap> overlaps = new ArrayList<>();
 
+        // Explicit column list — see findOverlappingConsultantAssignments for why not `cc.*`.
         String sql = """
-            SELECT cc.*, c.name as contract_name
+            SELECT cc.uuid, cc.contractuuid, cc.useruuid, cc.name, cc.activefrom, cc.activeto,
+                   cc.rate, cc.hours, cc.created,
+                   c.name as contract_name
             FROM contract_consultants cc
             JOIN contract_project cp ON cc.contractuuid = cp.contractuuid
             JOIN contracts c ON c.uuid = cc.contractuuid
@@ -310,7 +336,7 @@ public class ContractValidationService {
             overlap.setExistingActiveFrom((LocalDate) row[4]);
             overlap.setExistingActiveTo((LocalDate) row[5]);
             overlap.setExistingRate(((Number) row[6]).doubleValue());
-            overlap.setExistingContractName((String) row[10]);
+            overlap.setExistingContractName((String) row[9]);
 
             overlap.setNewConsultantUuid(consultant.getUuid());
             overlap.setNewContractUuid(consultant.getContractuuid());

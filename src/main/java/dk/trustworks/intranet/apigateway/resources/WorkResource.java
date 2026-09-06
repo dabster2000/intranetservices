@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import dk.trustworks.intranet.dao.workservice.services.DeclaredLeaveGuard;
 import dk.trustworks.intranet.dao.workservice.services.MonthSubmissionService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
@@ -74,6 +75,9 @@ public class WorkResource {
 
     @Inject
     MonthSubmissionService monthSubmissionService;
+
+    @Inject
+    DeclaredLeaveGuard declaredLeaveGuard;
 
     @Inject
     ScopeGuard scope;
@@ -148,6 +152,10 @@ public class WorkResource {
                     " is submitted. Request an unlock to make changes.",
                     jakarta.ws.rs.core.Response.Status.CONFLICT);
         }
+
+        // JK Team 2.0 WP2: a leave row for a declaring junior may not exceed the declared
+        // day (structured 400). Inert for everyone else and in SHADOW mode.
+        declaredLeaveGuard.enforce(work);
 
         workAPI.persistOrUpdate(work);
 

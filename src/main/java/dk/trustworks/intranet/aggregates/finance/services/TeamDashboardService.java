@@ -48,6 +48,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import dk.trustworks.intranet.aggregates.finance.dto.HourlyOverviewDTO;
+import dk.trustworks.intranet.aggregates.userprofile.model.UserProfileExtension;
 
 /**
  * Service for the Team Lead Dashboard.
@@ -75,6 +77,10 @@ public class TeamDashboardService {
 
     @Inject
     dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider profitabilityProvider;
+
+    /** JK Team 2.0 WP6: the hourly-kind card set (§4.6.0). */
+    @Inject
+    HourlyTeamDashboardService hourlyTeamDashboardService;
 
     // -----------------------------------------------------------------------
     // Shared helpers
@@ -225,8 +231,13 @@ public class TeamDashboardService {
                         "toKey", toMonthKey(effectiveEnd)));
         double salaryCost = numVal(salaryRow, "salary_cost");
 
-        // Roster — includes all member types (CONSULTANT, STAFF, etc.)
-        List<TeamRosterMemberDTO> roster = buildRoster(teamId, allMemberUuids, fy, effectiveEnd);
+        // Roster — includes all member types (CONSULTANT, STAFF, etc.); the profile
+        // extension (WP6 §4.6.3) rides along for every member, null when never set
+        Map<String, UserProfileExtension> profiles = UserProfileExtension.mapForUsers(allMemberUuids);
+        List<TeamRosterMemberDTO> roster = buildRoster(teamId, allMemberUuids, fy, effectiveEnd, profiles);
+
+        // JK Team 2.0 WP6 §4.6.0: the kind of team, derived from the roster once, here.
+        String teamKind = TeamKindResolver.resolve(roster);
 
         // Bench / attention items — consultant-only
         List<TeamBenchConsultantDTO> bench = consultantUuids.isEmpty()
@@ -239,7 +250,16 @@ public class TeamDashboardService {
                         .average()
                         .orElse(0.0);
 
-        List<TeamAttentionItemDTO> attentionItems = buildAttentionItems(bench);
+        List<TeamAttentionItemDTO> attentionItems = new ArrayList<>(buildAttentionItems(bench));
+
+        // Hourly kind: the card set built on declared hours, never on the CONSULTANT-only
+        // numbers above (which stay null/0 for an all-STUDENT roster, by construction).
+        HourlyOverviewDTO hourly = null;
+        if (TeamKindResolver.isHourly(teamKind)) {
+            hourly = hourlyTeamDashboardService.buildHourlyOverview(allMemberUuids, profiles, fy, effectiveEnd, now);
+            attentionItems.addAll(hourlyTeamDashboardService.hourlyAttentionItems(
+                    allMemberUuids, profiles, hourly.planCoverage(), now));
+        }
 
         // memberCount counts ALL current members (any type) so the headline
         // headcount equals the roster length shown on the same screen (audit C4/H11 family)
@@ -247,7 +267,67 @@ public class TeamDashboardService {
                 teamId, teamName, allMemberUuids.size(),
                 utilPct, revenue, salaryCost, avgBenchDays,
                 bench.size(),
-                roster, attentionItems);
+                roster, attentionItems,
+                teamKind, hourly);
+    }
+
+    /**
+     * The population a staffing card reads for this team (WP6 §4.6.0 tab matrix, Staffing row):
+     * the CONSULTANT-only snapshot for a SALARIED team — unchanged — and every current member
+     * for an HOURLY team, where the CONSULTANT filter would leave the four cards empty by
+     * construction. Never widens the salaried queries.
+     */
+    Set<String> staffingPopulation(String teamId, LocalDate date) {
+        Set<String> consultants = getTeamMemberUuids(teamId, date);
+        if (!consultants.isEmpty()) {
+            return consultants;
+        }
+        Set<String> all = getAllTeamMemberUuids(teamId, date);
+        return isAllStudents(all) ? all : consultants;
+    }
+
+    /**
+     * UUIDs of current STUDENT-type members — the hourly population (WP6 §4.6.0) — a snapshot
+     * at the given date. The declaring population of WP1 and the roster of every hourly-only card.
+     */
+    public Set<String> getStudentMemberUuids(String teamId, LocalDate date) {
+        @SuppressWarnings("unchecked")
+        List<String> uuids = em.createNativeQuery("""
+                SELECT tr.useruuid
+                FROM teamroles tr
+                JOIN userstatus us ON us.useruuid = tr.useruuid
+                     AND us.statusdate = (
+                         SELECT MAX(us2.statusdate) FROM userstatus us2
+                         WHERE us2.useruuid = tr.useruuid AND us2.statusdate <= :date
+                     )
+                     AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
+                     AND us.type = 'STUDENT'
+                WHERE tr.teamuuid = :teamId
+                  AND tr.membertype = 'MEMBER'
+                  AND tr.startdate <= :date
+                  AND (tr.enddate IS NULL OR tr.enddate > :date)
+                """)
+                .setParameter("teamId", teamId)
+                .setParameter("date", date)
+                .getResultList();
+        return Set.copyOf(uuids);
+    }
+
+    /** True when every uuid's current userstatus type is STUDENT (and the set is non-empty). */
+    private boolean isAllStudents(Set<String> memberUuids) {
+        if (memberUuids.isEmpty()) return false;
+        Long nonStudents = (Long) em.createNativeQuery("""
+                SELECT COUNT(*) FROM userstatus us
+                WHERE us.useruuid IN (:memberUuids)
+                  AND us.statusdate = (
+                      SELECT MAX(us2.statusdate) FROM userstatus us2
+                      WHERE us2.useruuid = us.useruuid AND us2.statusdate <= CURDATE()
+                  )
+                  AND us.type <> 'STUDENT'
+                """)
+                .setParameter("memberUuids", memberUuids)
+                .getSingleResult();
+        return nonStudents == 0;
     }
 
     // -----------------------------------------------------------------------
@@ -567,7 +647,7 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public TeamContractTimelineDTO getContractTimeline(String teamId, int lookbackMonths) {
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = staffingPopulation(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return new TeamContractTimelineDTO(List.of());
         }
@@ -694,7 +774,11 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public TeamForwardAllocationDTO getForwardAllocation(String teamId) {
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = staffingPopulation(teamId, LocalDate.now());
+        // JK Team 2.0 WP6 §4.6.1: an hourly team reads each member's own
+        // fact_user_day.net_available_hours instead of COUNT(*) × 7.4 — a declared
+        // 4-hour day is not a 7.4-hour day. Salaried teams keep today's approximation.
+        boolean hourlyKind = !memberUuids.isEmpty() && getTeamMemberUuids(teamId, LocalDate.now()).isEmpty();
         if (memberUuids.isEmpty()) {
             return new TeamForwardAllocationDTO(List.of(), List.of());
         }
@@ -746,6 +830,29 @@ public class TeamDashboardService {
             availByMonth.put((String) row.get("month_key"), numVal(row, "available_hours"));
         }
 
+        // Hourly kind: per member, per month, from the availability fact (WP6 §4.6.1)
+        Map<String, Map<String, Double>> availByUserMonth = new LinkedHashMap<>();
+        if (hourlyKind) {
+            @SuppressWarnings("unchecked")
+            List<Tuple> userAvailRows = em.createNativeQuery("""
+                    SELECT fud.useruuid AS user_id,
+                           CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
+                           SUM(fud.net_available_hours) AS available_hours
+                    FROM fact_user_day fud
+                    WHERE fud.useruuid IN (:memberUuids)
+                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                    GROUP BY fud.useruuid, fud.year, fud.month
+                    """, Tuple.class)
+                    .setParameter("memberUuids", memberUuids)
+                    .setParameter("fromDate", from)
+                    .setParameter("toDate", to)
+                    .getResultList();
+            for (Tuple row : userAvailRows) {
+                availByUserMonth.computeIfAbsent((String) row.get("user_id"), k -> new LinkedHashMap<>())
+                        .put((String) row.get("month_key"), numVal(row, "available_hours"));
+            }
+        }
+
         // Group budget by user+month
         Map<String, Map<String, Double>> budgetByUserMonth = new LinkedHashMap<>();
         for (Tuple row : budgetRows) {
@@ -773,7 +880,9 @@ public class TeamDashboardService {
             List<Double> allocPct = new ArrayList<>();
             for (String mk : months) {
                 double b = userBudget.getOrDefault(mk, 0.0);
-                double a = availByMonth.getOrDefault(mk, 162.8);
+                double a = hourlyKind
+                        ? availByUserMonth.getOrDefault(uid, Map.of()).getOrDefault(mk, 0.0)
+                        : availByMonth.getOrDefault(mk, 162.8);
                 budgetHrs.add(b);
                 availHrs.add(a);
                 allocPct.add(a > 0 ? (b / a) * 100.0 : 0.0);
@@ -792,7 +901,7 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public List<TeamExpiringContractDTO> getExpiringContracts(String teamId, int days) {
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = staffingPopulation(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
@@ -872,7 +981,7 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public List<TeamBenchConsultantDTO> getBenchConsultants(String teamId) {
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = staffingPopulation(teamId, LocalDate.now());
         return getBenchConsultants(teamId, memberUuids);
     }
 
@@ -1315,7 +1424,8 @@ public class TeamDashboardService {
     private List<TeamRosterMemberDTO> buildRoster(String teamId,
                                                    Set<String> memberUuids,
                                                    FiscalYearRange fy,
-                                                   LocalDate effectiveEnd) {
+                                                   LocalDate effectiveEnd,
+                                                   Map<String, UserProfileExtension> profiles) {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT u.uuid AS user_id, u.firstname, u.lastname,
@@ -1369,6 +1479,7 @@ public class TeamDashboardService {
             Double pct = n > 0 ? (b / n) * 100.0 : null;
             String userId = (String) row.get("user_id");
             String[] career = careerByUser.getOrDefault(userId, new String[]{null, null});
+            UserProfileExtension profile = profiles == null ? null : profiles.get(userId);
             roster.add(new TeamRosterMemberDTO(
                     userId,
                     (String) row.get("firstname"),
@@ -1380,7 +1491,10 @@ public class TeamDashboardService {
                     ((Number) row.get("has_active_contract")).intValue() > 0,
                     career[0],
                     career[1],
-                    contractsByUser.getOrDefault(userId, List.of())));
+                    contractsByUser.getOrDefault(userId, List.of()),
+                    profile == null ? null : profile.getStudyLevel(),
+                    profile == null ? null : profile.getExpectedGraduation(),
+                    profile == null ? null : profile.getPrimaryDiscipline()));
         }
         return roster;
     }
@@ -1585,7 +1699,8 @@ public class TeamDashboardService {
                 teamId, getTeamName(teamId), 0,
                 null, 0, 0, null,
                 0,
-                List.of(), List.of());
+                List.of(), List.of(),
+                TeamKindResolver.SALARIED, null);
     }
 
     /**

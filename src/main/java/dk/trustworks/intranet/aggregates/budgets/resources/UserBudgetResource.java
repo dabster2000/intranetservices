@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.budgets.resources;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonth;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonthLite;
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
+import dk.trustworks.intranet.aggregates.internalassignment.services.InternalBudgetService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import io.quarkus.cache.CacheResult;
 import jakarta.annotation.security.RolesAllowed;
@@ -18,6 +19,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
@@ -33,6 +35,9 @@ public class UserBudgetResource {
 
     @Inject
     BudgetService budgetService;
+
+    @Inject
+    InternalBudgetService internalBudgetService;
 
     /**
      * Self-reference (CDI client proxy) used to invoke the cached
@@ -58,12 +63,26 @@ public class UserBudgetResource {
      * the cached full result via {@link #self}, then projects to
      * {@link EmployeeBudgetPerMonthLite}.
      */
+    /**
+     * JK Team 2.0 WP3: {@code includeInternal=true} appends internal-assignment rows
+     * ({@code client = null}, {@code contract = null}, {@code rate = 0},
+     * {@code kind = "INTERNAL"}) from {@code fact_internal_budget_day}. Callers that omit the
+     * flag get exactly what they got before — the union lives at this read layer only.
+     */
     @GET
     @Path("/budgets/lite")
-    public List<EmployeeBudgetPerMonthLite> getAllUserBudgetsByPeriodLite(@QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
-        return self.getAllUserBudgetsByPeriod(periodFrom, periodTo).stream()
+    public List<EmployeeBudgetPerMonthLite> getAllUserBudgetsByPeriodLite(@QueryParam("fromdate") String periodFrom,
+                                                                          @QueryParam("todate") String periodTo,
+                                                                          @QueryParam("includeInternal") boolean includeInternal) {
+        List<EmployeeBudgetPerMonthLite> contractRows = self.getAllUserBudgetsByPeriod(periodFrom, periodTo).stream()
                 .map(EmployeeBudgetPerMonthLite::from)
                 .toList();
+        if (!includeInternal) {
+            return contractRows;
+        }
+        List<EmployeeBudgetPerMonthLite> out = new ArrayList<>(contractRows);
+        out.addAll(internalBudgetService.liteInPeriod(dateIt(periodFrom), dateIt(periodTo)));
+        return out;
     }
 
     @GET

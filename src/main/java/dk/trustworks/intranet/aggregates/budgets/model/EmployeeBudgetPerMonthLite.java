@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.budgets.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * Lightweight projection of {@link EmployeeBudgetPerMonth} for high-volume list
  * endpoints (e.g. {@code GET /users/budgets/lite}).
@@ -19,7 +21,14 @@ package dk.trustworks.intranet.aggregates.budgets.model;
  *
  * <p>Because it carries no {@code User} entity, it also bypasses the reflective
  * field-stripping done by {@code UserScopeResponseFilter} on the full endpoint.
+ *
+ * <p>JK Team 2.0 WP3: with {@code includeInternal=true} the endpoint also returns
+ * internal-assignment rows — {@code client = null}, {@code contract = null},
+ * {@code rate = 0}, {@code kind = "INTERNAL"} and an {@link InternalAssignmentRef}.
+ * Both new fields are omitted from the JSON of ordinary contract rows, so callers
+ * that never asked for internal rows see byte-identical output.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record EmployeeBudgetPerMonthLite(
         int year,
         int month,
@@ -27,12 +36,20 @@ public record EmployeeBudgetPerMonthLite(
         ClientRef client,
         Ref contract,
         double budgetHours,
-        double rate
+        double rate,
+        /** {@code "INTERNAL"} for internal-assignment rows; absent for contract rows. */
+        String kind,
+        /** Present on internal rows only. */
+        InternalAssignmentRef internalAssignment
 ) {
+
+    public static final String KIND_INTERNAL = "INTERNAL";
 
     public record Ref(String uuid) {}
 
     public record ClientRef(String uuid, String name) {}
+
+    public record InternalAssignmentRef(String uuid, String title, boolean strategic) {}
 
     public static EmployeeBudgetPerMonthLite from(EmployeeBudgetPerMonth b) {
         return new EmployeeBudgetPerMonthLite(
@@ -42,7 +59,25 @@ public record EmployeeBudgetPerMonthLite(
                 b.getClient() == null ? null : new ClientRef(b.getClient().getUuid(), b.getClient().getName()),
                 b.getContract() == null ? null : new Ref(b.getContract().getUuid()),
                 b.getBudgetHours(),
-                b.getRate()
+                b.getRate(),
+                null,
+                null
+        );
+    }
+
+    /** An internal-assignment row: demand, never revenue. */
+    public static EmployeeBudgetPerMonthLite internal(int year, int month, String useruuid, double budgetHours,
+                                                      String assignmentUuid, String title, boolean strategic) {
+        return new EmployeeBudgetPerMonthLite(
+                year,
+                month,
+                new Ref(useruuid),
+                null,
+                null,
+                budgetHours,
+                0.0,
+                KIND_INTERNAL,
+                new InternalAssignmentRef(assignmentUuid, title, strategic)
         );
     }
 }
