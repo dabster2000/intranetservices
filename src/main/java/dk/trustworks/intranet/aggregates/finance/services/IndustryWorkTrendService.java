@@ -355,7 +355,8 @@ public class IndustryWorkTrendService {
                 "            WHERE cp.projectuuid = p.uuid " +
                 "            AND cc.useruuid = IF(w.workas IS NOT NULL, w.workas, w.useruuid) " +
                 "            AND cc.activefrom <= w.registered AND cc.activeto >= w.registered " +
-                "            AND cc.rate > 0 " +
+                // WP4c/D3: a declared 0 kr line still proves contract coverage.
+                "            AND (cc.rate > 0 OR cc.zero_rate_reason IS NOT NULL) " +
                 (hasCompanies ? "AND ct.companyuuid IN (:companyIds) " : "") +
                 ") " +
                 "GROUP BY segment, w.useruuid, consultant_name, p.clientuuid, c.name, month_num " +
