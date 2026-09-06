@@ -234,7 +234,10 @@ public class WorkService {
                 "FROM work_full wf " +
                 "WHERE wf.useruuid = :useruuid " +
                 "    AND wf.workduration > 0 " +
-                "    AND wf.rate > 0 " +
+                // WP4c/D3: billable hours = sold work, priced or not. A declared zero-rate
+                // (føl) client hour is sold; rate > 0 would silently drop it. This query has
+                // no consultant_type filter, so juniors do reach it.
+                "    AND wf.rate_basis <> 'NO_CONTRACT' " +
                 "    AND wf.registered >= :fromdate " +
                 "    AND wf.registered < :todate " +
                 "GROUP BY YEAR(wf.registered), MONTH(wf.registered)";
@@ -255,7 +258,9 @@ public class WorkService {
                         "FROM work_full wf " +
                         "WHERE wf.useruuid = :useruuid " +
                         "  AND wf.workduration > 0 " +
-                        "  AND wf.rate > 0 " +
+                        // WP4c/D3: billable hours = sold work, priced or not. The revenue
+                        // variants below deliberately keep rate > 0 — money, not coverage.
+                        "  AND wf.rate_basis <> 'NO_CONTRACT' " +
                         "  AND wf.registered = :day";
 
         var q = em.createNativeQuery(sql);

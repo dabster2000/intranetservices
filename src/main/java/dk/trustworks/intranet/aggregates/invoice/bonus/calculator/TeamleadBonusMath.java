@@ -122,57 +122,38 @@ public final class TeamleadBonusMath {
     }
 
     // =====================================================================
-    // Hybrid per-leader split (spec §4)
+    // Per-leader window points (spec §4)
     // =====================================================================
 
     /**
-     * Splits a team's payable pool between its leaders proportionally to
-     * {@code weight_L = ownWindowPoints_L × monthsAsLeader_L}. Returns one slice per leader in the
-     * input order, each in {@code [0, 1]} and summing to 1 (barring the all-zero edge case).
+     * A leader's contribution to the pool: their own window's points, prorated by the share of the
+     * fiscal year they actually led ({@code ownWindowPoints × monthsAsLeader / 12}).
      *
-     * <ul>
-     *   <li>A single leader always gets the whole slice ({@code 1.0}).</li>
-     *   <li>When {@code ΣW = 0} (e.g. every leader sat at/below the utilization threshold) but the
-     *       team still has a payable pool, the split falls back to being proportional to the
-     *       months-as-leader counts, so leaderless-driven proration is still honoured.</li>
-     *   <li>When both the weights and the month counts are all zero, every slice is {@code 0}
-     *       (the covered fraction is zero anyway, so nothing is payable).</li>
-     * </ul>
+     * <p>Points MUST be clamped at the threshold <em>per leader window</em> — via
+     * {@link #rawPoints(double, double, double)} — and only then averaged over the year. Clamping
+     * after averaging (deriving points from the team's full-year mean utilization) lets a window
+     * below {@code minUtilThreshold} contribute a <em>negative</em> amount that its successor
+     * absorbs, which is exactly what a leader must not be answerable for. Because {@code rawPoints}
+     * is linear above the threshold, the two orderings agree whenever every window clears it — the
+     * handover case is the only one that ever differed.
      *
-     * Negative weights/months are clamped to zero before the ratio. Pure logic — unit-tested
-     * without a DB.
+     * <p>Negative month counts are clamped to zero. Pure logic — unit-tested without a DB.
      *
-     * @param weights per-leader {@code ownWindowPoints × monthsAsLeader} (same order as {@code months})
-     * @param months  per-leader considered-months-as-leader counts
-     * @return per-leader slices in input order
-     * @throws IllegalArgumentException when the two arrays differ in length
+     * @param ownWindowPoints the window's {@link #rawPoints} (own utilization, own team factor)
+     * @param monthsAsLeader  months of the fiscal year attributed to this leader
      */
-    public static double[] hybridSlices(double[] weights, int[] months) {
-        if (weights.length != months.length) {
-            throw new IllegalArgumentException("weights and months must have the same length");
-        }
-        int n = weights.length;
-        double[] slices = new double[n];
-        if (n == 0) return slices;
-        if (n == 1) {
-            slices[0] = 1.0;
-            return slices;
-        }
+    public static double proratedPoints(double ownWindowPoints, int monthsAsLeader) {
+        return ownWindowPoints * ((double) Math.max(monthsAsLeader, 0) / MONTHS_IN_YEAR);
+    }
 
-        double sumWeights = 0.0;
-        for (double w : weights) sumWeights += Math.max(w, 0.0);
-        if (sumWeights > 0.0) {
-            for (int i = 0; i < n; i++) slices[i] = Math.max(weights[i], 0.0) / sumWeights;
-            return slices;
-        }
-
-        // ΣW = 0 fallback: proportional to months-as-leader.
-        long sumMonths = 0;
-        for (int m : months) sumMonths += Math.max(m, 0);
-        if (sumMonths > 0) {
-            for (int i = 0; i < n; i++) slices[i] = Math.max(months[i], 0) / (double) sumMonths;
-        }
-        return slices;
+    /**
+     * A leader's informational share of their team's points ({@code leaderPoints / teamPoints}) — the
+     * "% share" the dashboard prints under a co-led team's leader names. Returns 0 when the team
+     * earned no points, so a zero-point team renders as 0 % rather than dividing by zero.
+     */
+    public static double pointsShare(double leaderPoints, double teamPoints) {
+        if (teamPoints <= 0.0) return 0.0;
+        return leaderPoints / teamPoints;
     }
 
     /**
