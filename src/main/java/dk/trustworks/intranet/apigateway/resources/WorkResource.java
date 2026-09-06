@@ -166,14 +166,6 @@ public class WorkResource {
         log.infof("Work save completed: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s",
                 work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered());
     }
-/*
-    @GET
-    @Path("/tasks/{uuid}/work")
-    public List<WorkFull> getWorkByTask(@PathParam("uuid") String taskuuid) {
-        return workAPI.findByTask(taskuuid);
-    }
-
- */
 
     // ============================================================================
     // Performance-Optimized Endpoints (Added for large dataset handling)
