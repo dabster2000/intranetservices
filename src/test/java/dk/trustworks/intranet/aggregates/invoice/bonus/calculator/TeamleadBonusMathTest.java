@@ -303,68 +303,69 @@ class TeamleadBonusMathTest {
     }
 
     // =====================================================================
-    // Hybrid per-leader split (spec §4)
+    // Per-leader window points (spec §4)
     // =====================================================================
 
     @Test
-    void hybridSlices_singleLeader_getsWholeSlice() {
-        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0}, new int[]{0});
-        assertEquals(1, slices.length);
-        assertEquals(1.0, slices[0], EXACT);
+    void proratedPoints_fullYear_isTheWindowPointsUnchanged() {
+        assertEquals(2.1, TeamleadBonusMath.proratedPoints(2.1, 12), EXACT);
     }
 
     @Test
-    void hybridSlices_normal_isWeightProportional() {
-        // weights 2 / 3 / 5 → 0.2 / 0.3 / 0.5
-        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0, 5.0}, new int[]{12, 12, 12});
-        assertEquals(0.2, slices[0], EXACT);
-        assertEquals(0.3, slices[1], EXACT);
-        assertEquals(0.5, slices[2], EXACT);
-        assertEquals(1.0, slices[0] + slices[1] + slices[2], EXACT);
+    void proratedPoints_partialYear_isScaledByMonthsLed() {
+        assertEquals(2.1 * 9 / 12, TeamleadBonusMath.proratedPoints(2.1, 9), EXACT);
     }
 
     @Test
-    void hybridSlices_sumWeightsZero_fallsBackToMonthsProportional() {
-        // Both leaders at/below threshold → ΣW = 0; split by months-as-leader (8 vs 4 → 2/3 vs 1/3).
-        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0, 0.0}, new int[]{8, 4});
-        assertEquals(8.0 / 12.0, slices[0], EXACT);
-        assertEquals(4.0 / 12.0, slices[1], EXACT);
+    void proratedPoints_zeroMonths_isZero() {
+        assertEquals(0.0, TeamleadBonusMath.proratedPoints(2.1, 0), EXACT);
     }
 
     @Test
-    void hybridSlices_allWeightsAndMonthsZero_areAllZero() {
-        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{0.0, 0.0}, new int[]{0, 0});
-        assertEquals(0.0, slices[0], EXACT);
-        assertEquals(0.0, slices[1], EXACT);
+    void proratedPoints_negativeMonths_clampedToZero() {
+        assertEquals(0.0, TeamleadBonusMath.proratedPoints(2.1, -3), EXACT);
     }
 
     @Test
-    void hybridSlices_negativeWeightsClampedToZero() {
-        double[] slices = TeamleadBonusMath.hybridSlices(new double[]{-1.0, 3.0}, new int[]{12, 12});
-        assertEquals(0.0, slices[0], EXACT);
-        assertEquals(1.0, slices[1], EXACT);
+    void proratedPoints_underperformingPredecessorCannotSubtractFromSuccessor() {
+        // Team Really Bad Ass, FY2025/26: Anette Jul-Sep at 38.82 %, Sofie Oct-Jun at 77.68 %,
+        // threshold 65 %, factor 1.5 for both windows.
+        double anette = TeamleadBonusMath.rawPoints(0.3882, 0.65, 1.5);
+        double sofie = TeamleadBonusMath.rawPoints(0.7768, 0.65, 1.5);
+        assertEquals(0.0, anette, EXACT, "a window below the threshold is worth 0, never negative");
+
+        double teamPoints = TeamleadBonusMath.proratedPoints(anette, 3)
+                + TeamleadBonusMath.proratedPoints(sofie, 9);
+        assertEquals(0.71325, teamPoints, DELTA);
+
+        // Clamping AFTER averaging (the old order) charged Anette's shortfall to Sofie: the team's
+        // mean utilization is 67.99 %, worth only 0.2244 points for the same two windows.
+        double meanUtil = (0.3882 * 3 + 0.7768 * 9) / 12;
+        double clampedAfterAveraging = TeamleadBonusMath.rawPoints(meanUtil, 0.65, 1.5);
+        assertTrue(clampedAfterAveraging < teamPoints,
+                "averaging before clamping must not be able to exceed per-window clamping");
+        assertEquals(0.22432, clampedAfterAveraging, DELTA);
     }
 
     @Test
-    void hybridSlices_lengthMismatch_throws() {
-        assertThrows(IllegalArgumentException.class,
-                () -> TeamleadBonusMath.hybridSlices(new double[]{1.0, 2.0}, new int[]{12}));
+    void proratedPoints_everyWindowAboveThreshold_matchesTheTeamMean() {
+        // Linearity above the threshold: per-window clamping and mean-then-clamp agree whenever no
+        // window is under water, so only handovers across the threshold ever changed.
+        double a = TeamleadBonusMath.rawPoints(0.889, 0.65, 1.5);
+        double b = TeamleadBonusMath.rawPoints(0.930, 0.65, 1.5);
+        double perWindow = TeamleadBonusMath.proratedPoints(a, 3) + TeamleadBonusMath.proratedPoints(b, 9);
+        double fromMean = TeamleadBonusMath.rawPoints((0.889 * 3 + 0.930 * 9) / 12, 0.65, 1.5);
+        assertEquals(fromMean, perWindow, DELTA);
     }
 
     @Test
-    void hybridSlices_excludedLeaderNotRedistributed_othersUnchanged() {
-        // The excluded leader is handled by the caller ZEROING its payable component AFTER the split,
-        // never by recomputing the split. So the three-leader slices are weight-proportional over ALL
-        // three, and A/B stay strictly smaller than the two-leader split they would get if C were
-        // actually removed — proving the excluded slice is not redistributed.
-        double[] threeWay = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0, 5.0}, new int[]{12, 12, 12});
-        double[] twoWay = TeamleadBonusMath.hybridSlices(new double[]{2.0, 3.0}, new int[]{12, 12});
-        assertEquals(0.2, threeWay[0], EXACT);
-        assertEquals(0.3, threeWay[1], EXACT);
-        assertEquals(0.4, twoWay[0], EXACT);
-        assertEquals(0.6, twoWay[1], EXACT);
-        assertTrue(threeWay[0] < twoWay[0], "excluding C must not raise A's slice");
-        assertTrue(threeWay[1] < twoWay[1], "excluding C must not raise B's slice");
+    void pointsShare_splitsTeamPointsProportionally() {
+        assertEquals(0.75, TeamleadBonusMath.pointsShare(1.5, 2.0), EXACT);
+    }
+
+    @Test
+    void pointsShare_zeroTeamPoints_isZeroNotNaN() {
+        assertEquals(0.0, TeamleadBonusMath.pointsShare(0.0, 0.0), EXACT);
     }
 
     // =====================================================================

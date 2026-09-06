@@ -343,40 +343,27 @@ public class TeamBonusProjectionService {
 
     /**
      * Computes the per-team leader bonus rows (one per leader that held the LEADER role in the FY,
-     * plus an {@code "unknown"} row for teams with none). The team's points stay computed on full-FY
-     * performance (recomposed utilization); the payable pool is {@code teamPoolShare × coveredMonths/12}
-     * and is split between the leaders by the hybrid rule (spec §4). Excluded leaders keep their
-     * informational figures but zero every payable component.
+     * plus an {@code "unknown"} row for teams with none). Every leader is paid on their OWN window:
+     * {@code rawPoints(ownWindowUtil) × monthsAsLeader/12}, so neither a predecessor's nor a
+     * successor's months can move their bonus (spec §4). The team's points are the sum of those
+     * per-leader contributions. Excluded leaders keep their informational figures but zero every
+     * payable component.
      */
     public List<LeaderBonusRow> computeLeaderRows(Team team, TeamleadContext ctx) {
         TeamAggregate agg = computeTeamAggregate(team, ctx);
-        double ppp = ctx.pricePerPoint();
         Map<String, String> exclusionNotes = ctx.leaderExclusionsByTeam().getOrDefault(team.getUuid(), Map.of());
         boolean teamFullyExcluded = ctx.fullyExcludedTeamIds().contains(team.getUuid());
-
-        double teamPoolShare = TeamleadBonusMath.poolShare(agg.teamRawPoints(), ppp);
-        double coveredFraction = (double) agg.coveredMonths() / TeamleadBonusMath.MONTHS_IN_YEAR;
 
         List<LeaderWindow> windows = agg.leaderWindows();
         if (windows.isEmpty()) {
             return List.of(buildUnknownRow(agg, ctx));
         }
 
-        double[] weights = new double[windows.size()];
-        int[] months = new int[windows.size()];
-        for (int i = 0; i < windows.size(); i++) {
-            weights[i] = windows.get(i).ownWindowPoints() * windows.get(i).monthsAsLeader();
-            months[i] = windows.get(i).monthsAsLeader();
-        }
-        double[] slices = TeamleadBonusMath.hybridSlices(weights, months);
-
         List<LeaderBonusRow> rows = new ArrayList<>();
-        for (int i = 0; i < windows.size(); i++) {
-            LeaderWindow w = windows.get(i);
+        for (LeaderWindow w : windows) {
             boolean excluded = teamFullyExcluded || exclusionNotes.containsKey(w.leaderUuid());
             String excludedNote = excluded ? exclusionNotes.get(w.leaderUuid()) : null;
-            rows.add(buildLeaderRow(agg, w, ctx, slices[i], teamPoolShare, coveredFraction,
-                    excluded, excludedNote, teamFullyExcluded));
+            rows.add(buildLeaderRow(agg, w, ctx, excluded, excludedNote, teamFullyExcluded));
         }
         return rows;
     }
@@ -609,23 +596,35 @@ public class TeamBonusProjectionService {
                 .filter(ym -> dataByMonth.get(ym).hasActiveData())
                 .mapToDouble(ym -> dataByMonth.get(ym).utilization()).toArray();
         double recomposedTeamUtil = TeamleadBonusMath.recomposedUtilization(effArr, cntArr, unassignedArr);
-        double teamRawPoints = TeamleadBonusMath.rawPoints(recomposedTeamUtil, minUtil, teamFactor);
+
+        // Points are earned per leader window — each clamped at the threshold in its own right — and
+        // summed; they are NOT derived from the team's full-year mean utilization. See
+        // TeamleadBonusMath#proratedPoints for why the clamp has to sit inside the average. Months
+        // with no leader at all simply earn nothing, which is what the old coveredMonths/12 scaling
+        // of the payable pool used to express.
+        double teamRawPoints = 0.0;
+        for (LeaderWindow w : windows) {
+            teamRawPoints += TeamleadBonusMath.proratedPoints(w.ownWindowPoints(), w.monthsAsLeader());
+        }
 
         return new TeamAggregate(teamId, team.getName(), monthlyUtil, recomposedTeamUtil, teamAvgSize,
                 teamFactor, teamRawPoints, List.copyOf(windows), coveredMonths);
     }
 
-    /** Builds a single leader's bonus row from the team aggregate and the leader's hybrid slice. */
+    /** Builds a single leader's bonus row from the team aggregate and the leader's own window. */
     private LeaderBonusRow buildLeaderRow(TeamAggregate agg, LeaderWindow w, TeamleadContext ctx,
-                                          double slice, double teamPoolShare, double coveredFraction,
                                           boolean excluded, String excludedNote, boolean teamFullyExcluded) {
         double minUtil = ctx.config().minUtilThreshold();
+        double ppp = ctx.pricePerPoint();
         AdjustmentAggregate adj = ctx.adjustmentsByLeader().get(w.leaderUuid());
         double utilAboveMin = Math.max(w.ownWindowUtil() - minUtil, 0.0);
 
-        double rowRawPoints = agg.teamRawPoints() * coveredFraction * slice;
-        double rowPoolShare = teamPoolShare * slice;
-        double rowAdjustedPoolBonus = teamPoolShare * coveredFraction * slice;
+        // Own window only: a predecessor below the utilization threshold contributes 0, never a
+        // negative that this leader would absorb. `slice` is now purely informational.
+        double rowRawPoints = TeamleadBonusMath.proratedPoints(w.ownWindowPoints(), w.monthsAsLeader());
+        double slice = TeamleadBonusMath.pointsShare(rowRawPoints, agg.teamRawPoints());
+        double rowPoolShare = TeamleadBonusMath.poolShare(w.ownWindowPoints(), ppp);
+        double rowAdjustedPoolBonus = TeamleadBonusMath.adjustedPoolBonus(rowPoolShare, w.monthsAsLeader());
 
         double ownRevenue = calculateLeaderOwnRevenueInMonths(w.leaderUuid(), w.attributedMonthKeys());
         double proratedThreshold = TeamleadBonusMath.proratedThreshold(
