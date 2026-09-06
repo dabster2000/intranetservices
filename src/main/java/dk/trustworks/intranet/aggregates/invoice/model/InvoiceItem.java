@@ -9,6 +9,7 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -44,6 +45,29 @@ public class InvoiceItem extends PanacheEntityBase {
 
     @Column(name = "label")
     public String label;
+
+    /**
+     * No-charge line (JK Team 2.0 WP4b, D2): the {@code zero_rate_reason} of the consultant
+     * line these hours came from. Set only on lines generated from a declared 0 kr contract
+     * line; such a line has {@code rate = 0}, contributes 0 to every total, is kept by the
+     * intercompany-invoice generator (which drops other rate-0 items) and survives credit-note
+     * generation unchanged.
+     */
+    @Column(name = "no_charge_reason")
+    public String noChargeReason;
+
+    /** List value per hour printed on a no-charge line — never part of a total. */
+    @Column(name = "list_rate")
+    public Double listRate;
+
+    /** Step-up deadline printed on a no-charge line. */
+    @Column(name = "rate_review_date")
+    public LocalDate rateReviewDate;
+
+    /** Whether this is a declared no-charge line rather than an unresolved rate. */
+    public boolean isNoCharge() {
+        return noChargeReason != null && !noChargeReason.isBlank();
+    }
 
     /**
      * Points to {@code invoiceitems.uuid} on the source invoice this line was derived from.

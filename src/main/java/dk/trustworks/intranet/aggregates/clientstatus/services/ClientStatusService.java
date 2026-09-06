@@ -459,6 +459,123 @@ public class ClientStatusService {
         return new double[]{num(expectedObj), num(invoicedObj)};
     }
 
+    // ── JK Team 2.0 WP8 (D13): junior hours on the account manager's own contracts ──────────
+
+    /**
+     * One row per (contract, junior) for the account manager's clients in {@code month}, plus a
+     * twelve-month paid-vs-0 kr trend. Ownership is the page's own rule — {@code client.accountmanager}
+     * is the viewer — resolved from the header on the resource, never from the body. STUDENT is
+     * decided per registered day (the person's status at the time), so a junior who later
+     * became a consultant keeps their junior months. Hours split by the §4.4.0 discriminator:
+     * rate &gt; 0 → paid; rate = 0 on a declared zero-rate line → 0 kr with the list value
+     * given away; internal clients never appear (the AM has none).
+     */
+    public JuniorHoursResponse getJuniorHours(String accountManagerUuid, YearMonth month) {
+        LocalDate fromDate = month.atDay(1);
+        LocalDate toDate = month.plusMonths(1).atDay(1);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT w.useruuid AS junior_uuid,
+                       CONCAT(u.firstname, ' ', u.lastname) AS junior_name,
+                       w.clientuuid AS client_uuid, cl.name AS client_name,
+                       w.contractuuid AS contract_uuid, c.name AS contract_name,
+                       SUM(w.workduration) AS hours,
+                       SUM(CASE WHEN IFNULL(w.rate, 0) > 0 THEN w.workduration ELSE 0 END) AS paid_hours,
+                       SUM(CASE WHEN IFNULL(w.rate, 0) = 0 AND cc.zero_rate_reason IS NOT NULL THEN w.workduration ELSE 0 END) AS zero_hours,
+                       SUM(CASE WHEN IFNULL(w.rate, 0) = 0 AND cc.list_rate IS NOT NULL THEN w.workduration * cc.list_rate ELSE 0 END) AS given_away,
+                       MAX(cc.pricing_model_code) AS pricing_model_code,
+                       MAX(cc.rate_review_date) AS rate_review_date,
+                       MAX(CASE WHEN cc.zero_rate_reason IS NOT NULL THEN 1 ELSE 0 END) AS zero_rate_line
+                FROM work_full w
+                JOIN client cl ON cl.uuid = w.clientuuid AND cl.accountmanager = :am
+                JOIN user u ON u.uuid = w.useruuid
+                LEFT JOIN contracts c ON c.uuid = w.contractuuid
+                LEFT JOIN contract_consultants cc
+                       ON cc.contractuuid = w.contractuuid AND cc.useruuid = w.useruuid
+                      AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
+                WHERE w.registered >= :fromDate AND w.registered < :toDate
+                  AND w.workduration > 0
+                  AND w.clientuuid <> :internalClient
+                  AND (SELECT us.type FROM userstatus us
+                        WHERE us.useruuid = w.useruuid AND us.statusdate <= w.registered
+                        ORDER BY us.statusdate DESC LIMIT 1) = 'STUDENT'
+                GROUP BY w.useruuid, u.firstname, u.lastname, w.clientuuid, cl.name, w.contractuuid, c.name
+                ORDER BY u.lastname, u.firstname, cl.name
+                """, Tuple.class)
+                .setParameter("am", accountManagerUuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .setParameter("internalClient", INTERNAL_CLIENT_UUID)
+                .getResultList();
+
+        List<JuniorHoursResponse.JuniorHoursRow> out = new ArrayList<>(rows.size());
+        double total = 0, paid = 0, zero = 0, given = 0;
+        for (Tuple r : rows) {
+            double hours = num(r.get("hours"));
+            double paidHours = num(r.get("paid_hours"));
+            double zeroHours = num(r.get("zero_hours"));
+            double givenAway = num(r.get("given_away"));
+            Object review = r.get("rate_review_date");
+            LocalDate reviewDate = review == null ? null
+                    : review instanceof LocalDate ld ? ld
+                    : review instanceof java.sql.Date d ? d.toLocalDate()
+                    : LocalDate.parse(review.toString().substring(0, 10));
+            out.add(new JuniorHoursResponse.JuniorHoursRow(
+                    (String) r.get("junior_uuid"), (String) r.get("junior_name"),
+                    (String) r.get("client_uuid"), (String) r.get("client_name"),
+                    (String) r.get("contract_uuid"), (String) r.get("contract_name"),
+                    hours, paidHours, zeroHours, givenAway,
+                    (String) r.get("pricing_model_code"), reviewDate,
+                    num(r.get("zero_rate_line")) > 0));
+            total += hours;
+            paid += paidHours;
+            zero += zeroHours;
+            given += givenAway;
+        }
+
+        // Twelve-month trend ending at the selected month — paid vs 0 kr, "is junior capacity
+        // actually being used and billed" in one glance
+        YearMonth trendStart = month.minusMonths(11);
+        @SuppressWarnings("unchecked")
+        List<Tuple> trendRows = em.createNativeQuery("""
+                SELECT DATE_FORMAT(w.registered, '%Y%m') AS month_key,
+                       SUM(CASE WHEN IFNULL(w.rate, 0) > 0 THEN w.workduration ELSE 0 END) AS paid_hours,
+                       SUM(CASE WHEN IFNULL(w.rate, 0) = 0 AND cc.zero_rate_reason IS NOT NULL THEN w.workduration ELSE 0 END) AS zero_hours
+                FROM work_full w
+                JOIN client cl ON cl.uuid = w.clientuuid AND cl.accountmanager = :am
+                LEFT JOIN contract_consultants cc
+                       ON cc.contractuuid = w.contractuuid AND cc.useruuid = w.useruuid
+                      AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
+                WHERE w.registered >= :fromDate AND w.registered < :toDate
+                  AND w.workduration > 0
+                  AND w.clientuuid <> :internalClient
+                  AND (SELECT us.type FROM userstatus us
+                        WHERE us.useruuid = w.useruuid AND us.statusdate <= w.registered
+                        ORDER BY us.statusdate DESC LIMIT 1) = 'STUDENT'
+                GROUP BY DATE_FORMAT(w.registered, '%Y%m')
+                """, Tuple.class)
+                .setParameter("am", accountManagerUuid)
+                .setParameter("fromDate", trendStart.atDay(1))
+                .setParameter("toDate", toDate)
+                .setParameter("internalClient", INTERNAL_CLIENT_UUID)
+                .getResultList();
+        Map<String, double[]> byMonth = new HashMap<>();
+        for (Tuple r : trendRows) {
+            byMonth.put((String) r.get("month_key"), new double[]{num(r.get("paid_hours")), num(r.get("zero_hours"))});
+        }
+        List<JuniorHoursResponse.JuniorHoursTrendPoint> trend = new ArrayList<>(12);
+        for (int i = 0; i < 12; i++) {
+            YearMonth ym = trendStart.plusMonths(i);
+            String key = String.format("%04d%02d", ym.getYear(), ym.getMonthValue());
+            double[] v = byMonth.getOrDefault(key, new double[]{0, 0});
+            trend.add(new JuniorHoursResponse.JuniorHoursTrendPoint(key, v[0], v[1]));
+        }
+
+        return new JuniorHoursResponse(String.format("%04d%02d", month.getYear(), month.getMonthValue()),
+                out, trend, total, paid, zero, given);
+    }
+
     /**
      * Build the per-consultant reconciliation for one client-month by pairing the registered
      * work (aggregated per consultant from {@code work}) with each in-scope invoice item and

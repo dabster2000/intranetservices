@@ -57,6 +57,37 @@ public class ClientStatusResource {
         return Response.ok(result).build();
     }
 
+    /**
+     * JK Team 2.0 WP8 (D13): junior hours on the caller's own contracts for one month, with a
+     * twelve-month paid-vs-0 kr trend. The account manager is the acting human from the
+     * {@code X-Requested-By} header — never a query parameter — so an AM can only ever see
+     * their own portfolio. Same scope as the grid.
+     *
+     * @param month yyyy-MM (or yyyyMM); defaults to the current month
+     */
+    @GET
+    @Path("/junior-hours")
+    public Response juniorHours(@HeaderParam("X-Requested-By") String userUuid,
+                                @QueryParam("month") String month) {
+        if (userUuid == null || !CLIENT_UUID.matcher(userUuid).matches()) {
+            throw new BadRequestException("X-Requested-By header (user UUID) is required");
+        }
+        YearMonth selected = parseMonthParam(month);
+        log.infof("GET /invoice-controlling/client-status/junior-hours: am=%s month=%s", userUuid, selected);
+        return Response.ok(clientStatusService.getJuniorHours(userUuid, selected)).build();
+    }
+
+    private static YearMonth parseMonthParam(String month) {
+        if (month == null || month.isBlank()) return YearMonth.now();
+        String trimmed = month.trim();
+        try {
+            if (trimmed.length() == 6) return YearMonth.parse(trimmed, YYYYMM);
+            return YearMonth.parse(trimmed.length() > 7 ? trimmed.substring(0, 7) : trimmed);
+        } catch (DateTimeParseException e) {
+            throw new BadRequestException("month must be yyyy-MM");
+        }
+    }
+
     @GET
     @Path("/detail")
     public Response getDetail(@QueryParam("client") String client,

@@ -594,14 +594,22 @@ public class ContractService {
                         "rate = ?2, " +
                         "activeFrom = ?3, " +
                         "activeTo = ?4, " +
-                        "name = ?5 " +
+                        "name = ?5, " +
+                        "pricingModelCode = ?7, " +
+                        "zeroRateReason = ?8, " +
+                        "rateReviewDate = ?9, " +
+                        "listRate = ?10 " +
                         "WHERE uuid like ?6 ",
                 contractConsultant.getHours(),
                 contractConsultant.getRate(),
                 contractConsultant.getActiveFrom(),
                 contractConsultant.getActiveTo(),
                 contractConsultant.getName(),
-                contractConsultant.getUuid());
+                contractConsultant.getUuid(),
+                contractConsultant.getPricingModelCode(),
+                contractConsultant.getZeroRateReason(),
+                contractConsultant.getRateReviewDate(),
+                contractConsultant.getListRate());
 
         // Log field-level changes
         if (oldCc != null) {
@@ -626,6 +634,24 @@ public class ContractService {
                 if (!Objects.equals(oldCc.getActiveTo(), contractConsultant.getActiveTo())) {
                     activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
                             "activeTo", String.valueOf(oldCc.getActiveTo()), String.valueOf(contractConsultant.getActiveTo()));
+                }
+                if (!Objects.equals(oldCc.getPricingModelCode(), contractConsultant.getPricingModelCode())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "pricingModelCode", String.valueOf(oldCc.getPricingModelCode()), String.valueOf(contractConsultant.getPricingModelCode()));
+                }
+                // Zero-rate declaration (WP4b): the reason, the step-up deadline and the list rate are
+                // commercial facts — every change is on the client's activity log like the rate itself.
+                if (!Objects.equals(oldCc.getZeroRateReason(), contractConsultant.getZeroRateReason())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "zeroRateReason", String.valueOf(oldCc.getZeroRateReason()), String.valueOf(contractConsultant.getZeroRateReason()));
+                }
+                if (!Objects.equals(oldCc.getRateReviewDate(), contractConsultant.getRateReviewDate())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "rateReviewDate", String.valueOf(oldCc.getRateReviewDate()), String.valueOf(contractConsultant.getRateReviewDate()));
+                }
+                if (!Objects.equals(oldCc.getListRate(), contractConsultant.getListRate())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "listRate", String.valueOf(oldCc.getListRate()), String.valueOf(contractConsultant.getListRate()));
                 }
             }
         }
