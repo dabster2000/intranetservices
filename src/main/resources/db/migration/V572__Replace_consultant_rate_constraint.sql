@@ -18,13 +18,22 @@
 -- kills and rolls back. Fail fast instead (the V557 lesson).
 SET SESSION lock_wait_timeout = 20;
 
+-- IF NOT EXISTS on every statement, for the same reason V561 states: repair-at-start
+-- clears a failed row from flyway_schema_history and re-runs the migration, and MariaDB
+-- DDL is not transactional — so a run that added these columns and then failed on the
+-- CHECK leaves them behind, and a bare ADD COLUMN can never succeed again. That is
+-- exactly what happened on staging 2026-09-06.
 ALTER TABLE contract_consultants
-    ADD COLUMN zero_rate_reason VARCHAR(32)   NULL COMMENT 'PILOT_FREE | GOODWILL | INTERNAL_TRANSFER | OTHER — why the line is 0 kr',
-    ADD COLUMN rate_review_date DATE          NULL COMMENT 'Hard deadline for the price step-up on a 0 kr line',
-    ADD COLUMN list_rate        DECIMAL(10,2) NULL COMMENT 'Notional rate the hours are worth on a 0 kr line — display/reporting only';
+    ADD COLUMN IF NOT EXISTS zero_rate_reason VARCHAR(32)   NULL COMMENT 'PILOT_FREE | GOODWILL | INTERNAL_TRANSFER | OTHER — why the line is 0 kr',
+    ADD COLUMN IF NOT EXISTS rate_review_date DATE          NULL COMMENT 'Hard deadline for the price step-up on a 0 kr line',
+    ADD COLUMN IF NOT EXISTS list_rate        DECIMAL(10,2) NULL COMMENT 'Notional rate the hours are worth on a 0 kr line — display/reporting only';
 
 ALTER TABLE contract_consultants
     DROP CONSTRAINT IF EXISTS chk_consultant_positive_rate;
+
+-- Drop before add, the V85 pattern, so a partial previous run cannot block the retry.
+ALTER TABLE contract_consultants
+    DROP CONSTRAINT IF EXISTS chk_consultant_rate_declared;
 
 ALTER TABLE contract_consultants
     ADD CONSTRAINT chk_consultant_rate_declared CHECK (
