@@ -30,7 +30,13 @@ public final class DeclaredAvailabilityValidator {
     private DeclaredAvailabilityValidator() {
     }
 
-    /** Problems with an upsert batch; empty means valid. */
+    /**
+     * Problems with an upsert batch; empty means valid.
+     *
+     * <p>An item whose {@code hours} is {@code null} is a <em>clear</em>: the day's declaration
+     * is removed and the day becomes unplanned again. It needs no hours validation and its note
+     * is ignored, so a planner can send additions, changes and removals in one request.
+     */
     public static List<String> validateUpsert(List<DeclaredAvailabilityUpsertRequest> items) {
         List<String> problems = new ArrayList<>();
         if (items == null || items.isEmpty()) {
@@ -53,6 +59,9 @@ public final class DeclaredAvailabilityValidator {
                 problems.add(where + ": day is required");
             } else if (!seen.add(item.day())) {
                 problems.add(where + ": " + item.day() + " appears more than once");
+            }
+            if (item.hours() == null) {
+                continue; // a clear — nothing else to check
             }
             String hoursProblem = validateHours(item.hours());
             if (hoursProblem != null) {

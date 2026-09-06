@@ -128,8 +128,18 @@ public class DeclaredAvailabilityService {
 
         LocalDateTime now = LocalDateTime.now();
         List<DeclaredAvailabilityDTO> saved = new ArrayList<>(items.size());
+        int cleared = 0;
         for (DeclaredAvailabilityUpsertRequest item : items) {
             UserDeclaredAvailability row = existing.get(item.day());
+            if (item.hours() == null) {
+                // A clear: the day goes back to "no plan". Absent rows are a no-op, so the
+                // batch stays idempotent.
+                if (row != null) {
+                    row.delete();
+                    cleared++;
+                }
+                continue;
+            }
             if (row == null) {
                 row = new UserDeclaredAvailability();
                 row.setUuid(UUID.randomUUID().toString());
@@ -145,8 +155,8 @@ public class DeclaredAvailabilityService {
             row.setUpdatedBy(actorUuid);
             saved.add(DeclaredAvailabilityDTO.from(row));
         }
-        log.infof("Declared availability upsert: user=%s days=%d source=%s actor=%s",
-                useruuid, items.size(), source, actorUuid);
+        log.infof("Declared availability upsert: user=%s days=%d cleared=%d source=%s actor=%s",
+                useruuid, saved.size(), cleared, source, actorUuid);
         recalculateAfterCommit(useruuid, days);
         return saved;
     }

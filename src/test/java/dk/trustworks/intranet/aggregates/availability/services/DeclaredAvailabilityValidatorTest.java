@@ -47,6 +47,24 @@ class DeclaredAvailabilityValidatorTest {
     }
 
     @Test
+    void nullHoursIsAClearAndNeedsNoHoursValidation() {
+        // The planner sends additions, changes and removals in one PUT: a null-hours item
+        // removes the day's declaration. Its note is ignored, so an overlong one is not a problem.
+        assertTrue(DeclaredAvailabilityValidator.validateUpsert(List.of(item(MON, "7.5"), item(TUE, null))).isEmpty());
+        assertTrue(DeclaredAvailabilityValidator.validateUpsert(
+                List.of(new DeclaredAvailabilityUpsertRequest(MON, null, "x".repeat(300)))).isEmpty());
+    }
+
+    @Test
+    void aClearStillNeedsADayAndCannotRepeatIt() {
+        List<String> problems = DeclaredAvailabilityValidator.validateUpsert(
+                List.of(item(MON, null), item(MON, "1"), item(null, null)));
+        assertEquals(2, problems.size());
+        assertTrue(problems.get(0).contains("appears more than once"));
+        assertTrue(problems.get(1).contains("day is required"));
+    }
+
+    @Test
     void oneBadItemRefusesTheWholeBatch() {
         // Atomicity by construction: the problems list names the bad item and the caller
         // gets a 400 before any row is written.

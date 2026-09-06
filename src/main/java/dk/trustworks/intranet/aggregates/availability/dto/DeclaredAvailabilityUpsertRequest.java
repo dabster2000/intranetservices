@@ -13,8 +13,10 @@ import java.time.LocalDate;
  *
  * @param day   the day being declared
  * @param hours expected working hours that day; {@code 0} is a real statement
- *              ("looked at it, not working") and is stored as a row
- * @param note  optional free text, e.g. "eksamen"
+ *              ("looked at it, not working") and is stored as a row. {@code null} is a
+ *              <em>clear</em>: the day's declaration is removed and the day is unplanned
+ *              again, so one batch can carry additions, changes and removals together
+ * @param note  optional free text, e.g. "eksamen"; ignored on a clear
  */
 public record DeclaredAvailabilityUpsertRequest(LocalDate day, BigDecimal hours, String note) {
 }
