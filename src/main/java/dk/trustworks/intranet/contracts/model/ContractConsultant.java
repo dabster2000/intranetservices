@@ -72,7 +72,11 @@ public class ContractConsultant extends PanacheEntityBase {
     @JsonDeserialize(using = LocalDateDeserializer.class)
     private LocalDate rateReviewDate;
 
-    @Column(name = "list_rate", precision = 10, scale = 2)
+    // No precision/scale here: Hibernate rejects a scale on a floating-point type
+    // ("scale has no meaning for SQL floating point types") and fails the whole
+    // SessionFactory build at boot. The column is DECIMAL(10,2) in V572; the mapping
+    // follows rate/hours above and InvoiceItem.listRate, which are plain doubles.
+    @Column(name = "list_rate")
     private Double listRate;
 
     /** A declared 0 kr line: the hours are given away on purpose and print as a no-charge invoice line. */
