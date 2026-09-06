@@ -724,7 +724,9 @@ public class GrowthAnalyticsService {
                 "COALESCE(SUM(w.workduration), 0) AS billable_hours, " +
                 "SUM(w.workduration * w.rate) / NULLIF(SUM(w.workduration), 0) AS realized_rate " +
                 "FROM work_full_optimized w " +
-                "WHERE w.rate > 0 " +
+                // WP4c/D3: this query includes STUDENT, so a declared zero-rate junior hour
+                // must count as billable. rate > 0 would silently drop it.
+                "WHERE w.rate_basis <> 'NO_CONTRACT' " +
                 "  AND w.registered >= :fromDate AND w.registered < :toDate " +
                 "  AND w.type IN ('CONSULTANT', 'STUDENT') " +
                 (hasCompanyFilter ? "AND w.contract_company_uuid IN (:companyIds) " : "") +

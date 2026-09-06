@@ -68,7 +68,8 @@ public class CrmService {
                     ) w ON w.contractuuid = cc.contractuuid AND w.useruuid = cc.useruuid
                     
                     WHERE
-                        cc.rate > 0
+                        -- WP4c/D3: a declared 0 kr line is a real consultant line, not an absent one.
+                        (cc.rate > 0 OR cc.zero_rate_reason IS NOT NULL)
                         AND cc.activeto >= '2021-07-01'
                         AND u.companyuuid = '%s'
                     ;
