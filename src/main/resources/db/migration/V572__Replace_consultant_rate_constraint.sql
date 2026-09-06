@@ -11,6 +11,13 @@
 -- contract_consultants. Deploy in a quiet window; the old application ignores the new
 -- columns and satisfies the new CHECK with every rate > 0 row it writes. MariaDB enforces
 -- CHECK constraints from 10.2 — confirm the deployed version before promoting.
+
+-- "A quiet window" is not a guarantee: a queued exclusive metadata lock blocks
+-- new shared readers on the same table, and the default lock_wait_timeout of
+-- 86400s turns a blocked ALTER into a silent boot hang that ECS health-check
+-- kills and rolls back. Fail fast instead (the V557 lesson).
+SET SESSION lock_wait_timeout = 20;
+
 ALTER TABLE contract_consultants
     ADD COLUMN zero_rate_reason VARCHAR(32)   NULL COMMENT 'PILOT_FREE | GOODWILL | INTERNAL_TRANSFER | OTHER — why the line is 0 kr',
     ADD COLUMN rate_review_date DATE          NULL COMMENT 'Hard deadline for the price step-up on a 0 kr line',
