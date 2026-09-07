@@ -317,10 +317,52 @@ public class UserService {
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow).stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
+    /**
+     * The statuses that count as employed: at work, or on leave of any kind.
+     *
+     * <p>PREBOARDING is deliberately absent. A preboarder has signed, but has not
+     * started and is not on the payroll, and the callers of
+     * {@link #findEmployedUsersByDate} — finance and public statistics — count
+     * paid headcount. Adding PREBOARDING here would silently move those numbers.
+     * Callers that care about the contract rather than the payroll want
+     * {@link #employedOrPreboardingStatuses()} instead.</p>
+     */
+    static String[] employedStatuses() {
+        return new String[]{ACTIVE.toString(), NON_PAY_LEAVE.toString(),
+                PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
+    }
+
+    /**
+     * Employed, plus those whose contract is signed and whose start date has not
+     * arrived yet. Derived from {@link #employedStatuses()} rather than written
+     * out again, so a status added to one cannot go missing from the other.
+     */
+    static String[] employedOrPreboardingStatuses() {
+        String[] employed = employedStatuses();
+        String[] withPreboarding = Arrays.copyOf(employed, employed.length + 1);
+        withPreboarding[employed.length] = PREBOARDING.toString();
+        return withPreboarding;
+    }
+
     //@CacheResult(cacheName = "user-cache")
     public List<User> findEmployedUsersByDate(LocalDate currentDate, boolean shallow, ConsultantType... consultantType) {
-        String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
-        return findUsersByDateAndStatusListAndTypes(currentDate, statusList,
+        return findUsersByDateAndStatusListAndTypes(currentDate, employedStatuses(),
+                Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow);
+    }
+
+    /**
+     * Everyone who can hold a signed agreement on {@code currentDate}: employed,
+     * on leave, or preboarding.
+     *
+     * <p>Kept separate from {@link #findEmployedUsersByDate} on purpose. The
+     * agreement registry cares who is contractually bound; finance and public
+     * statistics care who is on the payroll. Those are different questions, and
+     * collapsing them into one selector is what would make a headcount change
+     * ride along with an agreements fix.</p>
+     */
+    public List<User> findEmployedOrPreboardingUsersByDate(LocalDate currentDate, boolean shallow,
+                                                           ConsultantType... consultantType) {
+        return findUsersByDateAndStatusListAndTypes(currentDate, employedOrPreboardingStatuses(),
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow);
     }
 
