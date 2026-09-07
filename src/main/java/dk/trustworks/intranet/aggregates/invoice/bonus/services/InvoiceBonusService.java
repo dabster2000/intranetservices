@@ -591,7 +591,7 @@ public class InvoiceBonusService {
             String companyUuid = null;
             String companyAbbreviation = null;
             if (!hasNoConsultant) {
-                User cu = userByUuid.computeIfAbsent(item.consultantuuid, k -> User.findById(k));
+                User cu = getUserCached(item.consultantuuid, userByUuid);
                 if (cu != null) {
                     consultantName = (cu.getFirstname() + " " + cu.getLastname()).trim();
                 }
@@ -970,6 +970,32 @@ public class InvoiceBonusService {
             return "Unknown User";
         }
         return user.getFirstname() + " " + user.getLastname();
+    }
+
+    /**
+     * Helper method to get a user with caching to avoid repeated queries.
+     *
+     * <p>{@code containsKey}/{@code put} rather than {@code computeIfAbsent}: the latter
+     * treats a null <em>value</em> as an absent <em>key</em>, so a consultant uuid that
+     * resolves to nothing — a deleted or purged user — would leave no entry and be
+     * re-queried once per invoice line referencing it instead of once overall. A cached
+     * null here is a resolved negative; the caller already handles it by leaving the
+     * consultant name blank.</p>
+     *
+     * @param userUuid The user UUID
+     * @param cache The per-call cache map to use
+     * @return the User, or null if there is none
+     */
+    private User getUserCached(String userUuid, Map<String, User> cache) {
+        if (cache.containsKey(userUuid)) {
+            return cache.get(userUuid);
+        }
+        // Direct static call, not User::findById — a method reference binds to the
+        // un-enhanced PanacheEntityBase stub and throws at runtime (only direct call
+        // sites are rewritten by Quarkus build-time enhancement).
+        User user = User.findById(userUuid);
+        cache.put(userUuid, user);
+        return user;
     }
 
     /**
