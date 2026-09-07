@@ -52,8 +52,8 @@ public class ContractConsultant extends PanacheEntityBase {
 
     /**
      * {@code pricing_model_definitions.code} — the commercial model for this line
-     * (JK Team 2.0 WP5, D11). Lives on the line, never on the contract: Model 4 is a junior
-     * on a senior's ordinary contract. Nullable; validated against the active codes.
+     * (JK Team 2.0 WP5, D11). Lives on the assignment line. Required on individual saves
+     * when any part of the assignment is hourly paid; validated against the active codes.
      */
     @Column(name = "pricing_model_code", length = 32)
     private String pricingModelCode;

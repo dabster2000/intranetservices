@@ -11,8 +11,8 @@ import java.util.Set;
  * editor client-side.
  *
  * <ul>
- *   <li><b>Pricing model</b> (WP5): optional, but when given it must be an active
- *       {@code pricing_model_definitions.code}.</li>
+ *   <li><b>Pricing model</b>: required when the consultant is hourly paid during any part
+ *       of the assignment; when given it must be an active {@code pricing_model_definitions.code}.</li>
  *   <li><b>Zero rate</b> (WP4b, spec §4.4.1): a rate of 0 is legal only when declared —
  *       reason, review date <em>and</em> list rate — mirroring the
  *       {@code chk_consultant_rate_declared} CHECK. An accidental zero still fails, with
@@ -29,8 +29,12 @@ public final class ConsultantLineRules {
 
     /** {@code null} when the model is acceptable, otherwise the problem. */
     public static String pricingModelProblem(String pricingModelCode, Set<String> activeCodes) {
+        return pricingModelProblem(pricingModelCode, activeCodes, false);
+    }
+
+    public static String pricingModelProblem(String pricingModelCode, Set<String> activeCodes, boolean required) {
         if (pricingModelCode == null || pricingModelCode.isBlank()) {
-            return null;
+            return required ? "Pricing model is required for consultants paid by the hour during the assignment" : null;
         }
         if (activeCodes == null || !activeCodes.contains(pricingModelCode.trim())) {
             return "Unknown or inactive pricing model '" + pricingModelCode + "'";

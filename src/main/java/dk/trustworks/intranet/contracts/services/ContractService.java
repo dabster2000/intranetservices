@@ -557,6 +557,11 @@ public class ContractService {
     public ContractConsultant addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
         log.debugf("Adding consultant=%s to contract=%s, user=%s", consultantuuid, contractuuid, requestHeaderHolder.getUserUuid());
 
+        requireMatchingIdentity(contractConsultant.getContractuuid(), contractuuid, "Contract");
+        requireMatchingIdentity(contractConsultant.getUseruuid(), consultantuuid, "Consultant");
+        contractConsultant.setContractuuid(contractuuid);
+        contractConsultant.setUseruuid(consultantuuid);
+
         // Validate the consultant before adding
         ValidationReport report = validationService.validateContractConsultant(contractConsultant);
         validationService.enforceValidation(report);
@@ -578,12 +583,22 @@ public class ContractService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
-    public void updateConsultant(ContractConsultant contractConsultant) {
+    public void updateConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
         log.debugf("Updating contract consultant uuid=%s, contract=%s, user=%s",
                 contractConsultant.getUuid(), contractConsultant.getContractuuid(), requestHeaderHolder.getUserUuid());
 
         // Load old state for change logging
-        ContractConsultant oldCc = ContractConsultant.findById(contractConsultant.getUuid());
+        ContractConsultant oldCc = em.find(ContractConsultant.class, consultantuuid);
+        if (oldCc == null || !Objects.equals(oldCc.getContractuuid(), contractuuid)) {
+            throw new NotFoundException("Consultant assignment not found on this contract");
+        }
+        requireMatchingIdentity(contractConsultant.getUuid(), consultantuuid, "Assignment");
+        requireMatchingIdentity(contractConsultant.getContractuuid(), oldCc.getContractuuid(), "Contract");
+        requireMatchingIdentity(contractConsultant.getUseruuid(), oldCc.getUseruuid(), "Consultant");
+        // Persisted identity controls salary lookup; the request cannot substitute a salaried user.
+        contractConsultant.setUuid(oldCc.getUuid());
+        contractConsultant.setContractuuid(oldCc.getContractuuid());
+        contractConsultant.setUseruuid(oldCc.getUseruuid());
 
         // Validate the consultant before updating
         ValidationReport report = validationService.validateContractConsultant(contractConsultant);
@@ -658,6 +673,12 @@ public class ContractService {
 
         log.infof("Updated contract consultant uuid=%s, contract=%s, user=%s",
                 contractConsultant.getUuid(), contractConsultant.getContractuuid(), requestHeaderHolder.getUserUuid());
+    }
+
+    private static void requireMatchingIdentity(String provided, String expected, String field) {
+        if (expected == null || expected.isBlank() || (provided != null && !provided.equalsIgnoreCase(expected))) {
+            throw new BadRequestException(field + " does not match the assignment identity");
+        }
     }
 
     @Transactional
