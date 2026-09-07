@@ -279,8 +279,29 @@ public class AgreementService {
 
     // ── Enrichment ─────────────────────────────────────────────────────────
 
-    /** Per-call memo so a list render resolves each user/company/type once. */
-    private class EnrichmentCache {
+    /**
+     * Per-call memo so a list render resolves each user/company/type/candidate/clause
+     * key exactly once — <em>including keys that resolve to nothing</em>.
+     *
+     * <p>Caching the misses is the whole point of the {@code containsKey}/{@code put}
+     * shape below. {@code Map.computeIfAbsent} cannot express it: it treats a null
+     * <em>value</em> as an absent <em>key</em>, so a mapping function returning null
+     * leaves no entry and runs again for the next row. On the degraded rows that is
+     * exactly where the memo is needed — an {@code agreement_type} missing from
+     * {@code agreement_types}, a {@code clause_uuid} pointing at a deleted clause, a
+     * {@code user_uuid} whose user is gone, a purged candidate — and it turned the
+     * memo into an N+1: one query per referencing row instead of one per key.</p>
+     *
+     * <p>A cached null is a resolved negative, not an empty slot. {@link AgreementService#toDTO}
+     * already handles those (an unknown type falls back to the raw type key), so the
+     * memo only changes how many queries that costs, never what renders.</p>
+     *
+     * <p>Package-private, with {@link AgreementService#toDTO}, so the DB-free tier can
+     * render a populated DTO by seeding these maps — every lookup below is an inherited
+     * Panache static and so unreachable without a database. Seeding a null seeds a
+     * resolved negative, which the memo now honours.</p>
+     */
+    class EnrichmentCache {
         final Map<String, String> userNames = new HashMap<>();
         final Map<String, Company> userCompanies = new HashMap<>();
         final Map<String, RecruitmentCandidate> candidates = new HashMap<>();
@@ -288,31 +309,56 @@ public class AgreementService {
         final Map<String, TemplateClauseEntity> clauses = new HashMap<>();
 
         String userName(String uuid) {
-            return userNames.computeIfAbsent(uuid, key ->
-                    User.<User>findByIdOptional(key).map(User::getFullname).orElse(null));
+            if (userNames.containsKey(uuid)) {
+                return userNames.get(uuid);
+            }
+            String resolved = User.<User>findByIdOptional(uuid).map(User::getFullname).orElse(null);
+            userNames.put(uuid, resolved);
+            return resolved;
         }
 
         Company userCompany(String uuid) {
-            return userCompanies.computeIfAbsent(uuid, key -> {
-                UserStatus status = statusService.getLatestEmploymentStatus(key);
-                return status != null ? status.getCompany() : null;
-            });
+            if (userCompanies.containsKey(uuid)) {
+                return userCompanies.get(uuid);
+            }
+            UserStatus status = statusService.getLatestEmploymentStatus(uuid);
+            Company resolved = status != null ? status.getCompany() : null;
+            userCompanies.put(uuid, resolved);
+            return resolved;
         }
 
         RecruitmentCandidate candidate(String uuid) {
-            return candidates.computeIfAbsent(uuid, RecruitmentCandidate::findById);
+            if (candidates.containsKey(uuid)) {
+                return candidates.get(uuid);
+            }
+            // Direct static call, not RecruitmentCandidate::findById — a method reference binds to
+            // the un-enhanced PanacheEntityBase stub and throws at runtime (only direct call sites
+            // are rewritten by Quarkus build-time enhancement). Same for the two lookups below.
+            RecruitmentCandidate resolved = RecruitmentCandidate.findById(uuid);
+            candidates.put(uuid, resolved);
+            return resolved;
         }
 
         AgreementType type(String key) {
-            return types.computeIfAbsent(key, AgreementType::findById);
+            if (types.containsKey(key)) {
+                return types.get(key);
+            }
+            AgreementType resolved = AgreementType.findById(key);
+            types.put(key, resolved);
+            return resolved;
         }
 
         TemplateClauseEntity clause(String uuid) {
-            return clauses.computeIfAbsent(uuid, TemplateClauseEntity::findById);
+            if (clauses.containsKey(uuid)) {
+                return clauses.get(uuid);
+            }
+            TemplateClauseEntity resolved = TemplateClauseEntity.findById(uuid);
+            clauses.put(uuid, resolved);
+            return resolved;
         }
     }
 
-    private AgreementDTO toDTO(EmployeeAgreement row, EnrichmentCache cache) {
+    AgreementDTO toDTO(EmployeeAgreement row, EnrichmentCache cache) {
         AgreementDTO.AgreementDTOBuilder builder = AgreementDTO.builder()
                 .uuid(row.getUuid())
                 .userUuid(row.getUserUuid())
