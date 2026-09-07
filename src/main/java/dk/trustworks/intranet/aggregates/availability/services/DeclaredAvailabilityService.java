@@ -140,19 +140,25 @@ public class DeclaredAvailabilityService {
                 }
                 continue;
             }
-            if (row == null) {
+            boolean isNew = row == null;
+            if (isNew) {
                 row = new UserDeclaredAvailability();
                 row.setUuid(UUID.randomUUID().toString());
                 row.setUseruuid(useruuid);
                 row.setDay(item.day());
                 row.setCreatedAt(now);
-                row.persist();
             }
             row.setHours(item.hours().setScale(2, java.math.RoundingMode.HALF_UP));
             row.setNote(item.note() == null || item.note().isBlank() ? null : item.note().trim());
             row.setSource(source);
             row.setUpdatedAt(now);
             row.setUpdatedBy(actorUuid);
+            if (isNew) {
+                // Persist last: the id is assigned, so Hibernate builds the insert action and
+                // runs its not-null check inside persist() itself. Persisting a half-filled row
+                // fails on hours/source/updated_at before any setter can run.
+                row.persist();
+            }
             saved.add(DeclaredAvailabilityDTO.from(row));
         }
         log.infof("Declared availability upsert: user=%s days=%d cleared=%d source=%s actor=%s",
@@ -221,19 +227,23 @@ public class DeclaredAvailabilityService {
                     }
                     continue;
                 }
-                if (dst == null) {
+                boolean isNew = dst == null;
+                if (isNew) {
                     dst = new UserDeclaredAvailability();
                     dst.setUuid(UUID.randomUUID().toString());
                     dst.setUseruuid(useruuid);
                     dst.setDay(targetDay);
                     dst.setCreatedAt(now);
-                    dst.persist();
                 }
                 dst.setHours(src.getHours());
                 dst.setNote(src.getNote());
                 dst.setSource(Source.SYSTEM);
                 dst.setUpdatedAt(now);
                 dst.setUpdatedBy(actorUuid);
+                if (isNew) {
+                    // Persist last — see upsert(): the not-null check runs inside persist().
+                    dst.persist();
+                }
                 result.add(DeclaredAvailabilityDTO.from(dst));
             }
         }
