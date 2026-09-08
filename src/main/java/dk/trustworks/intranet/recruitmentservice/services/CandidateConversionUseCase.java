@@ -131,10 +131,19 @@ public class CandidateConversionUseCase {
                             .formatted(candidate.getUuid(), candidate.getStatus()));
         }
 
-        Company company = Company.findById(candidate.getTargetCompanyUuid());
+        // Guard the company uuid BEFORE the lookup: Hibernate throws
+        // IllegalArgumentException("Identifier may not be null") from inside
+        // findById(null), so a null here would escape as a 500 and the
+        // company == null branch below could never be reached. Nullable since
+        // V435 relaxed target_company_uuid for talent-pool / LinkedIn-import
+        // candidates, which the dossier flow never produced.
+        String targetCompanyUuid = requireTargetCompanyUuid(
+                candidate.getUuid(), candidate.getTargetCompanyUuid());
+
+        Company company = Company.findById(targetCompanyUuid);
         if (company == null) {
             throw new NotFoundException(
-                    "Target company not found: " + candidate.getTargetCompanyUuid());
+                    "Target company not found: " + targetCompanyUuid);
         }
 
         // (b) Create User. Mirrors the existing UserService.createUser flow:
@@ -288,6 +297,35 @@ public class CandidateConversionUseCase {
     public void runPostConversionCopy(UUID candidateUuid) {
         Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
         s3EmployeePromotionService.runPromotion(candidateUuid);
+    }
+
+    /**
+     * Resolve the candidate's target company uuid, refusing the conversion when
+     * the candidate carries none.
+     *
+     * <p>{@code target_company_uuid} is nullable since V435 (ATS talent pool):
+     * LinkedIn paste imports and pool candidates have no target company until
+     * an application exists, while the dossier flow still sets one. Converting
+     * such a candidate is a state problem — the candidate is not ready to be
+     * hired — so it maps to {@code 409 Conflict} like the ACTIVE-status guard,
+     * not to a 500. Without this guard the value reaches
+     * {@code Company.findById(null)}, which throws
+     * {@code IllegalArgumentException("Identifier may not be null")} from
+     * inside Hibernate before any null check on the result can run.</p>
+     *
+     * <p>Package-private for unit testing.</p>
+     *
+     * @return the non-blank target company uuid
+     * @throws BusinessRuleViolation when the candidate has no target company
+     */
+    static String requireTargetCompanyUuid(String candidateUuid, String targetCompanyUuid) {
+        if (targetCompanyUuid == null || targetCompanyUuid.isBlank()) {
+            throw new BusinessRuleViolation(
+                    ("Cannot convert candidate %s: no target company is set on the candidate. "
+                            + "Set the candidate's target company before converting.")
+                            .formatted(candidateUuid));
+        }
+        return targetCompanyUuid;
     }
 
     /**
