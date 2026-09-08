@@ -5,11 +5,13 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.contracts.dto.PricingModelDTO;
+import dk.trustworks.intranet.contracts.dto.PricingModelRequirementDTO;
 import dk.trustworks.intranet.contracts.dto.ValidationReport;
 import dk.trustworks.intranet.contracts.dto.ContractTypeItemDTO;
 import dk.trustworks.intranet.contracts.dto.ZeroRateWatchlistDTO;
 import dk.trustworks.intranet.contracts.model.PricingModelDefinition;
 import dk.trustworks.intranet.contracts.services.ZeroRateWatchlistService;
+import dk.trustworks.intranet.contracts.services.PricingModelRequirementService;
 import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -35,6 +37,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +81,9 @@ public class ContractResource {
     @Inject
     ZeroRateWatchlistService zeroRateWatchlistService;
 
+    @Inject
+    PricingModelRequirementService pricingModelRequirementService;
+
     /**
      * The active pricing models a consultant line may carry (JK Team 2.0 WP5, D11) —
      * reference data from {@code pricing_model_definitions}, read by the contract editor's
@@ -87,6 +93,23 @@ public class ContractResource {
     @Path("/pricing-models")
     public List<PricingModelDTO> pricingModels() {
         return PricingModelDefinition.findActive().stream().map(PricingModelDTO::from).toList();
+    }
+
+    /** Only the form requirement is returned; salary records never leave the service. */
+    @GET
+    @Path("/pricing-model-requirement")
+    @RolesAllowed({"contracts:read"})
+    public PricingModelRequirementDTO pricingModelRequirement(@QueryParam("userUuid") String userUuid,
+            @QueryParam("startDate") String startDate, @QueryParam("endDate") String endDate) {
+        if (startDate == null || endDate == null) {
+            throw new BadRequestException("Start date and end date are required");
+        }
+        try {
+            return new PricingModelRequirementDTO(pricingModelRequirementService.isRequired(
+                    userUuid, LocalDate.parse(startDate), LocalDate.parse(endDate)));
+        } catch (DateTimeParseException exception) {
+            throw new BadRequestException("Dates must use YYYY-MM-DD format");
+        }
     }
 
     /**
@@ -310,8 +333,8 @@ public class ContractResource {
     @CacheInvalidateAll(cacheName = "employee-budgets")
     @RolesAllowed({"contracts:write"})
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
-        ContractConsultant existingContractConsultant = ContractConsultant.findById(contractConsultant.getUuid());
-        contractService.updateConsultant(contractConsultant);
+        ContractConsultant existingContractConsultant = ContractConsultant.findById(consultantuuid);
+        contractService.updateConsultant(contractuuid, consultantuuid, contractConsultant);
         aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), existingContractConsultant));
         aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
     }

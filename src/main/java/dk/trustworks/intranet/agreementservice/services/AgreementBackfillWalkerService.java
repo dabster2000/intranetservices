@@ -33,8 +33,9 @@ import java.util.stream.Collectors;
 /**
  * The Phase-4 corpus walk over the S3 employee-documents store
  * (template-clauses spec §10, corpus reworked after the legacy
- * document store was migrated into S3): every ACTIVE employee's
- * {@code employee_documents} rows in the configured categories are
+ * document store was migrated into S3): the {@code employee_documents}
+ * rows, in the configured categories, of every employee who can hold an
+ * agreement — employed, on leave, or preboarding — are
  * fetched from S3 and put through one extraction call each. New
  * documents land ONLY in this store ({@code SIGNING}/{@code MANUAL_HR}/
  * {@code ONBOARDING} sources), so it is both complete and — unlike the
@@ -97,12 +98,17 @@ public class AgreementBackfillWalkerService {
     public WalkSummary walk(String runUuid, boolean dryRun) {
         Counters counters = new Counters();
         try {
-            // Corpus subjects: active employees (incl. leave states —
-            // people on leave still hold agreements) of every internal type.
+            // Corpus subjects: everyone who can hold an agreement today —
+            // employed, on leave (people on leave still hold agreements), and
+            // preboarding. Preboarders sign contract, tillæg and loyalty
+            // programme weeks ahead of their start date and those documents are
+            // in the store from the day they are signed; selecting only employed
+            // statuses left six people and fourteen signed documents unwalked,
+            // and — because they were never subjects — no run reported it.
             List<User> employees = QuarkusTransaction.requiringNew().call(() ->
-                    userService.findEmployedUsersByDate(LocalDate.now(), true,
+                    userService.findEmployedOrPreboardingUsersByDate(LocalDate.now(), true,
                             ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT));
-            Set<String> activeUuids = employees.stream().map(User::getUuid).collect(Collectors.toSet());
+            Set<String> subjectUuids = employees.stream().map(User::getUuid).collect(Collectors.toSet());
             counters.employees = employees.size();
 
             Set<String> categories = parseCategories(backfillCategories);
@@ -118,7 +124,7 @@ public class AgreementBackfillWalkerService {
                                     "archived = false AND category IN ?1 ORDER BY userUuid, createdAt",
                                     categoryValues)
                             .stream()
-                            .filter(doc -> activeUuids.contains(doc.getUserUuid()))
+                            .filter(doc -> subjectUuids.contains(doc.getUserUuid()))
                             .toList());
 
             Map<String, List<EmployeeDocument>> byEmployee = corpus.stream()
@@ -126,11 +132,11 @@ public class AgreementBackfillWalkerService {
                             LinkedHashMap::new, Collectors.toList()));
             counters.employeesWithDocs = byEmployee.size();
 
-            long uncovered = activeUuids.stream().filter(uuid -> !byEmployee.containsKey(uuid)).count();
+            long uncovered = subjectUuids.stream().filter(uuid -> !byEmployee.containsKey(uuid)).count();
             if (uncovered > 0) {
                 // No silent caps: an employee with no corpus documents at
                 // all is invisible to the walk and HR must know.
-                counters.note(uncovered + " active employees have no "
+                counters.note(uncovered + " of the walked employees have no "
                         + String.join("/", categories) + " documents in the employee-document store");
             }
             updateRunCounters(runUuid, counters);
@@ -346,7 +352,7 @@ public class AgreementBackfillWalkerService {
         }
 
         String corpusSummary() {
-            String base = employees + " aktive medarbejdere, " + employeesWalked + "/" + employeesWithDocs
+            String base = employees + " medarbejdere (ansatte og preboarding), " + employeesWalked + "/" + employeesWithDocs
                     + " med dokumenter i S3-arkivet, " + docsSeen + " dokumenter, " + documentsNew + " nye";
             return notes.isEmpty() ? base
                     : shortened(base + " — " + String.join("; ", notes), 500);

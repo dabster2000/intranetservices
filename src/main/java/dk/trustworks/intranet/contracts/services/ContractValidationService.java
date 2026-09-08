@@ -35,12 +35,19 @@ public class ContractValidationService {
     @Inject
     EntityManager em;
 
+    @Inject
+    PricingModelRequirementService pricingModelRequirementService;
+
     /**
      * Validate a ContractConsultant before saving or updating.
      * Checks for overlapping assignments and date range validity.
      */
     @Transactional(Transactional.TxType.SUPPORTS)
     public ValidationReport validateContractConsultant(ContractConsultant consultant) {
+        return validateContractConsultant(consultant, true);
+    }
+
+    private ValidationReport validateContractConsultant(ContractConsultant consultant, boolean requireHourlyModel) {
         log.debugf("Validating ContractConsultant: %s", consultant.getUuid());
 
         ValidationReport report = new ValidationReport();
@@ -72,9 +79,16 @@ public class ContractValidationService {
         // 3. Check for work in affected period (for rate changes)
         checkForAffectedWork(consultant, report);
 
-        // 4. Pricing model must be an active definition when given (JK Team 2.0 WP5, D11)
+        // 4. Individual assignment saves require a model for any overlapping HOURLY salary
+        // period. Existing empty values do not block unrelated contract edits/activation.
+        boolean modelRequired = requireHourlyModel
+                && (consultant.getPricingModelCode() == null || consultant.getPricingModelCode().isBlank())
+                && consultant.getActiveFrom() != null && consultant.getActiveTo() != null
+                && !consultant.getActiveFrom().isAfter(consultant.getActiveTo())
+                && pricingModelRequirementService.isRequired(consultant.getUseruuid(),
+                        consultant.getActiveFrom(), consultant.getActiveTo());
         String modelProblem = ConsultantLineRules.pricingModelProblem(
-                consultant.getPricingModelCode(), PricingModelDefinition.activeCodes());
+                consultant.getPricingModelCode(), PricingModelDefinition.activeCodes(), modelRequired);
         if (modelProblem != null) {
             report.setValid(false);
             errors.add(new ValidationError("pricingModelCode", modelProblem, ErrorType.MISSING_REQUIRED));
@@ -178,7 +192,7 @@ public class ContractValidationService {
 
         // Validate each consultant
         for (ContractConsultant consultant : contract.getContractConsultants()) {
-            ValidationReport consultantReport = validateContractConsultant(consultant);
+            ValidationReport consultantReport = validateContractConsultant(consultant, false);
             report.getErrors().addAll(consultantReport.getErrors());
             report.getOverlaps().addAll(consultantReport.getOverlaps());
             report.getWarnings().addAll(consultantReport.getWarnings());

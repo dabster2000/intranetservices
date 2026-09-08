@@ -26,6 +26,17 @@ class ConsultantLineRulesTest {
     }
 
     @Test
+    void hourlyAssignmentRequiresAnExplicitActiveModel() {
+        assertEquals("Pricing model is required for consultants paid by the hour during the assignment",
+                ConsultantLineRules.pricingModelProblem(null, ACTIVE, true));
+        assertEquals("Pricing model is required for consultants paid by the hour during the assignment",
+                ConsultantLineRules.pricingModelProblem("  ", ACTIVE, true));
+        assertNull(ConsultantLineRules.pricingModelProblem("COLLEAGUE_HOURS", ACTIVE, true));
+        assertEquals("Unknown or inactive pricing model 'RETIRED'",
+                ConsultantLineRules.pricingModelProblem("RETIRED", ACTIVE, true));
+    }
+
+    @Test
     void fullyDeclaredZeroIsAccepted() {
         assertTrue(ConsultantLineRules.zeroRateProblems(0.0, "PILOT_FREE", REVIEW, 600.0).isEmpty());
         assertTrue(ConsultantLineRules.zeroRateProblems(0.0, "GOODWILL", REVIEW, 450.0).isEmpty());
