@@ -5,6 +5,9 @@ import dk.trustworks.intranet.domain.user.entity.Salary;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
+import dk.trustworks.intranet.exceptions.InconsistantDataException;
+import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
+import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
@@ -57,8 +60,17 @@ import java.util.stream.Collectors;
  *
  * <h3>Conversion steps (transactional)</h3>
  * <ol>
- *   <li>Load candidate; guard ACTIVE state.</li>
- *   <li>Provision a new {@link User} via {@link UserService#createUser}.</li>
+ *   <li>Validate the request on its own terms — allocation range and the
+ *       {@link CareerLevel}/{@link CareerTrack} pairing — before anything is
+ *       read or written.</li>
+ *   <li>Load candidate; guard ACTIVE state and target company.</li>
+ *   <li>Guard the requested username against the existing user population
+ *       (terminated employees included) — {@link UserService#createUser}
+ *       silently skips a colliding user, which would strand every row below
+ *       on a dangling useruuid.</li>
+ *   <li>Provision a new {@link User} via {@link UserService#createUser},
+ *       carrying the candidate's phone number over to {@code user.phone}
+ *       when it fits that column.</li>
  *   <li>Insert two {@link UserStatus} rows:
  *       (1) {@link StatusType#PREBOARDING} at
  *       {@code max(plannedStart - 2 months, today)} with {@code allocation = 0}
@@ -70,6 +82,9 @@ import java.util.stream.Collectors;
  *       {@code uq_userstatus_user_date(useruuid, statusdate)}.</li>
  *   <li>Insert {@link UserCareerLevel}.</li>
  *   <li>Insert {@link TeamRole}.</li>
+ *   <li>Insert the initial {@link Salary} row — {@code NORMAL} (monthly) or
+ *       {@code HOURLY} as requested, with the standard Danish benefit
+ *       defaults.</li>
  *   <li>For each unique signing case key referenced by the candidate's
  *       dossier revisions, transfer local ownership to the new user via
  *       {@link SigningCaseOwnershipPort#transferLocalOwner}.</li>
@@ -90,6 +105,12 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class CandidateConversionUseCase {
+
+    /**
+     * Width of {@code user.phone} ({@code varchar(20)}). The source column,
+     * {@code recruitment_candidates.phone}, is {@code varchar(50)}.
+     */
+    static final int MAX_USER_PHONE_LENGTH = 20;
 
     @Inject
     UserService userService;
@@ -119,6 +140,14 @@ public class CandidateConversionUseCase {
         if (req.allocation() < 0 || req.allocation() > 100) {
             throw new IllegalArgumentException("allocation must be between 0 and 100");
         }
+        // Pure input validation belongs here, beside the allocation range
+        // check and ahead of the first write: the track/level pair is a
+        // property of the request alone and needs neither the candidate nor
+        // the company. This path used to persist its UserCareerLevel row with
+        // a bare persist() and was the one writer bypassing the
+        // CareerLevelService check, which is how an ADVISORY /
+        // THOUGHT_LEADER_PARTNER row reached production.
+        requireConsistentCareerTrack(req.careerTrack(), req.careerLevel());
 
         // (a) Load candidate; guard ACTIVE.
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
@@ -149,12 +178,49 @@ public class CandidateConversionUseCase {
         // (b) Create User. Mirrors the existing UserService.createUser flow:
         // name + email + username + a generated UUID. The candidate's
         // first/last name come from the recruitment record itself.
+        //
+        // The username is checked HERE, before anything is written:
+        // UserService.createUser SILENTLY returns the un-persisted argument
+        // when a row with the same uuid or username already exists ("User
+        // already exists, skipping creation"). The uuid minted below is
+        // fresh, so the only realistic collision is the username — and an
+        // unnoticed skip would leave every row below (user_status, career
+        // level, team_role, salary) pointing at a useruuid that was never
+        // inserted, i.e. a foreign-key violation surfacing as a 500 instead of
+        // "that username is taken". The lookup deliberately spans the whole
+        // user table: terminated employees keep their username and it stays
+        // reserved (login handles are never recycled). The equality below is
+        // only as strong as the handle is normalised — MariaDB's PAD SPACE
+        // collation ignores trailing but not leading blanks, so " x" would
+        // read as free — which is why ConvertRequest.username is pinned to
+        // ^[a-z0-9.]+$ at the REST boundary.
+        if (User.find("username", req.username()).count() > 0) {
+            throw new BusinessRuleViolation(
+                    ("Cannot convert candidate %s: username '%s' is already taken by another user. "
+                            + "Choose a different username.")
+                            .formatted(candidate.getUuid(), req.username()));
+        }
+
         User user = new User();
         user.uuid = UUID.randomUUID().toString();
         user.setFirstname(candidate.getFirstName());
         user.setLastname(candidate.getLastName());
         user.setEmail(req.email());
         user.setUsername(req.username());
+        // Carry the phone number the candidate already gave us instead of
+        // making HR retype it. It belongs on user.phone, NOT on
+        // user_contactinfo.phone: the Danløn employee export
+        // (DanlonResource.getDanlonEmployees), the document placeholder
+        // prefill (PlaceholderPrefillService, FIELD_PHONE) and the public
+        // employee directory (PublicUser) all read user.phone, while nothing
+        // reads user_contactinfo.phone — createUser seeds that one to "" and
+        // only UserContactInfoService ever writes it. The field carries a
+        // @Deprecated marker, but it is still the single column every reader
+        // resolves a phone number from.
+        String userPhone = resolveUserPhone(candidate.getUuid(), candidate.getPhone());
+        if (userPhone != null) {
+            user.setPhone(userPhone);
+        }
         userService.createUser(user);
 
         // (c) Two status rows: PREBOARDING (alloc=0, bonus=false) makes the
@@ -198,7 +264,9 @@ public class CandidateConversionUseCase {
                 dk.trustworks.intranet.aggregates.users.danlon.DanlonEventType.FIRST_EMPLOYMENT, company.getUuid());
 
         // (d) Career level — active_from is the planned start so the
-        // user's earliest career-level row aligns with their hire date.
+        // user's earliest career-level row aligns with their hire date. The
+        // track/level pair was already rejected at the top of execute if
+        // inconsistent, so the persist below cannot write an impossible row.
         UserCareerLevel level = new UserCareerLevel(
                 user.uuid,
                 req.plannedStartDate(),
@@ -217,9 +285,11 @@ public class CandidateConversionUseCase {
                 req.teamMemberType());
         TeamRole.persist(teamRole);
 
-        // (f) Initial salary row — monthly, with standard Danish benefit defaults.
+        // (f) Initial salary row — NORMAL (monthly) unless the request asks
+        // for HOURLY (students are paid per hour), with standard Danish
+        // benefit defaults.
         Salary salary = new Salary(plannedStart, req.salary(), user.uuid);
-        salary.setType(SalaryType.NORMAL);
+        salary.setType(resolveSalaryType(req.salaryType()));
         salary.setLunch(true);
         salary.setPhone(true);
         salary.setPrayerDay(true);
@@ -326,6 +396,94 @@ public class CandidateConversionUseCase {
                             .formatted(candidateUuid));
         }
         return targetCompanyUuid;
+    }
+
+    /**
+     * Decide what to write to {@code user.phone} when copying the candidate's
+     * number onto the new employee.
+     *
+     * <p>The two columns disagree on width: {@code recruitment_candidates.phone}
+     * is {@code varchar(50)}, {@code user.phone} is {@code varchar(20)}. Nothing
+     * in production exceeds 20 today (the longest is 15), so this is a latent
+     * mismatch rather than a live one — but a 21-character paste would only
+     * surface at flush, as a truncation {@code SQLException} that rolls the
+     * whole conversion back and answers 500. The phone number is a convenience
+     * carried over so HR does not retype it; the hire is what matters. So an
+     * over-long value is dropped and logged rather than allowed to fail the
+     * conversion. Widening the column is a migration and out of scope.</p>
+     *
+     * <p>The number itself is PII and is deliberately kept out of the log line;
+     * the candidate uuid and the length are enough to find and fix the record.</p>
+     *
+     * <p>Package-private for unit testing.</p>
+     *
+     * @return the phone number to copy, or {@code null} when there is nothing
+     *         to copy (absent, blank, or wider than the target column)
+     */
+    static String resolveUserPhone(String candidateUuid, String candidatePhone) {
+        if (candidatePhone == null || candidatePhone.isBlank()) return null;
+        if (candidatePhone.length() > MAX_USER_PHONE_LENGTH) {
+            log.warnf("Not copying phone for candidate=%s: %d characters exceeds the %d that user.phone holds. "
+                            + "Set the phone manually on the new employee.",
+                    candidateUuid, candidatePhone.length(), MAX_USER_PHONE_LENGTH);
+            return null;
+        }
+        return candidatePhone;
+    }
+
+    /**
+     * Refuse a career level that belongs to a different track than the one
+     * requested.
+     *
+     * <p>Every {@link CareerLevel} except {@code JUNIOR_CONSULTANT} carries its
+     * owning {@link CareerTrack}, and {@code CareerLevelService.create} has
+     * always rejected a mismatched pair. The conversion flow persisted its
+     * {@link UserCareerLevel} directly and so was the one writer that skipped
+     * that check — the source of the single impossible {@code ADVISORY /
+     * THOUGHT_LEADER_PARTNER} row in production.</p>
+     *
+     * <p>The check is duplicated here rather than delegated to
+     * {@code CareerLevelService.create}: that method re-enters a <em>fresh</em>
+     * transaction through a self-proxy for its duplicate-key retry, and a
+     * {@link jakarta.persistence.PersistenceException} raised inside this use
+     * case's single {@link Transactional} boundary would mark the ambient
+     * transaction rollback-only — breaking the "no partial hires" guarantee.
+     * The message shape is copied verbatim from {@code CareerLevelService} so
+     * operators see one consistent error whichever writer they hit, and
+     * {@link InconsistantDataException} keeps it a clean 400 (invalid input,
+     * not a conflict of candidate state).</p>
+     *
+     * <p>A null level is tolerated: {@code @NotNull} on
+     * {@link ConvertRequest#careerLevel()} is what rejects a missing level at
+     * the REST boundary. A level with a null track ({@code JUNIOR_CONSULTANT},
+     * the entry level) fits any track and always passes.</p>
+     *
+     * <p>Package-private for unit testing.</p>
+     *
+     * @throws InconsistantDataException when the level belongs to another track
+     */
+    static void requireConsistentCareerTrack(CareerTrack careerTrack, CareerLevel careerLevel) {
+        if (careerLevel == null || careerLevel.getTrack() == null) return;
+        if (!careerLevel.getTrack().equals(careerTrack)) {
+            throw new InconsistantDataException(
+                    "Career level " + careerLevel +
+                    " does not belong to track " + careerTrack +
+                    " (expected " + careerLevel.getTrack() + ")");
+        }
+    }
+
+    /**
+     * Resolve the salary type for the initial {@link Salary} row.
+     * {@link ConvertRequest#salaryType()} is optional — callers written against
+     * the pre-{@code salaryType} contract omit it — and absence means
+     * {@link SalaryType#NORMAL}, the monthly salary the vast majority of hires
+     * get. Students are hired {@link SalaryType#HOURLY} and could not be
+     * expressed at all before this parameter existed.
+     *
+     * <p>Package-private for unit testing.</p>
+     */
+    static SalaryType resolveSalaryType(SalaryType requested) {
+        return requested == null ? SalaryType.NORMAL : requested;
     }
 
     /**
