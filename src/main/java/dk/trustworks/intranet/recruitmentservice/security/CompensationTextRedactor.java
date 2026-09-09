@@ -70,7 +70,11 @@ public final class CompensationTextRedactor {
      * {@code månedsløn}, {@code grundløn}, {@code årsløn}), so anchoring it
      * to a word start misses half of them. The ø-less {@code lon} spelling
      * cannot be treated that way — it is a substring of {@code kolonne},
-     * {@code salon} and {@code colon} — so that branch stays word-initial.
+     * {@code salon} and {@code colon}. Word-initial is not enough either:
+     * {@code lon[a-z]*} swallows {@code London} and {@code long}, both of
+     * which occur in these notes (one production note reads "a 'long
+     * stretch'"), and either one drags an entire unrelated note into
+     * compensation masking. That branch therefore names real compounds.
      * <p>
      * The currency and earning branches ({@code kr}, {@code kroner},
      * {@code dkk}, {@code mio}, {@code tjene}) are what catch a figure stated
@@ -86,7 +90,7 @@ public final class CompensationTextRedactor {
     private static final Pattern COMPENSATION_VOCABULARY = Pattern.compile(
             "løn"                                        // substring: lønforventning AND månedsløn
                     + "|(?<![" + LETTER + "])("
-                    + "lon[" + LETTER + "]*"             // word-initial only: not kolonne/salon
+                    + "lon(?:forventning|forventninger|niveau|pakke|krav|ramme|seddel|ninger|nen)"
                     + "|gage|honorar|vederlag"
                     + "|salary|salaries|salaried|compensation|remuneration|wage|wages"
                     + "|pension[" + LETTER + "]*"
@@ -115,7 +119,13 @@ public final class CompensationTextRedactor {
      * still match, and that colon follows a letter.
      */
     private static final Pattern MONEY = Pattern.compile(
-            "(?<![\\d.,])(?<!\\d:)("
+            "(?<![\\d.,])(?<!\\d:)"
+                    // Optional RANGE prefix, so "51-52k" masks whole rather than
+                    // leaving "51-●●●". Found in production: the upper bound is
+                    // money-shaped and the lower one is a bare two-digit number,
+                    // so masking only the tail still discloses the range.
+                    + "(?:\\d{1,4}(?:[.,]\\d{1,2})?\\s?[-–—]\\s?)?"
+                    + "("
                     + "\\d{1,3}(?:[.\\u00A0 ]\\d{3})+(?:[.,]\\d{1,2})?"  // 70.000  1.500.000  85 000
                     + "|\\d{5,8}(?:[.,]\\d{1,2})?"                        // 85000  115000  85000.00
                     + "|\\d{2,4}(?:[.,]\\d{1,2})?\\s?[kK](?![" + LETTER + "\\d])"  // 63k  80 k

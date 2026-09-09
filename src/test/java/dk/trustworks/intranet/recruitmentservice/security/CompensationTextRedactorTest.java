@@ -91,6 +91,32 @@ class CompensationTextRedactorTest {
             assertTrue(CompensationTextRedactor.redact(leaked).contains(MASK),
                     () -> "missed: " + leaked);
         }
+
+        @Test
+        @DisplayName("a range masks whole — the lower bound must not survive")
+        void masksRangesWhole() {
+            // Real production text (Sophie Larsen). Masking only the money-shaped
+            // upper bound left "51-●●●", from which the reader still infers ~51k.
+            String redacted = CompensationTextRedactor.redact(
+                    "Hendes lønønsker var umiddelbart 51-52k, men ville gerne se den fulde pakke.");
+            assertFalse(redacted.contains("51"), () -> "range lower bound survived: " + redacted);
+            assertEquals("Hendes lønønsker var umiddelbart " + MASK
+                    + ", men ville gerne se den fulde pakke.", redacted);
+        }
+
+        @Test
+        @DisplayName("both halves of a full-figure range are masked")
+        void masksFullFigureRange() {
+            String redacted = CompensationTextRedactor.redact("løn 70.000-75.000");
+            assertFalse(redacted.matches("(?s).*\\d{2}.*"), () -> "digits survived: " + redacted);
+        }
+
+        @Test
+        @DisplayName("a colon after a letter is not a timestamp — Løn:70.000 still masks")
+        void colonAfterLetterStillMasks() {
+            assertEquals("Løn:" + MASK, CompensationTextRedactor.redact("Løn:70.000"));
+            assertEquals("Løn: " + MASK, CompensationTextRedactor.redact("Løn: 70.000"));
+        }
     }
 
     @Nested
@@ -110,6 +136,15 @@ class CompensationTextRedactorTest {
                 "Mødet var i Salon 2 med 25000 deltagere",
                 "Kravene er beskrevet i 120000 ord",
                 "Kristian har 150000 followers",
+                // Range-prefix must not turn these into money
+                "Sprint 5-10 leverede 300 point",
+                "Perioden 2026-08-11 til 2026-09-01",
+                "Vi er 150 mand mod 250-300 hos dem",
+                // "lon" lookalikes — a bare lon[a-z]* branch matched both of
+                // these and pulled the whole note into compensation masking.
+                "Han er dialog et andet sted som var et 'long stretch', 150000 brugere",
+                "Scandic Hotel London/Gatwick, England — 220000 gæster",
+                "Kandidaten flytter til London og har 85000 følgere",
         })
         void returnsTheSameInstance(String ordinary) {
             assertFalse(CompensationTextRedactor.mentionsCompensation(ordinary)
@@ -119,12 +154,21 @@ class CompensationTextRedactorTest {
         }
 
         @Test
+        @DisplayName("the ø-less spelling still works when it names a real compound")
+        void oLessCompoundsStillMatch() {
+            assertTrue(CompensationTextRedactor.redact("lonforventning 70.000").contains(MASK));
+            assertTrue(CompensationTextRedactor.redact("lonniveau 85000").contains(MASK));
+        }
+
+        @Test
         @DisplayName("a comp word with no figure is left intact")
         void compWordWithoutFigure() {
             String text = "Vi talte om løn, men hun ville ikke sætte tal på endnu.";
             assertSame(text, CompensationTextRedactor.redact(text));
             assertFalse(CompensationTextRedactor.carriesCompensationAmount(text));
         }
+
+
 
         @Test
         @DisplayName("ISO timestamps survive inside a masked note — the Airtable dumps are full of them")
@@ -140,12 +184,6 @@ class CompensationTextRedactorTest {
             assertTrue(redacted.contains("løn " + MASK), () -> "salary not masked: " + redacted);
         }
 
-        @Test
-        @DisplayName("a colon after a letter is not a timestamp — Løn:70.000 still masks")
-        void colonAfterLetterStillMasks() {
-            assertEquals("Løn:" + MASK, CompensationTextRedactor.redact("Løn:70.000"));
-            assertEquals("Løn: " + MASK, CompensationTextRedactor.redact("Løn: 70.000"));
-        }
 
         @Test
         @DisplayName("dates and percentages survive inside a masked note")
