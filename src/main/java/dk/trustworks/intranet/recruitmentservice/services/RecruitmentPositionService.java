@@ -9,6 +9,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventType;
 import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibility;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPositionAssistant;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentDemandRag;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
@@ -266,6 +267,70 @@ public class RecruitmentPositionService {
         }
         member.delete();
         eventRecorder.record(positionEvent(RecruitmentEventType.CIRCLE_MEMBER_REMOVED, position, actor)
+                .payload("member_uuid", userUuid));
+    }
+
+    // ---- Assistant assignment (2026-09-08 position scoping, D1) ------------------
+
+    /**
+     * The active assistant assignments on a position, oldest first. Revoked
+     * rows are excluded — they exist for audit, not for display.
+     */
+    public List<RecruitmentPositionAssistant> assistants(String positionUuid) {
+        return RecruitmentPositionAssistant.activeOnPosition(positionUuid);
+    }
+
+    /**
+     * Assign a recruitment assistant to a position (D1/D3). Authorization is
+     * the caller's job ({@code RecruitmentVisibility.canAssignAssistant});
+     * this enforces the two data rules.
+     * <p>
+     * Re-assigning after a revoke inserts a NEW row rather than un-revoking
+     * the old one: the audit question "who could see this pipeline in August?"
+     * needs one row per episode. The unique key permits that because MariaDB
+     * treats NULLs as distinct.
+     */
+    @Transactional
+    public RecruitmentPositionAssistant assignAssistant(RecruitmentPosition position,
+                                                        String userUuid, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            // Belt and braces behind canAssignAssistant: a partner
+            // requisition is never assignable, and the circle stays its only
+            // key. Enforced here too so no future caller can bypass it.
+            throw new BusinessRuleViolation(
+                    "A partner-track position cannot be assigned to a recruitment assistant");
+        }
+        if (RecruitmentPositionAssistant.findActive(position.getUuid(), userUuid) != null) {
+            throw new BusinessRuleViolation(
+                    "User %s is already an assistant on position %s"
+                            .formatted(userUuid, position.getUuid()));
+        }
+        RecruitmentPositionAssistant assignment =
+                new RecruitmentPositionAssistant(position.getUuid(), userUuid, actor.toString());
+        assignment.persist();
+        eventRecorder.record(positionEvent(RecruitmentEventType.POSITION_ASSISTANT_ASSIGNED, position, actor)
+                .payload("member_uuid", userUuid));
+        return assignment;
+    }
+
+    /**
+     * Revoke an assignment. Soft: {@code revoked_at} is stamped and the row
+     * stays. A missing or already-revoked assignment answers 404 — the caller
+     * asked to remove something that is not there.
+     */
+    @Transactional
+    public void revokeAssistant(RecruitmentPosition position, String userUuid, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+        RecruitmentPositionAssistant assignment =
+                RecruitmentPositionAssistant.findActive(position.getUuid(), userUuid);
+        if (assignment == null) {
+            throw new WebApplicationException(
+                    "User is not an assistant on this position", Response.Status.NOT_FOUND);
+        }
+        assignment.revoke(actor.toString());
+        assignment.persist();
+        eventRecorder.record(positionEvent(RecruitmentEventType.POSITION_ASSISTANT_REVOKED, position, actor)
                 .payload("member_uuid", userUuid));
     }
 

@@ -3,9 +3,11 @@ package dk.trustworks.intranet.recruitmentservice.resources;
 import dk.trustworks.intranet.recruitmentservice.dto.CircleMemberRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.PositionBoardResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.PositionListResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.PositionAssistantRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.PositionRequest;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPositionAssistant;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentPositionStatus;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
@@ -159,8 +161,9 @@ public class RecruitmentPositionResource {
         // endpoint previously had none at all — @RolesAllowed gates the API
         // client, and hiringTrack comes straight off the request, so anyone
         // the BFF admitted could open a PARTNER-track position. Recruiter
-        // tier opens anything; TEAMLEAD any non-partner; the assistant
-        // non-partner in their own practice.
+        // tier opens anything; TEAMLEAD any non-partner. A recruitment
+        // assistant opens nothing (D2, 2026-09-08) — their scope is exactly
+        // the positions somebody assigned them to.
         if (!visibility.canCreatePosition(actor.toString(),
                 request.hiringTrack(), request.practiceUuid())) {
             throw new WebApplicationException(
@@ -183,7 +186,6 @@ public class RecruitmentPositionResource {
         UUID actor = currentActor();
         RecruitmentPosition position = requireVisiblePosition(uuid, actor);
         requireMutationRights(position, actor);
-        requireAssistantDestinationPractice(position, request, actor);
         RecruitmentPosition updated = positionService.update(position, request, actor);
         stampMutationRight(updated, actor.toString());
         return updated;
@@ -238,6 +240,48 @@ public class RecruitmentPositionResource {
         return Response.noContent().build();
     }
 
+    // ---- Assistant assignment (2026-09-08 position scoping) -------------------------
+
+    /**
+     * The position's current recruitment assistants. Readable by anyone who
+     * can read the position — including an assistant assigned to it, who sees
+     * who else is working the pipeline. Revoked assignments are not listed.
+     */
+    @GET
+    @Path("/{uuid}/assistants")
+    public List<RecruitmentPositionAssistant> assistants(@PathParam("uuid") UUID uuid) {
+        enforceFlag();
+        RecruitmentPosition position = requireVisiblePosition(uuid, currentActor());
+        return positionService.assistants(position.getUuid());
+    }
+
+    @POST
+    @Path("/{uuid}/assistants")
+    @RolesAllowed({"recruitment:write"})
+    public Response assignAssistant(@PathParam("uuid") UUID uuid,
+                                    @Valid PositionAssistantRequest request) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentPosition position = requireVisiblePosition(uuid, actor);
+        requireAssistantAssignment(position, actor);
+        RecruitmentPositionAssistant assignment =
+                positionService.assignAssistant(position, request.userUuid(), actor);
+        return Response.status(Response.Status.CREATED).entity(assignment).build();
+    }
+
+    @DELETE
+    @Path("/{uuid}/assistants/{userUuid}")
+    @RolesAllowed({"recruitment:write"})
+    public Response revokeAssistant(@PathParam("uuid") UUID uuid,
+                                    @PathParam("userUuid") UUID userUuid) {
+        enforceFlag();
+        UUID actor = currentActor();
+        RecruitmentPosition position = requireVisiblePosition(uuid, actor);
+        requireAssistantAssignment(position, actor);
+        positionService.revokeAssistant(position, userUuid.toString(), actor);
+        return Response.noContent().build();
+    }
+
     // ---- Helpers --------------------------------------------------------------
 
     /**
@@ -251,6 +295,23 @@ public class RecruitmentPositionResource {
             throw new NotFoundException("Position not found: " + uuid);
         }
         return position;
+    }
+
+    /**
+     * D3: the recruiter tier assigns any non-partner position in any practice;
+     * a {@code TEAMLEAD} only a position they are the named hiring owner of.
+     * The message names the hiring-owner rule explicitly because a team lead
+     * who is NOT the owner is the common refusal — several production
+     * positions have no hiring owner at all, and for those only the recruiter
+     * tier can assign.
+     */
+    private void requireAssistantAssignment(RecruitmentPosition position, UUID actor) {
+        if (!visibility.canAssignAssistant(actor.toString(), position)) {
+            throw new WebApplicationException(
+                    "Only the position's hiring owner, or HR/recruitment/admin, may assign "
+                            + "recruitment assistants (partner-track positions never)",
+                    Response.Status.FORBIDDEN);
+        }
     }
 
     private void requireCircleManagement(RecruitmentPosition position, UUID actor) {
@@ -293,30 +354,12 @@ public class RecruitmentPositionResource {
                 Response.Status.FORBIDDEN);
     }
 
-    /**
-     * The assistant's practice boundary applies to the destination row as
-     * well as the position as it existed when authorization ran. Without
-     * this second check an assistant could edit an own-practice position and
-     * move its mutable {@code practiceUuid} to another practice (or clear it),
-     * changing out-of-scope recruitment data before merely losing access to
-     * the result. Broader additive roles keep their normal authority, and an
-     * explicit partner-circle mutation remains governed by the circle gate.
-     */
-    private void requireAssistantDestinationPractice(RecruitmentPosition position,
-                                                     PositionRequest request,
-                                                     UUID actor) {
-        if (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
-                || !visibility.isAssistantScopedViewer(actor.toString())) {
-            return;
-        }
-        String assistantPractice = visibility.practiceOfUser(actor.toString());
-        String destinationPractice = request == null ? null : request.practiceUuid();
-        if (assistantPractice == null || !assistantPractice.equals(destinationPractice)) {
-            throw new WebApplicationException(
-                    "A recruitment assistant may keep a position only in their own practice",
-                    Response.Status.FORBIDDEN);
-        }
-    }
+    // requireAssistantDestinationPractice was deleted on 2026-09-08 (D2).
+    // It existed to stop an assistant editing an own-practice position and
+    // moving its practiceUuid somewhere out of scope. An assistant can no
+    // longer edit a position at all — canMutatePosition refuses them before
+    // this ran — so the guard was unreachable, and keeping a dead
+    // authorization check reads as protection that is not there.
 
     /**
      * Block the request when {@code recruitment.pipeline.enabled} is off,

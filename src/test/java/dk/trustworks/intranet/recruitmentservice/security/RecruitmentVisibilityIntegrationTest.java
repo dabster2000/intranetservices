@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       reads AND decides on every non-partner position;</li>
  *   <li><b>decision 11:</b> {@code practice_lead} rows and led-team
  *       practices grant nothing anywhere — rights come from roles only;</li>
- *   <li><b>decisions 2–10:</b> {@code ASSISTANT_TEAMLEAD} carries the team
+ *   <li><b>decisions 2–10:</b> {@code RECRUITMENT_ASSISTANT} carries the team
  *       lead's capabilities scoped to {@code user.practice_uuid}, minus
  *       final outcomes, candidate creation and the Inbox.</li>
  * </ul>
@@ -56,7 +56,7 @@ class RecruitmentVisibilityIntegrationTest {
     private String adminUser;
     private String recruiterUser;   // HR role — recruiter tier
     private String teamleadUser;    // TEAMLEAD role; leads teamUuid via teamroles LEADER
-    private String assistantUser;   // ASSISTANT_TEAMLEAD role; user.practice_uuid = practiceUuid
+    private String assistantUser;   // RECRUITMENT_ASSISTANT role; user.practice_uuid = practiceUuid
     private String currentLeadUser; // practice_lead row, enddate IS NULL — NO role
     private String plainUser;       // no roles, no leads, no circles
     private String teamUuid;
@@ -102,7 +102,7 @@ class RecruitmentVisibilityIntegrationTest {
             insertRole(adminUser, "ADMIN");
             insertRole(recruiterUser, "HR");
             insertRole(teamleadUser, "TEAMLEAD");
-            insertRole(assistantUser, "ASSISTANT_TEAMLEAD");
+            insertRole(assistantUser, "RECRUITMENT_ASSISTANT");
 
             insertPractice(practiceUuid);
             insertPractice(otherPracticeUuid);
@@ -118,6 +118,15 @@ class RecruitmentVisibilityIntegrationTest {
                     practiceUuid, null, null);
             insertPosition(otherPracticePositionUuid, "Consultant (other practice)", "PRACTICE_TEAM",
                     otherPracticeUuid, null, null);
+
+            // D1 (2026-09-08): the assistant's scope is assignment, not
+            // practice. Assigned to the two practice positions the old
+            // practice route made visible, so this class's expectations keep
+            // their intent — "visible" now means assigned, and
+            // otherPracticePositionUuid stays out of scope because nobody
+            // assigned it, not because of its practice.
+            insertAssistantAssignment(practicePositionUuid, assistantUser);
+            insertAssistantAssignment(practiceOnlyPositionUuid, assistantUser);
         });
     }
 
@@ -126,6 +135,8 @@ class RecruitmentVisibilityIntegrationTest {
         QuarkusTransaction.requiringNew().run(() -> {
             List<String> positions = List.of(practicePositionUuid, partnerPositionUuid,
                     staffPositionUuid, practiceOnlyPositionUuid, otherPracticePositionUuid);
+            em.createNativeQuery("DELETE FROM recruitment_position_assistants WHERE position_uuid IN :p")
+                    .setParameter("p", positions).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_circle_members WHERE position_uuid IN :p")
                     .setParameter("p", positions).executeUpdate();
             em.createNativeQuery("DELETE FROM recruitment_positions WHERE uuid IN :p")
@@ -352,22 +363,51 @@ class RecruitmentVisibilityIntegrationTest {
      * cleared afterwards the assistant must resolve to nothing — a silently
      * empty module, never a wide-open one.
      */
+    /**
+     * D1: no assignment means no scope. Was "no practice means no scope" —
+     * practice is not consulted anywhere any more, so this now revokes the
+     * assignments instead, and additionally proves the practice is IRRELEVANT
+     * by leaving user.practice_uuid set while it does so.
+     */
     @Test
-    void assistant_withNoPractice_seesAndDecidesNothing() {
+    void assistant_withNoAssignment_seesAndDecidesNothing() {
         QuarkusTransaction.requiringNew().run(() ->
-                em.createNativeQuery("UPDATE user SET practice_uuid = NULL WHERE uuid = :u")
+                em.createNativeQuery("DELETE FROM recruitment_position_assistants WHERE user_uuid = :u")
                         .setParameter("u", assistantUser)
                         .executeUpdate());
-        assertNull(visibility.practiceOfUser(assistantUser));
+        assertTrue(visibility.assignedPositionUuids(assistantUser).isEmpty());
         assertTrue(visibleUuids(assistantUser).isEmpty());
         assertFalse(visibility.canDecideOnApplication(assistantUser, position(practiceOnlyPositionUuid)));
         assertTrue(visibility.assistantVisibleCandidateUuids(assistantUser).isEmpty());
     }
 
+    /**
+     * The heart of D1: an UNASSIGNED position in the assistant's OWN practice
+     * is invisible. Under the old practice route this was visible, so this
+     * assertion is the one that proves practice stopped mattering.
+     */
+    @Test
+    void assistant_unassignedPositionInOwnPractice_isInvisible() {
+        String unassigned = UUID.randomUUID().toString();
+        try {
+            QuarkusTransaction.requiringNew().run(() -> insertPosition(unassigned,
+                    "Consultant (same practice, unassigned)", "PRACTICE_TEAM",
+                    practiceUuid, null, null));
+            assertFalse(visibility.canReadPosition(assistantUser, position(unassigned)),
+                    "same practice is not a route any more \u2014 only an assignment is");
+            assertFalse(visibility.canDecideOnApplication(assistantUser, position(unassigned)));
+            assertFalse(visibleUuids(assistantUser).contains(unassigned));
+        } finally {
+            QuarkusTransaction.requiringNew().run(() ->
+                    em.createNativeQuery("DELETE FROM recruitment_positions WHERE uuid = :p")
+                            .setParameter("p", unassigned).executeUpdate());
+        }
+    }
+
     /** The role only adds; wider standing wins. A TEAMLEAD+assistant is a team lead. */
     @Test
     void assistantRole_neverNarrowsWiderStanding() {
-        QuarkusTransaction.requiringNew().run(() -> insertRole(teamleadUser, "ASSISTANT_TEAMLEAD"));
+        QuarkusTransaction.requiringNew().run(() -> insertRole(teamleadUser, "RECRUITMENT_ASSISTANT"));
         RecruitmentPosition outside = position(otherPracticePositionUuid);
         assertTrue(visibility.canDecideOnApplication(teamleadUser, outside),
                 "company-wide decide survives holding the assistant role too");
@@ -578,6 +618,17 @@ class RecruitmentVisibilityIntegrationTest {
         em.createNativeQuery("UPDATE user SET practice_uuid = :p WHERE uuid = :u")
                 .setParameter("p", practiceUuid)
                 .setParameter("u", userUuid)
+                .executeUpdate();
+    }
+
+    private void insertAssistantAssignment(String positionUuid, String userUuid) {
+        em.createNativeQuery("INSERT INTO recruitment_position_assistants"
+                        + " (uuid, position_uuid, user_uuid, assigned_by, assigned_at)"
+                        + " VALUES (:uuid, :position, :user, :by, NOW(3))")
+                .setParameter("uuid", UUID.randomUUID().toString())
+                .setParameter("position", positionUuid)
+                .setParameter("user", userUuid)
+                .setParameter("by", "test")
                 .executeUpdate();
     }
 

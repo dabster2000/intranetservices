@@ -16,6 +16,7 @@ import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCircleMember;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentInterview;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPositionAssistant;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentScorecard;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentCircleRole;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentHiringTrack;
@@ -649,7 +650,8 @@ public class RecruitmentSlaService {
 
     /**
      * The owner ladder (class javadoc): hiring owner → partner-circle
-     * OWNERs → current team leads → nobody. Public since P18 — the Slack
+     * OWNERs → current team leads → assigned recruitment assistants (F4) →
+     * nobody. Public since P18 — the Slack
      * reactor's debrief-ready owner DM resolves its recipient with this
      * exact rule (one ladder, never re-implemented).
      */
@@ -675,9 +677,31 @@ public class RecruitmentSlaService {
             return List.of(position.getHiringOwnerUuid());
         }
         if (position.getTeamUuid() != null && !position.getTeamUuid().isBlank()) {
-            return inTx(() -> currentTeamLeaders(position.getTeamUuid()));
+            List<String> leaders = inTx(() -> currentTeamLeaders(position.getTeamUuid()));
+            if (!leaders.isEmpty()) {
+                return leaders;
+            }
         }
-        return List.of();
+        // F4 (2026-09-08): assigned recruitment assistants are the last rung.
+        //
+        // Position scoping created a real gap here: an assistant can now be
+        // the ONLY person working a position — no named hiring owner, no team,
+        // or a team whose leaders have all rotated off — and the ladder above
+        // returned nobody, so no idle-application or debrief-ready nudge was
+        // ever sent for that pipeline. Not a leak; a silence.
+        //
+        // Deliberately the LAST rung, not an addition to the earlier ones: an
+        // assistant should not be DM'd about a pipeline whose owner or team
+        // lead is already being nudged. And deliberately not applied to the
+        // PARTNER branch above — a partner requisition is never assignable to
+        // an assistant, so there is nothing to resolve there.
+        return inTx(() -> RecruitmentPositionAssistant
+                .<RecruitmentPositionAssistant>list(
+                        "positionUuid = ?1 and revokedAt is null order by assignedAt",
+                        position.getUuid()).stream()
+                .map(RecruitmentPositionAssistant::getUserUuid)
+                .distinct()
+                .toList());
     }
 
     /** Current leaders of a team — the temporal {@code teamroles} rule. */

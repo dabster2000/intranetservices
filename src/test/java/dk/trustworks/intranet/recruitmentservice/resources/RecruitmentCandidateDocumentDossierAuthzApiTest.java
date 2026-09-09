@@ -102,11 +102,11 @@ class RecruitmentCandidateDocumentDossierAuthzApiTest {
             P8ProfileFixtures.insertUser(em, recruitmentUser, "Rene", "Recruitment");
             P8ProfileFixtures.insertUser(em, hrUser, "Hanne", "HR");
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
-            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUser, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, namedTeamlead, "TEAMLEAD");
             // Additive-role regression: assistant standing must not narrow a
             // simultaneously eligible named TEAMLEAD.
-            P8ProfileFixtures.insertRole(em, namedTeamlead, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, namedTeamlead, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, unnamedTeamlead, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, recruitmentUser, "RECRUITMENT");
             P8ProfileFixtures.insertRole(em, hrUser, "HR");

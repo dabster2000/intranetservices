@@ -172,6 +172,7 @@ class RecruitmentEventTypeCatalogTest {
                 "ART14_NOTICE_SENT", "DSAR_RECEIVED", "DSAR_EXPORTED", "CANDIDATE_ANONYMIZED",
                 "POSITION_OPENED", "POSITION_UPDATED", "POSITION_CLOSED",
                 "CIRCLE_MEMBER_ADDED", "CIRCLE_MEMBER_REMOVED",
+                "POSITION_ASSISTANT_ASSIGNED", "POSITION_ASSISTANT_REVOKED",
                 "AI_SUGGESTIONS_GENERATED", "AI_SUGGESTION_RESOLVED", "AI_BRIEF_GENERATED",
                 "AI_EMAIL_DRAFT_GENERATED", "AI_DIGEST_GENERATED", "AI_ASSISTANT_EXCHANGE",
                 "SCHEDULING_REQUEST_CREATED", "SCHEDULING_REQUEST_UPDATED",
@@ -210,8 +211,12 @@ class RecruitmentEventTypeCatalogTest {
                         + "structurally cannot trigger that notice), plus "
                         + "REFERRAL_CV_ATTACHED (the optional CV a referrer attaches "
                         + "after submitting \u2014 pre-candidate, so DOCUMENT_UPLOADED "
-                        + "could not carry it)");
-        assertEquals(93, RecruitmentEventType.values().length);
+                        + "could not carry it), plus the "
+                        + "POSITION_ASSISTANT_ASSIGNED/REVOKED pair (the 2026-09-08 "
+                        + "position-scoping design: an assistant\u2019s scope is data, "
+                        + "so granting and revoking it is auditable next to the "
+                        + "position\u2019s other history)");
+        assertEquals(95, RecruitmentEventType.values().length);
     }
 
     @Test

@@ -55,7 +55,7 @@ class RecruitmentOperationalEndUserAuthorizationTest {
         String assistant = UUID.randomUUID().toString();
         when(resource.requestHeaderHolder.getUserUuid()).thenReturn(assistant);
         when(resource.visibility.isRecruiterTier(assistant)).thenReturn(false);
-        when(resource.visibility.rolesOf(assistant)).thenReturn(Set.of("ASSISTANT_TEAMLEAD"));
+        when(resource.visibility.rolesOf(assistant)).thenReturn(Set.of("RECRUITMENT_ASSISTANT"));
 
         assertForbidden(() -> resource.reports("2026-07", "2026-08"));
         assertForbidden(resource::rebuild);
@@ -97,7 +97,7 @@ class RecruitmentOperationalEndUserAuthorizationTest {
 
         String assistant = UUID.randomUUID().toString();
         when(resource.requestHeaderHolder.getUserUuid()).thenReturn(assistant);
-        when(resource.visibility.rolesOf(assistant)).thenReturn(Set.of("ASSISTANT_TEAMLEAD"));
+        when(resource.visibility.rolesOf(assistant)).thenReturn(Set.of("RECRUITMENT_ASSISTANT"));
         MeetingRoomPolicyRequest request = new MeetingRoomPolicyRequest(List.of(), List.of());
 
         assertForbidden(resource::roomPolicy);

@@ -54,7 +54,7 @@ class RecruitmentDossierTemplateResourceApiTest {
             P8ProfileFixtures.insertRole(em, hr, "HR");
             P8ProfileFixtures.insertRole(em, owner, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, otherTeamlead, "TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistantOwner, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantOwner, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertPractice(em, practice);
             P8ProfileFixtures.insertPosition(em, ownerPosition, "Owner role",
                     "PRACTICE_TEAM", practice, null, owner);

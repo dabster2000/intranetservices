@@ -118,7 +118,7 @@ class SlackAssistantServiceTest {
             P8ProfileFixtures.insertUser(em, recruiterUuid, "Rita", "Recruiter");
             P8ProfileFixtures.insertRole(em, recruiterUuid, "HR");
             P8ProfileFixtures.insertUser(em, assistantUuid, "Rikke", "Assistant");
-            P8ProfileFixtures.insertRole(em, assistantUuid, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUuid, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertUser(em, uninvolvedUuid, "Uno", "Uninvolved");
             P8ProfileFixtures.insertUser(em, interviewerUuid, "Ivan", "Interviewer");
             P8ProfileFixtures.insertUser(em, circleMemberUuid, "Carl", "Circle");

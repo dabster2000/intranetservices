@@ -556,5 +556,25 @@ public enum RecruitmentEventType {
      * Exists so the AI Act logging obligation is satisfied by the event
      * store rather than by application logs.
      */
-    AI_NOTES_TIDIED
+    AI_NOTES_TIDIED,
+
+    /**
+     * A recruitment assistant was assigned to a position (2026-09-08
+     * position-scoping design, D1/D3). Payload carries {@code member_uuid}
+     * (the assistant) — the position is on the event's own
+     * {@code position_uuid}, so the audit answers "who could see this
+     * pipeline, and from when" without a payload hunt.
+     * <p>
+     * Deliberately a separate pair from {@code CIRCLE_MEMBER_ADDED/REMOVED}:
+     * an assignment is not a circle seat and carries none of its grants.
+     */
+    POSITION_ASSISTANT_ASSIGNED,
+    /**
+     * A recruitment assistant's assignment was revoked. The row is soft
+     * revoked rather than deleted, so this event and
+     * {@code recruitment_position_assistants.revoked_at} agree; the event is
+     * what makes the *why* and *by whom* readable next to the rest of the
+     * position's history.
+     */
+    POSITION_ASSISTANT_REVOKED
 }

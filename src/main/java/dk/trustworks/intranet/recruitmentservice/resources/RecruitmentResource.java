@@ -680,13 +680,26 @@ public class RecruitmentResource {
         // alone, and @RolesAllowed gates only the API client.
         requireVisibleCandidate(uuid);
         Objects.requireNonNull(request, "request body must not be null");
+        UUID actor = currentActor();
+        // Compensation facts: BOTH gates, deliberately.
+        //
+        // The scope check gates the API CLIENT. On its own it was inert for
+        // every human caller (spec F1): the BFF's identity carries admin:*,
+        // and ScopeContext.hasScope returns true for admin:* by design, so
+        // this branch never fired for anyone coming through the frontend.
+        // Keeping it still buys something — a machine client without
+        // recruitment:comp is refused — but it is not a per-person rule.
+        //
+        // isCompTierForCandidate IS the per-person rule, and it is what makes
+        // D8 real: a RECRUITMENT_ASSISTANT gets false from isCompTierFor, so
+        // they can neither read nor write a compensation fact.
         if (RecruitmentFactVocabulary.isCompScoped(request.field())
-                && !scopeContext.hasScope("recruitment:comp")) {
+                && (!scopeContext.hasScope("recruitment:comp")
+                    || !visibility.isCompTierForCandidate(actor.toString(), uuid.toString()))) {
             throw new WebApplicationException(
-                    "Compensation facts require the recruitment:comp scope",
+                    "Compensation facts are outside your lane",
                     Response.Status.FORBIDDEN);
         }
-        UUID actor = currentActor();
         RecruitmentEvent event = candidateService.addNote(uuid, request, actor);
         // AFTER the note's transaction committed: Slack channel thread +
         // mention DMs (author + candidate + link, never the note body).

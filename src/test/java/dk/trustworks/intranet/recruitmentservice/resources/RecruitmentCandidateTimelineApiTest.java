@@ -92,7 +92,7 @@ class RecruitmentCandidateTimelineApiTest {
             P8ProfileFixtures.insertUser(em, adminUser, "Alma", "Admin");
             P8ProfileFixtures.insertRole(em, recruiter, "HR");
             P8ProfileFixtures.insertRole(em, hiringOwner, "TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertPractice(em, practiceUuid);

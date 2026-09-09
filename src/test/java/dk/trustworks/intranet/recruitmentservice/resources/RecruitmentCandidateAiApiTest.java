@@ -87,7 +87,7 @@ class RecruitmentCandidateAiApiTest {
             P8ProfileFixtures.insertUser(em, circleHrUser, "Cilla", "Circle");
             P8ProfileFixtures.insertRole(em, circleHrUser, "HR");
             P8ProfileFixtures.insertUser(em, assistantUser, "Assi", "Stent");
-            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUser, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertUser(em, plainUser, "Palle", "Plain");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")

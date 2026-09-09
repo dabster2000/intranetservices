@@ -125,13 +125,13 @@ class RecruitmentVisibilityDossierBatchTest {
                 candidate("not-owned", CandidateStatus.HIRED));
 
         BatchStubVisibility assistant = declaredFacts();
-        assistant.roles.put(VIEWER, Set.of("ASSISTANT_TEAMLEAD"));
+        assistant.roles.put(VIEWER, Set.of("RECRUITMENT_ASSISTANT"));
         assertTrue(assistant.dossierReadableCandidateUuids(VIEWER, candidates).isEmpty());
         assertEquals(0, assistant.batchOwnerLookups);
         assertEquals(0, assistant.standingBatchLookups);
 
         BatchStubVisibility mixed = declaredFacts();
-        mixed.roles.put(VIEWER, Set.of("ASSISTANT_TEAMLEAD", "TEAMLEAD"));
+        mixed.roles.put(VIEWER, Set.of("RECRUITMENT_ASSISTANT", "TEAMLEAD"));
         assertEquals(Set.of("system"),
                 mixed.dossierReadableCandidateUuids(VIEWER, candidates));
 

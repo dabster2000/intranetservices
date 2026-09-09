@@ -66,7 +66,7 @@ class SigningResourceTemplateBoundaryApiTest {
         QuarkusTransaction.requiringNew().run(() -> {
             P8ProfileFixtures.insertUser(em, assistant, "Anja", "Assistant");
             P8ProfileFixtures.insertUser(em, hr, "Helle", "HR");
-            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, hr, "HR");
             insertSigningScopeGrant();
             P8ProfileFixtures.insertRole(em, hr, signingScopeRole);

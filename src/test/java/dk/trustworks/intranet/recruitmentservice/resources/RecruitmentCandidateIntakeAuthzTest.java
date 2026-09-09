@@ -134,7 +134,7 @@ class RecruitmentCandidateIntakeAuthzTest {
     void teamLeadVariantsWithIntake_mayCreateAnOrdinaryCandidate(
             NonDossierWriterWithIntake caller) {
         // TEAMLEAD standing is additive: TEAMLEAD alone and
-        // ASSISTANT_TEAMLEAD+TEAMLEAD both pass the ordinary intake gate.
+        // RECRUITMENT_ASSISTANT+TEAMLEAD both pass the ordinary intake gate.
         when(visibility.canCreateCandidate(ACTOR.toString())).thenReturn(true);
         when(visibility.canWriteDossier(ACTOR.toString())).thenReturn(false);
         when(candidateService.createCandidate(any(), eq(ACTOR), isNull()))
@@ -355,7 +355,7 @@ class RecruitmentCandidateIntakeAuthzTest {
 
     private enum NonDossierWriterWithIntake {
         TEAMLEAD,
-        ASSISTANT_TEAMLEAD_AND_TEAMLEAD
+        RECRUITMENT_ASSISTANT_AND_TEAMLEAD
     }
 
     private enum DossierWriter {
