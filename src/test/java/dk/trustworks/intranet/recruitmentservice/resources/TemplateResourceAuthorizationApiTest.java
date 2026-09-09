@@ -56,7 +56,7 @@ class TemplateResourceAuthorizationApiTest {
             P8ProfileFixtures.insertUser(em, hr, "Helle", "HR");
             P8ProfileFixtures.insertUser(em, assistant, "Rikke", "Assistant");
             P8ProfileFixtures.insertRole(em, hr, "HR");
-            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "RECRUITMENT_ASSISTANT");
             insertTemplate(employeeTemplate, "Salary adjustment", "EMPLOYEE_SIGNING");
             insertTemplate(recruitmentTemplate, "Offer contract", "RECRUITMENT_DOSSIER");
             // Deliberately stale: the dossier reference must override this value.

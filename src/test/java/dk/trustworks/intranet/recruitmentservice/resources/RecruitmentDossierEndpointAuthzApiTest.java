@@ -133,10 +133,10 @@ class RecruitmentDossierEndpointAuthzApiTest {
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertRole(em, recruitmentUser, "RECRUITMENT");
-            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistantAndTeamleadUser, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUser, "RECRUITMENT_ASSISTANT");
+            P8ProfileFixtures.insertRole(em, assistantAndTeamleadUser, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, assistantAndTeamleadUser, "TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistantWithoutPracticeUser, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantWithoutPracticeUser, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             P8ProfileFixtures.insertPractice(em, otherPracticeUuid);
             setUserPractice(assistantUser, practiceUuid);

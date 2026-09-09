@@ -51,9 +51,9 @@ class RecruitmentPositionAssistantPracticeMutationApiTest {
             P8ProfileFixtures.insertUser(em, assistant, "Assistant", "Scoped");
             P8ProfileFixtures.insertUser(em, assistantWithoutPractice, "Assistant", "Unscoped");
             P8ProfileFixtures.insertUser(em, assistantAndTeamlead, "Assistant", "Lead");
-            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistantWithoutPractice, "ASSISTANT_TEAMLEAD");
-            P8ProfileFixtures.insertRole(em, assistantAndTeamlead, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "RECRUITMENT_ASSISTANT");
+            P8ProfileFixtures.insertRole(em, assistantWithoutPractice, "RECRUITMENT_ASSISTANT");
+            P8ProfileFixtures.insertRole(em, assistantAndTeamlead, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, assistantAndTeamlead, "TEAMLEAD");
             setPractice(assistant, ownPractice);
             setPractice(assistantAndTeamlead, ownPractice);

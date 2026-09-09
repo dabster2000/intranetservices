@@ -577,9 +577,9 @@ public class RecruitmentApplicationResource {
     /**
      * Pipeline decisions require decision rights on the position: since
      * decision 1 (2026-08-23) that is admin, HR, RECRUITMENT and every
-     * TEAMLEAD on any non-partner position, the ASSISTANT_TEAMLEAD within
-     * their practice, hiring owners and team leads by involvement, and
-     * circle OWNER/RECRUITER on partner track.
+     * TEAMLEAD on any non-partner position, the RECRUITMENT_ASSISTANT on the
+     * positions they are assigned to (D1, 2026-09-08), hiring owners and team
+     * leads by involvement, and circle OWNER/RECRUITER on partner track.
      */
     private void requireDecisionRights(RecruitmentPosition position, UUID actor) {
         if (!visibility.canDecideOnApplication(actor.toString(), position)) {

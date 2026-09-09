@@ -44,7 +44,7 @@ public record BoardPositionSummary(
          * ({@code RecruitmentVisibility.canDecideFinalOutcome}, decision 7 of
          * the 2026-08-23 access model). Always false when
          * {@link #viewerCanDecide} is false; narrower than it for an
-         * {@code ASSISTANT_TEAMLEAD}, who moves cards but never closes an
+         * {@code RECRUITMENT_ASSISTANT}, who moves cards but never closes an
          * outcome. The board withholds the terminal card actions (and the
          * REJECT half of record-decision) when this is false.
          */

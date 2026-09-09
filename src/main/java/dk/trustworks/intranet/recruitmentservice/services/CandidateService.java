@@ -440,18 +440,26 @@ public class CandidateService {
             where.append(" AND uuid NOT IN :partnerTrackOnly");
             params.put("partnerTrackOnly", partnerTrackOnly);
         }
-        // Assistant scoping (decisions 5/8, 2026-08-23): an assistant-scoped
-        // viewer sees only candidates with an application on a non-partner
-        // position in their practice — query-level, before pagination, like
-        // the partner-row gap above. No practice or no qualifying candidate
-        // resolves to an impossible predicate rather than a wide-open grid.
+        // Assistant scoping (D1, 2026-09-08 — was practice-scoped since
+        // 2026-08-23): an assistant-scoped viewer sees only candidates with an
+        // application on a non-partner position they are ASSIGNED to —
+        // query-level, before pagination, like the partner-row gap above. No
+        // assignment, or no qualifying candidate, resolves to an impossible
+        // predicate rather than a wide-open grid.
+        //
+        // F2: totalCount below is computed from this SAME where/params, so row
+        // presence and the count cannot disagree and the row-cap warning flag
+        // cannot fire spuriously. Both this candidate-level narrowing and the
+        // position-level readablePositionUuids now read the one assignment
+        // table, so they agree by construction rather than by coincidence —
+        // that agreement is the whole point, do not narrow one alone.
         if (viewerUuid != null && visibility.isAssistantScopedViewer(viewerUuid)) {
-            List<String> practiceVisible = visibility.assistantVisibleCandidateUuids(viewerUuid);
-            if (practiceVisible.isEmpty()) {
+            List<String> assignedVisible = visibility.assistantVisibleCandidateUuids(viewerUuid);
+            if (assignedVisible.isEmpty()) {
                 where.append(" AND 1 = 0");
             } else {
                 where.append(" AND uuid IN :assistantVisible");
-                params.put("assistantVisible", practiceVisible);
+                params.put("assistantVisible", assignedVisible);
             }
         }
         if (search != null && !search.isBlank()) {
@@ -869,10 +877,10 @@ public class CandidateService {
         // else joins the invisible set and 404s the call, exactly like a
         // partner-track row the actor is outside the circle of.
         if (visibility.isAssistantScopedViewer(actor.toString())) {
-            java.util.Set<String> practiceVisible = new java.util.HashSet<>(
+            java.util.Set<String> assignedVisible = new java.util.HashSet<>(
                     visibility.assistantVisibleCandidateUuids(actor.toString()));
             for (String target : targets) {
-                if (!practiceVisible.contains(target)) {
+                if (!assignedVisible.contains(target)) {
                     invisible.add(target);
                 }
             }

@@ -50,7 +50,6 @@ public class RoleService {
 
     @Transactional
     public void create(String useruuid, @Valid Role role) {
-        requirePracticeForAssistantTeamlead(useruuid, role);
         role.setUuid(UUID.randomUUID().toString());
         role.setUseruuid(useruuid);
         Role.persist(role);
@@ -58,33 +57,19 @@ public class RoleService {
                 null, Map.of("useruuid", useruuid, "role", role.getRole()));
     }
 
-    /**
-     * The assignment rail for {@code ASSISTANT_TEAMLEAD} (recruitment access
-     * model 2026-08-23, decision 3 + the empty-practice guard): the role's
-     * entire reach is the practice the user belongs to
-     * ({@code user.practice_uuid}), so handing it to a user with no practice
-     * would produce a silently empty recruitment module for them — every
-     * screen blank, no error anywhere. Refused here, at assignment time,
-     * with a message that says what to fix instead.
-     */
-    private void requirePracticeForAssistantTeamlead(String useruuid, Role role) {
-        if (role.getRole() == null
-                || !"ASSISTANT_TEAMLEAD".equalsIgnoreCase(role.getRole().trim())) {
-            return;
-        }
-        List<?> rows = em.createNativeQuery(
-                        "SELECT practice_uuid FROM user WHERE uuid = :uuid")
-                .setParameter("uuid", useruuid)
-                .getResultList();
-        boolean hasPractice = !rows.isEmpty()
-                && rows.get(0) instanceof String practice && !practice.isBlank();
-        if (!hasPractice) {
-            throw new RoleAssignmentRailException(
-                    "Refused: ASSISTANT_TEAMLEAD is scoped to the practice the user belongs to,"
-                            + " and this user has no practice. Set their practice first"
-                            + " (user.practice_uuid), then assign the role.");
-        }
-    }
+    // requirePracticeForAssistantTeamlead was deleted on 2026-09-08 (D5).
+    //
+    // It refused the role to anyone without a user.practice_uuid, because the
+    // role's entire reach used to BE that practice and handing it over without
+    // one produced a silently empty recruitment module. Since the role became
+    // position-scoped, practice grants nothing: an assistant may be assigned
+    // to positions in any practice, and the empty-module case is now the
+    // correct and expected state for somebody holding the role with no
+    // assignment yet. A rail that refused the assignment would block the
+    // normal grant order (give the role, then assign positions).
+    //
+    // Note the rail only ever ran on create() and was never re-checked, so it
+    // was already not an invariant — see the spec §13.2.
 
     @Transactional
     public void delete(String useruuid) {

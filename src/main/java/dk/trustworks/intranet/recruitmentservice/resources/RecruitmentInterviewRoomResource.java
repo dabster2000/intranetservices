@@ -300,9 +300,18 @@ public class RecruitmentInterviewRoomResource {
                 : template.stream().map(ScorecardAttribute::code).toList();
     }
 
+    /**
+     * @param restricted the brief-scoped interviewer flag: the viewer is
+     *                   assigned but cannot read the full candidate profile
+     * @param compTier   whether the viewer may see or write COMPENSATION
+     *                   facts on this position. Derived from
+     *                   {@code isCompTierFor}, NOT from {@code restricted} —
+     *                   see resolveAccess (spec F1)
+     */
     private record RoomAccess(UUID viewer, RecruitmentInterview interview,
                               RecruitmentApplication application, RecruitmentPosition position,
-                              RecruitmentCandidate candidate, boolean restricted) {
+                              RecruitmentCandidate candidate, boolean restricted,
+                              boolean compTier) {
     }
 
     /**
@@ -337,27 +346,45 @@ public class RecruitmentInterviewRoomResource {
                     "Only assigned interviewers can write in this room",
                     Response.Status.FORBIDDEN);
         }
-        return new RoomAccess(viewer, interview, application, position, candidate, !profileReader);
+        // compTier is resolved HERE and separately from `restricted`.
+        // They used to be the same question by accident: the comp-fact write
+        // guard read `restricted`, i.e. `!profileReader`, so ANY full profile
+        // reader cleared the compensation lane. A RECRUITMENT_ASSISTANT is a
+        // full profile reader for candidates on their assigned positions, so
+        // that let them write salary facts — the exact thing D8 withholds
+        // (spec F1). isCompTierFor is the per-person answer and keeps every
+        // other role's behaviour identical: ADMIN, HR, RECRUITMENT and
+        // TEAMLEAD are comp tier by role, a plain assigned interviewer was
+        // already blocked as `restricted`, and both remain so.
+        boolean compTier = visibility.isCompTierFor(viewer.toString(), List.of(position));
+        return new RoomAccess(viewer, interview, application, position, candidate,
+                !profileReader, compTier);
     }
 
     /**
-     * A RESTRICTED interviewer (brief-scoped, decision 6) may not write
-     * compensation facts: their lane never raises salary (§5.1), and no
-     * role below the hiring tier may write one anywhere else in the module
-     * — the room must not become the exception (security review).
+     * Only a COMP-TIER viewer may write a compensation fact: a brief-scoped
+     * interviewer's lane never raises salary (§5.1), no role below the hiring
+     * tier may write one anywhere else in the module — the room must not
+     * become the exception (security review) — and since 2026-09-08 a
+     * {@code RECRUITMENT_ASSISTANT} is outside the comp tier entirely (D8).
+     * <p>
+     * Keyed on {@code compTier}, not {@code restricted}: see resolveAccess.
      */
     private static void requireFullProfileForCompFact(RoomAccess access, String field) {
-        if (access.restricted() && RecruitmentFactVocabulary.isCompScoped(field)) {
+        if (!access.compTier() && RecruitmentFactVocabulary.isCompScoped(field)) {
             throw new WebApplicationException(
-                    "Compensation facts are outside the restricted interviewer's lane",
+                    "Compensation facts are outside your lane",
                     Response.Status.FORBIDDEN);
         }
     }
 
     /**
-     * Compensation facts require {@code recruitment:comp} — the
-     * machine-client guard the notes route applies; the BFF's system
-     * client passes via {@code AdminScopeAugmentor}.
+     * Compensation facts require {@code recruitment:comp} — the machine-client
+     * guard the notes route applies. NOTE it is ONLY a machine-client guard:
+     * the BFF's system client passes via {@code AdminScopeAugmentor}, so this
+     * never refuses a human caller. The per-person rule is
+     * {@link #requireFullProfileForCompFact}, which every caller of this
+     * method also calls; neither is sufficient alone (spec F1).
      */
     private void requireCompScopeForCompFact(String field) {
         if (RecruitmentFactVocabulary.isCompScoped(field)

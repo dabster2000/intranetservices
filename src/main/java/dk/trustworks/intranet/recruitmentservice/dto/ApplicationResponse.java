@@ -54,7 +54,7 @@ public record ApplicationResponse(
          * ({@code RecruitmentVisibility.canDecideFinalOutcome}, decision 7 of
          * the 2026-08-23 access model). Always false when
          * {@link #viewerCanDecide} is false; narrower than it for an
-         * {@code ASSISTANT_TEAMLEAD}, who moves stages but never closes an
+         * {@code RECRUITMENT_ASSISTANT}, who moves stages but never closes an
          * outcome. The page hides Reject/Withdraw/Return-to-pool — and the
          * REJECT half of the interview decision — when this is false; the
          * backend enforces the same rule on those endpoints. Old frontends

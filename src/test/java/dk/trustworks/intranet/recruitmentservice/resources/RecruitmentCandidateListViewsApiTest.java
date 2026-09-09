@@ -84,7 +84,7 @@ class RecruitmentCandidateListViewsApiTest {
             P8ProfileFixtures.insertRole(em, hrUser, "HR");
             P8ProfileFixtures.insertRole(em, adminUser, "ADMIN");
             P8ProfileFixtures.insertRole(em, circleHr, "HR");
-            P8ProfileFixtures.insertRole(em, assistantUser, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistantUser, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertPractice(em, practiceUuid);
             em.createNativeQuery("UPDATE user SET practice_uuid = :practice WHERE uuid = :user")
                     .setParameter("practice", practiceUuid)

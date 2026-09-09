@@ -68,7 +68,7 @@ class RecordCheckResourceAuthzApiTest {
             P8ProfileFixtures.insertUser(em, otherTeamlead, "Otto", "Owner");
             P8ProfileFixtures.insertUser(em, hr, "Helle", "HR");
             P8ProfileFixtures.insertUser(em, admin, "Alma", "Admin");
-            P8ProfileFixtures.insertRole(em, assistant, "ASSISTANT_TEAMLEAD");
+            P8ProfileFixtures.insertRole(em, assistant, "RECRUITMENT_ASSISTANT");
             P8ProfileFixtures.insertRole(em, namedTeamlead, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, otherTeamlead, "TEAMLEAD");
             P8ProfileFixtures.insertRole(em, hr, "HR");

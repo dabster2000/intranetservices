@@ -57,10 +57,12 @@ import java.util.stream.Collectors;
  *       plus partner positions where the viewer is in the circle. Final
  *       outcomes stay with this tier and involvement —
  *       {@link #canDecideFinalOutcome}.</li>
- *   <li>{@code ASSISTANT_TEAMLEAD} → the same capability set scoped to the
- *       practice they are a member of ({@code user.practice_uuid}), minus
- *       final outcomes, the offer dossier, candidate creation and the
- *       intake queues (decisions 2–10).</li>
+ *   <li>{@code RECRUITMENT_ASSISTANT} → a narrower capability set scoped to
+ *       the individual positions somebody assigned them to
+ *       ({@code recruitment_position_assistants}, {@link #assignedPositionUuids}),
+ *       minus final outcomes, the offer dossier, candidate creation, the
+ *       intake queues, position mutation, circle management and every
+ *       compensation fact. Practice grants nothing (2026-09-08 design).</li>
  *   <li>Everyone else → positions they own ({@code hiring_owner_uuid}),
  *       positions of teams they currently lead, and circle memberships.</li>
  * </ol>
@@ -75,13 +77,18 @@ public class RecruitmentVisibility {
     static final String ROLE_HR = "HR";
     static final String ROLE_TEAMLEAD = "TEAMLEAD";
     /**
-     * A team lead scoped to one practice (decision 2, 2026-08-23) — not a
-     * junior recruiter. The role only ever ADDS the practice-scoped route;
-     * it never narrows what another role or an involvement already grants,
-     * so a TEAMLEAD who also holds it is simply a team lead. Its practice
-     * is {@code user.practice_uuid} (decision 3, {@link #practiceOfUser}).
+     * A recruitment assistant scoped to <b>individually assigned positions</b>
+     * (2026-09-08 position-scoping design, D1) — not a junior recruiter. Until
+     * that design the role was scoped to the viewer's {@code user.practice_uuid};
+     * practice now grants nothing anywhere in this class, and the route is
+     * membership in {@code recruitment_position_assistants}
+     * ({@link #assignedPositionUuids}).
+     * <p>
+     * The role only ever ADDS the assignment route; it never narrows what
+     * another role or an involvement already grants, so a TEAMLEAD who also
+     * holds it is simply a team lead.
      */
-    static final String ROLE_ASSISTANT_TEAMLEAD = "ASSISTANT_TEAMLEAD";
+    static final String ROLE_RECRUITMENT_ASSISTANT = "RECRUITMENT_ASSISTANT";
     /**
      * Recruiter-tier roles: the AI brief, configuration surfaces, the
      * review-before-send email queue, dossier-adjacent work. {@code TEAMLEAD}
@@ -98,7 +105,7 @@ public class RecruitmentVisibility {
      * Inbox tier (decisions 12/13, 2026-08-23): the roles that work the raw
      * intake queues — pending referrals and unsolicited applicants — and
      * their actions (triage, pool from the queue). The recruiter tier plus
-     * {@code TEAMLEAD}. {@code ASSISTANT_TEAMLEAD} is deliberately absent:
+     * {@code TEAMLEAD}. {@code RECRUITMENT_ASSISTANT} is deliberately absent:
      * decision 8 makes unapplied candidates invisible to an assistant, so
      * an assistant Inbox would show nothing while its buttons still fired.
      */
@@ -205,42 +212,58 @@ public class RecruitmentVisibility {
     }
 
     /**
-     * The practice the viewer's {@code ASSISTANT_TEAMLEAD} rights are scoped
-     * to — the practice they are a <em>member</em> of,
-     * {@code user.practice_uuid} (decision 3). Deliberately never
-     * {@code practice_lead} or {@code teamroles}: decision 11 removed the
-     * practice-lead routes from recruitment entirely; running a practice
-     * grants no recruitment right any more.
+     * The positions a recruitment assistant is currently assigned to — the
+     * whole scope of the role since the 2026-09-08 design (D1). ONE query,
+     * resolved once per call in the shape of {@link #circledPositionUuids},
+     * per the class's no-N+1 rule.
      * <p>
-     * {@code null} when the user has no practice. The assignment rail
-     * ({@code RoleService}) refuses handing the role to such a user, but a
-     * {@code null} here still fails closed at every consultation — an
-     * assistant with no practice can act on nothing.
+     * The query carries three rules so that <em>every</em> consumer gets them
+     * for free and none can forget one:
+     * <ul>
+     *   <li>{@code revoked_at IS NULL} — a revoked assignment grants nothing,
+     *       but the row survives for audit.</li>
+     *   <li>{@code p.status <> 'CLOSED'} — access ends the moment a position
+     *       closes and returns if it re-opens (D11). {@code ON_HOLD} keeps
+     *       access deliberately.</li>
+     *   <li>{@code p.hiring_track <> 'PARTNER'} — a partner requisition is
+     *       never assignable, and the circle stays its only key (spec A1).</li>
+     * </ul>
+     * Empty for everyone who holds no assignment, which is the fail-closed
+     * default: holding the role with no row grants nothing at all.
+     * <p>
+     * Replaced {@code practiceOfUser}, which this class no longer has any use
+     * for — practice is not a recruitment right in any form.
      */
-    public String practiceOfUser(String userUuid) {
-        if (userUuid == null || userUuid.isBlank()) {
-            return null;
+    @SuppressWarnings("unchecked")
+    public Set<String> assignedPositionUuids(String viewerUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
+            return Set.of();
         }
-        List<?> rows = em.createNativeQuery(
-                        "SELECT practice_uuid FROM user WHERE uuid = :uuid")
-                .setParameter("uuid", userUuid)
+        List<String> rows = em.createNativeQuery("""
+                        SELECT a.position_uuid
+                        FROM recruitment_position_assistants a
+                        JOIN recruitment_positions p ON p.uuid = a.position_uuid
+                        WHERE a.user_uuid = :viewer
+                          AND a.revoked_at IS NULL
+                          AND p.status <> 'CLOSED'
+                          AND p.hiring_track <> 'PARTNER'
+                        """)
+                .setParameter("viewer", viewerUuid)
                 .getResultList();
-        if (rows.isEmpty()) {
-            return null;
-        }
-        return rows.get(0) instanceof String s && !s.isBlank() ? s : null;
+        return Set.copyOf(rows);
     }
 
     /**
      * Whether the viewer's recruitment standing is the assistant tier and
-     * nothing wider: they hold {@code ASSISTANT_TEAMLEAD} and none of the
+     * nothing wider: they hold {@code RECRUITMENT_ASSISTANT} and none of the
      * roles that carry their own recruitment reach. Every assistant-specific
-     * DENY (final outcomes, the dossier, candidate creation) keys on this —
-     * the role only ever adds a practice-scoped route, so a TEAMLEAD or
-     * recruiter who also holds it keeps everything their wider role grants.
+     * DENY (final outcomes, the dossier, candidate creation, position
+     * mutation, circle management, compensation facts) keys on this — the role
+     * only ever adds the assignment route, so a TEAMLEAD or recruiter who also
+     * holds it keeps everything their wider role grants.
      */
     static boolean isAssistantScoped(Set<String> roles) {
-        return roles.contains(ROLE_ASSISTANT_TEAMLEAD)
+        return roles.contains(ROLE_RECRUITMENT_ASSISTANT)
                 && !roles.contains(ROLE_ADMIN)
                 && !roles.contains(ROLE_TEAMLEAD)
                 && roles.stream().noneMatch(RECRUITER_TIER_ROLES::contains);
@@ -268,23 +291,24 @@ public class RecruitmentVisibility {
     }
 
     /**
-     * The assistant's practice route (decisions 2–5): the viewer holds
-     * {@code ASSISTANT_TEAMLEAD} and the position is a <b>non-partner</b>
-     * position of the practice they belong to. Partner track is excluded
-     * unconditionally — the circle stays its only key, and belonging to a
-     * practice must never become a back door into a confidential hire. For
-     * assistant-only viewers this is also the complete non-partner answer:
-     * named ownership and current team leadership cannot widen it.
+     * The assistant's assignment route (2026-09-08 design, D1): the viewer
+     * holds {@code RECRUITMENT_ASSISTANT} and somebody has assigned them to
+     * this <b>non-partner</b>, non-closed position. Partner track is excluded
+     * unconditionally — the circle stays its only key, and an assignment must
+     * never become a back door into a confidential hire. For assistant-only
+     * viewers this is also the complete non-partner answer: named ownership
+     * and current team leadership cannot widen it.
+     * <p>
+     * Superseded the practice route: an assistant's own practice grants
+     * nothing, and an assistant may be assigned across practices (D5).
      */
-    private boolean assistantPracticeRoute(String viewerUuid, Set<String> roles,
+    private boolean assistantAssignedRoute(String viewerUuid, Set<String> roles,
                                            RecruitmentPosition position) {
-        if (!roles.contains(ROLE_ASSISTANT_TEAMLEAD)
-                || position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
-                || position.getPracticeUuid() == null) {
+        if (!roles.contains(ROLE_RECRUITMENT_ASSISTANT)
+                || position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
             return false;
         }
-        String practice = practiceOfUser(viewerUuid);
-        return practice != null && practice.equals(position.getPracticeUuid());
+        return assignedPositionUuids(viewerUuid).contains(position.getUuid());
     }
 
     /** Team uuids the viewer currently leads (temporal {@code teamroles} LEADER rows). */
@@ -314,7 +338,7 @@ public class RecruitmentVisibility {
      * question <em>"is this mine to worry about?"</em> — see
      * {@code RecruitmentLandingService.taskInScope}.
      * <p>
-     * Deliberately NOT {@link #practiceOfUser}: in production every one of
+     * Deliberately NOT the viewer's {@code user.practice_uuid}: in production every one of
      * the 13 team leads has a {@code user.practice_uuid} that differs from
      * the practice of the team they lead (or none at all), so the membership
      * hop would scope the card to the wrong practice. And deliberately not
@@ -372,18 +396,17 @@ public class RecruitmentVisibility {
     /**
      * Whether the viewer may bulk-tag candidates (decision 15, 2026-08-23):
      * the recruiter tier, every {@code TEAMLEAD} (● — company-wide, same as
-     * their candidate read), and the {@code ASSISTANT_TEAMLEAD} (◐ — the
-     * per-target practice scoping happens in
-     * {@code CandidateService.bulkAddTags} via
-     * {@link #assistantVisibleCandidateUuids}; out-of-practice targets
-     * answer 404 like any other invisible row).
+     * their candidate read), and the {@code RECRUITMENT_ASSISTANT} (◐ — the
+     * per-target scoping happens in {@code CandidateService.bulkAddTags} via
+     * {@link #assistantVisibleCandidateUuids}; targets outside their assigned
+     * positions answer 404 like any other invisible row).
      */
     public boolean canBulkTag(String userUuid) {
         Set<String> roles = rolesOf(userUuid);
         return roles.contains(ROLE_ADMIN)
                 || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)
                 || roles.contains(ROLE_TEAMLEAD)
-                || roles.contains(ROLE_ASSISTANT_TEAMLEAD);
+                || roles.contains(ROLE_RECRUITMENT_ASSISTANT);
     }
 
     /**
@@ -391,7 +414,7 @@ public class RecruitmentVisibility {
      * template list, render, AI draft, copy-options and the send itself
      * (2026-08-25). The recruiter tier, every {@code TEAMLEAD} (● —
      * company-wide, same reach as their candidate read) and the
-     * {@code ASSISTANT_TEAMLEAD} (◐ — practice-scoped).
+     * {@code RECRUITMENT_ASSISTANT} (◐ — scoped to their assigned positions).
      * <p>
      * This <b>reverses</b> the 2026-08-25 line of the access-model target's
      * "deliberately left closed to TEAMLEAD" list: the person actually
@@ -414,7 +437,7 @@ public class RecruitmentVisibility {
         return roles.contains(ROLE_ADMIN)
                 || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)
                 || roles.contains(ROLE_TEAMLEAD)
-                || roles.contains(ROLE_ASSISTANT_TEAMLEAD);
+                || roles.contains(ROLE_RECRUITMENT_ASSISTANT);
     }
 
     /**
@@ -456,7 +479,7 @@ public class RecruitmentVisibility {
      *
      * <p><b>Assistants never create candidates</b> (decision 10) — the rule
      * is stated on the role, not left to the grant configuration, so a
-     * console edit that hands {@code ASSISTANT_TEAMLEAD} the
+     * console edit that hands {@code RECRUITMENT_ASSISTANT} the
      * {@code recruitment:intake} key by mistake still opens nothing. This
      * closes the create-then-invisible blind spot: a candidate an assistant
      * created would have no application and therefore be invisible to its
@@ -491,7 +514,7 @@ public class RecruitmentVisibility {
      *       included.</li>
      *   <li>A {@code TEAMLEAD} opens any non-partner position (target
      *       table: create ●).</li>
-     *   <li>An {@code ASSISTANT_TEAMLEAD} opens non-partner positions in
+     *   <li>An {@code RECRUITMENT_ASSISTANT} opens non-partner positions in
      *       their own practice only (◐ practice).</li>
      *   <li>Partner-track creation stays recruiter-tier: the circle model
      *       starts at creation, and reading existing partner reqs is
@@ -511,10 +534,11 @@ public class RecruitmentVisibility {
         if (roles.contains(ROLE_TEAMLEAD)) {
             return true;
         }
-        if (roles.contains(ROLE_ASSISTANT_TEAMLEAD)) {
-            String practice = practiceOfUser(viewerUuid);
-            return practice != null && practice.equals(practiceUuid);
-        }
+        // A recruitment assistant does NOT create positions (D2, 2026-09-08).
+        // Their scope is exactly the positions somebody assigned them to, and
+        // creating one would be self-service scope. Stated on the role rather
+        // than on a practice comparison, so it holds however the caller is
+        // configured.
         return false;
     }
 
@@ -594,25 +618,30 @@ public class RecruitmentVisibility {
                     "exists (select 1 from RecruitmentCircleMember m"
                             + " where m.positionUuid = p.uuid and m.userUuid = :viewer)";
             boolean assistantScoped = isAssistantScoped(roles);
-            String assistantPractice = assistantScoped ? practiceOfUser(viewerUuid) : null;
+            Set<String> assistantAssigned = assistantScoped
+                    ? assignedPositionUuids(viewerUuid) : Set.of();
             if (roles.stream().anyMatch(POSITION_READ_ROLES::contains)) {
                 // Read tier (recruiter + teamlead): everything except partner
                 // track outside the circle. Decision rights are checked
                 // separately by canDecideOnApplication.
                 query.append(" and (p.hiringTrack <> :partnerTrack or ").append(circleExists).append(')');
             } else if (assistantScoped) {
-                // Assistant-only is an exclusive practice route for
-                // non-partner positions. Named ownership, stale team
-                // leadership and non-partner circle rows must never widen
-                // it; with no practice it therefore fails closed. An
-                // explicit circle still opens partner-track visibility.
+                // Assistant-only is an exclusive ASSIGNMENT route for
+                // non-partner positions (D1, 2026-09-08). Named ownership,
+                // stale team leadership and non-partner circle rows must
+                // never widen it; with no assignment it therefore fails
+                // closed — note the clause below is omitted entirely on an
+                // empty set rather than emitting `in ()`, which is both
+                // invalid JPQL and would read as "match everything" if a
+                // future edit inverted it. An explicit circle still opens
+                // partner-track visibility.
                 query.append(" and ((p.hiringTrack = :partnerTrack and ")
                         .append(circleExists)
                         .append(')');
-                if (assistantPractice != null) {
+                if (!assistantAssigned.isEmpty()) {
                     query.append(" or (p.hiringTrack <> :partnerTrack"
-                                    + " and p.practiceUuid = :assistantPractice)");
-                    params.and("assistantPractice", assistantPractice);
+                                    + " and p.uuid in :assistantAssigned)");
+                    params.and("assistantAssigned", assistantAssigned);
                 }
                 query.append(')');
             } else {
@@ -674,7 +703,7 @@ public class RecruitmentVisibility {
         if (isAssistantScoped(roles)) {
             // Assistant-only never falls through to named-owner/current-lead
             // involvement outside their practice (or with no practice).
-            return assistantPracticeRoute(viewerUuid, roles, position);
+            return assistantAssignedRoute(viewerUuid, roles, position);
         }
         // Involvement: named owner or current team lead. The practice-lead
         // route is gone (decision 11).
@@ -693,8 +722,8 @@ public class RecruitmentVisibility {
      * practice-run routes are gone (decision 11) — running a practice
      * grants nothing anywhere in recruitment any more.
      * <p>
-     * The {@code ASSISTANT_TEAMLEAD} qualifies through
-     * {@link #assistantPracticeRoute} — same capability, scoped to the
+     * The {@code RECRUITMENT_ASSISTANT} qualifies through
+     * {@link #assistantAssignedRoute} — same capability, scoped to the
      * practice they belong to, with no owner/current-leader fallback for an
      * assistant-only viewer. <b>Final outcomes are the exception</b>
      * (decision 7): hire, reject, withdraw and return-to-pool require
@@ -715,10 +744,10 @@ public class RecruitmentVisibility {
             // own-practice; named ownership/current leadership is not an
             // alternate route. Partner decisions retain explicit circle
             // OWNER/RECRUITER semantics through canDecideCore.
-            return assistantPracticeRoute(viewerUuid, roles, position);
+            return assistantAssignedRoute(viewerUuid, roles, position);
         }
         return canDecideCore(viewerUuid, roles, position)
-                || assistantPracticeRoute(viewerUuid, roles, position);
+                || assistantAssignedRoute(viewerUuid, roles, position);
     }
 
     /**
@@ -762,7 +791,7 @@ public class RecruitmentVisibility {
      * canonical predicate, so only the recruiter tier (ADMIN, HR,
      * RECRUITMENT) retains the pre-ATS route.
      *
-     * <p>The assistant practice route never satisfies the position predicate,
+     * <p>The assistant assignment route never satisfies the position predicate,
      * while an assistant who also holds TEAMLEAD, HR, RECRUITMENT or ADMIN
      * keeps the broader role's rights through the normal additive role model.
      */
@@ -833,7 +862,17 @@ public class RecruitmentVisibility {
      * enforced before: a circle PARTICIPANT may look but not touch.
      */
     public boolean canMutatePosition(String viewerUuid, RecruitmentPosition position) {
-        return canDecideOnApplication(viewerUuid, position);
+        // Split from canDecideOnApplication on 2026-09-08 (D2). They were the
+        // same predicate while the assistant's pipeline rights and position
+        // rights coincided; they no longer do — an assistant moves candidates
+        // through an assigned position's stages but may not edit or close the
+        // position itself. Everyone else is unchanged, byte for byte: the
+        // assistant is subtracted, nothing is added.
+        Set<String> roles = rolesOf(viewerUuid);
+        if (isAssistantScoped(roles)) {
+            return false;
+        }
+        return canDecideCore(viewerUuid, roles, position);
     }
 
     /**
@@ -855,10 +894,10 @@ public class RecruitmentVisibility {
         }
         if (isAssistantScoped(roles)
                 && position.getHiringTrack() != RecruitmentHiringTrack.PARTNER) {
-            return assistantPracticeRoute(viewerUuid, roles, position);
+            return assistantAssignedRoute(viewerUuid, roles, position);
         }
         return viewerUuid.equals(position.getHiringOwnerUuid())
-                || assistantPracticeRoute(viewerUuid, roles, position);
+                || assistantAssignedRoute(viewerUuid, roles, position);
     }
 
     // ---- Application visibility (P4) -----------------------------------------
@@ -957,8 +996,8 @@ public class RecruitmentVisibility {
         boolean admin = roles.contains(ROLE_ADMIN);
         boolean readTier = roles.stream().anyMatch(POSITION_READ_ROLES::contains);
         boolean assistantScoped = isAssistantScoped(roles);
-        String assistantPractice = assistantScoped
-                ? practiceOfUser(viewerUuid) : null;
+        Set<String> assistantAssigned = assistantScoped
+                ? assignedPositionUuids(viewerUuid) : Set.of();
 
         Set<String> circled = admin ? Set.of() : circledPositionUuids(viewerUuid);
         Set<String> ledTeams = (admin || readTier || assistantScoped) ? Set.of()
@@ -975,8 +1014,7 @@ public class RecruitmentVisibility {
                 return true;
             }
             if (assistantScoped) {
-                return assistantPractice != null
-                        && assistantPractice.equals(position.getPracticeUuid());
+                return assistantAssigned.contains(position.getUuid());
             }
             // The practice-lead route is gone (decision 11).
             return viewerUuid != null && (viewerUuid.equals(position.getHiringOwnerUuid())
@@ -991,10 +1029,10 @@ public class RecruitmentVisibility {
      * 2026-08-23). A position is theirs when any of these holds:
      * <ol>
      *   <li>they are the named hiring owner (except that assistant-only
-     *       standing remains exclusively practice-scoped);</li>
-     *   <li>they hold {@code ASSISTANT_TEAMLEAD} and it is a non-partner
-     *       position of the practice they belong to — the assistant's whole
-     *       scope IS their practice, so those pipelines are "theirs";</li>
+     *       standing remains exclusively assignment-scoped);</li>
+     *   <li>they hold {@code RECRUITMENT_ASSISTANT} and somebody assigned them
+     *       to this non-partner position — an assignment is precisely a
+     *       statement that the pipeline is theirs;</li>
      *   <li>they were invited onto its circle.</li>
      * </ol>
      * The former practice-run routes (led teams' practices, registered
@@ -1018,21 +1056,26 @@ public class RecruitmentVisibility {
         Set<String> roles = rolesOf(viewerUuid);
         boolean assistantScoped = isAssistantScoped(roles);
         Set<String> circled = circledPositionUuids(viewerUuid);
-        String assistantPractice = roles.contains(ROLE_ASSISTANT_TEAMLEAD)
-                ? practiceOfUser(viewerUuid) : null;
+        // Deliberately keyed on HOLDING the role, not on isAssistantScoped:
+        // an assignment is a statement that this pipeline is yours, and that
+        // is true whether or not you also hold TEAMLEAD. The surrounding
+        // branch still uses isAssistantScoped, because what an assistant-ONLY
+        // viewer may see is a narrower question than what is "theirs". The two
+        // spellings differ on purpose — this is the one site where they do.
+        Set<String> assistantAssigned = roles.contains(ROLE_RECRUITMENT_ASSISTANT)
+                ? assignedPositionUuids(viewerUuid) : Set.of();
 
         return positions.stream()
                 .filter(position -> {
-                    boolean assistantPracticePosition = assistantPractice != null
-                            && position.getHiringTrack() != RecruitmentHiringTrack.PARTNER
-                            && assistantPractice.equals(position.getPracticeUuid());
+                    boolean assistantAssignedPosition =
+                            assistantAssigned.contains(position.getUuid());
                     if (assistantScoped) {
-                        return assistantPracticePosition
+                        return assistantAssignedPosition
                                 || (position.getHiringTrack() == RecruitmentHiringTrack.PARTNER
                                     && circled.contains(position.getUuid()));
                     }
                     return viewerUuid.equals(position.getHiringOwnerUuid())
-                            || assistantPracticePosition
+                            || assistantAssignedPosition
                             || circled.contains(position.getUuid());
                 })
                 .map(RecruitmentPosition::getUuid)
@@ -1065,8 +1108,8 @@ public class RecruitmentVisibility {
         // on every non-partner position.
         boolean decideTier = admin || roles.stream().anyMatch(POSITION_READ_ROLES::contains);
         boolean assistantScoped = isAssistantScoped(roles);
-        String assistantPractice = assistantScoped
-                ? practiceOfUser(viewerUuid) : null;
+        Set<String> assistantAssigned = assistantScoped
+                ? assignedPositionUuids(viewerUuid) : Set.of();
         Set<String> ledTeams = (decideTier || assistantScoped) ? Set.of()
                 : new HashSet<>(currentlyLedTeams(viewerUuid));
         Map<String, RecruitmentCircleRole> circleRoles = admin ? Map.of()
@@ -1092,8 +1135,7 @@ public class RecruitmentVisibility {
                 return true;
             }
             if (assistantScoped) {
-                return assistantPractice != null
-                        && assistantPractice.equals(position.getPracticeUuid());
+                return assistantAssigned.contains(position.getUuid());
             }
             // Involvement: named owner or current team lead — the
             // practice-lead routes are gone (decision 11).
@@ -1142,10 +1184,10 @@ public class RecruitmentVisibility {
      *       applications sit on PARTNER positions and the viewer is in none
      *       of those circles (the spec §7.2 hard circle filter, applied to
      *       candidates).</li>
-     *   <li>Assistant tier ({@code ASSISTANT_TEAMLEAD}, decisions 5/8):
+     *   <li>Assistant tier ({@code RECRUITMENT_ASSISTANT}, decisions 5/8):
      *       only candidates with an application on a non-partner position
      *       in the viewer's practice
-     *       ({@link #hasApplicationInAssistantPractice}); an unapplied
+     *       ({@link #hasApplicationOnAssignedPosition}); an unapplied
      *       candidate is invisible.</li>
      *   <li>Involvement tier (everyone else): <b>ownership or current
      *       leadership</b> of a non-partner position the candidate applied
@@ -1184,10 +1226,16 @@ public class RecruitmentVisibility {
             return !isPartnerTrackOnly(viewerUuid, candidate.getUuid());
         }
         if (isAssistantScoped(roles)) {
-            // Assistant-only is exclusively practice-scoped for the full
-            // profile. Named-owner/current-lead involvement must not bypass
-            // an out-of-practice or missing-practice denial.
-            return hasApplicationInAssistantPractice(viewerUuid, candidate.getUuid());
+            // Assistant-only is exclusively assignment-scoped for the full
+            // profile (D1). Named-owner/current-lead involvement must not
+            // bypass a denial for a position they are not assigned to.
+            // NOTE (D6): once the candidate is visible through ONE assigned
+            // position, the WHOLE candidate file is visible — including their
+            // applications on positions the assistant is not assigned to.
+            // Per-application filtering was considered and dropped; see the
+            // spec §3 A4. Do not "fix" this into a per-application check
+            // without reading §11 first.
+            return hasApplicationOnAssignedPosition(viewerUuid, candidate.getUuid());
         }
         return hasOwnershipOrLeadershipInvolvement(viewerUuid, candidate.getUuid());
     }
@@ -1201,21 +1249,24 @@ public class RecruitmentVisibility {
      * created themselves, which is why they don't create (decision 10).
      * Partner positions never qualify: the circle stays their only key.
      */
-    public boolean hasApplicationInAssistantPractice(String viewerUuid, String candidateUuid) {
-        String practice = practiceOfUser(viewerUuid);
-        if (practice == null || candidateUuid == null) {
+    public boolean hasApplicationOnAssignedPosition(String viewerUuid, String candidateUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
             return false;
         }
         return !em.createNativeQuery("""
                         SELECT 1 FROM recruitment_applications a
                         JOIN recruitment_positions p ON p.uuid = a.position_uuid
+                        JOIN recruitment_position_assistants pa
+                             ON pa.position_uuid = p.uuid
+                            AND pa.user_uuid = :viewer
+                            AND pa.revoked_at IS NULL
                         WHERE a.candidate_uuid = :candidate
                           AND p.hiring_track <> 'PARTNER'
-                          AND p.practice_uuid = :practice
+                          AND p.status <> 'CLOSED'
                         LIMIT 1
                         """)
                 .setParameter("candidate", candidateUuid)
-                .setParameter("practice", practice)
+                .setParameter("viewer", viewerUuid)
                 .getResultList()
                 .isEmpty();
     }
@@ -1224,7 +1275,7 @@ public class RecruitmentVisibility {
      * Batched candidate-profile scope for the assistant database grid and
      * bulk actions: every candidate uuid visible through the assistant
      * practice route, in one query. Unlike the narrower
-     * {@link #hasApplicationInAssistantPractice} building block, this also
+     * {@link #hasApplicationOnAssignedPosition} building block, this also
      * applies the canonical hired-file cutoff from
      * {@link #canReadCandidateProfile}: an application must not keep a new
      * employee's former candidate file visible after conversion. Empty when
@@ -1233,8 +1284,7 @@ public class RecruitmentVisibility {
      */
     @SuppressWarnings("unchecked")
     public List<String> assistantVisibleCandidateUuids(String viewerUuid) {
-        String practice = practiceOfUser(viewerUuid);
-        if (practice == null) {
+        if (viewerUuid == null || viewerUuid.isBlank()) {
             return List.of();
         }
         return em.createNativeQuery("""
@@ -1242,11 +1292,15 @@ public class RecruitmentVisibility {
                         FROM recruitment_applications a
                         JOIN recruitment_positions p ON p.uuid = a.position_uuid
                         JOIN recruitment_candidates c ON c.uuid = a.candidate_uuid
+                        JOIN recruitment_position_assistants pa
+                             ON pa.position_uuid = p.uuid
+                            AND pa.user_uuid = :viewer
+                            AND pa.revoked_at IS NULL
                         WHERE p.hiring_track <> 'PARTNER'
-                          AND p.practice_uuid = :practice
+                          AND p.status <> 'CLOSED'
                           AND c.status <> 'HIRED'
                         """)
-                .setParameter("practice", practice)
+                .setParameter("viewer", viewerUuid)
                 .getResultList();
     }
 
@@ -1437,15 +1491,19 @@ public class RecruitmentVisibility {
         if (candidatePositions == null || candidatePositions.isEmpty()) {
             return false;
         }
-        // The assistant sees the salary-expectation events of their
-        // practice's candidates — pre-offer pipeline data, same population
-        // whose profile they read. The OFFER dossier's comp is a different
-        // surface and stays closed to them (decision 9, canReadDossier).
+        // A recruitment assistant gets NO compensation facts at all (D8,
+        // 2026-09-08) — not the salary expectation, not any comp-group fact,
+        // pre-offer or otherwise. Until then they saw their practice's
+        // candidates' expectations.
+        //
+        // Returning false rather than falling through to the owner/led-team
+        // checks below is REQUIRED for consistency: the assistant route is
+        // exclusive everywhere else in this class ("named ownership and
+        // current team leadership cannot widen it" — assistantAssignedRoute),
+        // so a fall-through would let an assistant who happens to be a named
+        // hiring owner read comp on a position they cannot even open.
         if (isAssistantScoped(roles)) {
-            String practice = practiceOfUser(viewerUuid);
-            return practice != null && candidatePositions.stream().anyMatch(p ->
-                    p.getHiringTrack() != RecruitmentHiringTrack.PARTNER
-                            && practice.equals(p.getPracticeUuid()));
+            return false;
         }
         if (candidatePositions.stream().anyMatch(p -> viewerUuid.equals(p.getHiringOwnerUuid()))) {
             return true;
@@ -1453,6 +1511,33 @@ public class RecruitmentVisibility {
         Set<String> ledTeams = new HashSet<>(currentlyLedTeams(viewerUuid));
         return candidatePositions.stream()
                 .anyMatch(p -> p.getTeamUuid() != null && ledTeams.contains(p.getTeamUuid()));
+    }
+
+    /**
+     * Candidate-level form of {@link #isCompTierFor}: resolves the
+     * candidate's positions itself, for the write-side guards that hold a
+     * candidate uuid rather than a pre-fetched position list.
+     * <p>
+     * Exists because the two compensation-fact WRITE guards used to check
+     * {@code scopeContext.hasScope("recruitment:comp")}, which gates the API
+     * CLIENT and not the person — the BFF's identity carries {@code admin:*},
+     * so {@code ScopeContext} answered true for every human caller and the
+     * guard was inert (spec F1). A per-person check is the only thing that
+     * makes "this role may not touch compensation" true.
+     * <p>
+     * Not batched on purpose: the callers are single-candidate mutations, not
+     * list rendering, so the extra two queries are per-request, not per-row.
+     */
+    public boolean isCompTierForCandidate(String viewerUuid, String candidateUuid) {
+        if (viewerUuid == null || viewerUuid.isBlank() || candidateUuid == null) {
+            return false;
+        }
+        List<RecruitmentApplication> applications =
+                RecruitmentApplication.list("candidateUuid", candidateUuid);
+        List<RecruitmentPosition> positions = applications.isEmpty() ? List.of()
+                : RecruitmentPosition.list("uuid in ?1", applications.stream()
+                        .map(RecruitmentApplication::getPositionUuid).distinct().toList());
+        return isCompTierFor(viewerUuid, positions);
     }
 
     // ---- Offer dossier / contract -------------------------------------------
@@ -1886,30 +1971,72 @@ public class RecruitmentVisibility {
 
     /**
      * May the viewer manage (add/remove) the position's circle? ADMIN and HR
-     * always; an {@code ASSISTANT_TEAMLEAD} within their practice (target
-     * table 2026-08-23: ◐ practice — non-partner only, the
-     * assistant route never fires on partner track); otherwise only circle
-     * {@code OWNER}s and {@code RECRUITER}s — a {@code PARTICIPANT} can see
-     * the position but not widen the circle.
+     * always; otherwise only circle {@code OWNER}s and {@code RECRUITER}s — a
+     * {@code PARTICIPANT} can see the position but not widen the circle.
+     * <p>
+     * A {@code RECRUITMENT_ASSISTANT} may NOT manage a circle (D10,
+     * 2026-09-08): the circle is the only key to a partner requisition, and a
+     * plain {@code TEAMLEAD} has never had this right either. An assistant
+     * who holds a seat still benefits from it — they simply cannot grant one.
      */
     public boolean canManageCircle(String viewerUuid, RecruitmentPosition position) {
         Set<String> roles = rolesOf(viewerUuid);
         if (roles.contains(ROLE_ADMIN) || roles.contains("HR")) {
             return true;
         }
-        if (isAssistantScoped(roles)
-                && position.getHiringTrack() != RecruitmentHiringTrack.PARTNER) {
-            // Non-partner circle membership is not an alternate route around
-            // the assistant's exclusive practice scope.
-            return assistantPracticeRoute(viewerUuid, roles, position);
-        }
-        if (assistantPracticeRoute(viewerUuid, roles, position)) {
-            return true;
-        }
+        // A recruitment assistant does NOT manage circle membership (D10,
+        // 2026-09-08). Both assistant routes that used to grant it are gone:
+        // the exclusive practice branch and the additive fall-through below
+        // it. The circle is the only key to a partner requisition, so letting
+        // the junior role widen it inverted the hierarchy — and a plain
+        // TEAMLEAD never had this right in the first place.
+        //
+        // A circle seat still works for an assistant who holds one (D10, spec
+        // A1): they fall through to the OWNER/RECRUITER check below like
+        // anybody else. What they cannot do is grant that seat to themselves
+        // or to anyone else.
         RecruitmentCircleMember membership = RecruitmentCircleMember.findById(
                 new RecruitmentCircleMember.Key(position.getUuid(), viewerUuid));
         return membership != null
                 && (membership.getRoleInCircle() == RecruitmentCircleRole.OWNER
                 || membership.getRoleInCircle() == RecruitmentCircleRole.RECRUITER);
+    }
+
+    /**
+     * May the viewer assign a recruitment assistant to this position (D3,
+     * 2026-09-08)? The gate on {@code POST/DELETE
+     * /recruitment/positions/{uuid}/assistants}.
+     * <ul>
+     *   <li>{@code PARTNER} track: <b>never</b>, for anybody. A partner
+     *       requisition is not assignable and the circle stays its only key
+     *       (spec A1). Checked first, before any role.</li>
+     *   <li>ADMIN, HR, RECRUITMENT: any non-partner position, in any practice
+     *       — practice is not a boundary for this role (D5).</li>
+     *   <li>{@code TEAMLEAD}: only a position they are the <b>named hiring
+     *       owner</b> of. Holding the role is not enough, deliberately: the
+     *       decision-1 widening lets every team lead decide on every
+     *       non-partner pipeline, so a role-only check here would let any of
+     *       the 20 holders staff an assistant onto another practice's hire.</li>
+     * </ul>
+     * Consequence worth knowing: a position with a NULL
+     * {@code hiring_owner_uuid} — several exist in production — cannot be
+     * assigned by any team lead at all, only by the recruiter tier. That is
+     * the intended reading of D3, and the panel copy says so.
+     * <p>
+     * A recruitment assistant can never assign anybody, including themselves:
+     * they hold none of the three roles above, and being a named hiring owner
+     * does not widen assistant standing anywhere in this class.
+     */
+    public boolean canAssignAssistant(String viewerUuid, RecruitmentPosition position) {
+        if (position == null || position.getHiringTrack() == RecruitmentHiringTrack.PARTNER) {
+            return false;
+        }
+        Set<String> roles = rolesOf(viewerUuid);
+        if (roles.contains(ROLE_ADMIN) || roles.stream().anyMatch(RECRUITER_TIER_ROLES::contains)) {
+            return true;
+        }
+        return roles.contains(ROLE_TEAMLEAD)
+                && viewerUuid != null
+                && viewerUuid.equals(position.getHiringOwnerUuid());
     }
 }

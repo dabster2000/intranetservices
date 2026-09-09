@@ -38,7 +38,11 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
  * themselves and to anyone with {@code teams:read} reach over them (a lead of their team,
  * HR/ADMIN unbounded); <em>writes</em> to {@code teams:write} reach only — team leads and
  * HR, never the person. Machine callers without an actor header pass, as everywhere
- * (Phase 12). Scopes are the existing {@code users:read} / {@code users:write}; no new key.
+ * (Phase 12). Scopes are the existing {@code users:read} for reads and {@code teams:write}
+ * for writes; no new key. The write scope deliberately matches {@link #WRITE_REACH}: when it
+ * was {@code users:write} the coarse gate and the row-level rule stated contradictory policy
+ * — {@code users:write} is held only by ADMIN and HR, so every team lead this resource was
+ * written for was refused before {@code requireSubjectWhenActor} ever ran.
  */
 @Tag(name = "User Profile")
 @JBossLog
@@ -71,7 +75,7 @@ public class UserProfileExtensionResource {
 
     @PUT
     @Path("/profile-extension")
-    @RolesAllowed({"users:write"})
+    @RolesAllowed({"teams:write"})
     public UserProfileExtensionDTO upsert(@PathParam("useruuid") String useruuid, UserProfileExtensionRequest request) {
         if (request == null) {
             throw new WebApplicationException("Body required", Response.Status.BAD_REQUEST);
@@ -89,7 +93,7 @@ public class UserProfileExtensionResource {
 
     @POST
     @Path("/competence-tags")
-    @RolesAllowed({"users:write"})
+    @RolesAllowed({"teams:write"})
     public List<CompetenceTagDTO> addTag(@PathParam("useruuid") String useruuid, CompetenceTagRequest request) {
         if (request == null) {
             throw new WebApplicationException("Body required", Response.Status.BAD_REQUEST);
@@ -100,7 +104,7 @@ public class UserProfileExtensionResource {
 
     @DELETE
     @Path("/competence-tags/{tag}")
-    @RolesAllowed({"users:write"})
+    @RolesAllowed({"teams:write"})
     public List<CompetenceTagDTO> removeTag(@PathParam("useruuid") String useruuid, @PathParam("tag") String tag) {
         scope.requireSubjectWhenActor(WRITE_REACH, useruuid, "Profile outside your reach");
         return service.removeTag(useruuid, tag, scope.actorOrNull());

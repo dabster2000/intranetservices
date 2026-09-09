@@ -74,7 +74,7 @@ import java.util.stream.Collectors;
  *       <b>Writing to a candidate</b> — the template list the picker
  *       offers, render, AI draft, copy-options, send — is the hiring tier
  *       ({@code ADMIN}/{@code HR}/{@code RECRUITMENT}/{@code TEAMLEAD}/
- *       {@code ASSISTANT_TEAMLEAD} via
+ *       {@code RECRUITMENT_ASSISTANT} via
  *       {@link RecruitmentVisibility#canEmailCandidates}): the person
  *       running a hire is the one who needs to write to the candidate.
  *       <b>Configuring what gets sent</b> — creating/editing templates, the
@@ -673,7 +673,7 @@ public class RecruitmentEmailResource {
 
     /**
      * Writing TO a candidate is the wider hiring tier (2026-08-25): the
-     * recruiter tier plus {@code TEAMLEAD} and {@code ASSISTANT_TEAMLEAD}.
+     * recruiter tier plus {@code TEAMLEAD} and {@code RECRUITMENT_ASSISTANT}.
      * Which candidates each of them reaches is still
      * {@code canReadCandidateProfile}'s answer, applied right after this by
      * {@link #requireVisibleCandidate}. Same 404-not-403 shape.
