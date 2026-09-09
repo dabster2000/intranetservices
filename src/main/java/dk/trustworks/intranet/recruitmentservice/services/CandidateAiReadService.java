@@ -12,7 +12,9 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibili
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
+import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RecruitmentStage;
+import dk.trustworks.intranet.recruitmentservice.security.CompensationTextRedactor;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -89,6 +91,12 @@ public class CandidateAiReadService {
         boolean intakeOn = aiFlags.isIntakeEnabled();
         boolean briefOn = aiFlags.isBriefEnabled();
         RouteScope routeScope = routeScope(viewerUuid, candidate.getUuid());
+        // The AI sections carry the same compensation data the timeline
+        // gates, in a shape the timeline's payload.field rule cannot see:
+        // an intake suggestion IS keyed {field: "SALARY_EXPECTATION",
+        // value: "70.000"}, and a brief bullet can simply narrate the
+        // figure. Neither was filtered before 2026-09-09.
+        boolean compTier = visibility.isCompTierForCandidate(viewerUuid, candidate.getUuid());
 
         AiBrief brief = null;
         List<AiSuggestionView> suggestions = List.of();
@@ -99,6 +107,10 @@ public class CandidateAiReadService {
                 Map<String, Object> pii = parse(briefEvent.getPii());
                 Map<String, Object> payload = parse(briefEvent.getPayload());
                 List<String> bullets = stringList(pii.get("bullets"));
+                if (!compTier) {
+                    // Prose kept, amounts masked — same rule as the timeline.
+                    bullets = bullets.stream().map(CompensationTextRedactor::redact).toList();
+                }
                 if (!bullets.isEmpty()) {
                     brief = new AiBrief(bullets, briefEvent.getOccurredAt(),
                             payload.get("model") instanceof String m ? m : null,
@@ -110,7 +122,8 @@ public class CandidateAiReadService {
         if (intakeOn) {
             IntakeGeneration generation = latestVisibleIntakeGeneration(routeScope);
             if (generation != null) {
-                suggestions = toViews(generation, resolvedSuggestionIds(routeScope), candidate);
+                suggestions = toViews(generation, resolvedSuggestionIds(routeScope), candidate,
+                        compTier);
             }
         }
         return new CandidateAiStateResponse(brief, suggestions, new AiRegenerateInfo(
@@ -284,14 +297,26 @@ public class CandidateAiReadService {
 
     // ---- Internals ---------------------------------------------------------------
 
+    /**
+     * @param compTier when false, compensation suggestions are dropped
+     *                 outright rather than masked: the suggestion's own
+     *                 {@code field} names the fact
+     *                 ({@code SALARY_EXPECTATION}), so a masked value would
+     *                 still hand the viewer a comp row the fact ledger
+     *                 already refuses them — and an assistant gets no
+     *                 compensation facts at all (D8).
+     */
     private List<AiSuggestionView> toViews(IntakeGeneration generation, Set<String> resolvedIds,
-                                           RecruitmentCandidate candidate) {
+                                           RecruitmentCandidate candidate, boolean compTier) {
         List<AiSuggestionView> views = new ArrayList<>();
         for (Map<String, Object> suggestion : generation.suggestions()) {
             String id = suggestion.get("id") instanceof String s ? s : null;
             String field = suggestion.get("field") instanceof String f ? f : null;
             if (id == null || field == null || resolvedIds.contains(id)
                     || isFieldPopulated(candidate, field)) {
+                continue;
+            }
+            if (!compTier && RecruitmentFactVocabulary.isCompScoped(field)) {
                 continue;
             }
             views.add(new AiSuggestionView(

@@ -11,6 +11,7 @@ import dk.trustworks.intranet.recruitmentservice.events.RecruitmentEventVisibili
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentApplication;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentFactVocabulary;
+import dk.trustworks.intranet.recruitmentservice.security.CompensationTextRedactor;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentPosition;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentVisibility;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -393,6 +394,27 @@ public class RecruitmentTimelineService {
             }
         }
 
+        // Free-text backstop for the comp tier (2026-09-09). Everything above
+        // keys on payload.field, so a note that simply TYPES the salary
+        // instead of tagging it — "hendes lønforventning var 70.000 +
+        // pension" — was never redacted, and neither was
+        // AI_SUGGESTIONS_GENERATED, whose pii spells out
+        // "SALARY_EXPECTATION=70.000kr" but is not a NOTE_ADDED. Production
+        // held both, on candidates a live RECRUITMENT_ASSISTANT could open.
+        //
+        // The author is exempt: masking someone's own words back at them is
+        // pure noise, and they already know what they wrote. Everyone else
+        // outside the comp tier gets the amounts masked and the prose kept,
+        // so the assistant still sees THAT compensation was discussed.
+        boolean compAmountsMasked = false;
+        if (!compTier && pii != null && !isOwnEvent(event, viewerUuid)) {
+            Map<String, Object> masked = CompensationTextRedactor.redactDocument(pii);
+            if (masked != pii) {
+                pii = masked;
+                compAmountsMasked = true;
+            }
+        }
+
         RecruitmentPosition position = event.getPositionUuid() != null
                 ? positions.get(event.getPositionUuid())
                 : null;
@@ -413,7 +435,15 @@ public class RecruitmentTimelineService {
                 event.getApplicationUuid(),
                 payload,
                 pii,
-                piiRedacted);
+                piiRedacted,
+                compAmountsMasked);
+    }
+
+    /** Whether this viewer wrote the event — exempt from amount masking. */
+    private static boolean isOwnEvent(RecruitmentEvent event, String viewerUuid) {
+        return viewerUuid != null
+                && event.getActorType() == RecruitmentActorType.USER
+                && viewerUuid.equals(event.getActorUuid());
     }
 
     /** Retain ordinary progress while removing offer-dossier facts. */

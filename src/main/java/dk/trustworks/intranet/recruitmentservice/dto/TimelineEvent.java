@@ -15,6 +15,12 @@ import java.util.Map;
  * personal data OR when scoping withheld it; {@code piiRedacted} is
  * {@code true} only in the withheld case (salary-expectation notes outside
  * the comp tier), so the UI can render an explicit "restricted" marker.
+ * <p>
+ * {@code compAmountsMasked} is the softer sibling: the pii IS present, but
+ * money figures inside its free text were replaced with
+ * {@code CompensationTextRedactor.MASK} because the viewer is outside the
+ * comp tier. The two are mutually exclusive per event — a withheld pii has
+ * no text left to mask.
  */
 public record TimelineEvent(
         long seq,
@@ -35,6 +41,11 @@ public record TimelineEvent(
         /** Personal data, parsed JSON; null when absent or withheld. */
         Map<String, Object> pii,
         /** True when {@code pii} was withheld by comp-tier scoping. */
-        boolean piiRedacted
+        boolean piiRedacted,
+        /**
+         * True when {@code pii} survived but had compensation amounts masked
+         * out of its free text for this viewer.
+         */
+        boolean compAmountsMasked
 ) {
 }
