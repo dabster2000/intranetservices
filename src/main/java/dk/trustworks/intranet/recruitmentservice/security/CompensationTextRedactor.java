@@ -115,7 +115,13 @@ public final class CompensationTextRedactor {
      * still match, and that colon follows a letter.
      */
     private static final Pattern MONEY = Pattern.compile(
-            "(?<![\\d.,])(?<!\\d:)("
+            "(?<![\\d.,])(?<!\\d:)"
+                    // Optional RANGE prefix, so "51-52k" masks whole rather than
+                    // leaving "51-●●●". Found in production: the upper bound is
+                    // money-shaped and the lower one is a bare two-digit number,
+                    // so masking only the tail still discloses the range.
+                    + "(?:\\d{1,4}(?:[.,]\\d{1,2})?\\s?[-–—]\\s?)?"
+                    + "("
                     + "\\d{1,3}(?:[.\\u00A0 ]\\d{3})+(?:[.,]\\d{1,2})?"  // 70.000  1.500.000  85 000
                     + "|\\d{5,8}(?:[.,]\\d{1,2})?"                        // 85000  115000  85000.00
                     + "|\\d{2,4}(?:[.,]\\d{1,2})?\\s?[kK](?![" + LETTER + "\\d])"  // 63k  80 k
