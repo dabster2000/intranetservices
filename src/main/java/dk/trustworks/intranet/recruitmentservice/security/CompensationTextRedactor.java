@@ -70,7 +70,11 @@ public final class CompensationTextRedactor {
      * {@code månedsløn}, {@code grundløn}, {@code årsløn}), so anchoring it
      * to a word start misses half of them. The ø-less {@code lon} spelling
      * cannot be treated that way — it is a substring of {@code kolonne},
-     * {@code salon} and {@code colon} — so that branch stays word-initial.
+     * {@code salon} and {@code colon}. Word-initial is not enough either:
+     * {@code lon[a-z]*} swallows {@code London} and {@code long}, both of
+     * which occur in these notes (one production note reads "a 'long
+     * stretch'"), and either one drags an entire unrelated note into
+     * compensation masking. That branch therefore names real compounds.
      * <p>
      * The currency and earning branches ({@code kr}, {@code kroner},
      * {@code dkk}, {@code mio}, {@code tjene}) are what catch a figure stated
@@ -86,7 +90,7 @@ public final class CompensationTextRedactor {
     private static final Pattern COMPENSATION_VOCABULARY = Pattern.compile(
             "løn"                                        // substring: lønforventning AND månedsløn
                     + "|(?<![" + LETTER + "])("
-                    + "lon[" + LETTER + "]*"             // word-initial only: not kolonne/salon
+                    + "lon(?:forventning|forventninger|niveau|pakke|krav|ramme|seddel|ninger|nen)"
                     + "|gage|honorar|vederlag"
                     + "|salary|salaries|salaried|compensation|remuneration|wage|wages"
                     + "|pension[" + LETTER + "]*"

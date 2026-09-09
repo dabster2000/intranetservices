@@ -140,12 +140,24 @@ class CompensationTextRedactorTest {
                 "Sprint 5-10 leverede 300 point",
                 "Perioden 2026-08-11 til 2026-09-01",
                 "Vi er 150 mand mod 250-300 hos dem",
+                // "lon" lookalikes — a bare lon[a-z]* branch matched both of
+                // these and pulled the whole note into compensation masking.
+                "Han er dialog et andet sted som var et 'long stretch', 150000 brugere",
+                "Scandic Hotel London/Gatwick, England — 220000 gæster",
+                "Kandidaten flytter til London og har 85000 følgere",
         })
         void returnsTheSameInstance(String ordinary) {
             assertFalse(CompensationTextRedactor.mentionsCompensation(ordinary)
                             && CompensationTextRedactor.redact(ordinary).contains(MASK),
                     () -> "wrongly masked: " + CompensationTextRedactor.redact(ordinary));
             assertSame(ordinary, CompensationTextRedactor.redact(ordinary));
+        }
+
+        @Test
+        @DisplayName("the ø-less spelling still works when it names a real compound")
+        void oLessCompoundsStillMatch() {
+            assertTrue(CompensationTextRedactor.redact("lonforventning 70.000").contains(MASK));
+            assertTrue(CompensationTextRedactor.redact("lonniveau 85000").contains(MASK));
         }
 
         @Test
