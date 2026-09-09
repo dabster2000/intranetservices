@@ -106,9 +106,16 @@ public final class CompensationTextRedactor {
      * the Airtable record ids ({@code recBMZggwGWgRZ69E}) that share these
      * notes — hence the 5-digit floor on bare integers (a bare year is four)
      * and the exact-three-digit grouping.
+     * <p>
+     * The {@code (?<!\d:)} guard is for ISO timestamps, which the Airtable
+     * "ALL DATA" notes are full of: without it the seconds of
+     * {@code 2026-07-01T12:50:47.000Z} read as the money shape
+     * {@code 47.000} and the note renders {@code 12:50:●●●Z}. It rejects a
+     * colon only when a DIGIT precedes it — a plain {@code Løn:70.000} must
+     * still match, and that colon follows a letter.
      */
     private static final Pattern MONEY = Pattern.compile(
-            "(?<![\\d.,])("
+            "(?<![\\d.,])(?<!\\d:)("
                     + "\\d{1,3}(?:[.\\u00A0 ]\\d{3})+(?:[.,]\\d{1,2})?"  // 70.000  1.500.000  85 000
                     + "|\\d{5,8}(?:[.,]\\d{1,2})?"                        // 85000  115000  85000.00
                     + "|\\d{2,4}(?:[.,]\\d{1,2})?\\s?[kK](?![" + LETTER + "\\d])"  // 63k  80 k

@@ -127,6 +127,27 @@ class CompensationTextRedactorTest {
         }
 
         @Test
+        @DisplayName("ISO timestamps survive inside a masked note — the Airtable dumps are full of them")
+        void keepsIsoTimestamps() {
+            // Real shape from the migrated Airtable "ALL DATA" notes. Without the
+            // (?<!\d:) guard the seconds read as the money shape 47.000 and the
+            // note rendered "12:50:●●●Z".
+            String text = "Airtable-kommentar: pension drøftet. "
+                    + "\"Sidst ændret status\" : \"2026-07-01T12:50:47.000Z\", løn 70.000";
+            String redacted = CompensationTextRedactor.redact(text);
+            assertTrue(redacted.contains("2026-07-01T12:50:47.000Z"),
+                    () -> "timestamp was mangled: " + redacted);
+            assertTrue(redacted.contains("løn " + MASK), () -> "salary not masked: " + redacted);
+        }
+
+        @Test
+        @DisplayName("a colon after a letter is not a timestamp — Løn:70.000 still masks")
+        void colonAfterLetterStillMasks() {
+            assertEquals("Løn:" + MASK, CompensationTextRedactor.redact("Løn:70.000"));
+            assertEquals("Løn: " + MASK, CompensationTextRedactor.redact("Løn: 70.000"));
+        }
+
+        @Test
         @DisplayName("dates and percentages survive inside a masked note")
         void keepsDatesAndPercentages() {
             String redacted = CompensationTextRedactor.redact(
