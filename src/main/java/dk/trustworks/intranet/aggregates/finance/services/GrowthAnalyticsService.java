@@ -75,6 +75,14 @@ public class GrowthAnalyticsService {
     /** Employee types included in every count (EXTERNAL is excluded). */
     static final Set<String> COUNTED_TYPES = Set.of("CONSULTANT", "STUDENT", "STAFF");
 
+    /**
+     * First fiscal year in which all three companies' bank accounts are in the
+     * import (Technology from 2023-09, Cyber Security from 2024-12): the seasonal
+     * cash-flow pattern is measured only from here, so the A/S-only years of a
+     * much smaller company cannot dominate the median.
+     */
+    static final int GROUP_ERA_FIRST_FISCAL_YEAR = 2024;
+
     @Inject
     EntityManager em;
 
@@ -187,7 +195,7 @@ public class GrowthAnalyticsService {
                     - glDirectByMonth.getOrDefault(mk, 0d));
         }
         Double conversion = measureCashConversion(bankFlows, ebitdaByMonth, COST_DATA_FROM_KEY, ttmToKey);
-        List<Double> seasonal = seasonalFlowPattern(bankFlows);
+        List<Double> seasonal = seasonalFlowPattern(bankFlows, revenueByMonth, revenueTtm);
         Double dividendTtm = dividendOverWindow(bankFlows, ttmFromKey, ttmToKey);
         Integer dividendMonth = dominantDividendMonth(bankFlows);
 
@@ -409,29 +417,42 @@ public class GrowthAnalyticsService {
 
     /**
      * Median intra-year cash-flow deviation per calendar month, measured on
-     * non-dividend flows across complete fiscal years, re-centered to sum ≈ 0.
-     * Index 0 = January. Returns an empty list when fewer than two complete
-     * fiscal years of bank data exist.
+     * non-dividend flows across the complete fiscal years of the three-company
+     * era ({@link #GROUP_ERA_FIRST_FISCAL_YEAR} on), re-centered to sum ≈ 0.
+     * Each year's deviations are expressed as a share of that year's net
+     * revenue before the median is taken, and the result is scaled back to DKK
+     * with the trailing-12-month revenue — so a pattern measured on smaller
+     * years still applies at today's size. Index 0 = January. Returns an empty
+     * list when fewer than two complete fiscal years exist.
      */
-    static List<Double> seasonalFlowPattern(List<GroupFlowMonth> flows) {
-        // Group non-dividend flows by fiscal year; keep only complete (12-month) years.
+    static List<Double> seasonalFlowPattern(List<GroupFlowMonth> flows, Map<String, Double> revenueByMonth,
+                                            double ttmRevenue) {
+        // Group non-dividend flows by fiscal year; keep only complete (12-month) years of the group era.
         Map<Integer, Map<Integer, Double>> byFy = new TreeMap<>();
         for (GroupFlowMonth flow : flows) {
             YearMonth ym = parseMonthKey(flow.monthKey());
-            byFy.computeIfAbsent(fiscalYearOf(ym), k -> new HashMap<>())
+            int fy = fiscalYearOf(ym);
+            if (fy < GROUP_ERA_FIRST_FISCAL_YEAR) continue;
+            byFy.computeIfAbsent(fy, k -> new HashMap<>())
                     .merge(ym.getMonthValue(), flow.totalFlow() - flow.dividendFlow(), Double::sum);
         }
         List<double[]> residualYears = new ArrayList<>();
-        for (Map<Integer, Double> months : byFy.values()) {
+        for (Map.Entry<Integer, Map<Integer, Double>> year : byFy.entrySet()) {
+            Map<Integer, Double> months = year.getValue();
             if (months.size() < 12) continue;
+            double revenue = 0;
+            for (int i = 0; i < 12; i++) {
+                revenue += revenueByMonth.getOrDefault(monthKey(YearMonth.of(year.getKey(), 7).plusMonths(i)), 0d);
+            }
+            if (revenue <= 0) continue;
             double mean = months.values().stream().mapToDouble(Double::doubleValue).sum() / 12d;
             double[] residuals = new double[12];
             for (Map.Entry<Integer, Double> e : months.entrySet()) {
-                residuals[e.getKey() - 1] = e.getValue() - mean;
+                residuals[e.getKey() - 1] = (e.getValue() - mean) / revenue;
             }
             residualYears.add(residuals);
         }
-        if (residualYears.size() < 2) return List.of();
+        if (residualYears.size() < 2 || ttmRevenue <= 0) return List.of();
 
         double[] medians = new double[12];
         for (int m = 0; m < 12; m++) {
@@ -443,7 +464,7 @@ public class GrowthAnalyticsService {
         }
         double center = java.util.Arrays.stream(medians).average().orElse(0);
         List<Double> result = new ArrayList<>(12);
-        for (double median : medians) result.add(median - center);
+        for (double median : medians) result.add((median - center) * ttmRevenue);
         return result;
     }
 
@@ -536,7 +557,7 @@ public class GrowthAnalyticsService {
      * the fact table exactly in the years before intercompany billing existed.
      * Null bounds mean open-ended.</p>
      */
-    private Map<String, Double> queryMonthlyRevenue(String fromKey, String toKey) {
+    Map<String, Double> queryMonthlyRevenue(String fromKey, String toKey) {
         String effectiveFromKey = fromKey != null ? fromKey : monthKey(REVENUE_START);
         String effectiveToKey = toKey != null ? toKey : monthKey(YearMonth.from(LocalDate.now()));
 
