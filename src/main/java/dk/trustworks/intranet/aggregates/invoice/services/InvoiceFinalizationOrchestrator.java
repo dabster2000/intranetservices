@@ -717,7 +717,11 @@ public class InvoiceFinalizationOrchestrator {
         // producing a supplier credit on the debtor side.
         //
         // A failure here sets economics_status = PARTIALLY_UPLOADED rather than
-        // propagating the exception; the retry batchlet (H12) will re-attempt.
+        // propagating the exception. NOTHING retries it automatically: EconomicsUploadRetryBatchlet
+        // reads invoice_economics_uploads, which this Q2C path never writes. The row stays
+        // half-booked until a human completes it (adoptVendorBooking in completion mode). The
+        // period pre-flight in createDraft now asks the debtor's agreement too, so a barred debtor
+        // period — the 2026-09-09 cause — is refused before either side is posted.
         //
         // INTERNAL / INTERNAL_SERVICE invoices and internal CREDIT_NOTE reversals (a
         // CREDIT_NOTE carrying a debtor) post a debtor-side voucher. A client CREDIT_NOTE
@@ -733,7 +737,8 @@ public class InvoiceFinalizationOrchestrator {
      * Posts a supplier-invoice entry to the debtor company's e-conomic journal.
      *
      * <p>Failures are caught and demoted to a {@code PARTIALLY_UPLOADED} status so
-     * the caller's transaction can still commit and the retry batchlet can recover.
+     * the caller's transaction can still commit and the issuer booking is recorded. There is no
+     * automatic recovery from that state; the nightly finalizer reports it as HALF_BOOKED.
      *
      * <p>Uses {@link DebtorCompanyLookup} and {@link EconomicsAgreementResolver} instead of
      * Panache static methods so this path is fully unit-testable without a live DB session.
@@ -767,7 +772,8 @@ public class InvoiceFinalizationOrchestrator {
                     inv.getUuid(), debtorCompany.getName());
         } catch (Exception e) {
             log.warnf(e, "bookDraft: DEBTOR-side voucher post failed for internal invoice %s — "
-                    + "setting PARTIALLY_UPLOADED for retry", inv.getUuid());
+                    + "setting PARTIALLY_UPLOADED; the issuer booking stands and nothing retries the "
+                    + "debtor voucher automatically", inv.getUuid());
             inv.setEconomicsStatus(EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
             invoices.persist(inv);
             perfMetrics.emitCount("InvoiceFinalizePartialUpload", 1,

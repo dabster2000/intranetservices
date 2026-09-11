@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.period;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.DebtorCompanyLookup;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
+import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.BadRequestException;
@@ -16,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Refuses a finalization whose invoice date lands in a period the issuer's e-conomic has closed or
@@ -31,6 +35,16 @@ import java.util.Optional;
  * <p>Every one of those consequences flows from discovering the barred period only at the booking
  * call, which is the last step. Asking first costs one GET and makes the whole failure disappear:
  * no draft, no rollback, no orphan, no burned idempotency key, and an error that names the fix.
+ *
+ * <h2>An internal invoice has two agreements to ask</h2>
+ * An INTERNAL invoice (or an internal credit note) is posted twice: the issuer books it as a sales
+ * invoice, and the debtor company receives a supplier voucher dated the same day. Barring is per
+ * agreement, so the same date can be open for one and barred for the other. Until 2026-09-09 this
+ * check asked only the issuer: invoice 7803f536 passed (July 2026 open at Trustworks Technology
+ * ApS), the issuer side booked irreversibly as 70479, and the debtor voucher was then refused by
+ * Trustworks A/S with {@code E04041 "Perioden er spærret."} — a permanently half-booked invoice
+ * that nothing can complete or unwind automatically. {@link #assertPeriodOpen} therefore asks the
+ * debtor's agreement too, and refuses before either document exists.
  *
  * <h2>Fail-open is a requirement, not a shortcut</h2>
  * This check is a courtesy, and e-conomic remains the only authority on whether a posting is
@@ -65,6 +79,10 @@ public class AccountingPeriodPreflight {
 
     @Inject
     EconomicsAgreementResolver agreements;
+
+    /** Only for naming the debtor in a refusal; resolution failure falls back to the uuid. */
+    @Inject
+    DebtorCompanyLookup debtorCompanies;
 
     /**
      * Kill switch. The check adds one synchronous vendor call to every finalization, so it needs a
@@ -168,41 +186,111 @@ public class AccountingPeriodPreflight {
     }
 
     /**
-     * Throws when the invoice's date provably cannot be posted in the issuer's e-conomic.
+     * Throws when the invoice's date provably cannot be posted in the e-conomic of <em>every</em>
+     * company that will receive a document for it.
      *
-     * @throws BadRequestException naming the company, the date, the reason and both remedies.
+     * <p>For a client invoice that is the issuer alone. An internal invoice or an internal credit
+     * note also posts a supplier voucher in the DEBTOR's e-conomic, dated the same day, and that
+     * agreement is asked as well — see the class comment for the 2026-09-09 half-booking this
+     * prevents. Both checks fail open in the same way: a refusal needs a positively identified
+     * closed or barred period; a missing agreement, a vendor error or a failed company lookup
+     * lets the finalization proceed.
+     *
+     * @throws BadRequestException naming the company and its role, the date, the reason and both
+     *                             remedies.
      */
     public void assertPeriodOpen(Invoice inv) {
         if (!preflightEnabled || inv == null || inv.getInvoicedate() == null
                 || inv.getCompany() == null) {
             return;
         }
-        String companyUuid = inv.getCompany().getUuid();
-        String companyName = inv.getCompany().getName() != null
-                ? inv.getCompany().getName() : companyUuid;
         LocalDate date = inv.getInvoicedate();
+        String issuerUuid = inv.getCompany().getUuid();
+        String issuerName = inv.getCompany().getName() != null
+                ? inv.getCompany().getName() : issuerUuid;
 
+        refuseIfBlocked(inv, Side.ISSUER, issuerUuid, () -> issuerName, date);
+
+        if (postsDebtorVoucher(inv)) {
+            String debtorUuid = inv.getDebtorCompanyuuid();
+            refuseIfBlocked(inv, Side.DEBTOR, debtorUuid, () -> debtorName(debtorUuid), date);
+        }
+    }
+
+    /** Which of an internal invoice's two documents a refusal is about. */
+    enum Side { ISSUER, DEBTOR }
+
+    /**
+     * Mirrors the gate in {@code InvoiceFinalizationOrchestrator.postDebtorSideVoucherIfInternal}:
+     * INTERNAL, INTERNAL_SERVICE and internal credit notes post a debtor voucher; any other type
+     * does not, and neither does an internal with no debtor recorded (that path skips the voucher
+     * with a WARN, so there is no second document to protect).
+     */
+    static boolean postsDebtorVoucher(Invoice inv) {
+        boolean internal = inv.getType() == InvoiceType.INTERNAL
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE
+                || inv.isInternalCreditNote();
+        return internal
+                && inv.getDebtorCompanyuuid() != null
+                && !inv.getDebtorCompanyuuid().isBlank();
+    }
+
+    /**
+     * One side's check. The company name is a supplier so the debtor lookup, a DB read, happens
+     * only when there is actually a refusal to word.
+     */
+    private void refuseIfBlocked(Invoice inv, Side side, String companyUuid,
+                                 Supplier<String> companyNameSupplier, LocalDate date) {
         Verdict verdict = verdictFor(companyUuid, date);
         if (verdict.state() != PeriodState.BLOCKED) return;
 
         EconomicsAccountingPeriod period = verdict.period();
-        log.warnf("Period pre-flight REFUSED invoiceUuid=%s company=%s invoicedate=%s — period %s "
-                        + "of year %s is %s",
-                inv.getUuid(), companyName, date, period.getPeriodNumber(), period.getYear(),
+        String companyName = companyNameSupplier.get();
+        log.warnf("Period pre-flight REFUSED invoiceUuid=%s side=%s company=%s invoicedate=%s — "
+                        + "period %s of year %s is %s",
+                inv.getUuid(), side, companyName, date, period.getPeriodNumber(), period.getYear(),
                 period.blockReason());
 
-        throw new BadRequestException(String.format(
-                "Invoice date %s falls in an accounting period that is %s in %s's e-conomic "
-                        + "(period %s of %s), so it cannot be booked there. Either finalize it with "
-                        + "a date in an open period, or open the period in e-conomic "
-                        + "(Indstillinger → Regnskabsår → Perioder). This is per company, so the "
-                        + "same date may well book in another Trustworks entity. Nothing was sent "
-                        + "to e-conomic.",
-                date, period.blockReason(), companyName,
-                period.getPeriodNumber(), period.getYear()));
+        String message = side == Side.ISSUER
+                ? String.format(
+                        "Invoice date %s falls in an accounting period that is %s in %s's e-conomic "
+                                + "(period %s of %s), so it cannot be booked there. Either finalize it "
+                                + "with a date in an open period, or open the period in e-conomic "
+                                + "(Indstillinger → Regnskabsår → Perioder). This is per company, so "
+                                + "the same date may well book in another Trustworks entity. Nothing "
+                                + "was sent to e-conomic.",
+                        date, period.blockReason(), companyName,
+                        period.getPeriodNumber(), period.getYear())
+                : String.format(
+                        "Invoice date %s falls in an accounting period that is %s in %s's e-conomic "
+                                + "(period %s of %s). %s is the DEBTOR on this internal invoice and "
+                                + "receives a supplier voucher dated the same day, so booking the "
+                                + "issuer side alone would leave the invoice half-booked with nothing "
+                                + "able to complete it. Either finalize it with a date that is open in "
+                                + "both companies' e-conomic, or open the period in %s's e-conomic "
+                                + "(Indstillinger → Regnskabsår → Perioder). Nothing was sent to "
+                                + "e-conomic.",
+                        date, period.blockReason(), companyName,
+                        period.getPeriodNumber(), period.getYear(), companyName, companyName);
+        throw new BadRequestException(message);
     }
 
-    /** Reads the issuer's periods and classifies {@code date}; UNKNOWN whenever it cannot. */
+    /** The debtor's display name for a refusal; the uuid when it cannot be resolved. Never throws. */
+    private String debtorName(String debtorUuid) {
+        try {
+            if (debtorCompanies == null) return debtorUuid;
+            return debtorCompanies.findByUuid(debtorUuid)
+                    .map(Company::getName)
+                    .filter(n -> n != null && !n.isBlank())
+                    .orElse(debtorUuid);
+        } catch (Exception e) {
+            log.debugf("Could not resolve debtor company name for %s (%s) — using the uuid",
+                    debtorUuid, e.getMessage());
+            return debtorUuid;
+        }
+    }
+
+    /** Reads one agreement's periods and classifies {@code date}; UNKNOWN whenever it cannot. */
     private Verdict verdictFor(String companyUuid, LocalDate date) {
         List<EconomicsAccountingPeriod> periods;
         try {

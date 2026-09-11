@@ -53,7 +53,30 @@ public class QueuedInternalInvoiceFinalizer {
     private static final DateTimeFormatter PERIOD_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM");
 
     /** Result of attempting to finalize a single queued invoice. */
-    public enum Outcome { PROCESSED, SKIPPED }
+    public enum Outcome {
+        /** Both sides posted: issuer booked, debtor voucher accepted, economics_status BOOKED. */
+        PROCESSED,
+        /** Not eligible yet (or no longer), nothing was sent to e-conomic. */
+        SKIPPED,
+        /**
+         * The ISSUER side booked at e-conomic and is committed locally, but the DEBTOR-side
+         * supplier voucher was refused and the row is left at economics_status
+         * PARTIALLY_UPLOADED. This is not a success: the two intercompany books disagree, and no
+         * job retries the debtor voucher (the upload-retry batchlet only reads
+         * {@code invoice_economics_uploads}, which this Q2C path never writes). Until 2026-09-10
+         * this case was logged as "Successfully auto-finalized" — invoice 7803f536 / 70479,
+         * 2026-09-09 — and was invisible to ops.
+         */
+        HALF_BOOKED
+    }
+
+    /**
+     * Log token for a half-booked internal invoice, styled after
+     * {@code ECONOMICS_UPLOAD_TERMINAL_FAILED} so a CloudWatch metric filter can alarm on it. Emitted
+     * at ERROR exactly once per occurrence: the invoice leaves QUEUED, so the nightly run never
+     * sees it again.
+     */
+    public static final String HALF_BOOKED_TOKEN = "INTERNAL_INVOICE_HALF_BOOKED";
 
     @Inject
     InternalInvoiceOrchestrator internalOrchestrator;
@@ -121,7 +144,8 @@ public class QueuedInternalInvoiceFinalizer {
      * referenced invoice is PAID, optionally regenerates items from current attribution, then
      * delegates to {@link InternalInvoiceOrchestrator#finalizeAutomatically(String)} which creates
      * the e-conomics draft and books it. Any exception propagates and rolls back ONLY this invoice's
-     * transaction (the orchestrator loop catches it and records a failure).
+     * transaction (the orchestrator loop catches it and records a failure). A return is NOT
+     * automatically a success — see {@link #outcomeOf}.
      */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Outcome processOne(String queuedInvoiceUuid) {
@@ -171,10 +195,9 @@ public class QueuedInternalInvoiceFinalizer {
                 queuedInvoice.getUuid(), referencedInvoice.getUuid());
 
         // Auto-finalize: create draft + book immediately, no review step (SPEC-INV-001 §9.1)
-        internalOrchestrator.finalizeAutomatically(queuedInvoice.getUuid());
+        Invoice finalized = internalOrchestrator.finalizeAutomatically(queuedInvoice.getUuid());
 
-        log.infof("Successfully auto-finalized queued invoice %s", queuedInvoice.getUuid());
-        return Outcome.PROCESSED;
+        return outcomeOf(finalized, "queued invoice");
     }
 
     /**
@@ -222,8 +245,47 @@ public class QueuedInternalInvoiceFinalizer {
                 "settlement month " + internal.getSettlementYear() + "-"
                         + String.format("%02d", internal.getSettlementMonth()));
         log.infof("Auto-finalizing settlement internal %s (self-billing vouchers paid)", internal.getUuid());
-        internalOrchestrator.finalizeAutomatically(internal.getUuid());
-        log.infof("Successfully auto-finalized settlement internal %s", internal.getUuid());
+        Invoice finalized = internalOrchestrator.finalizeAutomatically(internal.getUuid());
+        return outcomeOf(finalized, "settlement internal");
+    }
+
+    /**
+     * Reads the outcome off the finalized invoice instead of assuming that a return without an
+     * exception means both sides posted.
+     *
+     * <p>{@code finalizeAutomatically} deliberately swallows a DEBTOR-side voucher failure: the
+     * issuer booking is irreversible at e-conomic, so throwing would roll back the local record of
+     * a booking that really happened (the 2026-08-07 split-brain). The price is that the return
+     * value is the only signal, and until 2026-09-10 nobody read it — the job logged "Successfully
+     * auto-finalized" over a PARTIALLY_UPLOADED row. This method must likewise never throw: the
+     * enclosing REQUIRES_NEW transaction has to commit the half-booked state so that the booked
+     * number survives.
+     *
+     * @param finalized the invoice as returned by the orchestrator
+     * @param what      "queued invoice" or "settlement internal", for the log line
+     */
+    // Package-private so the outcome decision is testable without Panache statics.
+    Outcome outcomeOf(Invoice finalized, String what) {
+        if (finalized != null
+                && finalized.getEconomicsStatus() == EconomicsInvoiceStatus.PARTIALLY_UPLOADED) {
+            String issuer = finalized.getCompany() != null ? finalized.getCompany().getUuid() : null;
+            log.errorf("%s: %s %s is HALF-BOOKED — the ISSUER side (company %s) booked at e-conomic "
+                            + "as %s, but the DEBTOR-side supplier voucher to company %s was refused "
+                            + "and economics_status is PARTIALLY_UPLOADED. Nothing retries this "
+                            + "automatically. Check the debtor's e-conomic journal for an existing "
+                            + "voucher, fix the cause (see the preceding DEBTOR-side voucher WARN), "
+                            + "then post the debtor voucher via "
+                            + "POST /invoices/internalservices/{uuid}/reconcile-booking?bookedNumber=%s "
+                            + "and set economics_status=BOOKED.",
+                    HALF_BOOKED_TOKEN, what, finalized.getUuid(), issuer,
+                    finalized.getEconomicsBookedNumber(), finalized.getDebtorCompanyuuid(),
+                    finalized.getEconomicsBookedNumber());
+            return Outcome.HALF_BOOKED;
+        }
+        log.infof("Successfully auto-finalized %s %s (bookedNumber=%s, economicsStatus=%s)", what,
+                finalized != null ? finalized.getUuid() : null,
+                finalized != null ? finalized.getEconomicsBookedNumber() : null,
+                finalized != null ? finalized.getEconomicsStatus() : null);
         return Outcome.PROCESSED;
     }
 

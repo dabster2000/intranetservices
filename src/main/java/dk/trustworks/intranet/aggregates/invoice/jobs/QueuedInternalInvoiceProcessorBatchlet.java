@@ -56,15 +56,16 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
         int processed = 0;
         int skipped = 0;
+        int halfBooked = 0;
         int failed = 0;
 
         for (String uuid : firstPass) {
             try {
                 Outcome outcome = finalizer.processOne(uuid);
-                if (outcome == Outcome.PROCESSED) {
-                    processed++;
-                } else {
-                    skipped++;
+                switch (outcome) {
+                    case PROCESSED -> processed++;
+                    case HALF_BOOKED -> halfBooked++;   // issuer booked, debtor refused — not a success
+                    default -> skipped++;
                 }
             } catch (Exception e) {
                 log.warnf(e, "Auto-finalize failed for queued internal invoice %s", uuid);
@@ -73,8 +74,9 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
             }
         }
 
-        log.infof("QueuedInternalInvoiceProcessorBatchlet completed: total=%d, processed=%d, skipped=%d, failed=%d",
-                firstPass.size(), processed, skipped, failed);
+        log.infof("QueuedInternalInvoiceProcessorBatchlet completed: total=%d, processed=%d, skipped=%d, "
+                        + "halfBooked=%d, failed=%d",
+                firstPass.size(), processed, skipped, halfBooked, failed);
 
         processSettlementInternals();
 
@@ -100,14 +102,14 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
         List<String> settlement = finalizer.findSettlementUuids();
         log.infof("Found %d queued settlement internals (PHANTOM-referenced) to evaluate", settlement.size());
 
-        int processed = 0, skipped = 0, failed = 0;
+        int processed = 0, skipped = 0, halfBooked = 0, failed = 0;
         for (String uuid : settlement) {
             try {
                 Outcome outcome = finalizer.processOneSettlement(uuid);
-                if (outcome == Outcome.PROCESSED) {
-                    processed++;
-                } else {
-                    skipped++;
+                switch (outcome) {
+                    case PROCESSED -> processed++;
+                    case HALF_BOOKED -> halfBooked++;
+                    default -> skipped++;
                 }
             } catch (Exception e) {
                 log.warnf(e, "Auto-finalize failed for settlement internal %s", uuid);
@@ -116,7 +118,7 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
         }
 
         log.infof("QueuedInternalInvoiceProcessorBatchlet settlement pass completed: total=%d, processed=%d, "
-                        + "skipped=%d, failed=%d",
-                settlement.size(), processed, skipped, failed);
+                        + "skipped=%d, halfBooked=%d, failed=%d",
+                settlement.size(), processed, skipped, halfBooked, failed);
     }
 }
