@@ -2,6 +2,8 @@ package dk.trustworks.intranet.aggregates.invoice.economics.period;
 
 import dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight.PeriodState;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.DebtorCompanyLookup;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.model.Company;
 import jakarta.ws.rs.BadRequestException;
@@ -16,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -38,6 +41,7 @@ class AccountingPeriodPreflightTest {
 
     @Mock EconomicsAccountingYearsApiClient periodsApi;
     @Mock EconomicsAgreementResolver agreements;
+    @Mock DebtorCompanyLookup debtorCompanies;
 
     private static final LocalDate AUG_27 = LocalDate.of(2026, 8, 27);
     private static final LocalDate JUN_30 = LocalDate.of(2026, 6, 30);
@@ -402,6 +406,191 @@ class AccountingPeriodPreflightTest {
                 .allMatch(s -> s == PeriodState.UNKNOWN));
 
         verifyNoInteractions(periodsApi, agreements);
+    }
+
+    // ── the debtor leg of an internal invoice ───────────────────────────────────────────────
+
+    private static final String TWT = "44592d3b-2be5-4b29-bfaf-4fafc60b0fa3";
+    private static final String TW_AS = "d8894494-2fb4-4f72-9e05-e6032e6dd691";
+    private static final LocalDate JUL_31 = LocalDate.of(2026, 7, 31);
+    private static final EconomicsAgreementResolver.Tokens TWT_TOKENS =
+            new EconomicsAgreementResolver.Tokens("twt-secret", "twt-grant");
+    private static final EconomicsAgreementResolver.Tokens TW_AS_TOKENS =
+            new EconomicsAgreementResolver.Tokens("as-secret", "as-grant");
+
+    /**
+     * The 2026-09-09 production shape, invoice 7803f536: July 2026 open at the issuer, barred at
+     * the debtor. The old check asked only the issuer, so the issuer side booked as 70479 and the
+     * debtor voucher was then refused — a half-booked invoice nothing can complete. The refusal
+     * must now come here, before any document exists, and it must name the DEBTOR: an operator
+     * reading "barred" would otherwise go and check the issuer's periods, which are open.
+     */
+    @Test
+    void an_internal_invoice_is_refused_when_the_DEBTOR_period_is_barred_even_though_the_issuer_is_open() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        whenDebtorPeriodsReturn(barred("2026/2027", "2026-07-01", "2026-07-31"));
+        when(debtorCompanies.findByUuid(TW_AS)).thenReturn(Optional.of(company(TW_AS, "Trustworks A/S")));
+
+        BadRequestException thrown = assertThrows(BadRequestException.class,
+                () -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+
+        String msg = thrown.getMessage();
+        assertTrue(msg.contains("Trustworks A/S"), "must name the DEBTOR, not the issuer: " + msg);
+        assertFalse(msg.contains("Trustworks Technology ApS's e-conomic"),
+                "must not blame the issuer, whose period is open: " + msg);
+        assertTrue(msg.contains("2026-07-31"), msg);
+        assertTrue(msg.contains("barred"), msg);
+        assertTrue(msg.contains("DEBTOR"), msg);
+        assertTrue(msg.contains("both companies"), "the remedy is a date open on BOTH sides: " + msg);
+        assertTrue(msg.contains("Nothing was sent to e-conomic"), msg);
+        verify(periodsApi).listPeriods("twt-secret", "twt-grant", 100, 0);
+        verify(periodsApi).listPeriods("as-secret", "as-grant", 100, 0);
+    }
+
+    @Test
+    void an_internal_invoice_passes_when_the_date_is_open_on_both_sides() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        whenDebtorPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+
+        assertDoesNotThrow(() -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+
+        verify(periodsApi).listPeriods("twt-secret", "twt-grant", 100, 0);
+        verify(periodsApi).listPeriods("as-secret", "as-grant", 100, 0);
+        verifyNoInteractions(debtorCompanies);   // the name is only looked up to word a refusal
+    }
+
+    /** A client invoice has one document, so the second agreement must not even be resolved. */
+    @Test
+    void a_client_invoice_consults_only_the_issuer() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        Invoice client = internalInvoice(InvoiceType.INVOICE, JUL_31);
+
+        assertDoesNotThrow(() -> preflight.assertPeriodOpen(client));
+
+        verify(agreements).tokens(TWT);
+        verify(agreements, never()).tokens(TW_AS);
+        verifyNoInteractions(debtorCompanies);
+    }
+
+    /** An internal credit note reverses through the same two journals, so it is gated the same way. */
+    @Test
+    void an_internal_credit_note_is_gated_on_the_debtor_too() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        whenDebtorPeriodsReturn(barred("2026/2027", "2026-07-01", "2026-07-31"));
+        when(debtorCompanies.findByUuid(TW_AS)).thenReturn(Optional.of(company(TW_AS, "Trustworks A/S")));
+
+        assertThrows(BadRequestException.class,
+                () -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.CREDIT_NOTE, JUL_31)));
+    }
+
+    /** An internal with no debtor recorded posts no debtor voucher, so there is nothing to protect. */
+    @Test
+    void an_internal_invoice_without_a_debtor_consults_only_the_issuer() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        Invoice inv = internalInvoice(InvoiceType.INTERNAL, JUL_31);
+        inv.setDebtorCompanyuuid(null);
+
+        assertDoesNotThrow(() -> preflight.assertPeriodOpen(inv));
+
+        verify(agreements, never()).tokens(TW_AS);
+    }
+
+    /** Same fail-open contract as the issuer check: an unreadable debtor agreement lets it proceed. */
+    @Test
+    void the_debtor_check_never_blocks_when_the_debtor_agreement_cannot_be_read() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        when(agreements.tokens(TW_AS)).thenThrow(new IllegalStateException("no agreement grant token"));
+
+        assertDoesNotThrow(() -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+    }
+
+    @Test
+    void the_debtor_check_never_blocks_when_the_debtor_vendor_call_fails() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        when(agreements.tokens(TW_AS)).thenReturn(TW_AS_TOKENS);
+        when(periodsApi.listPeriods("as-secret", "as-grant", 100, 0))
+                .thenThrow(new WebApplicationException("e-conomic unavailable", Response.status(503).build()));
+
+        assertDoesNotThrow(() -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+    }
+
+    /** A failed name lookup must degrade the message, never the decision. */
+    @Test
+    void a_debtor_refusal_falls_back_to_the_uuid_when_the_company_cannot_be_resolved() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(period("2026/2027", "2026-07-01", "2026-07-31", false, false));
+        whenDebtorPeriodsReturn(barred("2026/2027", "2026-07-01", "2026-07-31"));
+        when(debtorCompanies.findByUuid(TW_AS)).thenThrow(new IllegalStateException("no session"));
+
+        BadRequestException thrown = assertThrows(BadRequestException.class,
+                () -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+
+        assertTrue(thrown.getMessage().contains(TW_AS), thrown.getMessage());
+    }
+
+    /** The issuer is asked first; when it refuses, the debtor is not consulted at all. */
+    @Test
+    void an_issuer_refusal_is_reported_as_before_and_the_debtor_is_not_consulted() {
+        preflight.preflightEnabled = true;
+        whenIssuerPeriodsReturn(barred("2026/2027", "2026-07-01", "2026-07-31"));
+
+        BadRequestException thrown = assertThrows(BadRequestException.class,
+                () -> preflight.assertPeriodOpen(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+
+        assertTrue(thrown.getMessage().contains("Trustworks Technology ApS"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("another Trustworks entity"),
+                "the issuer wording must be unchanged: " + thrown.getMessage());
+        verify(agreements, never()).tokens(TW_AS);
+        verifyNoInteractions(debtorCompanies);
+    }
+
+    @Test
+    void postsDebtorVoucher_mirrors_the_orchestrator_gate() {
+        assertTrue(AccountingPeriodPreflight.postsDebtorVoucher(internalInvoice(InvoiceType.INTERNAL, JUL_31)));
+        assertTrue(AccountingPeriodPreflight.postsDebtorVoucher(internalInvoice(InvoiceType.INTERNAL_SERVICE, JUL_31)));
+        assertTrue(AccountingPeriodPreflight.postsDebtorVoucher(internalInvoice(InvoiceType.CREDIT_NOTE, JUL_31)),
+                "a credit note carrying a debtor is an internal credit note");
+
+        assertFalse(AccountingPeriodPreflight.postsDebtorVoucher(internalInvoice(InvoiceType.INVOICE, JUL_31)),
+                "a client invoice never posts a debtor voucher, whatever the debtor field says");
+        Invoice noDebtor = internalInvoice(InvoiceType.INTERNAL, JUL_31);
+        noDebtor.setDebtorCompanyuuid(" ");
+        assertFalse(AccountingPeriodPreflight.postsDebtorVoucher(noDebtor));
+    }
+
+    private void whenIssuerPeriodsReturn(EconomicsAccountingPeriod... periods) {
+        when(agreements.tokens(TWT)).thenReturn(TWT_TOKENS);
+        when(periodsApi.listPeriods("twt-secret", "twt-grant", 100, 0)).thenReturn(List.of(periods));
+    }
+
+    private void whenDebtorPeriodsReturn(EconomicsAccountingPeriod... periods) {
+        when(agreements.tokens(TW_AS)).thenReturn(TW_AS_TOKENS);
+        when(periodsApi.listPeriods("as-secret", "as-grant", 100, 0)).thenReturn(List.of(periods));
+    }
+
+    /** Issued by Trustworks Technology ApS to Trustworks A/S — the 7803f536 pair. */
+    private static Invoice internalInvoice(InvoiceType type, LocalDate date) {
+        Invoice inv = new Invoice();
+        inv.setUuid("7803f536-ecc1-4bcf-8f47-b8574795155b");
+        inv.setType(type);
+        inv.setCompany(company(TWT, "Trustworks Technology ApS"));
+        inv.setDebtorCompanyuuid(TW_AS);
+        inv.setInvoicedate(date);
+        return inv;
+    }
+
+    private static Company company(String uuid, String name) {
+        Company c = new Company();
+        c.setUuid(uuid);
+        c.setName(name);
+        return c;
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────
