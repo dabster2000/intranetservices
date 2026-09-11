@@ -395,10 +395,16 @@ public class InternalInvoiceOrchestrator {
                     bookedNumber, invoiceUuid, attempt.getUuid(), attempt.getPostedAt(),
                     booked.getGrossAmount());
 
-            // Durable write (attempt + invoice row) in its own committed transaction, then refresh
+            // Durable write (attempt + invoice row) in its own committed transaction, then bring
             // the entity past its stale pre-adoption snapshot before any further use.
             attemptWriter.markBooked(attempt.getUuid(), invoiceUuid, bookedNumber);
-            invoices.refresh(inv);
+            syncAfterDurableWrite(inv, invoiceUuid, () -> {
+                // Exactly what InvoiceBookingAttemptWriter.updateInvoiceBooked wrote.
+                inv.setEconomicsBookedNumber(bookedNumber);
+                inv.setInvoicenumber(bookedNumber);
+                inv.setStatus(InvoiceStatus.CREATED);
+                inv.setEconomicsStatus(EconomicsInvoiceStatus.BOOKED);
+            });
         }
 
         // Debtor-side supplier voucher with the vendor-verified gross. The transient grandTotal
@@ -407,10 +413,11 @@ public class InternalInvoiceOrchestrator {
         boolean posted = issuerSide.postDebtorVoucherAfterReconcile(inv, voucherDate);
 
         if (posted) {
-            // Both legs now exist. Close the half-booking durably (REQUIRES_NEW) and re-read the
-            // row so the returned entity reports what was committed.
+            // Both legs now exist. Close the half-booking durably (REQUIRES_NEW), then make the
+            // entity report what was committed.
             int rows = invoices.markDebtorVoucherPosted(invoiceUuid);
-            invoices.refresh(inv);
+            syncAfterDurableWrite(inv, invoiceUuid,
+                    () -> inv.setEconomicsStatus(EconomicsInvoiceStatus.BOOKED));
             log.infof("adoptVendorBooking: invoiceUuid=%s debtor voucher posted — economics_status "
                     + "set to BOOKED (%d row updated)", invoiceUuid, rows);
         }
@@ -418,6 +425,31 @@ public class InternalInvoiceOrchestrator {
         log.infof("adoptVendorBooking: invoiceUuid=%s reconciled to bookedNumber=%d, "
                 + "economicsStatus=%s", invoiceUuid, bookedNumber, inv.getEconomicsStatus());
         return inv;
+    }
+
+    /**
+     * Brings a loaded entity in line with a row that a {@code REQUIRES_NEW} write has just
+     * rewritten underneath it.
+     *
+     * <p>The mirror is applied first and unconditionally, so the returned entity — and any later
+     * {@code persist} of it — carries the committed values even when the refresh cannot run. The
+     * refresh is then attempted as confirmation and its failure tolerated: on 2026-09-11 all five
+     * reconciles of the July half-bookings had posted their voucher and committed the status flip,
+     * and then died in {@code invoices.refresh} with
+     * {@code DetachedObjectException: Given proxy does not belong to this persistence context} —
+     * the entity was loaded outside a transaction and the transactional refresh runs in a different
+     * persistence context. A 500 after two successful irreversible writes is the worst outcome
+     * this method can produce, so the refresh must never be the thing that fails it.
+     */
+    private void syncAfterDurableWrite(Invoice inv, String invoiceUuid, Runnable mirrorCommittedState) {
+        mirrorCommittedState.run();
+        try {
+            invoices.refresh(inv);
+        } catch (RuntimeException e) {
+            log.warnf("adoptVendorBooking: could not refresh invoice %s after the durable write (%s: %s) "
+                            + "— the committed state is mirrored in memory and the write itself stands",
+                    invoiceUuid, e.getClass().getSimpleName(), e.getMessage());
+        }
     }
 
     /** Gross (VAT-inclusive) derived from persisted items: Σ(rate × hours) × (1 + vat%). */
