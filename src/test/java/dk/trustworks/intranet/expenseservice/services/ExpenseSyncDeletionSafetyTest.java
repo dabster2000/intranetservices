@@ -177,7 +177,7 @@ class ExpenseSyncDeletionSafetyTest {
         assertEquals(ExpenseSyncBatchlet.SyncOutcome.SUCCESS, outcome);
         assertEquals(List.of(expense), deletionCandidates);
 
-        batchlet.applyDeletionPhase(deletionCandidates, 100);
+        batchlet.applyDeletionPhase(deletionCandidates, 100, 0);
 
         verify(expenseService).updateSyncMissCount(expense, 0);
         verify(expenseService).updateStatus(expense, ExpenseService.STATUS_DELETED);
@@ -264,6 +264,7 @@ class ExpenseSyncDeletionSafetyTest {
         Expense expense = expense();
         expense.setAmount(345.0);
         stubNumberLookupsNotFound(expense);
+        stubCrossYearNotFound();
         when(api.getJournalEntriesPage(eq(16), eq(1000), eq(0))).thenAnswer(inv -> ok(EMPTY));
         // journal 42's marker page: marker present but amount differs
         when(api.getJournalEntriesPage(eq(42), eq(1000), eq(0)))
@@ -363,7 +364,7 @@ class ExpenseSyncDeletionSafetyTest {
         Expense expense = expense();
         expense.setAmount(40.5);
         stubNotFoundAnywhere(expense);
-        when(api.getAccountingYears(50)).thenAnswer(inv -> ok(YEARS_LISTING));
+        stubCrossYearNotFound();
         when(api.getYearEntries(eq("2025_6_2026"), eq("amount$eq:40.5"), eq(1000), eq(0)))
                 .thenAnswer(inv -> ok(EMPTY));
 
@@ -390,7 +391,7 @@ class ExpenseSyncDeletionSafetyTest {
         batchlet.syncDeleteAbortPercent = 0.0;
         List<Expense> candidates = List.of(expense(), expense(), expense());
 
-        batchlet.applyDeletionPhase(new ArrayList<>(candidates), 100);
+        batchlet.applyDeletionPhase(new ArrayList<>(candidates), 100, 0);
 
         verifyNoInteractions(expenseService); // "0 deleted + 1 alert": every row untouched
     }
@@ -402,7 +403,7 @@ class ExpenseSyncDeletionSafetyTest {
         Expense first = expense();
         Expense second = expense();
 
-        batchlet.applyDeletionPhase(new ArrayList<>(List.of(first, second)), 100);
+        batchlet.applyDeletionPhase(new ArrayList<>(List.of(first, second)), 100, 0);
 
         verify(expenseService).updateSyncMissCount(first, 0);
         verify(expenseService).updateStatus(first, ExpenseService.STATUS_DELETED);
@@ -418,7 +419,7 @@ class ExpenseSyncDeletionSafetyTest {
         List<Expense> candidates = new ArrayList<>();
         for (int i = 0; i < 30; i++) candidates.add(expense());
 
-        batchlet.applyDeletionPhase(candidates, 537);
+        batchlet.applyDeletionPhase(candidates, 537, 0);
 
         verifyNoInteractions(expenseService);
     }
@@ -436,6 +437,17 @@ class ExpenseSyncDeletionSafetyTest {
     }
 
     /** Voucher absent from the stored journal, the accounting year, and every swept journal. */
+    /**
+     * Step 2.8's cross-year number lookup finds nothing. The stored year is skipped (step 2 already
+     * checked it), so only the OTHER year in {@link #YEARS_LISTING} is queried — including the one
+     * marked closed, which this step searches on purpose.
+     */
+    private void stubCrossYearNotFound() {
+        when(api.getAccountingYears(50)).thenAnswer(inv -> ok(YEARS_LISTING));
+        when(api.getYearEntries(eq("2024_6_2025"), eq("voucherNumber$eq:12345"), eq(1000), eq(0)))
+                .thenAnswer(inv -> ok(EMPTY));
+    }
+
     private void stubNotFoundAnywhere(Expense expense) {
         stubNumberLookupsNotFound(expense);
         // marker sweep pages (no marker anywhere)

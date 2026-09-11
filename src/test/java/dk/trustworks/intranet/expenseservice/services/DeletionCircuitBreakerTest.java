@@ -31,6 +31,22 @@ class DeletionCircuitBreakerTest {
     }
 
     @Test
+    void shipped_caps_at_production_scale_leave_only_the_absolute_cap_binding() {
+        // The 2026-09-11 live shape: 36 candidates out of 757 selected, shipped caps 20 / 5.0%.
+        // 5% of 757 is 37.85, so the PERCENT cap does not fire — the absolute cap is the only
+        // thing refusing this batch. That is why raising delete-abort-threshold to "just above
+        // the current count" would have deleted all 36 on the very next nightly run, and why the
+        // percent cap cannot be relied on as a second line of defence at production volume.
+        DeletionCircuitBreaker shipped = new DeletionCircuitBreaker(20, 5.0, 757);
+        assertTrue(shipped.exceedsCap(36));
+        assertFalse(new DeletionCircuitBreaker(0, 5.0, 757).exceedsCap(36), "percent cap alone lets all 36 through");
+
+        // Above ~400 selected the absolute cap is always the stricter of the two.
+        DeletionCircuitBreaker big = new DeletionCircuitBreaker(20, 5.0, 5000);
+        assertTrue(big.exceedsCap(21), "absolute cap still binds when 5% would allow 250");
+    }
+
+    @Test
     void percent_cap_is_floored_at_one_so_tiny_runs_can_still_delete_one() {
         // 5% of 10 = 0.5 → floor at 1: a single legitimate deletion still goes through
         DeletionCircuitBreaker breaker = new DeletionCircuitBreaker(1000, 5.0, 10);

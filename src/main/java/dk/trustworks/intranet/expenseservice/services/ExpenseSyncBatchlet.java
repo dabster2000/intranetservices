@@ -12,11 +12,13 @@ import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @JBossLog
@@ -97,14 +99,25 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             // "N deleted before the breaker noticed".
             List<Expense> deletionCandidates = new java.util.ArrayList<>();
 
+            // A row whose lookups failed is UNDECIDED, not "present": it silently drops out of the
+            // candidate count, which is the number the blast-radius breaker judges. Count them so the
+            // deletion phase can tell a genuinely small batch from a big one thinned by a flaky night.
+            int undecided = 0;
+            boolean runAborted = false;
+
             for (Expense expense : expenses) {
                 SyncOutcome outcome = syncExpense(expense, retry, deletionCandidates);
+                if (outcome == SyncOutcome.ERROR) {
+                    undecided++;
+                }
                 if (outcome == SyncOutcome.THROTTLED) {
+                    undecided++;
                     breaker.recordThrottled();
                     if (breaker.isTripped()) {
                         log.warn("e-conomic sustained throttling; aborting expense-sync, will resume next run "
                                 + "(consecutive throttled=" + breaker.getConsecutiveThrottled()
                                 + ", threshold=" + syncAbortThreshold + ")");
+                        runAborted = true;
                         break;
                     }
                 } else {
@@ -116,12 +129,22 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         log.warn("expense-sync interrupted during pacing; stopping run");
+                        runAborted = true;
                         break;
                     }
                 }
             }
 
-            applyDeletionPhase(deletionCandidates, expenses.size());
+            if (runAborted) {
+                // The loop stopped early, so most of the selection was never examined — but
+                // applyDeletionPhase would still measure the few candidates we did collect against
+                // the FULL selection size, making the percentage cap trivially satisfied. A partial
+                // run is never a safe basis for deletion.
+                log.warn("expense-sync stopped before the end of the selection; skipping the deletion phase entirely"
+                        + " (" + deletionCandidates.size() + " candidate(s) collected so far are NOT deleted)");
+            } else {
+                applyDeletionPhase(deletionCandidates, expenses.size(), undecided);
+            }
             return "COMPLETED";
         } catch (Exception e) {
             log.error("ExpenseSyncBatchlet failed", e);
@@ -160,14 +183,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 1) Look in journal entries (unbooked)
             String journalFilter = "voucher.voucherNumber$eq:" + vn;
-            Response jr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(jn, journalFilter, 1000)));
-            int jrStatus = jr != null ? jr.getStatus() : -1;
-            String jrBody = null;
-            try {
-                if (jr != null) jrBody = jr.readEntity(String.class);
-            } finally {
-                if (jr != null) jr.close();
-            }
+            ApiRead jrRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(jn, journalFilter, 1000))));
+            int jrStatus = jrRead.status();
+            String jrBody = jrRead.body();
             log.info("Expense " + expense.getUuid() + ": journal query jn=" + jn + ", filter='" + journalFilter + "', status=" + jrStatus);
             log.debug("Journal response body (truncated): " + truncate(jrBody, 800));
             if (jrStatus == 404) {
@@ -193,22 +211,26 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             String yearFilter = "voucherNumber$eq:" + vn;
             // Convert to underscore format for accounting-years path parameter
             String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year);
-            Response yr = retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, yearFilter, 1000, 0)));
-            int yrStatus = yr != null ? yr.getStatus() : -1;
-            String yrBody = null;
-            try {
-                if (yr != null) yrBody = yr.readEntity(String.class);
-            } finally {
-                if (yr != null) yr.close();
-            }
+            ApiRead yrRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, yearFilter, 1000, 0))));
+            int yrStatus = yrRead.status();
+            String yrBody = yrRead.body();
             log.info("Expense " + expense.getUuid() + ": year query year=" + yearId + ", filter='" + yearFilter + "', status=" + yrStatus);
             log.debug("Year response body (truncated): " + truncate(yrBody, 800));
-            if (!isSuccessStatus(yrStatus)) {
+            if (yrStatus == 404) {
+                // The stored accounting-year LABEL is not addressable in this agreement — the row
+                // carries a year that does not exist (e.g. "2025_6_2026" where this tenant's
+                // FY2025/26 is named "2025_6_2026a"). That is evidence the stored year is wrong,
+                // NOT evidence the voucher is gone, so fall through to the sweeps: step 2.8 looks
+                // the voucher number up in the years that actually exist. Returning ERROR here is
+                // what pinned such a row at miss=0 and re-logged it every night forever.
+                log.warn("Expense " + expense.getUuid() + ": stored accounting year '" + yearId
+                        + "' is not addressable (404) — the stored year is wrong; continuing with the sweeps");
+            } else if (!isSuccessStatus(yrStatus)) {
                 log.warn("Expense " + expense.getUuid() + ": year query failed with status=" + yrStatus + "; leaving status unchanged");
                 return SyncOutcome.ERROR;
             }
 
-            boolean booked = hasAnyEntries(yrBody);
+            boolean booked = isSuccessStatus(yrStatus) && hasAnyEntries(yrBody);
             if (booked) {
                 applyAccountAndNotes(expense, yrBody, "booked");
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
@@ -316,6 +338,51 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 }
             }
 
+            // 2.8) Every lookup so far has been pinned to the STORED accounting year, and that year
+            // is a local guess: the upload persists the year it SENT (EconomicsService#sendVoucher
+            // reads only voucherNumber back out of the response), never the year e-conomic actually
+            // booked into. e-conomic derives the year from the entry DATE, and the accountant
+            // routinely re-dates uploads back into the still-open prior fiscal year around the
+            // 1 July boundary — so a perfectly healthy voucher can sit booked under a year this row
+            // never names. The marker sweeps above cannot rescue those rows either: anything
+            // uploaded before the marker shipped (2026-08-05) carries no "#<uuid8>" and matches
+            // nothing by construction, however healthy it is.
+            //
+            // So before concluding the voucher is gone, look it up BY NUMBER in the other accounting
+            // years. Closed years are deliberately included: booking is the act that PRECEDES
+            // closing, so the year a voucher was booked into is very often one that has since closed.
+            // The amount must match before re-keying, because e-conomic REUSES voucher numbers across
+            // years (2026-08-31: number 6037343 had been reassigned to an unrelated intercompany
+            // invoice, and a number-only match produced a false "still booked" verdict).
+            // Guarded on the amount for the same reason as 2.7: the amount is what distinguishes
+            // "our voucher, booked elsewhere" from "someone else's voucher that inherited the
+            // number". Without one there is nothing to confirm a hit against, so the lookup could
+            // only ever return unusable candidates — skip it rather than spend the calls.
+            CrossYearResult crossYear = expense.getAmount() == null
+                    ? new CrossYearResult(new java.util.ArrayList<>())
+                    : findBookedInOtherYears(api, retry, expense, yearId);
+            if (crossYear == null) {
+                return SyncOutcome.ERROR; // a year lookup failed — absence is NOT proven
+            }
+            if (crossYear.hits.size() > 1) {
+                log.error("Expense " + expense.getUuid() + ": voucher " + vn + " exists with a matching amount in "
+                        + crossYear.hits.size() + " accounting years (" + crossYear.yearsDescription()
+                        + ") — cannot re-key safely, leaving unchanged for manual review");
+                return SyncOutcome.ERROR;
+            }
+            if (crossYear.hits.size() == 1) {
+                BookedHit hit = crossYear.hits.get(0);
+                log.warn("Expense " + expense.getUuid() + ": booked under a DIFFERENT accounting year than the one"
+                        + " stored — correcting '" + yearId + "' -> '" + hit.accountingYear + "' (voucher " + vn
+                        + " unchanged); marking VERIFIED_BOOKED");
+                expense.setAccountingyear(hit.accountingYear);
+                applyAccountAndNotes(expense, hit.entryBody, "cross-year");
+                // updateStatus persists accountingyear from the entity, so the correction lands with the status
+                expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
+                resetSyncMissCountIfNeeded(expense);
+                return SyncOutcome.SUCCESS;
+            }
+
             // 3) Absent from EVERY journal and not booked. Grace period: only consider
             // deletion after N consecutive missing runs — a voucher mid-move between
             // journals reappears and the counter resets, so it is never wrongly deleted.
@@ -350,29 +417,46 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
      * otherwise applies NONE of them and raises an alert — any bad night becomes
      * "0 deleted + 1 alert" instead of mass data damage.
      */
-    void applyDeletionPhase(List<Expense> deletionCandidates, int totalSelected) {
+    void applyDeletionPhase(List<Expense> deletionCandidates, int totalSelected, int undecided) {
         if (deletionCandidates.isEmpty()) {
             return;
         }
         DeletionCircuitBreaker deleteBreaker = new DeletionCircuitBreaker(
                 syncDeleteAbortThreshold, syncDeleteAbortPercent, totalSelected);
+
+        // The breaker judges the candidates we OBSERVED, and a row whose lookups failed never becomes
+        // a candidate at all — so a flaky night silently shrinks a blocked batch. With the shipped caps
+        // that is not theoretical: 36 blocked rows minus 16 transient failures leaves 20, and 20 > 20
+        // is false, so a batch the breaker refuses every other night would delete 20 rows — chosen by
+        // nothing but which lookups happened to fail. Only trust the count when the rows we could not
+        // decide could not have changed the verdict.
+        if (undecided > 0 && deleteBreaker.exceedsCap(deletionCandidates.size() + undecided)) {
+            log.error("EXPENSE-SYNC DELETION PHASE SKIPPED: " + deletionCandidates.size()
+                    + " deletion candidate(s) stayed within the caps, but " + undecided
+                    + " expense(s) could not be decided this run and would have exceeded them ("
+                    + (deletionCandidates.size() + undecided) + " of " + totalSelected
+                    + ", absolute-threshold=" + syncDeleteAbortThreshold
+                    + ", percent-threshold=" + syncDeleteAbortPercent + "%)."
+                    + " NO expenses were deleted; a partially-failed run is not a safe basis for deletion."
+                    + " Candidate uuids: " + uuidList(deletionCandidates));
+            return;
+        }
+
         if (deleteBreaker.exceedsCap(deletionCandidates.size())) {
             // ERROR on purpose: the log-based production monitoring alerts on it (no
             // Slack path exists in this module). A tripped breaker means a human must
             // check e-conomic before any deletion happens; the rows keep their state
             // and the alert repeats every night until someone acts.
-            String sampleUuids = deletionCandidates.stream()
-                    .limit(10)
-                    .map(Expense::getUuid)
-                    .reduce((a, b) -> a + ", " + b)
-                    .orElse("");
             log.error("EXPENSE-SYNC DELETION CIRCUIT BREAKER TRIPPED: " + deletionCandidates.size()
                     + " of " + totalSelected + " selected expenses would be marked DELETED"
                     + " (absolute-threshold=" + syncDeleteAbortThreshold
                     + ", percent-threshold=" + syncDeleteAbortPercent + "%)."
                     + " NO expenses were deleted; all rows left unchanged. Manual review required —"
                     + " likely an e-conomic journal reshuffle (see 2026-07-28 incident)."
-                    + " First candidate uuids: " + sampleUuids);
+                    // Every uuid, not a sample: the blocked set is persisted NOWHERE else, so a
+                    // shortened list leaves an operator unable to enumerate what to review — and the
+                    // review is the only thing that clears the breaker.
+                    + " Candidate uuids: " + uuidList(deletionCandidates));
             return;
         }
         for (Expense expense : deletionCandidates) {
@@ -383,6 +467,81 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             expenseService.updateSyncMissCount(expense, 0);
             expenseService.updateStatus(expense, ExpenseService.STATUS_DELETED);
         }
+    }
+
+    /** Every candidate uuid, comma-separated — the blocked batch is recorded nowhere else. */
+    private static String uuidList(List<Expense> expenses) {
+        return expenses.stream().map(Expense::getUuid).reduce((a, b) -> a + ", " + b).orElse("");
+    }
+
+    /** Outcome of the cross-year voucher-number lookup: every year holding that number with a matching amount. */
+    static final class CrossYearResult {
+        final List<BookedHit> hits;
+
+        CrossYearResult(List<BookedHit> hits) {
+            this.hits = hits;
+        }
+
+        String yearsDescription() {
+            return hits.stream().map(h -> h.accountingYear).reduce((a, b) -> a + ", " + b).orElse("");
+        }
+    }
+
+    /**
+     * Looks the voucher NUMBER up in every accounting year that could still hold it, skipping the
+     * stored year (step 2 already checked that one). Returns the years whose entry for that number
+     * ALSO matches the expense amount, or {@code null} when any lookup failed — absence is then not
+     * proven and the caller must leave the expense unchanged.
+     * <p>
+     * Candidate years come from {@link EconomicsService#candidateBookedYears}, which keeps every year
+     * ending on or after the expense date — closed years included, unlike {@link #extractOpenYears}
+     * used by the marker sweep. The marker sweep can justify skipping closed years because nothing
+     * NEW can book into them; this lookup cannot, because what it is searching for was booked before
+     * the year closed. Cost is one filtered GET per candidate year (typically two or three), and only
+     * for rows that have already failed every other lookup.
+     */
+    private CrossYearResult findBookedInOtherYears(EconomicsAPI api, EconomicsRetryExecutor retry,
+                                                   Expense expense, String storedYearId) {
+        ApiRead years = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getAccountingYears(50))));
+        if (years.status() == 404) {
+            return new CrossYearResult(new java.util.ArrayList<>()); // no listing to search
+        }
+        if (!isSuccessStatus(years.status())) {
+            log.warn("Expense " + expense.getUuid() + ": accounting-years listing failed with status=" + years.status()
+                    + "; cannot conclude deletion, leaving status unchanged");
+            return null;
+        }
+        String filter = "voucherNumber$eq:" + expense.getVouchernumber();
+        List<BookedHit> hits = new java.util.ArrayList<>();
+        for (String label : EconomicsService.candidateBookedYears(years.body(), expense.getExpensedate())) {
+            final String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(label);
+            if (yearId == null || yearId.equals(storedYearId)) continue;
+            ApiRead er = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, filter, 1000, 0))));
+            if (er.status() == 404) {
+                continue; // year not addressable — nothing of ours is booked under it
+            }
+            if (!isSuccessStatus(er.status())) {
+                log.warn("Expense " + expense.getUuid() + ": cross-year lookup failed for year " + yearId
+                        + " with status=" + er.status() + "; cannot conclude deletion, leaving status unchanged");
+                return null;
+            }
+            JsonNode entries = entriesArray(er.body());
+            if (entries == null || entries.size() == 0) continue;
+            for (JsonNode entry : entries) {
+                JsonNode amountNode = entry.get("amount");
+                Double amount = amountNode != null && amountNode.isNumber() ? amountNode.asDouble() : null;
+                if (!amountsMatch(expense.getAmount(), amount)) {
+                    log.warn("Expense " + expense.getUuid() + ": voucher " + expense.getVouchernumber()
+                            + " exists in year " + yearId + " but the amount differs (expense=" + expense.getAmount()
+                            + ", entry=" + amount + "); e-conomic reuses voucher numbers — NOT treating this as a match");
+                    continue;
+                }
+                hits.add(new BookedHit(yearId, expense.getVouchernumber(),
+                        "{\"collection\":[" + entry.toString() + "]}"));
+                break; // one confirmed hit per year is enough
+            }
+        }
+        return new CrossYearResult(hits);
     }
 
     /** Outcome of the all-journals sweep: which journal (if any) holds the voucher, and its entries body. */
@@ -402,14 +561,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
      * must leave the expense unchanged.
      */
     private List<Integer> fetchJournalNumbers(EconomicsAPI api, EconomicsRetryExecutor retry, Expense expense) {
-        Response js = retry.executeWithRetry(() -> failOnThrottle(api.getJournals(JOURNALS_PAGESIZE)));
-        int jsStatus = js != null ? js.getStatus() : -1;
-        String jsBody = null;
-        try {
-            if (js != null) jsBody = js.readEntity(String.class);
-        } finally {
-            if (js != null) js.close();
-        }
+        ApiRead jsRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getJournals(JOURNALS_PAGESIZE))));
+        int jsStatus = jsRead.status();
+        String jsBody = jsRead.body();
         if (!isSuccessStatus(jsStatus)) {
             log.warn("Expense " + expense.getUuid() + ": journals listing failed with status=" + jsStatus
                     + "; cannot conclude deletion, leaving status unchanged");
@@ -433,14 +587,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
         log.debug("Expense " + expense.getUuid() + ": sweeping " + journalNumbers.size() + " journals for voucher");
         for (Integer candidate : journalNumbers) {
             if (candidate == null || candidate == storedJournal) continue;
-            Response cr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(candidate, journalFilter, 1000)));
-            int crStatus = cr != null ? cr.getStatus() : -1;
-            String crBody = null;
-            try {
-                if (cr != null) crBody = cr.readEntity(String.class);
-            } finally {
-                if (cr != null) cr.close();
-            }
+            ApiRead crRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(candidate, journalFilter, 1000))));
+            int crStatus = crRead.status();
+            String crBody = crRead.body();
             if (crStatus == 404) {
                 continue; // journal disappeared between listing and lookup — nothing in it
             }
@@ -503,14 +652,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             if (candidate == null) continue;
             for (int page = 0; page < MARKER_SCAN_MAX_PAGES; page++) {
                 final int skippages = page;
-                Response pr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntriesPage(candidate, 1000, skippages)));
-                int prStatus = pr != null ? pr.getStatus() : -1;
-                String prBody = null;
-                try {
-                    if (pr != null) prBody = pr.readEntity(String.class);
-                } finally {
-                    if (pr != null) pr.close();
-                }
+                ApiRead prRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntriesPage(candidate, 1000, skippages))));
+                int prStatus = prRead.status();
+                String prBody = prRead.body();
                 if (prStatus == 404) {
                     break; // journal disappeared between listing and scan — nothing in it
                 }
@@ -577,14 +721,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
      * expense unchanged. Closed years are skipped: nothing new can book into them.
      */
     private BookedMarkerResult findBookedByMarker(EconomicsAPI api, EconomicsRetryExecutor retry, Expense expense) {
-        Response yr = retry.executeWithRetry(() -> failOnThrottle(api.getAccountingYears(50)));
-        int yrStatus = yr != null ? yr.getStatus() : -1;
-        String yrBody = null;
-        try {
-            if (yr != null) yrBody = yr.readEntity(String.class);
-        } finally {
-            if (yr != null) yr.close();
-        }
+        ApiRead yrRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getAccountingYears(50))));
+        int yrStatus = yrRead.status();
+        String yrBody = yrRead.body();
         if (!isSuccessStatus(yrStatus)) {
             log.warn("Expense " + expense.getUuid() + ": accounting-years listing failed with status=" + yrStatus
                     + "; cannot conclude, leaving status unchanged");
@@ -598,14 +737,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             final String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(openYear);
             for (int page = 0; page < MARKER_SCAN_MAX_PAGES; page++) {
                 final int skippages = page;
-                Response pr = retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, amountFilter, 1000, skippages)));
-                int prStatus = pr != null ? pr.getStatus() : -1;
-                String prBody = null;
-                try {
-                    if (pr != null) prBody = pr.readEntity(String.class);
-                } finally {
-                    if (pr != null) pr.close();
-                }
+                ApiRead prRead = readApi(() -> retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, amountFilter, 1000, skippages))));
+                int prStatus = prRead.status();
+                String prBody = prRead.body();
                 if (prStatus == 404) {
                     break; // year not addressable — nothing booked there for us
                 }
@@ -736,6 +870,46 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             // grace-period counter, which still prevents any first-miss deletion.
         }
         return result;
+    }
+
+    /** One e-conomic read reduced to what every call site in this class actually uses. */
+    record ApiRead(int status, String body) { }
+
+    /**
+     * Performs one e-conomic read: runs the call, captures status and body, and always closes the
+     * response — and re-materialises a thrown 404 as {@code status == 404}.
+     * <p>
+     * That last part is not defensive padding, it is the whole point. A 404 never arrives here as a
+     * {@link Response}: the MicroProfile Rest Client auto-registers a {@code DefaultResponseExceptionMapper}
+     * that turns every status >= 400 into a thrown {@code WebApplicationException}, and
+     * {@link EconomicsErrorMapper} declining 404 only removes ITSELF from the candidate list — it does
+     * not suppress the default one. Declaring the proxy method to return {@code Response} buys no
+     * exemption either, because the mapper is delivered by a {@code ClientResponseFilter} that runs on
+     * every response regardless of return type. Every {@code status == 404} branch in this class was
+     * therefore unreachable in production — including the "the stored journal was deleted, fall through
+     * to the sweep" fallback written for the 2026-07-28 mass-deletion incident, which in production threw
+     * instead and killed the row as ERROR. {@code EconomicsService} already works around the identical
+     * behaviour by string-matching "HTTP 404" on the exception message; this expresses it as a status.
+     * <p>
+     * Only {@link NotFoundException} is caught. A throttling {@code EconomicsRateLimitException} and any
+     * body-read failure still propagate exactly as before, so "absence not proven" stays "absence not
+     * proven" — a swallowed failure here would read as an empty result and push a row toward deletion.
+     */
+    static ApiRead readApi(Supplier<Response> call) {
+        Response r;
+        try {
+            r = call.get();
+        } catch (NotFoundException nfe) {
+            return new ApiRead(404, null);
+        }
+        int status = r != null ? r.getStatus() : -1;
+        String body = null;
+        try {
+            if (r != null) body = r.readEntity(String.class);
+        } finally {
+            if (r != null) r.close();
+        }
+        return new ApiRead(status, body);
     }
 
     static Response failOnThrottle(Response response) {
