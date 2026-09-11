@@ -264,24 +264,42 @@ class GrowthAnalyticsServiceTest {
     }
 
     @Test
-    void seasonalFlowPatternIsZeroCenteredMedianOfCompleteFiscalYears() {
-        // Two complete FYs where July is consistently 1.2M below the year mean.
+    void seasonalFlowPatternIsZeroCenteredMedianOfCompleteFiscalYearsScaledToRevenue() {
+        // Two complete FYs of the group era where July is consistently 1.2M below the year
+        // mean; the second year is twice the size of the first (flows and revenue alike).
         List<GroupFlowMonth> flows = new ArrayList<>();
-        for (int fy : new int[]{2023, 2024}) {
+        Map<String, Double> revenue = new java.util.HashMap<>();
+        for (int fy : new int[]{2024, 2025}) {
+            double scale = fy == 2024 ? 1 : 2;
             for (int i = 0; i < 12; i++) {
                 YearMonth ym = YearMonth.of(fy, 7).plusMonths(i);
-                double value = ym.getMonthValue() == 7 ? -200_000 : 1_000_000;
+                double value = (ym.getMonthValue() == 7 ? -200_000 : 1_000_000) * scale;
                 flows.add(flow(monthKey(ym), value, 0));
+                revenue.put(monthKey(ym), 10_000_000 * scale);
             }
         }
-        List<Double> pattern = GrowthAnalyticsService.seasonalFlowPattern(flows);
+        double ttmRevenue = 240_000_000; // today's size: twice the second year again
+        List<Double> pattern = GrowthAnalyticsService.seasonalFlowPattern(flows, revenue, ttmRevenue);
         assertEquals(12, pattern.size());
         double sum = pattern.stream().mapToDouble(Double::doubleValue).sum();
         assertEquals(0.0, sum, 1.0);
-        // July (index 6) is the dip.
+        // July (index 6) is the dip, scaled to today's revenue: the year-1 dip was 1.1M on
+        // 120M revenue and the year-2 dip 2.2M on 240M — the same share — so at 240M the
+        // pattern reproduces a 2.2M dip against a 0.2M lift in every other month.
         assertTrue(pattern.get(6) < pattern.get(0));
+        assertEquals(-2_400_000, pattern.get(6) - pattern.get(0), 1_000);
         // A single complete year is not enough.
-        assertTrue(GrowthAnalyticsService.seasonalFlowPattern(flows.subList(0, 12)).isEmpty());
+        assertTrue(GrowthAnalyticsService.seasonalFlowPattern(flows.subList(0, 12), revenue, ttmRevenue).isEmpty());
+        // Years before the three-company era are ignored even when complete.
+        List<GroupFlowMonth> oldYears = new ArrayList<>();
+        for (int fy : new int[]{2016, 2017}) {
+            for (int i = 0; i < 12; i++) {
+                YearMonth ym = YearMonth.of(fy, 7).plusMonths(i);
+                oldYears.add(flow(monthKey(ym), 500_000, 0));
+                revenue.put(monthKey(ym), 2_000_000d);
+            }
+        }
+        assertTrue(GrowthAnalyticsService.seasonalFlowPattern(oldYears, revenue, ttmRevenue).isEmpty());
     }
 
     @Test
