@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.jobs;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight;
+import dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight.PeriodState;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
@@ -93,9 +95,9 @@ public class QueuedInternalInvoiceFinalizer {
     @Inject
     SelfBilledDeltaQuery selfBilledDeltaQuery;
 
-    /** Decides whether the source period is still open, so a back-dated finalization is safe. */
+    /** Decides which period is open in BOTH companies, so a back-dated finalization is safe. */
     @Inject
-    dk.trustworks.intranet.aggregates.invoice.economics.period.AccountingPeriodPreflight periodPreflight;
+    AccountingPeriodPreflight periodPreflight;
 
     @Inject
     EntityManager em;
@@ -305,11 +307,26 @@ public class QueuedInternalInvoiceFinalizer {
      * <h2>Why not just the source period either</h2>
      * By the time payment lands, that period may be closed or barred — and then a job that
      * insisted on it would fail every night instead of booking late, which is strictly worse than
-     * the problem it set out to fix. So the source period is used only when e-conomic confirms it
-     * is open; anything else falls back to today, which is the old behaviour.
+     * the problem it set out to fix.
      *
-     * <p>Both branches are logged at INFO with the date and the reason, so a late booking is
-     * visible in the log rather than silently inferred from a date that looks like any other.
+     * <h2>Why both companies, and why the months in between</h2>
+     * An internal invoice is posted twice, on the same date: a sales invoice at the issuer and a
+     * supplier voucher at the debtor. Barring is per agreement. Until 2026-09-11 this method asked
+     * only the issuer, and five invoices dated 2026-07-31 (70479, 70483, 70485, 70486, 70487) were
+     * booked at Trustworks Technology ApS while Trustworks A/S had July barred: issuer side booked,
+     * debtor voucher refused, half-booked. The pre-flight in {@code createDraft} now refuses such a
+     * date outright — but a refusal every night is a stuck invoice until a human acts, and clients
+     * pay late while the parent bars months early, so it would recur monthly.
+     *
+     * <p>So the choice is: the source date if BOTH companies confirm it open; otherwise the first
+     * day of the earliest later month — up to but not including the current one — that both
+     * confirm open; otherwise today, the old fallback, which the guard then validates. Each
+     * agreement is read once for all candidates. A date no company confirmed (UNKNOWN: vendor
+     * error, kill switch, no covering period) is never chosen except as today's fallback, so a
+     * vendor hiccup cannot move an accounting period.
+     *
+     * <p>Every branch is logged at INFO with the date and the reason, so a late booking is visible
+     * in the log rather than silently inferred from a date that looks like any other.
      *
      * @param inv        the invoice about to be finalized
      * @param sourceDate the date of the period it belongs to, or null when there is none
@@ -319,21 +336,79 @@ public class QueuedInternalInvoiceFinalizer {
     void applyFinalizationDate(Invoice inv, LocalDate sourceDate, String sourceWhat) {
         LocalDate today = LocalDate.now();
         String issuer = inv.getCompany() != null ? inv.getCompany().getUuid() : null;
+        // Same gate as the debtor-side voucher post: only an internal that will actually post a
+        // debtor voucher has a second agreement to satisfy.
+        String debtor = AccountingPeriodPreflight.postsDebtorVoucher(inv) ? inv.getDebtorCompanyuuid() : null;
 
-        if (sourceDate != null && !sourceDate.isAfter(today) && issuer != null
-                && periodPreflight.isKnownOpen(issuer, sourceDate)) {
-            inv.setInvoicedate(sourceDate);
-            inv.setDuedate(sourceDate.plusDays(1));
-            log.infof("Finalization date for %s: %s, from %s — that period is open in the issuer's "
-                            + "e-conomic", inv.getUuid(), sourceDate, sourceWhat);
-            return;
+        if (sourceDate != null && !sourceDate.isAfter(today) && issuer != null) {
+            List<LocalDate> candidates = candidateDates(sourceDate, today);
+            Map<LocalDate, PeriodState> issuerStates = periodPreflight.classifyDates(issuer, candidates);
+            Map<LocalDate, PeriodState> debtorStates = debtor != null
+                    ? periodPreflight.classifyDates(debtor, candidates) : Map.of();
+
+            for (LocalDate candidate : candidates) {
+                boolean issuerOpen = issuerStates.get(candidate) == PeriodState.OPEN;
+                boolean debtorOpen = debtor == null || debtorStates.get(candidate) == PeriodState.OPEN;
+                if (!issuerOpen || !debtorOpen) continue;
+
+                stamp(inv, candidate);
+                if (candidate.equals(sourceDate)) {
+                    log.infof("Finalization date for %s: %s, from %s — that period is open in %s",
+                            inv.getUuid(), candidate, sourceWhat,
+                            debtor != null ? "both the issuer's and the debtor's e-conomic"
+                                    : "the issuer's e-conomic");
+                } else {
+                    log.infof("Finalization date for %s: %s — the first later month open in %s. Source "
+                                    + "period %s from %s was %s",
+                            inv.getUuid(), candidate,
+                            debtor != null ? "both the issuer's and the debtor's e-conomic"
+                                    : "the issuer's e-conomic",
+                            sourceDate, sourceWhat, describe(sourceDate, issuerStates, debtorStates, debtor));
+                }
+                return;
+            }
         }
 
-        inv.setInvoicedate(today);
-        inv.setDuedate(today.plusDays(1));
+        stamp(inv, today);
         log.infof("Finalization date for %s: %s (today). Source period %s from %s was closed, "
-                        + "barred, or could not be confirmed open",
+                        + "barred, or could not be confirmed open in every company, and so was every "
+                        + "month between",
                 inv.getUuid(), today, sourceDate, sourceWhat);
+    }
+
+    private static void stamp(Invoice inv, LocalDate date) {
+        inv.setInvoicedate(date);
+        inv.setDuedate(date.plusDays(1));
+    }
+
+    /** "barred/closed at the issuer" / "unconfirmed at the debtor" etc., for the log line. */
+    private static String describe(LocalDate date, Map<LocalDate, PeriodState> issuerStates,
+                                   Map<LocalDate, PeriodState> debtorStates, String debtor) {
+        List<String> parts = new ArrayList<>(2);
+        PeriodState i = issuerStates.get(date);
+        if (i != PeriodState.OPEN) parts.add((i == PeriodState.BLOCKED ? "closed/barred" : "unconfirmed") + " at the issuer");
+        if (debtor != null) {
+            PeriodState d = debtorStates.get(date);
+            if (d != PeriodState.OPEN) parts.add((d == PeriodState.BLOCKED ? "closed/barred" : "unconfirmed") + " at the debtor");
+        }
+        return parts.isEmpty() ? "open" : String.join(" and ", parts);
+    }
+
+    /**
+     * The dates tried, in order: the source date itself, then the first day of each later month
+     * strictly before the current month. Today is not in the list — it is the fallback the caller
+     * applies when nothing here is confirmed open, and it stays exactly the pre-2026-09 behaviour.
+     */
+    static List<LocalDate> candidateDates(LocalDate sourceDate, LocalDate today) {
+        List<LocalDate> out = new ArrayList<>();
+        out.add(sourceDate);
+        LocalDate month = sourceDate.withDayOfMonth(1).plusMonths(1);
+        LocalDate currentMonth = today.withDayOfMonth(1);
+        while (month.isBefore(currentMonth)) {
+            out.add(month);
+            month = month.plusMonths(1);
+        }
+        return out;
     }
 
     /** Last day of the month a settlement internal settles, or null when it carries no period. */

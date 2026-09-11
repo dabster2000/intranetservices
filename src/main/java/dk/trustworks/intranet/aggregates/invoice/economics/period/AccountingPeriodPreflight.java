@@ -224,9 +224,10 @@ public class AccountingPeriodPreflight {
      * Mirrors the gate in {@code InvoiceFinalizationOrchestrator.postDebtorSideVoucherIfInternal}:
      * INTERNAL, INTERNAL_SERVICE and internal credit notes post a debtor voucher; any other type
      * does not, and neither does an internal with no debtor recorded (that path skips the voucher
-     * with a WARN, so there is no second document to protect).
+     * with a WARN, so there is no second document to protect). Public because the nightly date
+     * chooser applies the same gate when deciding whose periods to ask.
      */
-    static boolean postsDebtorVoucher(Invoice inv) {
+    public static boolean postsDebtorVoucher(Invoice inv) {
         boolean internal = inv.getType() == InvoiceType.INTERNAL
                 || inv.getType() == InvoiceType.INTERNAL_SERVICE
                 || inv.isInternalCreditNote();
