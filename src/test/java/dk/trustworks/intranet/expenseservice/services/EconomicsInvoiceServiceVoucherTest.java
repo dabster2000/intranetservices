@@ -101,6 +101,44 @@ class EconomicsInvoiceServiceVoucherTest {
         assertNull(voucher.getEntries().getManualCustomerInvoices()); // supplier branch only
     }
 
+    /**
+     * The 2026-09 reconciliation: an invoice dated 2026-07-31 whose debtor (A/S) has July barred.
+     * The override must move the entry date AND the accounting year the voucher is filed under,
+     * and must leave the invoice's own date alone.
+     */
+    @Test
+    void an_entry_date_override_dates_the_voucher_and_its_year_without_touching_the_invoice() {
+        Invoice inv = internalInvoice(TECH_UUID, TECH_CVR);
+        inv.setInvoicedate(LocalDate.of(2026, 7, 31));
+        Journal journal = new Journal(INTERNAL_JOURNAL);
+        when(agreementResolver.intercompanyCostAccount(AS_UUID, TECH_UUID)).thenReturn(Optional.of(3050));
+        when(supplierResolver.resolveByCvr(AS_UUID, TECH_CVR)).thenReturn(Optional.of(700));
+
+        Voucher moved = service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS(), LocalDate.of(2026, 8, 1));
+        Voucher asIs = service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS(), null);
+
+        assertEquals("2026-08-01", moved.getEntries().getSupplierInvoices().get(0).date);
+        assertEquals("2026/2027", moved.getAccountingYear().getYear());
+        assertEquals("2026-07-31", asIs.getEntries().getSupplierInvoices().get(0).date,
+                "null keeps today's behaviour: the invoice date");
+        assertEquals(LocalDate.of(2026, 7, 31), inv.getInvoicedate());
+    }
+
+    /** Across the 30 June boundary the year label moves with the date — and A/S's prior year is suffixed. */
+    @Test
+    void an_entry_date_override_into_another_financial_year_changes_the_year_label() {
+        Invoice inv = internalInvoice(CYBER_UUID, "45236609");
+        inv.setInvoicedate(LocalDate.of(2026, 4, 26));
+        Journal journal = new Journal(INTERNAL_JOURNAL);
+        when(agreementResolver.intercompanyCostAccount(AS_UUID, CYBER_UUID)).thenReturn(Optional.of(3055));
+        when(supplierResolver.resolveByCvr(AS_UUID, "45236609")).thenReturn(Optional.of(701));
+
+        assertEquals("2025/2026a",
+                service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS(), null).getAccountingYear().getYear());
+        assertEquals("2026/2027",
+                service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS(), LocalDate.of(2026, 8, 1)).getAccountingYear().getYear());
+    }
+
     @Test
     void cyber_to_AS_books_cost_on_3055() {
         Invoice inv = internalInvoice(CYBER_UUID, "12345678");

@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAt
 import dk.trustworks.intranet.aggregates.invoice.economics.book.InvoiceBookingAttemptWriter;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
@@ -20,6 +21,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -68,7 +70,7 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
         InOrder inOrder = inOrder(attemptWriter, invoices, issuerSide);
         inOrder.verify(attemptWriter).markBooked("att-1", "inv-1", 50107);
         inOrder.verify(invoices).refresh(inv);
-        inOrder.verify(issuerSide).postDebtorVoucherAfterReconcile(inv);
+        inOrder.verify(issuerSide).postDebtorVoucherAfterReconcile(inv, null);
         assertEquals(17078.70, inv.getGrandTotal(), 0.001,
                 "grandTotal must carry the vendor-verified gross into the debtor voucher");
         assertSame(inv, result);
@@ -89,7 +91,7 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
 
         assertEquals(409, thrown.getResponse().getStatus());
         verifyNoInteractions(attemptWriter);
-        verify(issuerSide, never()).postDebtorVoucherAfterReconcile(any());
+        verify(issuerSide, never()).postDebtorVoucherAfterReconcile(any(), any());
     }
 
     @Test
@@ -129,11 +131,72 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
 
         Invoice result = internal.adoptVendorBooking("inv-7", 50107);
 
-        verify(issuerSide).postDebtorVoucherAfterReconcile(inv);
+        verify(issuerSide).postDebtorVoucherAfterReconcile(inv, null);
         assertEquals(17078.70, inv.getGrandTotal(), 0.001);
         verifyNoInteractions(attemptRepo, attemptWriter);
         verify(invoices, never()).refresh(any());
         assertSame(inv, result);
+    }
+
+    // ── the 2026-09 half-bookings: complete the debtor leg in the first OPEN period ─────────
+
+    /**
+     * Five internals dated 2026-07-31 were booked at the issuer while Trustworks A/S had July 2026
+     * barred. Their debtor voucher can only go into August, so the date must reach the voucher
+     * service — and the invoice itself must stay dated July.
+     */
+    @Test
+    void completion_mode_passes_the_voucher_date_through_and_closes_the_half_booking_on_success() {
+        Invoice inv = settlementDraft("inv-8");
+        inv.setEconomicsBookedNumber(50107);
+        inv.setInvoicedate(LocalDate.of(2026, 7, 31));
+        inv.setEconomicsStatus(EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
+        when(invoices.findByUuid("inv-8")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("cyber-uuid")).thenReturn(TOKENS);
+        when(bookApi.getBooked("secret", "grant", 50107)).thenReturn(booked(17078.70));
+        when(issuerSide.postDebtorVoucherAfterReconcile(inv, LocalDate.of(2026, 8, 1))).thenReturn(true);
+        when(invoices.markDebtorVoucherPosted("inv-8")).thenReturn(1);
+
+        internal.adoptVendorBooking("inv-8", 50107, LocalDate.of(2026, 8, 1));
+
+        InOrder inOrder = inOrder(issuerSide, invoices);
+        inOrder.verify(issuerSide).postDebtorVoucherAfterReconcile(inv, LocalDate.of(2026, 8, 1));
+        inOrder.verify(invoices).markDebtorVoucherPosted("inv-8");
+        inOrder.verify(invoices).refresh(inv);
+        assertEquals(LocalDate.of(2026, 7, 31), inv.getInvoicedate(),
+                "the override dates the voucher, never the invoice");
+    }
+
+    @Test
+    void completion_mode_leaves_the_status_alone_when_the_debtor_voucher_is_refused() {
+        Invoice inv = settlementDraft("inv-9");
+        inv.setEconomicsBookedNumber(50107);
+        inv.setInvoicedate(LocalDate.of(2026, 7, 31));
+        when(invoices.findByUuid("inv-9")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("cyber-uuid")).thenReturn(TOKENS);
+        when(bookApi.getBooked("secret", "grant", 50107)).thenReturn(booked(17078.70));
+        when(issuerSide.postDebtorVoucherAfterReconcile(inv, LocalDate.of(2026, 8, 1))).thenReturn(false);
+
+        internal.adoptVendorBooking("inv-9", 50107, LocalDate.of(2026, 8, 1));
+
+        verify(invoices, never()).markDebtorVoucherPosted(any());
+        verify(invoices, never()).refresh(any());
+    }
+
+    @Test
+    void a_voucher_date_before_the_invoice_date_or_in_the_future_is_refused_before_any_vendor_call() {
+        Invoice inv = settlementDraft("inv-10");
+        inv.setEconomicsBookedNumber(50107);
+        inv.setInvoicedate(LocalDate.of(2026, 7, 31));
+        when(invoices.findByUuid("inv-10")).thenReturn(Optional.of(inv));
+
+        assertThrows(BadRequestException.class,
+                () -> internal.adoptVendorBooking("inv-10", 50107, LocalDate.of(2026, 6, 30)),
+                "cost before revenue is never intended");
+        assertThrows(BadRequestException.class,
+                () -> internal.adoptVendorBooking("inv-10", 50107, LocalDate.now().plusDays(1)));
+
+        verifyNoInteractions(bookApi, issuerSide, attemptWriter);
     }
 
     @Test

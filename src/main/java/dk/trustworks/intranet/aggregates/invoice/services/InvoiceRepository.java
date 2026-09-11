@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.LockModeType;
@@ -53,6 +54,23 @@ public class InvoiceRepository {
     @Transactional
     public void persist(Invoice invoice) {
         Invoice.getEntityManager().merge(invoice);
+    }
+
+    /**
+     * Durably closes a half-booked internal invoice once its debtor voucher has posted
+     * ({@code InternalInvoiceOrchestrator.adoptVendorBooking}, completion mode).
+     *
+     * <p>{@code REQUIRES_NEW} like {@code InvoiceBookingAttemptWriter.markBooked}: the caller holds
+     * no transaction, and the write must survive whatever the caller does next. Guarded on
+     * {@code PARTIALLY_UPLOADED} so it can never promote an invoice that was not half-booked; a row
+     * someone already set to BOOKED by hand is simply left alone (0 rows).
+     *
+     * @return rows updated — 1 when the invoice was PARTIALLY_UPLOADED, else 0
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public int markDebtorVoucherPosted(String uuid) {
+        return Invoice.update("economicsStatus = ?1 WHERE uuid = ?2 AND economicsStatus = ?3",
+                EconomicsInvoiceStatus.BOOKED, uuid, EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
     }
 
     /**

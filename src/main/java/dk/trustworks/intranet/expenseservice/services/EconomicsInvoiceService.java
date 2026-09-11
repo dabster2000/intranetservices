@@ -28,6 +28,7 @@ import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.LocalDate;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
@@ -145,18 +146,34 @@ public class EconomicsInvoiceService {
     }
 
     public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue, dk.trustworks.intranet.model.Company targetCompany){
+        return buildJSONRequest(invoice, journal, text, integrationKeyValue, targetCompany, null);
+    }
+
+    /**
+     * As {@link #buildJSONRequest(Invoice, Journal, String, IntegrationKey.IntegrationKeyValue, Company)},
+     * with an explicit entry date for the voucher.
+     *
+     * <p>{@code entryDate} moves BOTH the voucher's entry date and the accounting year it is filed
+     * under; the invoice itself is untouched. It exists for reconciling a half-booked internal
+     * invoice whose own date sits in a period the debtor has since barred (2026-09: five July
+     * invoices, Trustworks A/S with July 2026 barred) — the debtor leg is then posted in the first
+     * open period instead, which is what the accountant would otherwise do by hand. {@code null}
+     * keeps today's behaviour: the invoice date.
+     */
+    public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue, dk.trustworks.intranet.model.Company targetCompany, LocalDate entryDate){
         log.debug("EconomicsInvoiceService.buildJSONRequest");
         ContraAccount contraAccount = new ContraAccount(integrationKeyValue.invoiceAccountNumber());
         log.debug("contraAccount = " + contraAccount.getAccountNumber());
         ExpenseAccount account = new ExpenseAccount(integrationKeyValue.invoiceAccountNumber());
         log.debug("account = " + account.getAccountNumber());
+        LocalDate effectiveDate = entryDate != null ? entryDate : invoice.getInvoicedate();
         String fiscalYearName = DateUtils.getFiscalYearName(
-                DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()),
+                DateUtils.getFiscalStartDateBasedOnDate(effectiveDate),
                 targetCompany.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
         log.debug("Using accounting year " + accountingYear.getYear() + " for company " + targetCompany.getUuid());
 
-        String date = DateUtils.stringIt(invoice.getInvoicedate());
+        String date = DateUtils.stringIt(effectiveDate);
 
         Entries entries = new Entries();
         Voucher voucher = new Voucher(accountingYear, journal, entries);
@@ -295,9 +312,25 @@ public class EconomicsInvoiceService {
      * @throws IOException if upload fails
      */
     public Response sendVoucherToCompany(Invoice invoice, dk.trustworks.intranet.model.Company targetCompany, int journalNumber) throws IOException {
+        return sendVoucherToCompany(invoice, targetCompany, journalNumber, null);
+    }
+
+    /**
+     * As {@link #sendVoucherToCompany(Invoice, Company, int)}, with an explicit voucher entry date.
+     * See {@link #buildJSONRequest(Invoice, Journal, String, IntegrationKey.IntegrationKeyValue, Company, LocalDate)}
+     * for why it exists. The override is logged at WARN because it moves the debtor's cost to a
+     * different period than the issuer's revenue.
+     */
+    public Response sendVoucherToCompany(Invoice invoice, dk.trustworks.intranet.model.Company targetCompany, int journalNumber, LocalDate entryDate) throws IOException {
         log.info("EconomicsInvoiceService.sendVoucherToCompany");
         log.infof("Sending invoice %d to company %s using journal %d",
                 invoice.invoicenumber, targetCompany.getName(), journalNumber);
+        if (entryDate != null && !entryDate.equals(invoice.getInvoicedate())) {
+            log.warnf("Voucher for invoice %s (%d) to company %s is dated %s instead of the invoice "
+                            + "date %s — explicit override by the caller",
+                    invoice.getUuid(), invoice.invoicenumber, targetCompany.getName(), entryDate,
+                    invoice.getInvoicedate());
+        }
 
         IntegrationKey.IntegrationKeyValue targetKeys = IntegrationKey.getIntegrationKeyValue(targetCompany);
         log.info("integrationKeyValue = " + targetKeys);
@@ -305,7 +338,7 @@ public class EconomicsInvoiceService {
         Journal journal = new Journal(journalNumber);
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
-        Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys, targetCompany);
+        Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys, targetCompany, entryDate);
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
         log.info("json = " + json);

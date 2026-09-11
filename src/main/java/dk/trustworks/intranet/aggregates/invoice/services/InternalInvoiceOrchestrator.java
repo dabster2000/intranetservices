@@ -289,11 +289,44 @@ public class InternalInvoiceOrchestrator {
      * @return the reconciled invoice (status CREATED)
      */
     public Invoice adoptVendorBooking(String invoiceUuid, int bookedNumber) {
+        return adoptVendorBooking(invoiceUuid, bookedNumber, null);
+    }
+
+    /**
+     * As {@link #adoptVendorBooking(String, int)}, with an explicit entry date for the debtor-side
+     * voucher.
+     *
+     * <p>Exists for the 2026-09 half-bookings: five internals dated 2026-07-31 booked at the
+     * issuer while Trustworks A/S had July 2026 barred, so their debtor voucher can only go into
+     * the first open period (August). The date moves the debtor's cost to that period; the issuer's
+     * revenue and the invoice itself stay in July. Same financial year in this case, so only the
+     * monthly phasing differs — the WARN at post time records it.
+     *
+     * <p>On success in completion mode the invoice is durably flipped from PARTIALLY_UPLOADED to
+     * BOOKED ({@code InvoiceRepository.markDebtorVoucherPosted}); until 2026-09-11 that was left
+     * to a manual UPDATE.
+     *
+     * @param voucherDate entry date for the debtor voucher, or {@code null} for the invoice date
+     * @throws BadRequestException when the date is in the future or before the invoice date
+     */
+    public Invoice adoptVendorBooking(String invoiceUuid, int bookedNumber, LocalDate voucherDate) {
         if (bookedNumber <= 0) {
             throw new BadRequestException("bookedNumber must be positive, got " + bookedNumber);
         }
         Invoice inv = invoices.findByUuid(invoiceUuid)
                 .orElseThrow(() -> new NotFoundException("Invoice not found: " + invoiceUuid));
+        if (voucherDate != null) {
+            if (voucherDate.isAfter(LocalDate.now())) {
+                throw new BadRequestException("voucherDate cannot be in the future: " + voucherDate);
+            }
+            if (inv.getInvoicedate() != null && voucherDate.isBefore(inv.getInvoicedate())) {
+                throw new BadRequestException("voucherDate " + voucherDate + " is before the invoice date "
+                        + inv.getInvoicedate() + " — the debtor's cost cannot precede the issuer's revenue");
+            }
+            log.warnf("adoptVendorBooking: invoiceUuid=%s debtor voucher will be dated %s instead of "
+                            + "the invoice date %s (explicit override)",
+                    invoiceUuid, voucherDate, inv.getInvoicedate());
+        }
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
             throw new BadRequestException(
@@ -371,7 +404,16 @@ public class InternalInvoiceOrchestrator {
         // Debtor-side supplier voucher with the vendor-verified gross. The transient grandTotal
         // must be set explicitly — this entity was never through createDraft's recalculation.
         inv.setGrandTotal(booked.getGrossAmount());
-        issuerSide.postDebtorVoucherAfterReconcile(inv);
+        boolean posted = issuerSide.postDebtorVoucherAfterReconcile(inv, voucherDate);
+
+        if (posted) {
+            // Both legs now exist. Close the half-booking durably (REQUIRES_NEW) and re-read the
+            // row so the returned entity reports what was committed.
+            int rows = invoices.markDebtorVoucherPosted(invoiceUuid);
+            invoices.refresh(inv);
+            log.infof("adoptVendorBooking: invoiceUuid=%s debtor voucher posted — economics_status "
+                    + "set to BOOKED (%d row updated)", invoiceUuid, rows);
+        }
 
         log.infof("adoptVendorBooking: invoiceUuid=%s reconciled to bookedNumber=%d, "
                 + "economicsStatus=%s", invoiceUuid, bookedNumber, inv.getEconomicsStatus());

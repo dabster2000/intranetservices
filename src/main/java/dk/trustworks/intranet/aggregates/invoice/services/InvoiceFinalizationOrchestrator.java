@@ -700,12 +700,23 @@ public class InvoiceFinalizationOrchestrator {
      * the supplier voucher for a booking that was reconciled after the fact. The caller must have
      * set {@code grandTotal} (transient) to the vendor-verified gross first. Failure demotes to
      * {@code PARTIALLY_UPLOADED} exactly like the inline path.
+     *
+     * @param voucherDate entry date for the debtor voucher, or {@code null} for the invoice date.
+     *                    Used when the invoice's own period is barred in the debtor's e-conomic
+     *                    (2026-09: July 2026 barred at Trustworks A/S) — the leg goes into the
+     *                    first open period instead, as the accountant would post it by hand.
+     * @return true when the debtor voucher was accepted by e-conomic; false when it was refused
+     *         (the invoice is then PARTIALLY_UPLOADED) or when there was nothing to post.
      */
-    void postDebtorVoucherAfterReconcile(Invoice inv) {
-        postDebtorSideVoucherIfInternal(inv);
+    boolean postDebtorVoucherAfterReconcile(Invoice inv, java.time.LocalDate voucherDate) {
+        return postDebtorSideVoucherIfInternal(inv, voucherDate);
     }
 
     private void postDebtorSideVoucherIfInternal(Invoice inv) {
+        postDebtorSideVoucherIfInternal(inv, null);
+    }
+
+    private boolean postDebtorSideVoucherIfInternal(Invoice inv, java.time.LocalDate voucherDate) {
         // DEBTOR-side voucher for internal invoices (SPEC-INV-001 §4.5, §4.7, §10).
         // The issuer side already went through the standard Q2C path above.  Now post
         // a supplier-invoice entry to the debtor company's e-conomic journal so their
@@ -729,8 +740,9 @@ public class InvoiceFinalizationOrchestrator {
         if (inv.getType() == InvoiceType.INTERNAL
                 || inv.getType() == InvoiceType.INTERNAL_SERVICE
                 || inv.isInternalCreditNote()) {
-            postDebtorSideVoucher(inv);
+            return postDebtorSideVoucher(inv, voucherDate);
         }
+        return false;
     }
 
     /**
@@ -743,13 +755,15 @@ public class InvoiceFinalizationOrchestrator {
      * <p>Uses {@link DebtorCompanyLookup} and {@link EconomicsAgreementResolver} instead of
      * Panache static methods so this path is fully unit-testable without a live DB session.
      *
-     * @param inv the internal invoice that was just booked on the issuer side
+     * @param inv         the internal invoice that was just booked on the issuer side
+     * @param voucherDate explicit entry date for the voucher, or {@code null} for the invoice date
+     * @return true only when e-conomic accepted the voucher
      */
-    private void postDebtorSideVoucher(Invoice inv) {
+    private boolean postDebtorSideVoucher(Invoice inv, java.time.LocalDate voucherDate) {
         if (inv.getDebtorCompanyuuid() == null || inv.getDebtorCompanyuuid().isBlank()) {
             log.warnf("bookDraft: INTERNAL invoice %s has no debtorCompanyuuid — "
                     + "skipping DEBTOR-side voucher post", inv.getUuid());
-            return;
+            return false;
         }
 
         try {
@@ -759,8 +773,11 @@ public class InvoiceFinalizationOrchestrator {
 
             int journalNumber = agreements.internalJournalNumber(inv.getDebtorCompanyuuid());
 
-            try (jakarta.ws.rs.core.Response response =
-                         economicsInvoiceService.sendVoucherToCompany(inv, debtorCompany, journalNumber)) {
+            // The date-less overload is the inline booking path; keep calling it so that path is
+            // byte-identical. The override exists only for after-the-fact reconciliation.
+            try (jakarta.ws.rs.core.Response response = voucherDate == null
+                         ? economicsInvoiceService.sendVoucherToCompany(inv, debtorCompany, journalNumber)
+                         : economicsInvoiceService.sendVoucherToCompany(inv, debtorCompany, journalNumber, voucherDate)) {
                 if (response.getStatus() < 200 || response.getStatus() >= 300) {
                     String body = response.readEntity(String.class);
                     throw new RuntimeException(
@@ -768,8 +785,10 @@ public class InvoiceFinalizationOrchestrator {
                             + " for invoice " + inv.getUuid() + ": " + body);
                 }
             }
-            log.infof("bookDraft: DEBTOR-side voucher posted for internal invoice %s to company %s",
+            log.infof("bookDraft: DEBTOR-side voucher posted for internal invoice %s to company %s"
+                            + (voucherDate != null ? " dated " + voucherDate : ""),
                     inv.getUuid(), debtorCompany.getName());
+            return true;
         } catch (Exception e) {
             log.warnf(e, "bookDraft: DEBTOR-side voucher post failed for internal invoice %s — "
                     + "setting PARTIALLY_UPLOADED; the issuer booking stands and nothing retries the "
@@ -778,6 +797,7 @@ public class InvoiceFinalizationOrchestrator {
             invoices.persist(inv);
             perfMetrics.emitCount("InvoiceFinalizePartialUpload", 1,
                     java.util.Map.of(), java.util.Map.of());
+            return false;
         }
     }
 
