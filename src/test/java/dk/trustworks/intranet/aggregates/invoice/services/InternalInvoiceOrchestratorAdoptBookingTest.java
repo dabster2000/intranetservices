@@ -167,6 +167,52 @@ class InternalInvoiceOrchestratorAdoptBookingTest {
                 "the override dates the voucher, never the invoice");
     }
 
+    /**
+     * 2026-09-11: all five July reconciles posted their voucher, committed the status flip, and then
+     * returned 500 because the refresh threw on a detached entity. The refresh is confirmation, not
+     * a step the call may fail on — and the returned entity must still say BOOKED.
+     */
+    @Test
+    void a_failing_refresh_after_the_durable_write_does_not_fail_the_call_and_the_entity_still_reports_BOOKED() {
+        Invoice inv = settlementDraft("inv-11");
+        inv.setEconomicsBookedNumber(50107);
+        inv.setInvoicedate(LocalDate.of(2026, 7, 31));
+        inv.setEconomicsStatus(EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
+        when(invoices.findByUuid("inv-11")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("cyber-uuid")).thenReturn(TOKENS);
+        when(bookApi.getBooked("secret", "grant", 50107)).thenReturn(booked(17078.70));
+        when(issuerSide.postDebtorVoucherAfterReconcile(inv, LocalDate.of(2026, 8, 1))).thenReturn(true);
+        when(invoices.markDebtorVoucherPosted("inv-11")).thenReturn(1);
+        doThrow(new IllegalArgumentException("org.hibernate.DetachedObjectException: Given proxy does not "
+                + "belong to this persistence context")).when(invoices).refresh(inv);
+
+        Invoice result = internal.adoptVendorBooking("inv-11", 50107, LocalDate.of(2026, 8, 1));
+
+        assertEquals(EconomicsInvoiceStatus.BOOKED, result.getEconomicsStatus(),
+                "the durable flip happened; the response must say so even though refresh failed");
+        verify(invoices).markDebtorVoucherPosted("inv-11");
+    }
+
+    /** Same guarantee on the full adopt: the entity mirrors exactly what markBooked wrote. */
+    @Test
+    void a_failing_refresh_after_markBooked_leaves_the_entity_carrying_the_booked_state() {
+        Invoice inv = settlementDraft("inv-12");
+        when(invoices.findByUuid("inv-12")).thenReturn(Optional.of(inv));
+        when(attemptRepo.listPostedUnresolvedByInvoice("inv-12"))
+                .thenReturn(List.of(postedAttempt("att-12")));
+        when(agreements.tokens("cyber-uuid")).thenReturn(TOKENS);
+        when(bookApi.getBooked("secret", "grant", 50107)).thenReturn(booked(17078.70));
+        doThrow(new IllegalArgumentException("detached")).when(invoices).refresh(inv);
+
+        Invoice result = internal.adoptVendorBooking("inv-12", 50107);
+
+        verify(attemptWriter).markBooked("att-12", "inv-12", 50107);
+        assertEquals(50107, result.getEconomicsBookedNumber());
+        assertEquals(50107, result.getInvoicenumber());
+        assertEquals(InvoiceStatus.CREATED, result.getStatus());
+        assertEquals(EconomicsInvoiceStatus.BOOKED, result.getEconomicsStatus());
+    }
+
     @Test
     void completion_mode_leaves_the_status_alone_when_the_debtor_voucher_is_refused() {
         Invoice inv = settlementDraft("inv-9");
