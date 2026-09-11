@@ -507,10 +507,22 @@ public class InvoiceResource {
     @Path("/internalservices/{invoiceuuid}/reconcile-booking")
     @RolesAllowed({"invoices:write"})
     public Invoice reconcileInternalBooking(@PathParam("invoiceuuid") String uuid,
-                                            @QueryParam("bookedNumber") int bookedNumber) {
-        log.warnf("reconcileInternalBooking: invoice=%s bookedNumber=%d requested by %s",
-                uuid, bookedNumber, requestHeaderHolder.getUserUuid());
-        return internalInvoiceOrchestrator.adoptVendorBooking(uuid, bookedNumber);
+                                            @QueryParam("bookedNumber") int bookedNumber,
+                                            @QueryParam("voucherDate") String voucherDate) {
+        // Optional yyyy-MM-dd entry date for the DEBTOR-side voucher only — for completing a
+        // half-booked internal whose own period the debtor has since barred. See
+        // InternalInvoiceOrchestrator.adoptVendorBooking(String, int, LocalDate).
+        LocalDate date = null;
+        if (voucherDate != null && !voucherDate.isBlank()) {
+            try {
+                date = LocalDate.parse(voucherDate);
+            } catch (DateTimeParseException dtpe) {
+                throw new BadRequestException("voucherDate must be yyyy-MM-dd, got: " + voucherDate);
+            }
+        }
+        log.warnf("reconcileInternalBooking: invoice=%s bookedNumber=%d voucherDate=%s requested by %s",
+                uuid, bookedNumber, date, requestHeaderHolder.getUserUuid());
+        return internalInvoiceOrchestrator.adoptVendorBooking(uuid, bookedNumber, date);
     }
 
     @PUT
