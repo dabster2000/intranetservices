@@ -1,7 +1,7 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 94,
+  "count": 95,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
@@ -75,6 +75,7 @@
     { "key": "revenue:read", "displayName": "Revenue — read", "category": "Revenue & utilization" },
     { "key": "salaries:read", "displayName": "Salaries — read", "category": "Users & HR" },
     { "key": "salaries:write", "displayName": "Salaries — write", "category": "Users & HR" },
+    { "key": "signals:write", "displayName": "Account signals — capture", "category": "CRM" },
     { "key": "signing:read", "displayName": "Signing — read", "category": "Signing" },
     { "key": "signing:write", "displayName": "Signing — write", "category": "Signing" },
     { "key": "system:read", "displayName": "System — read", "category": "System" },

@@ -57,6 +57,7 @@ public final class Permissions {
             // CRM
             new Permission("crm:read", "CRM — read", "CRM"),
             new Permission("crm:write", "CRM — write", "CRM"),
+            new Permission("signals:write", "Account signals — capture", "CRM"),
 
             // Contracts
             new Permission("contracts:read", "Contracts — read", "Contracts"),

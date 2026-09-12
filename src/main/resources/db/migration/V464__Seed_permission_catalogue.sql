@@ -226,6 +226,9 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('salaries:write', 'Salaries — write', NULL, 'Users & HR', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('signals:write', 'Account signals — capture', NULL, 'CRM', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('signing:read', 'Signing — read', NULL, 'Signing', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)

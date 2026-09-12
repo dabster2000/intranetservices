@@ -47,9 +47,16 @@ class PermissionsCatalogueTest {
      * registry rows are salary-adjacent and deliberately not under
      * {@code documents:*}, which every template-admin surface already
      * holds, so registry visibility can stay narrower than document
-     * administration.
+     * administration;
+     * 95 since the CRM signal capture added {@code signals:write}
+     * (2026-09-12, "Heard something?" — intra-crm-spec §3.4/§7). Capture is
+     * open to EVERY employee, so it could not reuse {@code crm:write} (the
+     * SALES tier here — V468 grants it to SALES/ADMIN/PARTNER only) and
+     * should not reuse {@code crm:read}, a read key, to authorize a write.
+     * Granted to role USER in V584; listed in the frontend scanner's
+     * UNIVERSAL_PERMISSIONS because everyone holds it.
      */
-    private static final int EXPECTED_PERMISSIONS = 94;
+    private static final int EXPECTED_PERMISSIONS = 95;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {
