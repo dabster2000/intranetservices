@@ -113,6 +113,7 @@ jobs:
               {"name":"FINANCE_ECONOMICS_LOAD_ENABLED","value":"true"},
               {"name":"ENVIRONMENT_ID","value":"production"},
               {"name":"NEWS_API_ENABLED","value":"true"},
+              {"name":"TRUSTLINK_ENABLED","value":"true"},
               {"name":"PERF_LOG_GROUP","value":"/aws/ecs/default/tw-quarkus-production"},
               {"name":"PERF_DIGEST_ENABLED","value":"true"},
               {"name":"INVOICE_S3","value":"invoicefiles-new"},

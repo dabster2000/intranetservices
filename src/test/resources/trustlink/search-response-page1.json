@@ -1,0 +1,98 @@
+{
+    "items": [
+        {
+            "personId": "9c1199023424a4b0bfdb8de982815255",
+            "fullName": "Africa S. Prats",
+            "position": "Senior Product Partner",
+            "tier": 5,
+            "companyName": "Novo Nordisk",
+            "companyId": "207",
+            "isCustomer": true,
+            "linkedInUrl": "https://www.linkedin.com/in/africa-prats",
+            "connectedTrustworkers": [
+                {
+                    "name": "Simon Brandt S\u00f8rensen",
+                    "connectedOn": "2024-03-10T00:00:00"
+                }
+            ],
+            "coffeeCount": 0,
+            "commentCount": 0
+        },
+        {
+            "personId": "2b3b7141b80e846f8f88e496ddff872b",
+            "fullName": "Alex Modin",
+            "position": "Associate Change Partner",
+            "tier": 5,
+            "companyName": "Novo Nordisk",
+            "companyId": "207",
+            "isCustomer": true,
+            "linkedInUrl": "https://www.linkedin.com/in/alex-modin-362417116",
+            "connectedTrustworkers": [
+                {
+                    "name": "Mathias Hauge",
+                    "connectedOn": "2016-06-20T00:00:00"
+                }
+            ],
+            "coffeeCount": 0,
+            "commentCount": 0
+        },
+        {
+            "personId": "e95e0c0ee60f72ea230a3f95eb94faf4",
+            "fullName": "Alexander Heinzmann",
+            "position": "Product Owner",
+            "tier": 5,
+            "companyName": "Novo Nordisk",
+            "companyId": "207",
+            "isCustomer": true,
+            "linkedInUrl": "https://www.linkedin.com/in/alexander-heinzmann-b5657025",
+            "connectedTrustworkers": [
+                {
+                    "name": "Mia J\u00f8rgensen",
+                    "connectedOn": "2018-01-23T00:00:00"
+                }
+            ],
+            "coffeeCount": 0,
+            "commentCount": 0
+        },
+        {
+            "personId": "9e647ca247519b234e0f968abd881c76",
+            "fullName": "Alexander Lindegaard",
+            "position": "Associate Director",
+            "tier": 5,
+            "companyName": "Novo Nordisk",
+            "companyId": "207",
+            "isCustomer": true,
+            "linkedInUrl": "https://www.linkedin.com/in/alexander-lindegaard-a74a355b",
+            "connectedTrustworkers": [
+                {
+                    "name": "Jakob Geitner-Andersen",
+                    "connectedOn": "2017-09-24T00:00:00"
+                }
+            ],
+            "coffeeCount": 0,
+            "commentCount": 0
+        },
+        {
+            "personId": "66f74a5a71b896305a15d4db853bdb34",
+            "fullName": "Alexander Pennerup Ardest",
+            "position": "Associate Director & EA to Senior Vice President",
+            "tier": 5,
+            "companyName": "Novo Nordisk",
+            "companyId": "207",
+            "isCustomer": true,
+            "linkedInUrl": "https://www.linkedin.com/in/alexander-pennerup-ardest",
+            "connectedTrustworkers": [
+                {
+                    "name": "Lukas H\u00f8jland",
+                    "connectedOn": "2020-01-24T00:00:00"
+                }
+            ],
+            "coffeeCount": 0,
+            "commentCount": 0
+        }
+    ],
+    "totalCount": 203,
+    "page": 1,
+    "pageSize": 5,
+    "totalPages": 41
+}
