@@ -19,6 +19,29 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  */
 class AccountActivityServiceTest {
 
+    /** The Slack row leads with the channel, as spec §3.2's own example does, then the model's line. */
+    @Test
+    void aSlackDayReadsAsItsHeadline() {
+        assertEquals("#a_e-nettet: Reelle ejere skubbes til efter kick-off",
+                AccountActivityService.slackSummary("a_e-nettet", "Reelle ejere skubbes til efter kick-off", 14, 3,
+                        List.of("Marta", "Nicky")));
+    }
+
+    /**
+     * No headline — the model was off, failed, or read the day as chatter — still gives a
+     * true sentence with the counts and who was talking, never an absent row.
+     */
+    @Test
+    void aSlackDayWithoutAHeadlineReadsAsItsCounts() {
+        assertEquals("#a_e-nettet: 17 messages (Marta, Nicky)",
+                AccountActivityService.slackSummary("a_e-nettet", null, 14, 3, List.of("Marta", "Nicky")));
+        assertEquals("#a_e-nettet: 1 message",
+                AccountActivityService.slackSummary("a_e-nettet", "  ", 1, 0, List.of()),
+                "no participant resolved — staging nulls slackusername — and still a sentence");
+        assertEquals("#a_e-nettet: 5 messages (A, B, C +1 more)",
+                AccountActivityService.slackSummary("a_e-nettet", null, 5, 0, List.of("A", "B", "C", "D")));
+    }
+
     @Test
     void aMeetingIsNamedByItsAttendees() {
         assertEquals("Mette Kjær, Søren Bjerre",
