@@ -58,6 +58,11 @@ public final class Permissions {
             new Permission("crm:read", "CRM — read", "CRM"),
             new Permission("crm:write", "CRM — write", "CRM"),
             new Permission("signals:write", "Account signals — capture", "CRM"),
+            new Permission("signals:decide", "Account signals — decide", "CRM"),
+            new Permission("accounts:read", "Accounts — read", "CRM"),
+            new Permission("accounts:write", "Accounts — write", "CRM"),
+            new Permission("bids:read", "Bids — read", "CRM"),
+            new Permission("bids:write", "Bids — write", "CRM"),
 
             // Contracts
             new Permission("contracts:read", "Contracts — read", "Contracts"),

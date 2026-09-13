@@ -103,6 +103,94 @@ public class AccountSignalService {
         return row;
     }
 
+    /** Every signal filed on one account, newest first — the plan tab's "what we've heard". */
+    public List<AccountSignal> listForClient(String clientUuid) {
+        if (isBlank(clientUuid)) {
+            return List.of();
+        }
+        return AccountSignal.list("clientUuid = ?1 order by createdAt desc", clientUuid.trim());
+    }
+
+    /**
+     * Records the owner's verdict (CRM spec §3.4).
+     *
+     * <p><b>Who may decide is not a scope question.</b> {@code signals:decide} says the
+     * caller is in the sales tier at all; WHICH signals they may decide is this check: the
+     * account's owner, or management. A scope cannot express "the owner of this particular
+     * account", so it is enforced here, against {@code client.accountmanager}.
+     *
+     * <p>A decision is not reversible through this endpoint — {@code NEW} is refused as a
+     * target status. Re-opening a signal somebody decided is a conversation, not an API
+     * call, and an audit trail that can be rewound is not an audit trail.
+     *
+     * @param managementOverride true when the caller holds ADMIN/PARTNER, who may decide
+     *                           anywhere; resolved by the resource from the JWT
+     */
+    @Transactional
+    public AccountSignal decide(String signalUuid, String statusRaw, String leadUuid,
+                                String actorUuid, boolean managementOverride) {
+        if (isBlank(actorUuid)) {
+            throw new WebApplicationException(
+                    "X-Requested-By is required — a decision records who took it",
+                    Response.Status.BAD_REQUEST);
+        }
+        AccountSignal signal = AccountSignal.findById(signalUuid);
+        if (signal == null) {
+            throw new WebApplicationException("Unknown signal", Response.Status.NOT_FOUND);
+        }
+
+        SignalStatus status = parseDecision(statusRaw);
+        if (!managementOverride && !isOwnerOf(signal.getClientUuid(), actorUuid)) {
+            throw new WebApplicationException(
+                    "Only the account's owner can decide what to do with a signal filed on it",
+                    Response.Status.FORBIDDEN);
+        }
+        if (status == SignalStatus.LEAD_CREATED && isBlank(leadUuid)) {
+            throw new WebApplicationException(
+                    "A signal turned into a lead must name the lead", Response.Status.BAD_REQUEST);
+        }
+
+        signal.setStatus(status);
+        signal.setLeadUuid(status == SignalStatus.LEAD_CREATED ? leadUuid.trim() : null);
+        signal.setDecidedBy(actorUuid);
+        signal.setDecidedAt(LocalDateTime.now());
+        signal.persist();
+
+        log.infof("Account signal decided: uuid=%s client=%s status=%s actor=%s",
+                signal.getUuid(), signal.getClientUuid(), status, actorUuid);
+        return signal;
+    }
+
+    /** The account manager is the Responsible; nobody else owns the account. */
+    boolean isOwnerOf(String clientUuid, String actorUuid) {
+        Client client = clientService.findByUuid(clientUuid);
+        return client != null
+                && client.getAccountmanager() != null
+                && client.getAccountmanager().equals(actorUuid);
+    }
+
+    /**
+     * A decision is one of three. {@code NEW} is not a decision, and an unknown value is a
+     * caller bug rather than something to guess at — unlike {@link #parseType}, where an
+     * unrecognised type must never cost somebody their capture.
+     */
+    static SignalStatus parseDecision(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new WebApplicationException("A decision is required", Response.Status.BAD_REQUEST);
+        }
+        SignalStatus status;
+        try {
+            status = SignalStatus.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException("Unknown decision: " + raw, Response.Status.BAD_REQUEST);
+        }
+        if (status == SignalStatus.NEW) {
+            throw new WebApplicationException(
+                    "A signal cannot be moved back to undecided", Response.Status.BAD_REQUEST);
+        }
+        return status;
+    }
+
     /**
      * The client allowlist handed to the extractor: {@code [uuid, name]} for every client.
      *

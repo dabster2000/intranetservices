@@ -54,9 +54,20 @@ class PermissionsCatalogueTest {
      * SALES tier here — V468 grants it to SALES/ADMIN/PARTNER only) and
      * should not reuse {@code crm:read}, a read key, to authorize a write.
      * Granted to role USER in V584; listed in the frontend scanner's
-     * UNIVERSAL_PERMISSIONS because everyone holds it.
+     * UNIVERSAL_PERMISSIONS because everyone holds it;
+     * 100 since the account page was finished (2026-09-13,
+     * account-page-completion spec) with {@code accounts:read},
+     * {@code accounts:write}, {@code bids:read}, {@code bids:write} and
+     * {@code signals:decide}. The read keys go to role USER — the account
+     * page has always been firm-readable and says so on its own header — so
+     * both join the scanner's UNIVERSAL_PERMISSIONS; the write keys are the
+     * SALES tier, matching {@code crm:write} (V468). {@code signals:decide}
+     * is split from {@code signals:write} because capture is open to every
+     * employee and deciding commits the firm's time; which signals a person
+     * may decide is an ownership check in the service, since a scope cannot
+     * express "the owner of this particular account".
      */
-    private static final int EXPECTED_PERMISSIONS = 95;
+    private static final int EXPECTED_PERMISSIONS = 100;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {

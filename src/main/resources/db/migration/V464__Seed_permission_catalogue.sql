@@ -16,6 +16,12 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('accounting:write', 'Accounting — write', NULL, 'Accounting', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('accounts:read', 'Accounts — read', NULL, 'CRM', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('accounts:write', 'Accounts — write', NULL, 'CRM', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('admin:*', 'Admin — wildcard (all permissions)', NULL, 'Admin', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
@@ -32,6 +38,12 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('availability:read', 'Availability — read', NULL, 'Revenue & utilization', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('bids:read', 'Bids — read', NULL, 'CRM', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('bids:write', 'Bids — write', NULL, 'CRM', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('bonus:read', 'Bonus — read', NULL, 'Bonuses', 'CODE', 'ACTIVE')
@@ -224,6 +236,9 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('salaries:write', 'Salaries — write', NULL, 'Users & HR', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('signals:decide', 'Account signals — decide', NULL, 'CRM', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('signals:write', 'Account signals — capture', NULL, 'CRM', 'CODE', 'ACTIVE')
