@@ -130,6 +130,7 @@ jobs:
               {"name":"DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED","value":"true"},
               {"name":"FEATURE_DECLARED_AVAILABILITY_MODE","value":"LIVE"},
               {"name":"DECLARED_AVAILABILITY_FLOOR_DATE","value":"2026-10-01"},
+              {"name":"DK_TRUSTWORKS_CRM_CALENDAR_SYNC_ENABLED","value":"true"},
               {"name":"AIRTABLE_EXCLUDED_TABLES","value":"Areas to cover during interview,Hired Employees"}
             ]
           secrets: |
