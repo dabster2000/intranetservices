@@ -92,10 +92,15 @@ class AccountSignalResourceRoutingTest {
                 .stream()
                 .map(java.lang.reflect.RecordComponent::getName)
                 .collect(java.util.stream.Collectors.toSet());
-        assertEquals(Set.of("clientUuid", "text", "personName", "personRole", "relationText", "signalType"),
+        assertEquals(Set.of("clientUuid", "clientUuids", "text", "personName", "personRole",
+                        "relationText", "signalType", "colleagueUuids"),
                 components,
                 "AccountSignalRequest must expose only what a caller may decide — "
-                        + "author, source, status and timestamps are derived server-side");
+                        + "author, source, status and timestamps are derived server-side. "
+                        + "clientUuids and colleagueUuids joined it in V593: a line names "
+                        + "the accounts it is about and the colleagues who were there, and "
+                        + "neither is attribution the caller could forge — the author is "
+                        + "still X-Requested-By and nothing else.");
     }
 
     private static String classPath(Class<?> type) {

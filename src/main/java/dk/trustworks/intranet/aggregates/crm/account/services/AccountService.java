@@ -39,6 +39,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -133,6 +134,8 @@ public class AccountService {
                 new SectorRefDTO(segment.name(), segment.getDisplayName(), sectorLeadService.currentLead(segment)),
                 sectorPlanService.reference(segment),
                 account == null ? null : account.getSlackSpace(),
+                account == null ? null : account.getSlackChannelId(),
+                account == null ? null : account.getSlackLinkError(),
                 account == null ? null : account.getNextStep(),
                 domains(clientUuid),
                 bandHistory(clientUuid),
@@ -316,8 +319,16 @@ public class AccountService {
 
         if (request.clearSlackSpace()) {
             account.setSlackSpace(null);
+            resetSlackLink(account);
         } else if (request.slackSpace() != null) {
-            account.setSlackSpace(normaliseSlackSpace(request.slackSpace()));
+            String normalised = normaliseSlackSpace(request.slackSpace());
+            if (!Objects.equals(normalised, account.getSlackSpace())) {
+                // A different name is a different channel until the nightly sync says
+                // otherwise (V594): the old id must not keep being read, and a stale
+                // NOT_FOUND must not sit next to a name that may now be right.
+                resetSlackLink(account);
+            }
+            account.setSlackSpace(normalised);
         }
 
         // A GTM team is a FOCUS bubble — Offentlig Digitalisering, Grøn Omstilling, ... The
@@ -532,6 +543,17 @@ public class AccountService {
         } catch (IllegalArgumentException e) {
             throw new WebApplicationException("Unknown band: " + raw, Response.Status.BAD_REQUEST);
         }
+    }
+
+    /**
+     * Forgets what the nightly sync learned about the previous channel name. The digest
+     * rows already written stay — they describe days that happened in the channel that
+     * was linked then, and a re-link must not rewrite history.
+     */
+    static void resetSlackLink(ClientAccount account) {
+        account.setSlackChannelId(null);
+        account.setSlackLinkError(null);
+        account.setSlackSyncedAt(null);
     }
 
     /** Accepts {@code #a_foo} and {@code a_foo}; stores the bare name. */

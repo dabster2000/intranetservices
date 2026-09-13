@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.crm.signal.services;
 
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalRequest;
 import dk.trustworks.intranet.aggregates.crm.signal.model.AccountSignal;
+import dk.trustworks.intranet.aggregates.crm.signal.model.AccountSignalColleague;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalSource;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalStatus;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalType;
@@ -9,7 +10,9 @@ import dk.trustworks.intranet.aggregates.crm.sector.services.SectorLeadService;
 import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -19,6 +22,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -44,6 +48,21 @@ public class AccountSignalService {
 
     /** A signal is one sentence. Matches the column and the extractor's own cap. */
     public static final int MAX_TEXT_CHARS = 2000;
+
+    /**
+     * How many accounts one capture may name (V593).
+     *
+     * <p>Two is the case this was built for and three is plausible. A line naming ten is
+     * not a signal, it is a mailing list, and every one of them costs a row some owner
+     * has to decide on — so it is refused outright rather than quietly shortened.
+     */
+    public static final int MAX_CLIENTS_PER_CAPTURE = 5;
+
+    /**
+     * How many colleagues one capture may name. Same reasoning as the client cap, and the
+     * same refusal: every name here becomes an edge in somebody's relationship graph.
+     */
+    public static final int MAX_COLLEAGUES_PER_CAPTURE = 10;
     public static final int MAX_PERSON_NAME_CHARS = 255;
     public static final int MAX_PERSON_ROLE_CHARS = 255;
     public static final int MAX_RELATION_CHARS = 500;
@@ -60,23 +79,47 @@ public class AccountSignalService {
     private volatile List<String[]> allowlistCache;
     private volatile long allowlistExpiresAt;
 
+    /**
+     * The colleague allowlist, cached on the same terms and for the same reason as the
+     * client one: names and uuids only, identical for every caller, so a process-wide
+     * cache leaks nothing between employees.
+     */
+    private volatile List<String[]> colleagueCache;
+    private volatile long colleagueExpiresAt;
+
     @Inject
     ClientService clientService;
 
     @Inject
     SectorLeadService sectorLeadService;
 
+    @Inject
+    UserService userService;
+
     /**
-     * Creates a signal.
+     * Creates one capture: one row per account it names (V593).
+     *
+     * <p><b>Why N rows.</b> A line naming two accounts used to store one, because
+     * {@code client_uuid} was a single column and the panel held a single pick — the
+     * second {@code @} silently replaced the first, and the account that lost was the one
+     * the signal was about. The rows share a {@code captureUuid} so a reader can say
+     * "also filed on Rigspolitiet", but they are otherwise independent: {@code status},
+     * {@code leadUuid} and {@code decidedBy} are per account, and {@link #decide}
+     * authorizes against ONE client's account manager. One owner parking a signal must
+     * not park it for another's.
+     *
+     * <p><b>All or nothing.</b> One transaction. An unknown client in the list fails the
+     * whole capture rather than filing it on the accounts that did resolve — a partial
+     * save is indistinguishable, afterwards, from the author having named fewer accounts.
      *
      * @param request    what the author accepted in the preview
      * @param authorUuid the acting employee, resolved from {@code X-Requested-By} by the
      *                   resource; required — an unattributed signal is worthless in a
      *                   feature whose whole value is knowing who heard it
-     * @return the saved row
+     * @return the saved rows, in the order the author named the accounts
      */
     @Transactional
-    public AccountSignal create(AccountSignalRequest request, String authorUuid) {
+    public List<AccountSignal> create(AccountSignalRequest request, String authorUuid) {
         if (request == null) {
             throw new WebApplicationException("A body is required", Response.Status.BAD_REQUEST);
         }
@@ -86,26 +129,52 @@ public class AccountSignalService {
                     Response.Status.BAD_REQUEST);
         }
         String text = requireText(request.text());
-        String clientUuid = requireClient(request.clientUuid());
+        List<String> clientUuids = requireClients(request.allClientUuids());
+        List<String> colleagueUuids = requireColleagues(request.allColleagueUuids(), authorUuid);
 
-        AccountSignal row = new AccountSignal();
-        row.setUuid(UUID.randomUUID().toString());
-        row.setClientUuid(clientUuid);
-        row.setAuthorUuid(authorUuid);
-        row.setSource(SignalSource.INTRA);
-        row.setText(text);
-        row.setPersonName(trimToNull(request.personName(), MAX_PERSON_NAME_CHARS));
-        row.setPersonRole(trimToNull(request.personRole(), MAX_PERSON_ROLE_CHARS));
-        row.setRelationText(trimToNull(request.relationText(), MAX_RELATION_CHARS));
-        row.setSignalType(parseType(request.signalType()));
-        row.setStatus(SignalStatus.NEW);
-        row.setCreatedAt(LocalDateTime.now());
-        row.persist();
+        // One timestamp and one capture uuid for the whole capture. Minting either per
+        // row would make the sibling rows look like separate captures that happened to
+        // arrive together, which is exactly what they are not.
+        String captureUuid = UUID.randomUUID().toString();
+        LocalDateTime capturedAt = LocalDateTime.now();
 
-        log.infof("Account signal created: uuid=%s client=%s type=%s hasPerson=%s actor=%s",
-                row.getUuid(), row.getClientUuid(), row.getSignalType(),
-                row.getPersonName() != null, authorUuid);
-        return row;
+        String personName = trimToNull(request.personName(), MAX_PERSON_NAME_CHARS);
+        String personRole = trimToNull(request.personRole(), MAX_PERSON_ROLE_CHARS);
+        String relationText = trimToNull(request.relationText(), MAX_RELATION_CHARS);
+        SignalType signalType = parseType(request.signalType());
+
+        List<AccountSignal> rows = new ArrayList<>();
+        for (String clientUuid : clientUuids) {
+            AccountSignal row = new AccountSignal();
+            row.setUuid(UUID.randomUUID().toString());
+            row.setCaptureUuid(captureUuid);
+            row.setClientUuid(clientUuid);
+            row.setAuthorUuid(authorUuid);
+            row.setSource(SignalSource.INTRA);
+            row.setText(text);
+            row.setPersonName(personName);
+            row.setPersonRole(personRole);
+            row.setRelationText(relationText);
+            row.setSignalType(signalType);
+            row.setStatus(SignalStatus.NEW);
+            row.setCreatedAt(capturedAt);
+            row.persist();
+            rows.add(row);
+
+            for (String colleagueUuid : colleagueUuids) {
+                AccountSignalColleague named = new AccountSignalColleague();
+                named.setUuid(UUID.randomUUID().toString());
+                named.setSignalUuid(row.getUuid());
+                named.setUserUuid(colleagueUuid);
+                named.setCreatedAt(capturedAt);
+                named.persist();
+            }
+        }
+
+        log.infof("Account signal captured: capture=%s clients=%d colleagues=%d type=%s hasPerson=%s actor=%s",
+                captureUuid, rows.size(), colleagueUuids.size(), signalType,
+                personName != null, authorUuid);
+        return rows;
     }
 
     /** Every signal filed on one account, newest first — the plan tab's "what we've heard". */
@@ -243,6 +312,85 @@ public class AccountSignalService {
         return immutable;
     }
 
+    /**
+     * The colleague allowlist handed to the extractor and to the {@code @} picker:
+     * {@code [uuid, name]} for everyone currently employed (V593).
+     *
+     * <p>Read in its own transaction by the caller BEFORE the model call, never during it
+     * (the §P9 M1 rule). Same cache and same TTL as {@link #clientAllowlist()}, for the
+     * same reason: a full employee scan per debounced keystroke burst, per employee, just
+     * to build a prompt.
+     *
+     * <p>Employed in any status — at work, on leave of any kind — and every consultant
+     * type including EXTERNAL. Somebody on parental leave still knows the people they
+     * knew last month, and an external consultant on an account is exactly the person
+     * whose relationship the graph is missing. PREBOARDING is out: they have not started,
+     * so they cannot yet have met anybody through us.
+     *
+     * <p>Only uuid and name. A {@code User} is never serialised out of here — the BFF's
+     * own token carries {@code admin:*}, which makes {@code UserScopeResponseFilter}
+     * inert, so a whole User row would put salaries and bank details in the browser to
+     * autocomplete a name.
+     */
+    public List<String[]> colleagueAllowlist() {
+        List<String[]> cached = colleagueCache;
+        if (cached != null && System.nanoTime() < colleagueExpiresAt) {
+            return cached;
+        }
+        List<String[]> allowlist = new ArrayList<>();
+        List<User> employed = userService.findEmployedUsersByDate(
+                java.time.LocalDate.now(), true,
+                ConsultantType.CONSULTANT, ConsultantType.STUDENT,
+                ConsultantType.STAFF, ConsultantType.EXTERNAL);
+        for (User user : employed) {
+            if (user == null || user.getUuid() == null) {
+                continue;
+            }
+            String name = fullNameOf(user);
+            if (!isBlank(name)) {
+                allowlist.add(new String[]{user.getUuid(), name});
+            }
+        }
+        allowlist.sort((left, right) -> left[1].compareToIgnoreCase(right[1]));
+        List<String[]> immutable = List.copyOf(allowlist);
+        colleagueCache = immutable;
+        colleagueExpiresAt = System.nanoTime() + ALLOWLIST_TTL_NANOS;
+        return immutable;
+    }
+
+    /** "Firstname Lastname", falling back to the username — matches {@code PersonDTO}. */
+    static String fullNameOf(User user) {
+        String first = user.getFirstname() == null ? "" : user.getFirstname().trim();
+        String last = user.getLastname() == null ? "" : user.getLastname().trim();
+        String joined = (first + " " + last).trim();
+        return joined.isEmpty() ? user.getUsername() : joined;
+    }
+
+    /**
+     * The colleagues named on each of a set of signals, keyed by signal uuid.
+     *
+     * <p>One query for the whole account rather than one per row — the account page reads
+     * every signal on a client at once, and resolving colleagues row by row is the N+1
+     * the read surfaces exist to avoid.
+     */
+    public java.util.Map<String, List<String>> colleaguesBySignal(List<String> signalUuids) {
+        java.util.Map<String, List<String>> bySignal = new java.util.LinkedHashMap<>();
+        for (AccountSignalColleague row : AccountSignalColleague.listForSignals(signalUuids)) {
+            bySignal.computeIfAbsent(row.getSignalUuid(), key -> new ArrayList<>())
+                    .add(row.getUserUuid());
+        }
+        return bySignal;
+    }
+
+    /** The colleagues named on one signal. */
+    public List<String> colleaguesFor(String signalUuid) {
+        List<String> uuids = new ArrayList<>();
+        for (AccountSignalColleague row : AccountSignalColleague.listForSignal(signalUuid)) {
+            uuids.add(row.getUserUuid());
+        }
+        return uuids;
+    }
+
     /** First name of the acting employee, used to phrase the relation from the author. */
     public String authorFirstName(String authorUuid) {
         if (isBlank(authorUuid)) {
@@ -266,19 +414,67 @@ public class AccountSignalService {
     }
 
     /**
-     * The client must exist. The capture panel resolves it from the {@code @} picker, so a
-     * miss here means a stale or forged uuid, not an ordinary typo — 400, never a row
-     * pointing at nothing.
+     * Every client must exist, and there must be at least one. The capture panel resolves
+     * them from the {@code @} picker, so a miss here means a stale or forged uuid, not an
+     * ordinary typo — 400, never a row pointing at nothing.
+     *
+     * <p>Order is the author's. The first account they named is the one they led with.
      */
-    private String requireClient(String clientUuid) {
-        if (isBlank(clientUuid)) {
+    private List<String> requireClients(List<String> clientUuids) {
+        if (clientUuids == null || clientUuids.isEmpty()) {
             throw new WebApplicationException("Pick the client with @ first", Response.Status.BAD_REQUEST);
         }
-        Client client = clientService.findByUuid(clientUuid.trim());
-        if (client == null) {
-            throw new WebApplicationException("Unknown client", Response.Status.BAD_REQUEST);
+        if (clientUuids.size() > MAX_CLIENTS_PER_CAPTURE) {
+            throw new WebApplicationException(
+                    "One line can name at most " + MAX_CLIENTS_PER_CAPTURE + " accounts",
+                    Response.Status.BAD_REQUEST);
         }
-        return client.getUuid();
+        List<String> resolved = new ArrayList<>();
+        for (String clientUuid : clientUuids) {
+            Client client = clientService.findByUuid(clientUuid);
+            if (client == null) {
+                throw new WebApplicationException("Unknown client", Response.Status.BAD_REQUEST);
+            }
+            resolved.add(client.getUuid());
+        }
+        return resolved;
+    }
+
+    /**
+     * Every named colleague must be a real user, and never the author.
+     *
+     * <p>The author is dropped silently rather than refused: the extractor can quite
+     * reasonably read "jeg og Tobias" as naming two colleagues, and the author is already
+     * recorded as {@code author_uuid}. Keeping them here would double every KNOWS edge
+     * {@code AccountRelationshipService} draws from this signal.
+     *
+     * <p>An unknown uuid IS refused. Unlike an unreadable signal type, this is not
+     * something a capture should survive: the panel only ever sends uuids it got from the
+     * mentionables endpoint or from the verified extraction, so anything else is stale or
+     * forged, and the row it would create asserts that a named employee knows a named
+     * third party.
+     */
+    private List<String> requireColleagues(List<String> colleagueUuids, String authorUuid) {
+        if (colleagueUuids == null || colleagueUuids.isEmpty()) {
+            return List.of();
+        }
+        if (colleagueUuids.size() > MAX_COLLEAGUES_PER_CAPTURE) {
+            throw new WebApplicationException(
+                    "One line can name at most " + MAX_COLLEAGUES_PER_CAPTURE + " colleagues",
+                    Response.Status.BAD_REQUEST);
+        }
+        List<String> resolved = new ArrayList<>();
+        for (String colleagueUuid : colleagueUuids) {
+            if (colleagueUuid.equals(authorUuid)) {
+                continue;
+            }
+            User user = User.findById(colleagueUuid);
+            if (user == null) {
+                throw new WebApplicationException("Unknown colleague", Response.Status.BAD_REQUEST);
+            }
+            resolved.add(user.getUuid());
+        }
+        return resolved;
     }
 
     /** Unknown, misspelled and absent types all become OTHER — a capture is never refused over it. */

@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.aggregates.crm.account.services;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountActivityDTO;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestDTO;
+import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackDigestService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -34,14 +37,18 @@ import java.util.Map;
  *   <tr><td>BAND</td><td>{@code client_band_history}</td></tr>
  *   <tr><td>CALENDAR</td><td>{@code account_meeting} + its external attendees</td></tr>
  *   <tr><td>NOTE</td><td>{@code client_note} — the one line somebody typed</td></tr>
- *   <tr><td>SLACK</td><td><b>nothing</b> — see below</td></tr>
+ *   <tr><td>SLACK</td><td>{@code account_slack_digest} — one row per day of the linked account space (V594)</td></tr>
  * </table>
  *
- * <p><b>There is no SLACK producer.</b> Account spaces, the {@code /signal} command and the
- * daily channel summary need Slack inbound, which has no staging signing secret and so
- * cannot be verified anywhere before production. The source is part of the contract the
- * frontend already renders, and the timeline shows the lane as having no source connected
- * rather than inventing rows for it. That is a recorded gap, not an oversight.
+ * <p><b>The SLACK producer reads a digest, never a channel.</b> {@code AccountSlackSyncJob}
+ * pulls the linked {@code a_*} channel nightly with the Slack API — an outbound read,
+ * which is why it needed no inbound signing secret — and stores one row per Copenhagen
+ * day: counts, participants, and a model's validated reading of the day (headline,
+ * decisions, next steps, risks, client asks, people named, topics). No message text is
+ * stored anywhere; {@link #slackRows} composes its line from the headline when there is
+ * one and from the counts when there is not, and hands the reading to the row as
+ * {@code slackDigest}. The {@code /signal} command and the buttons of spec §4.9 still
+ * need inbound and are still not built.
  *
  * <p><b>Native queries.</b> {@code sales_lead_stage_history} has no entity (it is written
  * with a native INSERT in {@code SalesService}) and the meeting summary needs a join whose
@@ -66,6 +73,10 @@ public class AccountActivityService {
     @Inject
     EntityManager em;
 
+    /** Only for reading the stored digest JSON back; it never calls a model from here. */
+    @Inject
+    AccountSlackDigestService slackDigestService;
+
     /** Every source for one client, newest first, capped. */
     public List<AccountActivityDTO> forClient(String clientUuid, int limit) {
         if (clientUuid == null || clientUuid.isBlank()) {
@@ -82,6 +93,7 @@ public class AccountActivityService {
         rows.addAll(bandRows(clientUuid, capped));
         rows.addAll(meetingRows(clientUuid, capped));
         rows.addAll(noteRows(clientUuid, capped));
+        rows.addAll(slackRows(clientUuid, capped));
 
         rows.sort(Comparator.comparing(AccountActivityDTO::occurredAt).reversed()
                 .thenComparing(AccountActivityDTO::id));
@@ -122,6 +134,11 @@ public class AccountActivityService {
         mergeNewest(newest, """
                 select client_uuid, max(created_at) from client_note group by client_uuid
                 """, "NOTE", "Note added");
+        // A label, not the headline: the list shows several hundred clients and the
+        // headline is a paraphrase of a conversation that belongs on the account page.
+        mergeNewest(newest, """
+                select client_uuid, max(digest_date) from account_slack_digest group by client_uuid
+                """, "SLACK", "Slack activity");
 
         return newest;
     }
@@ -411,9 +428,98 @@ public class AccountActivityService {
         return rows;
     }
 
+    /**
+     * Slack days — one row per Copenhagen day of the linked account space (V594).
+     *
+     * <p><b>No message ever reaches this feed.</b> The row's line is the model's headline
+     * when it wrote one and a counts line ("#a_oersted: 14 messages (Mikkel, Jonas)") when
+     * it did not, so a day with activity is never silently absent. Under the line the row
+     * carries the validated reading — decisions, next steps, risks, client asks, people
+     * named, topics — and the deep link into Slack, which is the one place the actual
+     * words live. {@code refUuid} names the digest; nothing in Intra opens it yet, but a
+     * row that cannot name its source could never grow an affordance.
+     *
+     * <p>{@code actor} is null: a day is many people, and they are listed in the digest.
+     */
+    private List<AccountActivityDTO> slackRows(String clientUuid, int limit) {
+        Query digests = em.createNativeQuery("""
+                select uuid, channel_name, digest_date, message_count, thread_reply_count,
+                       permalink, relevance, headline, digest_json
+                  from account_slack_digest
+                 where client_uuid = :clientUuid
+                 order by digest_date desc
+                """);
+        digests.setParameter("clientUuid", clientUuid);
+        digests.setMaxResults(limit);
+        List<Object[]> digestRows = rowsOf(digests);
+        if (digestRows.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> uuids = digestRows.stream().map(row -> asString(row[0])).toList();
+        Query participants = em.createNativeQuery("""
+                select digest_uuid, user_uuid
+                  from account_slack_digest_participant
+                 where digest_uuid in (:uuids)
+                 order by digest_uuid, message_count desc, user_uuid
+                """);
+        participants.setParameter("uuids", uuids);
+        Map<String, List<String>> namesByDigest = new LinkedHashMap<>();
+        for (Object[] row : rowsOf(participants)) {
+            String name = firstNameOf(asString(row[1]));
+            if (name != null) {
+                namesByDigest.computeIfAbsent(asString(row[0]), key -> new ArrayList<>()).add(name);
+            }
+        }
+
+        List<AccountActivityDTO> rows = new ArrayList<>();
+        for (Object[] row : digestRows) {
+            String uuid = asString(row[0]);
+            String channel = asString(row[1]);
+            int messages = asInt(row[3]);
+            int replies = asInt(row[4]);
+            String headline = asString(row[7]);
+            List<String> names = namesByDigest.getOrDefault(uuid, List.of());
+            SlackDigestContent content = slackDigestService.fromJson(asString(row[8]));
+            rows.add(new AccountActivityDTO(
+                    "slack:" + uuid,
+                    "SLACK",
+                    slackSummary(channel, headline, messages, replies, names),
+                    toLocalDate(row[2]),
+                    null,
+                    "SLACK",
+                    uuid,
+                    new SlackDigestDTO(channel, messages, replies, names, asString(row[5]),
+                            asString(row[6]), content)));
+        }
+        return rows;
+    }
+
+    /**
+     * The Slack row's line. The channel first, as spec §3.2's own example has it
+     * ("#a_banedanmark: …"); then the headline, or the counts and who was talking when the
+     * model wrote nothing — a day that was only "jeg er hjemmefra" still happened.
+     */
+    static String slackSummary(String channel, String headline, int messages, int replies, List<String> names) {
+        String prefix = "#" + (channel == null || channel.isBlank() ? "slack" : channel) + ": ";
+        if (headline != null && !headline.isBlank()) {
+            return prefix + headline.trim();
+        }
+        int total = Math.max(messages, 0) + Math.max(replies, 0);
+        String count = total == 1 ? "1 message" : total + " messages";
+        if (names == null || names.isEmpty()) {
+            return prefix + count;
+        }
+        return prefix + count + " (" + joinNames(names) + ")";
+    }
+
     // ------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------
+
+    private static int asInt(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
+    }
 
     private void mergeNewest(Map<String, AccountActivityDTO> into, String sql, String source, String summary) {
         @SuppressWarnings("unchecked")

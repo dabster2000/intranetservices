@@ -27,6 +27,13 @@ public record AccountDTO(
         SectorRefDTO sector,
         SectorPlanRefDTO sectorPlan,
         String slackSpace,
+        /**
+         * The channel id the nightly sync resolved {@code slackSpace} to, and why it could
+         * not: {@code NOT_FOUND}, {@code NOT_IN_CHANNEL} or {@code ARCHIVED}. Both null on a
+         * healthy link, and both null until the first run after the name was set (V594).
+         */
+        String slackChannelId,
+        String slackLinkError,
         String nextStep,
         List<ClientDomainDTO> domains,
         List<BandHistoryDTO> bandHistory,

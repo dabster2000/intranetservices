@@ -25,7 +25,10 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -766,6 +769,197 @@ public class SlackService {
             log.warnf(e, "Error resolving Slack permalink channel=%s: %s", channel, e.getMessage());
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // Account spaces (CRM spec §3.2 / §4.9, V594): READING a client channel
+    //
+    // Everything below uses the ADMIN token. The account spaces are a mix of
+    // public (#a_e-nettet) and private (#a_lb_forsikring) channels, and the
+    // admin bot is the app that already holds groups:read for the private ones
+    // (listHumanChannelMembers). Reading needs four scopes on that app:
+    //   channels:read, groups:read     — conversations.list
+    //   channels:history, groups:history — conversations.history / .replies
+    // and the bot must be a MEMBER of the channel either way — conversations.history
+    // on a channel the bot is not in answers not_in_channel, and conversations.list
+    // simply omits a private channel the bot is not in. Both arrive as a
+    // SlackChannelAccessException and are recorded on the account, never retried
+    // blindly.
+    //
+    // Message text is returned to the caller and held in memory for one model
+    // call. Nothing here logs it.
+    // ------------------------------------------------------------------------
+
+    /**
+     * A channel message as {@code AccountSlackSyncService} needs it. {@code subtype} is
+     * non-null for anything that is not a plain human message — joins, leaves, topic
+     * changes and bot posts ({@code bot_message} is stamped on for a message that only
+     * carries a {@code bot_id}) — so a caller drops those with one null check.
+     * {@code replyCount} and {@code latestReply} are Slack's own thread bookkeeping on a
+     * thread parent; both are zero/null on everything else.
+     */
+    public record SlackChannelMessage(String ts, String threadTs, String user, String subtype,
+                                      String text, int replyCount, String latestReply) { }
+
+    /**
+     * Every channel the admin bot can see — public ones and the private ones it is a
+     * member of — as {@code lower-cased name → channel id}. Both {@code name} and
+     * {@code name_normalized} are indexed so {@code a_e-nettet} matches however Slack
+     * spelt it. Archived channels are excluded: a digest of a dead space is noise, and an
+     * account pointing at one should be told so (the read answers {@code is_archived}).
+     *
+     * <p>One paginated listing per run, not one per account: {@code conversations.list}
+     * is Tier 2 and the caller resolves every unresolved account from the same map.
+     */
+    public Map<String, String> listChannelIdsByName() throws IOException, SlackApiException {
+        Map<String, String> byName = new HashMap<>();
+        String cursor = null;
+        do {
+            final String pageCursor = cursor;
+            ConversationsListResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                    .conversationsList(req -> req
+                            .types(List.of(com.slack.api.model.ConversationType.PUBLIC_CHANNEL,
+                                    com.slack.api.model.ConversationType.PRIVATE_CHANNEL))
+                            .excludeArchived(true)
+                            .limit(1000)
+                            .cursor(pageCursor));
+            if (!response.isOk()) {
+                throw slackFailure("Slack channel listing failed", response);
+            }
+            if (response.getChannels() != null) {
+                for (com.slack.api.model.Conversation channel : response.getChannels()) {
+                    if (channel.getId() == null) {
+                        continue;
+                    }
+                    if (channel.getName() != null) {
+                        byName.putIfAbsent(channel.getName().toLowerCase(Locale.ROOT), channel.getId());
+                    }
+                    if (channel.getNameNormalized() != null) {
+                        byName.putIfAbsent(channel.getNameNormalized().toLowerCase(Locale.ROOT), channel.getId());
+                    }
+                }
+            }
+            cursor = response.getResponseMetadata() == null
+                    ? null : response.getResponseMetadata().getNextCursor();
+        } while (cursor != null && !cursor.isEmpty());
+        return byName;
+    }
+
+    /**
+     * The TOP-LEVEL messages of a channel between two Slack timestamps (both exclusive,
+     * as Slack treats them), oldest page first, paginated. Thread replies are NOT in
+     * here — Slack keeps them under {@code conversations.replies} — which is why the
+     * record carries {@code replyCount}/{@code latestReply}: the caller decides which
+     * threads to open with {@link #readThreadReplies}.
+     *
+     * @throws SlackChannelAccessException for {@code not_in_channel}, {@code channel_not_found}
+     *                                     and {@code is_archived} — a fact about THIS channel
+     * @throws SlackConfigurationException for a token or scope fault — a fact about the app
+     * @throws IOException                 for anything transient
+     */
+    public List<SlackChannelMessage> readChannelHistory(String channelId, String oldestTs, String latestTs)
+            throws IOException, SlackApiException {
+        List<SlackChannelMessage> messages = new ArrayList<>();
+        String cursor = null;
+        do {
+            final String pageCursor = cursor;
+            ConversationsHistoryResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                    .conversationsHistory(req -> req.channel(channelId)
+                            .oldest(oldestTs).latest(latestTs).limit(200).cursor(pageCursor));
+            if (!response.isOk()) {
+                throw channelFailure("Slack channel history read failed", response);
+            }
+            if (response.getMessages() != null) {
+                for (com.slack.api.model.Message message : response.getMessages()) {
+                    messages.add(toChannelMessage(message));
+                }
+            }
+            cursor = response.getResponseMetadata() == null
+                    ? null : response.getResponseMetadata().getNextCursor();
+        } while (cursor != null && !cursor.isEmpty());
+        return messages;
+    }
+
+    /**
+     * The replies of one thread between two Slack timestamps. Slack returns the thread
+     * parent as the first message of the first page regardless of {@code oldest}; it is
+     * dropped here so the caller only ever sees replies.
+     */
+    public List<SlackChannelMessage> readThreadReplies(String channelId, String threadTs,
+                                                       String oldestTs, String latestTs)
+            throws IOException, SlackApiException {
+        List<SlackChannelMessage> replies = new ArrayList<>();
+        String cursor = null;
+        do {
+            final String pageCursor = cursor;
+            ConversationsRepliesResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                    .conversationsReplies(req -> req.channel(channelId).ts(threadTs)
+                            .oldest(oldestTs).latest(latestTs).limit(200).cursor(pageCursor));
+            if (!response.isOk()) {
+                throw channelFailure("Slack thread read failed", response);
+            }
+            if (response.getMessages() != null) {
+                for (com.slack.api.model.Message message : response.getMessages()) {
+                    if (threadTs.equals(message.getTs())) {
+                        continue;
+                    }
+                    replies.add(toChannelMessage(message));
+                }
+            }
+            cursor = response.getResponseMetadata() == null
+                    ? null : response.getResponseMetadata().getNextCursor();
+        } while (cursor != null && !cursor.isEmpty());
+        return replies;
+    }
+
+    /**
+     * {@link #getPermalink} with the admin token. The mother bot is not in the private
+     * account spaces, and {@code chat.getPermalink} needs a token that can see the
+     * channel. Null on any failure — provenance is best-effort, as for the mother variant.
+     */
+    public String getPermalinkAsAdmin(String channel, String messageTs) {
+        try {
+            var response = Slack.getInstance().methods(adminSlackBotToken)
+                    .chatGetPermalink(req -> req.channel(channel).messageTs(messageTs));
+            if (!response.isOk()) {
+                log.warnf("Slack permalink lookup (admin) failed channel=%s: %s", channel, response.getError());
+                return null;
+            }
+            return response.getPermalink();
+        } catch (Exception e) {
+            log.warnf("Error resolving Slack permalink (admin) channel=%s: %s", channel, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * {@link #slackFailure} with one more tier in front of it: the three per-channel codes
+     * become a {@link SlackChannelAccessException} so the account-space sync can record
+     * "invite the bot" on the account instead of counting a failure.
+     */
+    static IOException channelFailure(String what, SlackApiTextResponse response) {
+        String error = response.getError();
+        if (SlackChannelAccessException.isChannelAccessError(error)) {
+            return new SlackChannelAccessException(what + ": " + error, error);
+        }
+        return slackFailure(what, response);
+    }
+
+    /** Package-private so the shape rules are unit-testable without Slack's static client. */
+    static SlackChannelMessage toChannelMessage(com.slack.api.model.Message message) {
+        String subtype = message.getSubtype();
+        if (subtype == null && message.getBotId() != null) {
+            // A bot post with no subtype (Block Kit posts from apps) — not a human message.
+            subtype = "bot_message";
+        }
+        return new SlackChannelMessage(
+                message.getTs(),
+                message.getThreadTs(),
+                message.getUser(),
+                subtype,
+                message.getText(),
+                message.getReplyCount() == null ? 0 : message.getReplyCount(),
+                message.getLatestReply());
     }
 
     public void addUserToChannel(User user, String channelID) {

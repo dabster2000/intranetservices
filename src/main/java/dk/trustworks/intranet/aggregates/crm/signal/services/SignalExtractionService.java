@@ -12,6 +12,8 @@ import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -78,32 +80,37 @@ public class SignalExtractionService {
     /**
      * Reads one line.
      *
-     * @param authorFirstName used to phrase the relation from the author
-     * @param clients         the allowlist, each {@code [uuid, name]} — the only client
-     *                        uuids that may come back
-     * @param text            the raw line
-     * @param pickedClientUuid the client the author already chose with {@code @}, or null.
-     *                         When set it overrides whatever the model says.
+     * @param authorFirstName  used to phrase the relation from the author
+     * @param clients          the client allowlist, each {@code [uuid, name]} — the only
+     *                         client uuids that may come back
+     * @param colleagues       the colleague allowlist, each {@code [uuid, name]} — the only
+     *                         colleague uuids that may come back
+     * @param text             the raw line
+     * @param pickedClientUuids the clients the author has already chosen with {@code @}.
+     *                          These are always part of the reading; unlike before V593
+     *                          they no longer SUPPRESS what the model found, or a line
+     *                          naming a second account could never surface it.
      */
     public SignalExtractionDTO extract(String authorFirstName, List<String[]> clients,
-                                       String text, String pickedClientUuid) {
+                                       List<String[]> colleagues, String text,
+                                       List<String> pickedClientUuids) {
         if (QuarkusTransaction.isActive()) {
             // The §P9 M1 rule: never hold a pooled connection across the model call.
             throw new IllegalStateException("extract must not be called inside a transaction");
         }
         if (!extractionEnabled) {
             log.debug("Signal extraction is switched off — returning an empty reading");
-            return empty(resolveClient(pickedClientUuid, clients));
+            return empty(resolveAll(pickedClientUuids, clients));
         }
         String json = openAIService.askQuestionWithSchema(
                 AccountSignalPrompts.systemPrompt(),
-                AccountSignalPrompts.userPrompt(authorFirstName, clients, text),
+                AccountSignalPrompts.userPrompt(authorFirstName, clients, colleagues, text),
                 AccountSignalPrompts.schema(),
                 SCHEMA_NAME,
                 AccountSignalPrompts.REFUSAL_FALLBACK_JSON,
                 extractionModel, MAX_OUTPUT_TOKENS, false,
                 extractionReasoningEffort.filter(e -> !e.isBlank()).orElse(null));
-        return parse(json, clients, pickedClientUuid);
+        return parse(json, clients, colleagues, pickedClientUuids);
     }
 
     /**
@@ -113,15 +120,16 @@ public class SignalExtractionService {
      * surface is exercised by a plain JUnit test in the DB-free fast tier that gates
      * deploys — no Quarkus boot, no database, no network.
      */
-    SignalExtractionDTO parse(String json, List<String[]> clients, String pickedClientUuid) {
-        String verifiedPick = resolveClient(pickedClientUuid, clients);
+    SignalExtractionDTO parse(String json, List<String[]> clients, List<String[]> colleagues,
+                              List<String> pickedClientUuids) {
+        List<String> verifiedPicks = resolveAll(pickedClientUuids, clients);
 
         // OpenAIService never throws: it reports every failure as "{}" or blank. A caller
         // that only try/catches silently accepts nothing — test for it explicitly.
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             log.warnf("Signal extraction returned no usable output (model=%s, prompt=%s) — saving the line unread",
                     extractionModel, AccountSignalPrompts.PROMPT_VERSION);
-            return empty(verifiedPick);
+            return empty(verifiedPicks);
         }
 
         JsonNode node;
@@ -130,22 +138,27 @@ public class SignalExtractionService {
         } catch (Exception e) {
             log.warnf(e, "Signal extraction returned unparseable JSON (model=%s, prompt=%s)",
                     extractionModel, AccountSignalPrompts.PROMPT_VERSION);
-            return empty(verifiedPick);
+            return empty(verifiedPicks);
         }
 
-        String modelClient = resolveClient(textOrNull(node, "clientUuid"), clients);
-        String clientUuid = verifiedPick != null ? verifiedPick : modelClient;
+        // The author's picks first, then anything the model found that they have not
+        // picked yet — that tail is what the panel offers as "you also mentioned X".
+        // Before V593 a pick REPLACED the model's reading, which is precisely how a line
+        // naming two accounts could only ever keep one of them.
+        LinkedHashSet<String> clientUuids = new LinkedHashSet<>(verifiedPicks);
+        clientUuids.addAll(resolveAll(stringList(node, "clientUuids"), clients));
 
         // Only surface the unmatched fragment when there is genuinely no client, so the
         // panel can say what it failed to match instead of silently finding nothing.
-        String clientText = clientUuid == null ? textOrNull(node, "clientText") : null;
+        String clientText = clientUuids.isEmpty() ? textOrNull(node, "clientText") : null;
 
         return new SignalExtractionDTO(
-                clientUuid,
+                List.copyOf(clientUuids),
                 clientText,
                 textOrNull(node, "personName"),
                 textOrNull(node, "personRole"),
                 textOrNull(node, "relationText"),
+                resolveAll(stringList(node, "colleagueUuids"), colleagues),
                 parseType(textOrNull(node, "signalType")).name(),
                 confidence(node));
     }
@@ -153,21 +166,55 @@ public class SignalExtractionService {
     /**
      * The allowlist re-check. A uuid is accepted only if it is one of the uuids we put in
      * the prompt — the model never reaches persistence with an id nobody verified, and a
-     * forged or hallucinated uuid resolves to null rather than to someone else's client.
+     * forged or hallucinated uuid is dropped rather than resolving to someone else's
+     * client or to a colleague who was never mentioned.
+     *
+     * <p>Used for BOTH lists. A colleague uuid is checked exactly as hard as a client
+     * uuid: the consequence of accepting an unverified one is a relationship edge
+     * asserting that a named employee knows a named third party, which is worse than a
+     * wrong account, not better.
+     *
+     * <p>Order is the candidates' own, de-duplicated. Never null.
      */
-    private static String resolveClient(String candidate, List<String[]> clients) {
-        if (candidate == null || candidate.isBlank() || clients == null) {
-            return null;
+    private static List<String> resolveAll(List<String> candidates, List<String[]> allowlist) {
+        if (candidates == null || candidates.isEmpty() || allowlist == null) {
+            return List.of();
         }
-        Set<String> allowed = clients.stream()
-                .filter(c -> c != null && c.length > 0 && c[0] != null)
-                .map(c -> c[0])
+        Set<String> allowed = allowlist.stream()
+                .filter(entry -> entry != null && entry.length > 0 && entry[0] != null)
+                .map(entry -> entry[0])
                 .collect(java.util.stream.Collectors.toSet());
-        return allowed.contains(candidate) ? candidate : null;
+        LinkedHashSet<String> resolved = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank() && allowed.contains(candidate.trim())) {
+                resolved.add(candidate.trim());
+            }
+        }
+        return List.copyOf(resolved);
     }
 
-    private static SignalExtractionDTO empty(String clientUuid) {
-        return new SignalExtractionDTO(clientUuid, null, null, null, null, SignalType.OTHER.name(), 0.0d);
+    /**
+     * A JSON array of strings, or empty. A model that answers a schema-required array
+     * with a scalar, a null or an object is a model that answered wrong — dropping it is
+     * the same posture as an unparseable uuid, not a reason to throw.
+     */
+    private static List<String> stringList(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (!value.isArray()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (JsonNode element : value) {
+            if (element.isTextual() && !element.asText().isBlank()) {
+                out.add(element.asText().trim());
+            }
+        }
+        return out;
+    }
+
+    private static SignalExtractionDTO empty(List<String> clientUuids) {
+        return new SignalExtractionDTO(clientUuids == null ? List.of() : List.copyOf(clientUuids),
+                null, null, null, null, List.of(), SignalType.OTHER.name(), 0.0d);
     }
 
     /** Unknown, misspelled and absent types all become OTHER — never an exception. */

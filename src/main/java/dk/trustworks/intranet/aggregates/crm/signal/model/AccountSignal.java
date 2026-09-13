@@ -55,6 +55,22 @@ public class AccountSignal extends PanacheEntityBase {
     @Column(name = "uuid", length = 36)
     private String uuid;
 
+    /**
+     * The capture this row belongs to (V593).
+     *
+     * <p>One line may name several accounts — <i>"@Rigspolitiet … som jeg har mødt i
+     * @KOMBIT"</i> — and each account gets its OWN row, sharing this uuid. That is
+     * deliberate: {@link #status}, {@link #leadUuid} and {@link #decidedBy} are per
+     * account, and {@code AccountSignalService.decide} authorizes against one client's
+     * account manager, so one owner parking a signal must not park it for another's.
+     * Group by this when a reader wants to say "also filed on Rigspolitiet".
+     *
+     * <p>Never null. A capture naming one account is a capture of one, and rows that
+     * predate V593 were backfilled to their own uuid, so no reader needs a null branch.
+     */
+    @Column(name = "capture_uuid", length = 36, nullable = false)
+    private String captureUuid;
+
     /** The client the signal is about. Required — a signal with no account has nowhere to land. */
     @Column(name = "client_uuid", length = 36, nullable = false)
     private String clientUuid;

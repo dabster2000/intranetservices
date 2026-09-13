@@ -1,3 +1,8 @@
+client-news:
+  enabled: ${NEWS_API_ENABLED:false}
+  api-key: ${NEWS_API_AI_KEY:}
+  daily-request-budget: ${NEWS_API_DAILY_REQUEST_BUDGET:200}
+
 quarkus:
   application:
     name: trustworks-intranet
@@ -476,6 +481,34 @@ openai:
 # (Regression test: ApplicationYamlNoDuplicateKeysTest.)
 dk:
   trustworks:
+    crm:
+      # ---- TrustLink ("who knows them") ----
+      # Mirrors tier-5 LinkedIn-style connections from the TrustLink service and turns
+      # them into a third edge source in the account relationship graph, next to calendar
+      # meetings (MET) and colleague signals (KNOWS).
+      trustlink:
+        # Ships dark, like dk.trustworks.crm.calendar.sync.enabled. The nightly job writes
+        # third-party personal data — names, job titles and LinkedIn URLs of people at
+        # client organisations — and nothing it writes is ever deleted, so turning this on
+        # is a decision an environment makes deliberately, not something a merge does.
+        enabled: ${TRUSTLINK_ENABLED:false}
+        # No authentication of any kind is required by TrustLink today. That is a fact
+        # about the upstream service, not a choice, so the base URL stays overridable and
+        # the key below is wired up and simply unsent while it is empty — the day a key
+        # exists it is an environment variable, not a release.
+        base-url: ${TRUSTLINK_BASE_URL:https://trustlink-blazor.azurewebsites.net}
+        api-key: ${TRUSTLINK_API_KEY:}
+        # Page size for POST /api/connections/search. 1000 has been observed to be honoured
+        # and is the client's hard ceiling; 500 leaves headroom under the 4 MB response cap.
+        # The server MUST echo this value back: TrustLinkClient treats a page size it did
+        # not ask for as a corrupt response, because this API answers a request field it
+        # does not understand by ignoring it rather than by failing, and an ignored filter
+        # returns all 47,436 people instead of the ~1,600 that are actually ours.
+        page-size: ${TRUSTLINK_PAGE_SIZE:500}
+        # How many TrustLink company names go into one search request. A single POST with
+        # all 294 client names succeeded, so 100 is a comfortable batch; it is a knob so a
+        # slow day upstream can be met with smaller asks instead of a redeploy.
+        company-batch-size: ${TRUSTLINK_COMPANY_BATCH_SIZE:100}
     expense:
       # Slack DM to the employee when an expense lands on them (AI block or
       # accounting send-back), plus the Monday reminder digest.

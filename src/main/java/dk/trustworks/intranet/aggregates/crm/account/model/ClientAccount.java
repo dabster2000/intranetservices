@@ -65,6 +65,27 @@ public class ClientAccount extends PanacheEntityBase {
     @Column(name = "slack_space", length = 80)
     private String slackSpace;
 
+    /**
+     * The Slack channel id ({@code C…}) the nightly {@code AccountSlackSyncJob} resolved
+     * {@link #slackSpace} to (V594). Null until resolved; {@code AccountService.patch}
+     * resets it whenever the name changes, so a renamed link is re-resolved rather than
+     * read from the old channel forever.
+     */
+    @Column(name = "slack_channel_id", length = 32)
+    private String slackChannelId;
+
+    /**
+     * Why the last resolution or read failed — {@code NOT_FOUND}, {@code NOT_IN_CHANNEL}
+     * or {@code ARCHIVED} — or null when healthy. Shown next to the field in the header:
+     * a typo must not fail silently, which is exactly what the lane did before V594.
+     */
+    @Column(name = "slack_link_error", length = 40)
+    private String slackLinkError;
+
+    /** Last successful read of the channel. */
+    @Column(name = "slack_synced_at")
+    private LocalDateTime slackSyncedAt;
+
     /** One line. Expected on Strategic and Active accounts; meaningless on Backlog. */
     @Column(name = "next_step", length = 200)
     private String nextStep;

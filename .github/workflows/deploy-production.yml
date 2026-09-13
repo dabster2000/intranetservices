@@ -113,6 +113,8 @@ jobs:
               {"name":"INVOICE_ECONOMICS_SYNC_ENABLED","value":"true"},
               {"name":"FINANCE_ECONOMICS_LOAD_ENABLED","value":"true"},
               {"name":"ENVIRONMENT_ID","value":"production"},
+              {"name":"NEWS_API_ENABLED","value":"true"},
+              {"name":"TRUSTLINK_ENABLED","value":"true"},
               {"name":"PERF_LOG_GROUP","value":"/aws/ecs/default/tw-quarkus-production"},
               {"name":"PERF_DIGEST_ENABLED","value":"true"},
               {"name":"INVOICE_S3","value":"invoicefiles-new"},
@@ -153,6 +155,7 @@ jobs:
               {"name":"CVTOOL_SUBSCRIPTION_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_SUBSCRIPTION_KEY::"},
               {"name":"GH_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:GH_TOKEN::"},
               {"name":"VIRKDATA_API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:VIRKDATA_API_KEY::"},
+              {"name":"NEWS_API_AI_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:NEWS_API_AI_KEY::"},
               {"name":"AIRTABLE_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AIRTABLE_TOKEN::"},
               {"name":"AIRTABLE_BASE_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AIRTABLE_BASE_ID::"}
             ]

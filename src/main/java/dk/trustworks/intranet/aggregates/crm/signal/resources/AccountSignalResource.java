@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.signal.resources;
 
+import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
 import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalRequest;
@@ -7,9 +8,11 @@ import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalViewDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.SignalDecisionRequest;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.SignalExtractionDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.SignalExtractionRequest;
+import dk.trustworks.intranet.aggregates.crm.signal.dto.SignalMentionablesDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.model.AccountSignal;
 import dk.trustworks.intranet.aggregates.crm.signal.services.AccountSignalService;
 import dk.trustworks.intranet.aggregates.crm.signal.services.SignalExtractionService;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.annotation.security.RolesAllowed;
@@ -33,8 +36,8 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.net.URI;
 import java.util.List;
+import java.util.Map;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -113,7 +116,49 @@ public class AccountSignalResource {
         if (clientUuid == null || clientUuid.isBlank()) {
             throw new WebApplicationException("clientUuid is required", Response.Status.BAD_REQUEST);
         }
-        return service.listForClient(clientUuid).stream().map(AccountSignalViewDTO::from).toList();
+        List<AccountSignal> rows = service.listForClient(clientUuid);
+        // One query for every row's colleagues, not one per row (V593).
+        Map<String, List<String>> colleagues =
+                service.colleaguesBySignal(rows.stream().map(AccountSignal::getUuid).toList());
+        return rows.stream()
+                .map(row -> AccountSignalViewDTO.from(row, people(colleagues.get(row.getUuid()))))
+                .toList();
+    }
+
+    /**
+     * Everything the capture panel's {@code @} picker can resolve (V593).
+     *
+     * <p>Built from the SAME two allowlists the extractor is given, so the picker can
+     * never offer something the model is then told does not exist, and the model can
+     * never return a uuid the picker could not have produced.
+     *
+     * <p>{@code signals:write} by class default: this is the capture panel's own data,
+     * and every employee who can open the panel needs it. It returns uuid and name only
+     * — see {@link SignalMentionablesDTO} for why a {@code User} is never serialised here.
+     */
+    @GET
+    @Path("/mentionables")
+    public SignalMentionablesDTO mentionables() {
+        return new SignalMentionablesDTO(
+                mentionable(service.clientAllowlist()),
+                mentionable(service.colleagueAllowlist()));
+    }
+
+    private static List<SignalMentionablesDTO.MentionableDTO> mentionable(List<String[]> allowlist) {
+        return allowlist.stream()
+                .map(entry -> new SignalMentionablesDTO.MentionableDTO(entry[0], entry[1]))
+                .toList();
+    }
+
+    /** Resolves colleague uuids to the narrow {@link PersonDTO} every CRM surface shows. */
+    private static List<PersonDTO> people(List<String> userUuids) {
+        if (userUuids == null || userUuids.isEmpty()) {
+            return List.of();
+        }
+        return userUuids.stream()
+                .map(uuid -> PersonDTO.from(User.findById(uuid)))
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     /**
@@ -137,21 +182,31 @@ public class AccountSignalResource {
         // frontend and management could never decide anything (gap analysis D1).
         boolean management = personRoles.isManagement(actor);
         AccountSignal row = service.decide(uuid, request.status(), request.leadUuid(), actor, management);
-        return AccountSignalViewDTO.from(row);
+        return AccountSignalViewDTO.from(row, people(service.colleaguesFor(row.getUuid())));
     }
 
     /**
-     * Saves one capture. Returns 201 with the stored row.
+     * Saves one capture. Returns 201 with the stored rows — one per account the line
+     * named (V593).
      *
      * <p>The author is taken from {@code X-Requested-By} and OVERRIDES anything the body
      * might claim — the request DTO does not even carry the field.
+     *
+     * <p><b>No {@code Location} header.</b> A capture naming two accounts is two
+     * resources, and {@code Location} can only name one. Pointing it at the first would
+     * say the second is subordinate to it, which is exactly the relationship the N-rows
+     * design does not have — the rows are siblings under a capture uuid. The bodies carry
+     * every uuid a caller needs.
      */
     @POST
     public Response create(AccountSignalRequest request) {
         String author = requireHumanActor();
-        AccountSignal row = service.create(request, author);
-        AccountSignalDTO dto = AccountSignalDTO.from(row);
-        return Response.created(URI.create("/account-signals/" + dto.uuid())).entity(dto).build();
+        List<AccountSignal> rows = service.create(request, author);
+        List<String> colleagues = rows.isEmpty() ? List.of() : service.colleaguesFor(rows.get(0).getUuid());
+        List<AccountSignalDTO> dtos = rows.stream()
+                .map(row -> AccountSignalDTO.from(row, colleagues))
+                .toList();
+        return Response.status(Response.Status.CREATED).entity(dtos).build();
     }
 
     /**
@@ -182,9 +237,11 @@ public class AccountSignalResource {
         }
 
         List<String[]> clients = QuarkusTransaction.requiringNew().call(service::clientAllowlist);
+        List<String[]> colleagues = QuarkusTransaction.requiringNew().call(service::colleagueAllowlist);
         String firstName = QuarkusTransaction.requiringNew().call(() -> service.authorFirstName(author));
 
-        return extractionService.extract(firstName, clients, request.text(), request.clientUuid());
+        return extractionService.extract(firstName, clients, colleagues, request.text(),
+                request.allClientUuids());
     }
 
     /**
