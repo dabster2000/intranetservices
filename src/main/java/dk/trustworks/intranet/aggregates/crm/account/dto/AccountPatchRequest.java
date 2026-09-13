@@ -15,5 +15,7 @@ public record AccountPatchRequest(
         String slackSpace,
         boolean clearSlackSpace,
         String gtmBubbleUuid,
-        boolean clearGtmBubble) {
+        boolean clearGtmBubble,
+        String accountTeamBubbleUuid,
+        boolean clearAccountTeamBubble) {
 }

@@ -15,6 +15,7 @@ import dk.trustworks.intranet.aggregates.crm.account.services.AccountActivitySer
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountRateService;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountRelationshipService;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountService;
+import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
 import dk.trustworks.intranet.aggregates.crm.plan.services.AccountPlanService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
@@ -96,6 +97,9 @@ public class AccountResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    PersonRoleService personRoles;
 
     @Context
     SecurityContext securityContext;
@@ -204,11 +208,22 @@ public class AccountResource {
     /**
      * Whether this caller may see a salary-derived cost figure.
      *
-     * <p>Read from the JWT's roles rather than from a scope: break-even is not a CRM
-     * concept and giving it a CRM scope would let it be granted with the rest of the
-     * account layer by accident. These are the same four roles the CXO cost endpoints use.
+     * <p>Resolved from the PERSON in {@code X-Requested-By}, never from the security
+     * context. The token this resource sees is the BFF's own client credential; its groups
+     * claim carries scopes — including {@code admin:*} — and never a person's role names.
+     * The earlier version of this method fell through to {@code isUserInRole("admin:*")},
+     * which the BFF's token satisfies on every request, so the break-even reached every
+     * employee's browser through the BFF. The four cost roles are the same the CXO cost
+     * endpoints and the frontend's {@code CXO_SALARY_ROLES} use.
+     *
+     * <p>A direct API client that holds a cost ROLE on its token (not through the BFF) is
+     * still honoured, so the behaviour for machine callers is unchanged.
      */
     private boolean callerMaySeeCost() {
+        String actor = requestHeaderHolder.getUserUuid();
+        if (personRoles.maySeeCost(actor)) {
+            return true;
+        }
         if (securityContext == null) {
             return false;
         }
@@ -217,9 +232,7 @@ public class AccountResource {
                 return true;
             }
         }
-        // admin:* expands to every scope for the BFF's own client, but the cost roles are
-        // roles, not scopes — so an admin scope alone does not open this.
-        return securityContext.isUserInRole("admin:*");
+        return false;
     }
 
     /**

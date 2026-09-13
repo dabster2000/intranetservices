@@ -71,7 +71,10 @@ public final class PlanRequests {
             String rag,
             boolean clearRag,
             String ragWhy,
-            List<String> linkedLeadUuids) {
+            List<String> linkedLeadUuids,
+            /** The sector objective this one serves; ignored on the sector plan's own objectives. */
+            String sectorObjectiveUuid,
+            boolean clearSectorObjective) {
     }
 
     public record ActionRequest(

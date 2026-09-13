@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.signal.resources;
 
+import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalRequest;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalViewDTO;
@@ -94,6 +95,9 @@ public class AccountSignalResource {
     @Context
     SecurityContext securityContext;
 
+    @Inject
+    PersonRoleService personRoles;
+
     /**
      * Every signal filed on one account — the plan tab's "People &amp; what we've heard",
      * and the Overview's signals card.
@@ -127,8 +131,11 @@ public class AccountSignalResource {
         if (request == null) {
             throw new WebApplicationException("A body is required", Response.Status.BAD_REQUEST);
         }
-        boolean management = securityContext != null
-                && (securityContext.isUserInRole("ADMIN") || securityContext.isUserInRole("PARTNER"));
+        // From the PERSON, not the security context: the token here is the BFF's own client
+        // credential and carries scopes, never role names, so the old
+        // securityContext.isUserInRole("ADMIN") was false for every request through the
+        // frontend and management could never decide anything (gap analysis D1).
+        boolean management = personRoles.isManagement(actor);
         AccountSignal row = service.decide(uuid, request.status(), request.leadUuid(), actor, management);
         return AccountSignalViewDTO.from(row);
     }

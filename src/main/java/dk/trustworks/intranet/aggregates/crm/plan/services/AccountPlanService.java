@@ -25,6 +25,8 @@ import dk.trustworks.intranet.aggregates.crm.plan.model.enums.PlanSlot;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.PlanStatus;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.RelationRole;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.RelationSource;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorPlanService;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -98,6 +100,9 @@ public class AccountPlanService {
 
     @Inject
     ClientService clientService;
+
+    @Inject
+    SectorPlanService sectorPlanService;
 
     /** What the accounts list needs about a plan — nothing more. */
     public record PlanSummary(String rag, LocalDate updatedAt, boolean started) {
@@ -178,6 +183,8 @@ public class AccountPlanService {
             return List.of();
         }
         Map<String, List<String>> leads = leadsByObjective(rows.stream().map(ClientPlanObjective::getUuid).toList());
+        Map<String, String> sectorTitles = sectorPlanService.titlesOf(
+                rows.stream().map(ClientPlanObjective::getSectorObjectiveUuid).filter(java.util.Objects::nonNull).toList());
         List<AccountPlanDTO.PlanObjectiveDTO> out = new ArrayList<>();
         for (ClientPlanObjective row : rows) {
             out.add(new AccountPlanDTO.PlanObjectiveDTO(
@@ -191,7 +198,9 @@ public class AccountPlanService {
                     person(row.getOwnerUuid()),
                     row.getRag() == null ? null : row.getRag().name(),
                     row.getRagWhy(),
-                    leads.getOrDefault(row.getUuid(), List.of())));
+                    leads.getOrDefault(row.getUuid(), List.of()),
+                    row.getSectorObjectiveUuid(),
+                    row.getSectorObjectiveUuid() == null ? null : sectorTitles.get(row.getSectorObjectiveUuid())));
         }
         return out;
     }
@@ -647,6 +656,16 @@ public class AccountPlanService {
                 objective.setRagWhy(why);
             } else if (request.ragWhy() != null) {
                 objective.setRagWhy(trimTo(request.ragWhy(), MAX_WHY_CHARS));
+            }
+            // The one typed link between an account plan and its sector plan (V592). The
+            // target must be an OPEN objective of the client's OWN sector; SectorPlanService
+            // refuses anything else with a sentence the dialog shows.
+            if (request.clearSectorObjective()) {
+                objective.setSectorObjectiveUuid(null);
+            } else if (request.sectorObjectiveUuid() != null && !request.sectorObjectiveUuid().isBlank()) {
+                Client client = clientService.findByUuid(objective.getClientUuid());
+                sectorPlanService.requireOpenObjectiveFor(request.sectorObjectiveUuid(), SectorService.segmentOf(client));
+                objective.setSectorObjectiveUuid(request.sectorObjectiveUuid().trim());
             }
         }
         objective.setModifiedAt(now);

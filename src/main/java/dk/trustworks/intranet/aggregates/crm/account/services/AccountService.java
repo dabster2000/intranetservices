@@ -14,7 +14,13 @@ import dk.trustworks.intranet.aggregates.crm.account.model.ClientDomain;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountBand;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountRoleType;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.DomainSource;
+import dk.trustworks.intranet.aggregates.crm.sector.dto.SectorRefDTO;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorLeadService;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorPlanService;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
+import dk.trustworks.intranet.dao.bubbleservice.model.enums.BubbleType;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -92,6 +98,12 @@ public class AccountService {
     @Inject
     EntityManager em;
 
+    @Inject
+    SectorLeadService sectorLeadService;
+
+    @Inject
+    SectorPlanService sectorPlanService;
+
     // ------------------------------------------------------------------------
     // Read
     // ------------------------------------------------------------------------
@@ -106,6 +118,8 @@ public class AccountService {
 
         AccountBand band = account == null ? defaultBandFor(clientUuid) : account.getBand();
         String gtmBubbleUuid = account == null ? null : account.getGtmBubbleUuid();
+        String accountTeamBubbleUuid = account == null ? null : account.getAccountTeamBubbleUuid();
+        ClientSegment segment = SectorService.segmentOf(client);
 
         return new AccountDTO(
                 clientUuid,
@@ -114,6 +128,10 @@ public class AccountService {
                 supportedBy(clientUuid),
                 gtmBubbleUuid,
                 bubbleName(gtmBubbleUuid),
+                accountTeamBubbleUuid,
+                bubbleName(accountTeamBubbleUuid),
+                new SectorRefDTO(segment.name(), segment.getDisplayName(), sectorLeadService.currentLead(segment)),
+                sectorPlanService.reference(segment),
                 account == null ? null : account.getSlackSpace(),
                 account == null ? null : account.getNextStep(),
                 domains(clientUuid),
@@ -302,14 +320,21 @@ public class AccountService {
             account.setSlackSpace(normaliseSlackSpace(request.slackSpace()));
         }
 
+        // A GTM team is a FOCUS bubble — Offentlig Digitalisering, Grøn Omstilling, ... The
+        // ACCOUNT_TEAM bubbles are per client and live in their own column below; pointing
+        // gtm_bubble_uuid at one would make the GTM tab list Ørsted as a go-to-market team.
         if (request.clearGtmBubble()) {
             account.setGtmBubbleUuid(null);
         } else if (request.gtmBubbleUuid() != null && !request.gtmBubbleUuid().isBlank()) {
-            String bubbleUuid = request.gtmBubbleUuid().trim();
-            if (Bubble.<Bubble>findById(bubbleUuid) == null) {
-                throw new WebApplicationException("Unknown GTM team", Response.Status.BAD_REQUEST);
-            }
-            account.setGtmBubbleUuid(bubbleUuid);
+            account.setGtmBubbleUuid(requireBubble(request.gtmBubbleUuid(), BubbleType.FOCUS,
+                    "A GTM team is a focus-area bubble — pick one of those"));
+        }
+
+        if (request.clearAccountTeamBubble()) {
+            account.setAccountTeamBubbleUuid(null);
+        } else if (request.accountTeamBubbleUuid() != null && !request.accountTeamBubbleUuid().isBlank()) {
+            account.setAccountTeamBubbleUuid(requireBubble(request.accountTeamBubbleUuid(), BubbleType.ACCOUNT_TEAM,
+                    "An account team is an account-team bubble — pick one of those"));
         }
 
         account.setModifiedAt(now);
@@ -459,6 +484,19 @@ public class AccountService {
             return null;
         }
         return PersonDTO.from(User.findById(userUuid.trim()));
+    }
+
+    /** The bubble must exist, be active and be of the given type; anything else is a 400 with a sentence. */
+    private static String requireBubble(String raw, BubbleType type, String wrongTypeMessage) {
+        String bubbleUuid = raw.trim();
+        Bubble bubble = Bubble.findById(bubbleUuid);
+        if (bubble == null || !bubble.isActive()) {
+            throw new WebApplicationException("Unknown or inactive bubble", Response.Status.BAD_REQUEST);
+        }
+        if (bubble.getType() != type) {
+            throw new WebApplicationException(wrongTypeMessage, Response.Status.BAD_REQUEST);
+        }
+        return bubbleUuid;
     }
 
     private String bubbleName(String bubbleUuid) {
