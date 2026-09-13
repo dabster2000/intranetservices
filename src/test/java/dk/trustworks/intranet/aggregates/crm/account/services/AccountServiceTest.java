@@ -5,6 +5,8 @@ import jakarta.ws.rs.WebApplicationException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -109,6 +111,31 @@ class AccountServiceTest {
         WebApplicationException error =
                 assertThrows(WebApplicationException.class, () -> AccountService.parseBand("KEY_ACCOUNT"));
         assertEquals(400, error.getResponse().getStatus());
+    }
+
+    // ------------------------------------------------------------------------
+    // The derived default band
+    // ------------------------------------------------------------------------
+
+    /**
+     * `exists(...)` comes back as a BigInteger, a Long or a Boolean depending on the
+     * driver. Getting this wrong would silently make every untriaged client BACKLOG again
+     * — which is exactly the bug the derived default exists to fix, and it would look like
+     * a rendering problem rather than a type problem.
+     */
+    @Test
+    void everyShapeTheDatabaseReturnsAnExistsInIsReadTheSameWay() {
+        assertTrue(AccountService.toBoolean(Boolean.TRUE));
+        assertTrue(AccountService.toBoolean(1));
+        assertTrue(AccountService.toBoolean(1L));
+        assertTrue(AccountService.toBoolean(java.math.BigInteger.ONE));
+
+        assertFalse(AccountService.toBoolean(Boolean.FALSE));
+        assertFalse(AccountService.toBoolean(0));
+        assertFalse(AccountService.toBoolean(0L));
+        assertFalse(AccountService.toBoolean(java.math.BigInteger.ZERO));
+        assertFalse(AccountService.toBoolean(null));
+        assertFalse(AccountService.toBoolean("not a number"));
     }
 
     // ------------------------------------------------------------------------

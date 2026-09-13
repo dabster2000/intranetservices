@@ -20,6 +20,7 @@ import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -32,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -42,6 +44,15 @@ import java.util.UUID;
  * {@code client_account} row exists, and creates nothing. Opening a client page must not
  * be the act that decides its band — several hundred clients have never been triaged and
  * a row conjured by a page view would make "Backlog" look like somebody's judgement.
+ *
+ * <p><b>The default band is DERIVED, not a flat Backlog.</b> A client with a running
+ * contract or an open lead is {@link AccountBand#ACTIVE} even before anybody triages it,
+ * because it demonstrably is. Spec §3.1 says as much from the other direction — "creating
+ * a lead on a Backlog account promotes it to Active" — so an untriaged client with three
+ * consultants on site was never really Backlog. Defaulting everything to the floor instead
+ * made the plan tab inert on all 282 clients until somebody hand-changed a band, which is
+ * a feature nobody would ever find. The derived value is still only a default: it is
+ * marked {@code isDefault} and the first real decision overwrites it.
  *
  * <p><b>The owner is not stored here.</b> {@code client.accountmanager} stays the source
  * of truth (spec §9.7 left the migration open). Whenever this service touches an account
@@ -78,6 +89,9 @@ public class AccountService {
     @Inject
     ClientService clientService;
 
+    @Inject
+    EntityManager em;
+
     // ------------------------------------------------------------------------
     // Read
     // ------------------------------------------------------------------------
@@ -90,7 +104,7 @@ public class AccountService {
         Client client = requireClient(clientUuid);
         ClientAccount account = ClientAccount.findById(clientUuid);
 
-        AccountBand band = account == null ? AccountBand.BACKLOG : account.getBand();
+        AccountBand band = account == null ? defaultBandFor(clientUuid) : account.getBand();
         String gtmBubbleUuid = account == null ? null : account.getGtmBubbleUuid();
 
         return new AccountDTO(
@@ -135,13 +149,67 @@ public class AccountService {
         return byClient;
     }
 
-    /** Band per client for every account that has a row; everything else is BACKLOG. */
+    /**
+     * Band per client: the stored one where somebody has decided, the derived default
+     * everywhere else.
+     *
+     * <p>Two queries for the whole list rather than one per row — the accounts list renders
+     * several hundred clients. The stored bands are applied LAST so a decision always beats
+     * the derivation.
+     */
     public Map<String, AccountBand> bandsForAll() {
         Map<String, AccountBand> bands = new LinkedHashMap<>();
+        for (String clientUuid : clientsWithRunningWork()) {
+            bands.put(clientUuid, AccountBand.ACTIVE);
+        }
         for (ClientAccount account : ClientAccount.<ClientAccount>listAll()) {
             bands.put(account.getClientUuid(), account.getBand());
         }
         return bands;
+    }
+
+    /**
+     * What band a client reads as before anybody has triaged it: ACTIVE when there is
+     * running work, BACKLOG when there is not.
+     */
+    AccountBand defaultBandFor(String clientUuid) {
+        Object result = em.createNativeQuery("""
+                select exists(
+                    select 1 from contracts ct
+                     where ct.clientuuid = :clientUuid and ct.status in ('SIGNED','TIME','BUDGET')
+                ) or exists(
+                    select 1 from sales_lead l
+                     where l.clientuuid = :clientUuid and l.status not in ('WON','LOST')
+                )
+                """)
+                .setParameter("clientUuid", clientUuid)
+                .getSingleResult();
+        return toBoolean(result) ? AccountBand.ACTIVE : AccountBand.BACKLOG;
+    }
+
+    /** Every client with a running contract or an open lead, in one query. */
+    Set<String> clientsWithRunningWork() {
+        @SuppressWarnings("unchecked")
+        List<Object> rows = em.createNativeQuery("""
+                select distinct clientuuid from contracts where status in ('SIGNED','TIME','BUDGET')
+                union
+                select distinct clientuuid from sales_lead where status not in ('WON','LOST')
+                """).getResultList();
+        Set<String> uuids = new LinkedHashSet<>();
+        for (Object row : rows) {
+            if (row != null) {
+                uuids.add(row.toString());
+            }
+        }
+        return uuids;
+    }
+
+    /** MariaDB hands `exists(...)` back as a BigInteger, a Long or a Boolean by driver. */
+    static boolean toBoolean(Object value) {
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        return value instanceof Number number && number.intValue() != 0;
     }
 
     public List<ClientDomainDTO> domains(String clientUuid) {
