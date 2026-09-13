@@ -47,9 +47,27 @@ class PermissionsCatalogueTest {
      * registry rows are salary-adjacent and deliberately not under
      * {@code documents:*}, which every template-admin surface already
      * holds, so registry visibility can stay narrower than document
-     * administration.
+     * administration;
+     * 95 since the CRM signal capture added {@code signals:write}
+     * (2026-09-12, "Heard something?" — intra-crm-spec §3.4/§7). Capture is
+     * open to EVERY employee, so it could not reuse {@code crm:write} (the
+     * SALES tier here — V468 grants it to SALES/ADMIN/PARTNER only) and
+     * should not reuse {@code crm:read}, a read key, to authorize a write.
+     * Granted to role USER in V584; listed in the frontend scanner's
+     * UNIVERSAL_PERMISSIONS because everyone holds it;
+     * 100 since the account page was finished (2026-09-13,
+     * account-page-completion spec) with {@code accounts:read},
+     * {@code accounts:write}, {@code bids:read}, {@code bids:write} and
+     * {@code signals:decide}. The read keys go to role USER — the account
+     * page has always been firm-readable and says so on its own header — so
+     * both join the scanner's UNIVERSAL_PERMISSIONS; the write keys are the
+     * SALES tier, matching {@code crm:write} (V468). {@code signals:decide}
+     * is split from {@code signals:write} because capture is open to every
+     * employee and deciding commits the firm's time; which signals a person
+     * may decide is an ownership check in the service, since a scope cannot
+     * express "the owner of this particular account".
      */
-    private static final int EXPECTED_PERMISSIONS = 94;
+    private static final int EXPECTED_PERMISSIONS = 100;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {

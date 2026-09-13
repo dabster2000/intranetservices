@@ -175,6 +175,59 @@ public interface GraphCalendarClient {
     }
 
     /**
+     * The events overlapping a window in a mailbox's default calendar, WITH
+     * their attendees — the CRM account-meeting sync (CRM spec §3.2, §3.7).
+     *
+     * <p>Distinct from {@link #calendarView} above, which selects only
+     * {@code id,showAs} for the interview-scheduler's conflict recheck. This
+     * one needs to know who was in the room, because who was in the room is
+     * the entire content of the relationship graph.
+     *
+     * <p><b>What is deliberately NOT selected: {@code subject} and
+     * {@code body}.</b> The spec permits attendees, date and duration and
+     * forbids the subject, so the caller passes a {@code $select} that never
+     * names them and {@code account_meeting} has no column to put them in. The
+     * text never leaves Microsoft's tenant. Callers must keep it that way —
+     * the parameter exists so the select is visible at the call site, not so
+     * it can be widened.
+     *
+     * <p>Only mailboxes whose owner has consented are ever passed here; the
+     * app registration could read any of them, and {@code CalendarConsentService}
+     * is the rule Intra imposes on itself.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview">List calendarView</a>
+     */
+    @GET
+    @Path("/users/{userPrincipal}/calendarView")
+    @Produces(MediaType.APPLICATION_JSON)
+    @ClientHeaderParam(name = "Prefer", value = "outlook.timezone=\"Europe/Copenhagen\"")
+    AttendeeViewResponse calendarViewWithAttendees(
+        @PathParam("userPrincipal") String userPrincipal,
+        @QueryParam("startDateTime") String startDateTime,
+        @QueryParam("endDateTime") String endDateTime,
+        @QueryParam("$select") String select,
+        @QueryParam("$top") Integer top
+    );
+
+    /**
+     * {@code calendarView} response for the CRM sync: identity, bounds,
+     * cancellation and attendees. No subject and no body are mapped, so even a
+     * widened {@code $select} could not land them in a field.
+     */
+    record AttendeeViewResponse(
+        @JsonProperty("value") List<AttendeeViewEvent> value,
+        @JsonProperty("@odata.nextLink") String odataNextLink
+    ) {
+        public record AttendeeViewEvent(
+            String id,
+            @JsonProperty("isCancelled") Boolean isCancelled,
+            CalendarViewResponse.GraphDateTime start,
+            CalendarViewResponse.GraphDateTime end,
+            List<CalendarEventDetails.EventAttendee> attendees
+        ) { }
+    }
+
+    /**
      * Lists the tenant's bookable meeting rooms. Used by the recruitment
      * interview scheduler's room picker — requires the app-level
      * {@code Place.Read.All} permission.
