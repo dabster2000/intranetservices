@@ -192,17 +192,41 @@ public class AccountRelationshipService {
         }
     }
 
-    /** KNOWS edges — one per signal that named both a person and how the author knows them. */
+    /**
+     * KNOWS edges — one per Trustworks person a signal connected to a named individual.
+     *
+     * <p>Before V593 that was always exactly the author, because a capture had nowhere to
+     * record anybody else. <i>"jeg har snakket med Dorte som jeg har mødt i KOMBIT sammen
+     * Tobias Kjølsen"</i> names TWO of us who know Dorte, and the second name was thrown
+     * away at the extractor. It is now {@code account_signal_colleague}, and every name on
+     * it gets its own edge.
+     *
+     * <p>A named colleague joins {@code trustworksPeople} whether or not the line named an
+     * individual at the client. Being named in a signal about an account is itself the
+     * claim that you have something to do with it — that is what puts somebody in "Who
+     * knows them", which is the question the tab is answering.
+     */
     private void collectSignalEdges(String clientUuid,
                                     Map<String, PersonDTO> trustworksPeople,
                                     Map<String, AccountRelationshipsDTO.ExternalPersonDTO> externals,
                                     List<AccountRelationshipsDTO.RelationEdgeDTO> edges) {
+        // LEFT JOIN, and person_name is NOT filtered here: a capture that named a
+        // colleague but no client person still tells us the colleague knows the account.
+        // group_concat keeps this one row per signal — a join fan-out would repeat the
+        // author edge once per colleague and double-draw it in the graph.
         Query query = em.createNativeQuery("""
-                select author_uuid, person_name, person_role, relation_text, created_at
-                  from account_signal
-                 where client_uuid = :clientUuid
-                   and person_name is not null
-                 order by created_at desc
+                select s.author_uuid,
+                       s.person_name,
+                       s.person_role,
+                       s.relation_text,
+                       s.created_at,
+                       group_concat(c.user_uuid) as colleague_uuids
+                  from account_signal s
+                  left join account_signal_colleague c on c.signal_uuid = s.uuid
+                 where s.client_uuid = :clientUuid
+                 group by s.uuid, s.author_uuid, s.person_name, s.person_role,
+                          s.relation_text, s.created_at
+                 order by s.created_at desc
                 """);
         query.setParameter("clientUuid", clientUuid);
 
@@ -210,21 +234,34 @@ public class AccountRelationshipService {
         List<Object[]> rows = query.getResultList();
         for (Object[] row : rows) {
             String authorUuid = row[0] == null ? null : row[0].toString();
-            String personName = row[1] == null ? null : row[1].toString();
-            if (authorUuid == null || personName == null || personName.isBlank()) {
+            if (authorUuid == null) {
                 continue;
             }
+            String personName = row[1] == null ? null : row[1].toString();
             String role = row[2] == null ? null : row[2].toString();
             String relation = row[3] == null ? null : row[3].toString();
 
-            PersonDTO author = trustworksPeople.get(authorUuid);
-            if (author == null) {
-                User user = User.findById(authorUuid);
-                if (user == null) {
-                    continue;
+            List<String> twUuids = namedTrustworksPeople(
+                    authorUuid, row[5] == null ? null : row[5].toString());
+
+            List<PersonDTO> named = new ArrayList<>();
+            for (String uuid : twUuids) {
+                PersonDTO person = trustworksPeople.get(uuid);
+                if (person == null) {
+                    User user = User.findById(uuid);
+                    if (user == null) {
+                        continue;
+                    }
+                    person = PersonDTO.from(user);
+                    trustworksPeople.put(uuid, person);
                 }
-                author = PersonDTO.from(user);
-                trustworksPeople.put(authorUuid, author);
+                named.add(person);
+            }
+
+            if (personName == null || personName.isBlank()) {
+                // Nobody at the client was named. The colleagues above are still on the
+                // account; there is simply no individual to draw an edge to.
+                continue;
             }
 
             AccountRelationshipsDTO.ExternalPersonDTO existing = externals.get(personName);
@@ -238,9 +275,41 @@ public class AccountRelationshipService {
             }
 
             if (relation != null && !relation.isBlank()) {
-                edges.add(new AccountRelationshipsDTO.RelationEdgeDTO(
-                        author.name(), personName, 0, (LocalDate) null, relation));
+                for (PersonDTO person : named) {
+                    edges.add(new AccountRelationshipsDTO.RelationEdgeDTO(
+                            person.name(), personName, 0, (LocalDate) null, relation));
+                }
             }
         }
+    }
+
+    /**
+     * Everyone at Trustworks one signal row connects to its named person: the author,
+     * then whoever {@code group_concat} returned from {@code account_signal_colleague}.
+     *
+     * <p>Pure and package-private so the fast tier can hold it: an off-by-one here
+     * either doubles an edge in the graph or silently drops the colleague whose absence
+     * is the whole reason V593 exists.
+     *
+     * <p>The author is always first and always present. A colleague row for the author
+     * cannot normally exist — {@code AccountSignalService} filters it out on write — but
+     * a row written before that rule, or by hand, must still not produce two edges.
+     *
+     * @param concatenated the raw {@code group_concat} value, or null when the LEFT JOIN
+     *                     matched nothing
+     */
+    static List<String> namedTrustworksPeople(String authorUuid, String concatenated) {
+        List<String> uuids = new ArrayList<>();
+        uuids.add(authorUuid);
+        if (concatenated == null || concatenated.isBlank()) {
+            return uuids;
+        }
+        for (String raw : concatenated.split(",")) {
+            String uuid = raw.trim();
+            if (!uuid.isEmpty() && !uuid.equals(authorUuid) && !uuids.contains(uuid)) {
+                uuids.add(uuid);
+            }
+        }
+        return uuids;
     }
 }
