@@ -192,13 +192,33 @@ class TrustLinkClientParseTest {
     }
 
     @Test
-    @DisplayName("an envelope that contradicts itself is rejected")
-    void rejectsAnIncoherentEnvelope() throws Exception {
-        TrustLinkSearchResponse fewerThanShown = parse(fixture().replace("\"totalCount\": 203", "\"totalCount\": 2"));
-        assertRejected(() -> TrustLinkClient.assertAnswersRequest(fewerThanShown, 1, 5, NOVO));
-
+    @DisplayName("a page past the end of the result set is rejected")
+    void rejectsAnEnvelopePastTheEnd() throws Exception {
         TrustLinkSearchResponse pastTheEnd = parse(fixture().replace("\"totalPages\": 41", "\"totalPages\": 0"));
         assertRejected(() -> TrustLinkClient.assertAnswersRequest(pastTheEnd, 1, 5, NOVO));
+    }
+
+    /**
+     * This one asserts the ABSENCE of a check, which is unusual enough to explain.
+     *
+     * <p>{@code totalCount >= items.size()} reads like an invariant and is not one TrustLink
+     * holds: it counts DISTINCT people while returning one row per matching company, and the
+     * alias table deliberately points a client at several company names for one organisation
+     * ("Netcompany" and "Netcompany A/S"). A staging batch spanning both returned 470 items
+     * against a totalCount of 457, and asserting the invariant rejected the page and threw
+     * away all 100 companies in that batch.
+     *
+     * <p>It also guarded nothing. The failure it was imagined to catch — a silently ignored
+     * filter — returns a LARGER totalCount (47,436 for the unfiltered corpus), never a
+     * smaller one. The filter guards are the tier and company-membership checks, which have
+     * their own tests above and are deliberately untouched.
+     */
+    @Test
+    @DisplayName("more items than totalCount is accepted: upstream counts people, the page lists rows")
+    void acceptsMoreItemsThanTotalCount() throws Exception {
+        TrustLinkSearchResponse fewerThanShown = parse(fixture().replace("\"totalCount\": 203", "\"totalCount\": 2"));
+
+        TrustLinkClient.assertAnswersRequest(fewerThanShown, 1, 5, NOVO);
     }
 
     @Test

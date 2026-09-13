@@ -33,8 +33,20 @@ public record TrustLinkSearchResponse(
         return items == null ? List.of() : items;
     }
 
-    /** True when another page exists. Paging is 1-based and stops at {@code totalPages}. */
+    /**
+     * True when another page exists. Paging is 1-based.
+     *
+     * <p>{@code totalPages} alone is not enough. It is derived from {@code totalCount},
+     * which counts DISTINCT people while the page returns one row per matching company —
+     * so a batch spanning "Netcompany" and "Netcompany A/S" reports fewer pages than it
+     * actually serves, and trusting it would stop paging with rows still unread. A page
+     * that came back full is therefore also a reason to ask for the next one; an empty page
+     * always ends it, and the caller's own {@code MAX_PAGES_PER_BATCH} bounds the loop.
+     */
     public boolean hasMorePages() {
-        return page < totalPages;
+        if (items().isEmpty()) {
+            return false;
+        }
+        return page < totalPages || items().size() >= pageSize;
     }
 }

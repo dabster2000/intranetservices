@@ -263,7 +263,16 @@ public class TrustLinkClient {
             throw new TrustLinkFailure(Failure.INVALID_RESPONSE);
         }
         List<TrustLinkConnectionDTO> items = response.items();
-        if (items.size() > expectedPageSize || response.totalCount() < items.size()
+        // NOT checked: totalCount >= items.size(). It looks like an obvious invariant and it
+        // is not one upstream holds. TrustLink counts DISTINCT people but returns one row per
+        // matching company, and the same person genuinely sits under several — "Netcompany"
+        // and "Netcompany A/S" are two company rows for one organisation, which is the exact
+        // fragmentation the alias table exists to paper over. A batch spanning both came back
+        // with 470 items against totalCount 457, and asserting the invariant threw away all
+        // 100 companies in that batch. It guarded nothing either: an ignored filter returns a
+        // LARGER totalCount (47,436), never a smaller one. The filter guards are the tier and
+        // company-membership checks below, and they are untouched.
+        if (items.size() > expectedPageSize
                 || response.totalPages() < 0 || (!items.isEmpty() && response.totalPages() < expectedPage)) {
             throw new TrustLinkFailure(Failure.INVALID_RESPONSE);
         }
