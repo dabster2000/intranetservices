@@ -1,3 +1,8 @@
+client-news:
+  enabled: ${NEWS_API_ENABLED:false}
+  api-key: ${NEWS_API_AI_KEY:}
+  daily-request-budget: ${NEWS_API_DAILY_REQUEST_BUDGET:200}
+
 quarkus:
   application:
     name: trustworks-intranet

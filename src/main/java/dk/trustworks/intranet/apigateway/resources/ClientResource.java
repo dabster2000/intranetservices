@@ -52,6 +52,17 @@ public class ClientResource {
     ClientService clientAPI;
 
     @Inject
+    dk.trustworks.intranet.aggregates.crm.news.ClientNewsService clientNewsService;
+
+    @GET
+    @Path("/{uuid}/news")
+    @Produces("application/json")
+    @RolesAllowed({"accounts:read"})
+    public dk.trustworks.intranet.aggregates.crm.news.ClientNewsDTO news(@PathParam("uuid") String uuid) {
+        return clientNewsService.get(uuid);
+    }
+
+    @Inject
     AggregateEventSender aggregateEventSender;
 
     @Inject
