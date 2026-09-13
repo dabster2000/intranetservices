@@ -20,10 +20,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The derived account feed (CRM spec §3.2). Nothing in it is typed by hand; every row is
- * something a system already saw.
+ * The derived account feed (CRM spec §3.2). Every row but one is something a system
+ * already saw; {@code NOTE} is the single hand-typed source, and it exists for what no
+ * system recorded.
  *
- * <p>Seven sources are unioned here and sorted newest first:
+ * <p>Eight sources are unioned here and sorted newest first:
  *
  * <table>
  *   <tr><td>CONTRACT</td><td>{@code client_activity_log} rows about contracts</td></tr>
@@ -32,6 +33,7 @@ import java.util.Map;
  *   <tr><td>KYC</td><td>{@code questionnaire_submission} about the client</td></tr>
  *   <tr><td>BAND</td><td>{@code client_band_history}</td></tr>
  *   <tr><td>CALENDAR</td><td>{@code account_meeting} + its external attendees</td></tr>
+ *   <tr><td>NOTE</td><td>{@code client_note} — the one line somebody typed</td></tr>
  *   <tr><td>SLACK</td><td><b>nothing</b> — see below</td></tr>
  * </table>
  *
@@ -79,6 +81,7 @@ public class AccountActivityService {
         rows.addAll(kycRows(clientUuid, capped));
         rows.addAll(bandRows(clientUuid, capped));
         rows.addAll(meetingRows(clientUuid, capped));
+        rows.addAll(noteRows(clientUuid, capped));
 
         rows.sort(Comparator.comparing(AccountActivityDTO::occurredAt).reversed()
                 .thenComparing(AccountActivityDTO::id));
@@ -112,6 +115,13 @@ public class AccountActivityService {
         mergeNewest(newest, """
                 select client_uuid, max(occurred_at) from account_meeting group by client_uuid
                 """, "CALENDAR", "Meeting");
+        // "Note added", not the note. mergeNewest takes a constant summary and never reads
+        // row content, so the accounts list gets a label and a date for several hundred
+        // clients while the words stay on the account page where only that page's reader
+        // sees them.
+        mergeNewest(newest, """
+                select client_uuid, max(created_at) from client_note group by client_uuid
+                """, "NOTE", "Note added");
 
         return newest;
     }
@@ -243,16 +253,13 @@ public class AccountActivityService {
             String person = asString(row[1]);
             String role = asString(row[2]);
             String type = asString(row[3]);
-            String who = person == null
-                    ? typeLabel(type)
-                    : person + (role == null ? "" : " (" + role + ")");
             rows.add(new AccountActivityDTO(
-                    "signal:" + uuid, "SIGNAL", "Heard: " + who,
+                    "signal:" + uuid, "SIGNAL", heardSummary(person, role, type),
                     toLocalDate(row[6]), firstNameOf(asString(row[5])), "SIGNAL", uuid));
             if (row[8] != null) {
                 rows.add(new AccountActivityDTO(
                         "signal-decided:" + uuid, "SIGNAL",
-                        "Signal " + decisionLabel(asString(row[4])) + " — " + who,
+                        decidedSummary(person, role, type, asString(row[4])),
                         toLocalDate(row[8]), firstNameOf(asString(row[7])), "SIGNAL", uuid));
             }
         }
@@ -361,6 +368,49 @@ public class AccountActivityService {
         return rows;
     }
 
+    /**
+     * Notes — the one source in this feed a person typed.
+     *
+     * <p><b>The text IS in the feed, unlike a signal's.</b> {@link #signalRows} keeps the
+     * verbatim quote out (see its javadoc) because the plan tab shows that quote where
+     * somebody is actually working the signal. A note has no second surface: strip its text
+     * and the row reads "Hans added a note", which nobody would ever bother to write. So the
+     * line goes in, and this feed becomes a surface carrying free text that may name a third
+     * party — see {@code ClientNote}'s javadoc for what that obliges and what is not built.
+     *
+     * <p>{@code created_at} is the only date a note has, deliberately: a note can be removed
+     * but never rewritten, so nothing can ever re-date a row under the person reading it.
+     *
+     * <p>{@code refType}/{@code refUuid} name the note itself rather than the null/null that
+     * {@link #bandRows} and {@link #meetingRows} pass, so the row can say which note it came
+     * from. Nothing offers an affordance on it yet; a row that cannot name its source could
+     * never grow one.
+     */
+    private List<AccountActivityDTO> noteRows(String clientUuid, int limit) {
+        Query query = em.createNativeQuery("""
+                select uuid, note_text, author_uuid, created_at
+                  from client_note
+                 where client_uuid = :clientUuid
+                 order by created_at desc
+                """);
+        query.setParameter("clientUuid", clientUuid);
+        query.setMaxResults(limit);
+
+        List<AccountActivityDTO> rows = new ArrayList<>();
+        for (Object[] row : rowsOf(query)) {
+            String uuid = asString(row[0]);
+            rows.add(new AccountActivityDTO(
+                    "note:" + uuid,
+                    "NOTE",
+                    orDash(asString(row[1])),
+                    toLocalDate(row[3]),
+                    firstNameOf(asString(row[2])),
+                    "NOTE",
+                    uuid));
+        }
+        return rows;
+    }
+
     // ------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------
@@ -424,6 +474,65 @@ public class AccountActivityService {
         return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }
 
+    /**
+     * <b>A signal's subject is a person, or it is nothing.</b> The extractor names one when
+     * the line contained one; when it did not, the four typed kinds still say what the
+     * capture was ABOUT, and {@code OTHER} — the honest default for a line nothing could
+     * classify — says only that something was heard. Reusing the type label as if it were
+     * the subject is what produced "Heard: something" and "Signal parked — something".
+     */
+    static String heardSummary(String personName, String personRole, String signalType) {
+        String person = namedPerson(personName, personRole);
+        if (person != null) {
+            return "Heard: " + person;
+        }
+        String topic = typedTopic(signalType);
+        return topic == null ? "Heard something" : "Heard about " + topic;
+    }
+
+    /**
+     * The decision row. It shares the capture row's subject, so it shared the defect; with
+     * nothing to name it stops after the decision rather than trailing a dash into nothing.
+     */
+    static String decidedSummary(String personName, String personRole, String signalType, String status) {
+        String decision = "Signal " + decisionLabel(status);
+        String person = namedPerson(personName, personRole);
+        if (person != null) {
+            return decision + " — " + person;
+        }
+        String topic = typedTopic(signalType);
+        return topic == null ? decision : decision + " — " + topic;
+    }
+
+    /** "Mette Kjær (CIO)", "Mette Kjær", or null when the extractor found nobody. */
+    private static String namedPerson(String name, String role) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return role == null || role.isBlank() ? name : name + " (" + role + ")";
+    }
+
+    /**
+     * The four typed kinds as a noun phrase that reads after "about". Null for {@code OTHER}
+     * and for anything unrecognised, because {@link #typeLabel}'s "something" is a
+     * placeholder standing in for a label, not a topic a sentence can be built on.
+     */
+    private static String typedTopic(String signalType) {
+        return switch (signalType == null ? "" : signalType) {
+            case "ORG_CHANGE", "COMING_PROJECT", "CONTACT_MOVED", "TENDER" -> typeLabel(signalType);
+            default -> null;
+        };
+    }
+
+    /**
+     * The four signal kinds as English.
+     *
+     * <p><b>The {@code default} branch no longer reaches a reader.</b> {@link #typedTopic} is
+     * its only production caller and never passes {@code OTHER}, null or an unrecognised
+     * value, so "something" now survives only in {@code AccountActivityServiceTest}. Keep
+     * both: the branch is what makes the switch total, and that assertion is the only place
+     * the four labels are pinned.
+     */
     static String typeLabel(String signalType) {
         return switch (signalType == null ? "" : signalType) {
             case "ORG_CHANGE" -> "an organisational change";

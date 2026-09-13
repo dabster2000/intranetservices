@@ -59,6 +59,44 @@ class AccountActivityServiceTest {
         assertEquals("something", AccountActivityService.typeLabel(null));
     }
 
+    /**
+     * All five of {@code SignalType}. A row whose line named nobody used to borrow the type
+     * label as its subject and read "Heard: an organisational change" — and, for
+     * {@code OTHER}, "Heard: something", which says nothing at all.
+     */
+    @Test
+    void aSignalWithNoNamedPersonSaysWhatItWasAboutRatherThanNamingTheKind() {
+        assertEquals("Heard: Mette Kjær (CIO)",
+                AccountActivityService.heardSummary("Mette Kjær", "CIO", "ORG_CHANGE"));
+        assertEquals("Heard: Mette Kjær",
+                AccountActivityService.heardSummary("Mette Kjær", null, "ORG_CHANGE"));
+        assertEquals("Heard about an organisational change",
+                AccountActivityService.heardSummary(null, null, "ORG_CHANGE"));
+        assertEquals("Heard about a coming project",
+                AccountActivityService.heardSummary(null, null, "COMING_PROJECT"));
+        assertEquals("Heard about a contact moving on",
+                AccountActivityService.heardSummary(null, null, "CONTACT_MOVED"));
+        assertEquals("Heard about a tender",
+                AccountActivityService.heardSummary(null, null, "TENDER"));
+        assertEquals("Heard something",
+                AccountActivityService.heardSummary(null, null, "OTHER"));
+        assertEquals("Heard something",
+                AccountActivityService.heardSummary(null, null, null));
+    }
+
+    /** The decision row is built on the same subject, so it carried the same defect. */
+    @Test
+    void aDecidedSignalWithNothingToNameStopsAfterTheDecision() {
+        assertEquals("Signal parked — Mette Kjær (CIO)",
+                AccountActivityService.decidedSummary("Mette Kjær", "CIO", "TENDER", "PARKED"));
+        assertEquals("Signal turned into a lead — a tender",
+                AccountActivityService.decidedSummary(null, null, "TENDER", "LEAD_CREATED"));
+        assertEquals("Signal closed as not relevant",
+                AccountActivityService.decidedSummary(null, null, "OTHER", "NOT_RELEVANT"));
+        assertEquals("Signal decided",
+                AccountActivityService.decidedSummary(null, null, null, "ANYTHING_ELSE"));
+    }
+
     @Test
     void decisionsReadAsWhatWasDecided() {
         assertEquals("turned into a lead", AccountActivityService.decisionLabel("LEAD_CREATED"));
