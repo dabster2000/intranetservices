@@ -11,7 +11,10 @@ import jakarta.persistence.Query;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The rate KPI on the account page (CRM spec §4.3): what this account pays us an hour,
@@ -108,7 +111,12 @@ public class AccountRateService {
      * as much as a thirty-person one. Levels whose break-even could not be computed (no net
      * available hours, no utilisation) are skipped rather than treated as zero.
      */
-    Double firmBreakEven() {
+    /** The priced-at target on top of a break-even: the same 15 % the pricing tab uses. */
+    public static double targetFor(double breakEven) {
+        return round(breakEven * TARGET_MARGIN);
+    }
+
+    public Double firmBreakEven() {
         CareerLevelEconomicsDTO economics = careerLevelEconomics.getCareerLevelEconomics(null);
         if (economics == null || economics.getCareerLevels() == null) {
             return null;
@@ -123,6 +131,107 @@ public class AccountRateService {
             people += item.getConsultantCount();
         }
         return people == 0 ? null : round(weighted / people);
+    }
+
+    // ------------------------------------------------------------------------
+    // Per sector — the same rule over every running contract in a segment
+    // ------------------------------------------------------------------------
+
+    /** The hours-weighted rate over a sector's running contracts, and who is on them. */
+    public record SegmentRate(Double weighted, int consultants) {
+    }
+
+    /**
+     * {@code segment → weighted rate and distinct consultants} over every running contract,
+     * in two queries for all six sectors rather than one per sector. A client with no
+     * segment counts as OTHER, as it does everywhere the segment is read.
+     *
+     * <p>Zero-rate rows are excluded from the RATE (a zero row is a data problem, not a
+     * price) but the people on them still count as consultants on site.
+     */
+    public Map<String, SegmentRate> weightedRateBySegment() {
+        LocalDate today = LocalDate.now();
+        Map<String, Double> rates = new HashMap<>();
+        Query rateQuery = em.createNativeQuery("""
+                select coalesce(cl.segment, 'OTHER'), sum(cc.rate * cc.hours), sum(cc.hours)
+                  from contract_consultants cc
+                  join contracts c on c.uuid = cc.contractuuid
+                  join client cl on cl.uuid = c.clientuuid
+                 where c.status in ('SIGNED', 'TIME', 'BUDGET')
+                   and cc.rate > 0
+                   and cc.hours > 0
+                   and (cc.activefrom is null or cc.activefrom <= :today)
+                   and (cc.activeto is null or cc.activeto >= :today)
+                 group by coalesce(cl.segment, 'OTHER')
+                """);
+        rateQuery.setParameter("today", today);
+        @SuppressWarnings("unchecked")
+        List<Object[]> rateRows = rateQuery.getResultList();
+        for (Object[] row : rateRows) {
+            if (row[0] == null || row[1] == null || row[2] == null) {
+                continue;
+            }
+            double hours = ((Number) row[2]).doubleValue();
+            if (hours > 0) {
+                rates.put(String.valueOf(row[0]), round(((Number) row[1]).doubleValue() / hours));
+            }
+        }
+
+        Map<String, Integer> people = new HashMap<>();
+        Query peopleQuery = em.createNativeQuery("""
+                select coalesce(cl.segment, 'OTHER'), count(distinct cc.useruuid)
+                  from contract_consultants cc
+                  join contracts c on c.uuid = cc.contractuuid
+                  join client cl on cl.uuid = c.clientuuid
+                 where c.status in ('SIGNED', 'TIME', 'BUDGET')
+                   and cc.hours > 0
+                   and (cc.activefrom is null or cc.activefrom <= :today)
+                   and (cc.activeto is null or cc.activeto >= :today)
+                 group by coalesce(cl.segment, 'OTHER')
+                """);
+        peopleQuery.setParameter("today", today);
+        @SuppressWarnings("unchecked")
+        List<Object[]> peopleRows = peopleQuery.getResultList();
+        for (Object[] row : peopleRows) {
+            if (row[0] != null && row[1] != null) {
+                people.put(String.valueOf(row[0]), ((Number) row[1]).intValue());
+            }
+        }
+
+        Map<String, SegmentRate> result = new HashMap<>();
+        for (String segment : rates.keySet()) {
+            result.put(segment, new SegmentRate(rates.get(segment), people.getOrDefault(segment, 0)));
+        }
+        for (String segment : people.keySet()) {
+            result.putIfAbsent(segment, new SegmentRate(null, people.get(segment)));
+        }
+        return result;
+    }
+
+    /** Distinct user uuids on a sector's running contracts today. */
+    public List<String> consultantUuidsForSegment(String segment) {
+        Query query = em.createNativeQuery("""
+                select distinct cc.useruuid
+                  from contract_consultants cc
+                  join contracts c on c.uuid = cc.contractuuid
+                  join client cl on cl.uuid = c.clientuuid
+                 where coalesce(cl.segment, 'OTHER') = :segment
+                   and c.status in ('SIGNED', 'TIME', 'BUDGET')
+                   and cc.hours > 0
+                   and (cc.activefrom is null or cc.activefrom <= :today)
+                   and (cc.activeto is null or cc.activeto >= :today)
+                """);
+        query.setParameter("segment", segment);
+        query.setParameter("today", LocalDate.now());
+        @SuppressWarnings("unchecked")
+        List<Object> rows = query.getResultList();
+        List<String> uuids = new ArrayList<>();
+        for (Object row : rows) {
+            if (row != null) {
+                uuids.add(row.toString());
+            }
+        }
+        return uuids;
     }
 
     private static double round(double value) {

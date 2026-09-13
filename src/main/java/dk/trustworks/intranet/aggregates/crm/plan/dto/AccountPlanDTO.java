@@ -56,7 +56,10 @@ public record AccountPlanDTO(
             PersonDTO owner,
             String rag,
             String ragWhy,
-            List<String> linkedLeadUuids) {
+            List<String> linkedLeadUuids,
+            /** The sector objective this one serves (V592), and its title for the chip; null when none. */
+            String sectorObjectiveUuid,
+            String sectorObjectiveTitle) {
 
         /**
          * @param hold true when the target is a floor to hold rather than a level to reach

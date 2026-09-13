@@ -48,9 +48,18 @@ public class ClientAccount extends PanacheEntityBase {
     @Column(name = "band", length = 20, nullable = false)
     private AccountBand band;
 
-    /** The Account Team bubble ({@code bubbles.uuid}) that runs this account. */
+    /**
+     * The GTM team: a {@code FOCUS} bubble ({@code bubbles.uuid}) such as Offentlig
+     * Digitalisering or Grøn Omstilling. Not the client's own account-team bubble — that
+     * is {@link #accountTeamBubbleUuid}. {@code AccountService} refuses any other bubble
+     * type here (V591).
+     */
     @Column(name = "gtm_bubble_uuid", length = 36)
     private String gtmBubbleUuid;
+
+    /** The client's own {@code ACCOUNT_TEAM} bubble ({@code bubbles.uuid}), when it has one. */
+    @Column(name = "account_team_bubble_uuid", length = 36)
+    private String accountTeamBubbleUuid;
 
     /** Channel name without the leading {@code #}, e.g. {@code a_oersted}. */
     @Column(name = "slack_space", length = 80)

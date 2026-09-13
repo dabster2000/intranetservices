@@ -1,5 +1,8 @@
 package dk.trustworks.intranet.aggregates.crm.account.dto;
 
+import dk.trustworks.intranet.aggregates.crm.sector.dto.SectorPlanRefDTO;
+import dk.trustworks.intranet.aggregates.crm.sector.dto.SectorRefDTO;
+
 import java.util.List;
 
 /**
@@ -15,8 +18,14 @@ public record AccountDTO(
         String band,
         PersonDTO owner,
         List<PersonDTO> supportedBy,
+        /** The GTM team — a FOCUS bubble — and the client's own ACCOUNT_TEAM bubble, when set. */
         String gtmBubbleUuid,
         String gtmTeamName,
+        String accountTeamBubbleUuid,
+        String accountTeamName,
+        /** The sector the client is in, with its lead, and that sector's plan as a chip. */
+        SectorRefDTO sector,
+        SectorPlanRefDTO sectorPlan,
         String slackSpace,
         String nextStep,
         List<ClientDomainDTO> domains,

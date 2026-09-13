@@ -5,6 +5,8 @@ import dk.trustworks.intranet.aggregates.crm.signal.model.AccountSignal;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalSource;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalStatus;
 import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalType;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorLeadService;
+import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -61,6 +63,9 @@ public class AccountSignalService {
     @Inject
     ClientService clientService;
 
+    @Inject
+    SectorLeadService sectorLeadService;
+
     /**
      * Creates a signal.
      *
@@ -116,15 +121,17 @@ public class AccountSignalService {
      *
      * <p><b>Who may decide is not a scope question.</b> {@code signals:decide} says the
      * caller is in the sales tier at all; WHICH signals they may decide is this check: the
-     * account's owner, or management. A scope cannot express "the owner of this particular
-     * account", so it is enforced here, against {@code client.accountmanager}.
+     * account's owner; the SECTOR LEAD when the account has no owner (spec §3.4); or
+     * management. A scope cannot express "the owner of this particular account", so it is
+     * enforced here, against {@code client.accountmanager} and {@code sector_lead}.
      *
      * <p>A decision is not reversible through this endpoint — {@code NEW} is refused as a
      * target status. Re-opening a signal somebody decided is a conversation, not an API
      * call, and an audit trail that can be rewound is not an audit trail.
      *
      * @param managementOverride true when the caller holds ADMIN/PARTNER, who may decide
-     *                           anywhere; resolved by the resource from the JWT
+     *                           anywhere; resolved by the resource from the PERSON's roles,
+     *                           never from the JWT, whose groups are the BFF's scopes
      */
     @Transactional
     public AccountSignal decide(String signalUuid, String statusRaw, String leadUuid,
@@ -140,9 +147,16 @@ public class AccountSignalService {
         }
 
         SignalStatus status = parseDecision(statusRaw);
-        if (!managementOverride && !isOwnerOf(signal.getClientUuid(), actorUuid)) {
+        Client client = clientService.findByUuid(signal.getClientUuid());
+        boolean hasOwner = client != null && client.getAccountmanager() != null && !client.getAccountmanager().isBlank();
+        boolean isOwner = hasOwner && client.getAccountmanager().equals(actorUuid);
+        boolean isSectorLead = !hasOwner && client != null
+                && sectorLeadService.isCurrentLead(SectorService.segmentOf(client), actorUuid);
+        if (!mayDecide(managementOverride, isOwner, hasOwner, isSectorLead)) {
             throw new WebApplicationException(
-                    "Only the account's owner can decide what to do with a signal filed on it",
+                    hasOwner
+                            ? "Only the account's owner can decide what to do with a signal filed on it"
+                            : "This account has no owner — only its sector lead can decide what to do with a signal filed on it",
                     Response.Status.FORBIDDEN);
         }
         if (status == SignalStatus.LEAD_CREATED && isBlank(leadUuid)) {
@@ -159,6 +173,14 @@ public class AccountSignalService {
         log.infof("Account signal decided: uuid=%s client=%s status=%s actor=%s",
                 signal.getUuid(), signal.getClientUuid(), status, actorUuid);
         return signal;
+    }
+
+    /**
+     * Who may decide a signal (spec §3.4): the owner; the sector lead when there is no
+     * owner; management anywhere. Pure, so the rule is locked in the fast tier.
+     */
+    static boolean mayDecide(boolean management, boolean isOwner, boolean hasOwner, boolean isSectorLead) {
+        return management || isOwner || (!hasOwner && isSectorLead);
     }
 
     /** The account manager is the Responsible; nobody else owns the account. */
