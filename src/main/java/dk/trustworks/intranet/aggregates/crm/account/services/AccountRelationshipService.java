@@ -28,8 +28,10 @@ import java.util.Map;
  * this replaces. Every node and every edge is read from records that already exist:
  *
  * <ul>
- *   <li><b>Trustworks side</b> — the account manager plus everyone on a contract for this
- *       client. These are people who demonstrably work the account.</li>
+ *   <li><b>Trustworks side</b> — the account manager plus the {@value #MAX_TRUSTWORKS_PEOPLE}
+ *       most recent people on a contract for this client. These are people who demonstrably
+ *       work the account. The cap bounds the filler only: anybody the edges below turn up is
+ *       added back regardless, because an actual relationship is the thing worth showing.</li>
  *   <li><b>MET edges</b> — {@code account_meeting}: calendar metadata from mailboxes whose
  *       owners consented, attributed to this client by the attendee's e-mail domain. The
  *       weight is the number of meetings the two were both in; {@code lastMet} is the most
@@ -50,6 +52,14 @@ public class AccountRelationshipService {
 
     /** How many external people the graph draws before it stops. Beyond this it is unreadable. */
     private static final int MAX_EXTERNAL_PEOPLE = 12;
+
+    /**
+     * How many contract people the Trustworks side seeds with. A client we have served for
+     * years has dozens of former consultants, and listing all of them buried the handful who
+     * actually know somebody. Applied to the contract query only — {@link #collectMeetingEdges}
+     * and {@link #collectSignalEdges} still add anyone an edge names.
+     */
+    private static final int MAX_TRUSTWORKS_PEOPLE = 12;
 
     @Inject
     EntityManager em;
@@ -100,8 +110,10 @@ public class AccountRelationshipService {
     }
 
     /**
-     * The Trustworks side: the account manager first (they are the Responsible), then
-     * everyone who has been on a contract for this client, most recent contract first.
+     * The Trustworks side: the account manager first (they are the Responsible), then the
+     * {@value #MAX_TRUSTWORKS_PEOPLE} people whose contract for this client ran most
+     * recently. An open-ended consultant row (no {@code activeto}) sorts as the most current
+     * one rather than the least, which is the same convention the account page uses.
      */
     private Map<String, PersonDTO> trustworksPeople(String clientUuid, String accountManagerUuid) {
         Map<String, PersonDTO> people = new LinkedHashMap<>();
@@ -113,12 +125,16 @@ public class AccountRelationshipService {
         }
 
         Query query = em.createNativeQuery("""
-                select distinct cc.useruuid
+                select cc.useruuid
                   from contract_consultants cc
                   join contracts c on c.uuid = cc.contractuuid
                  where c.clientuuid = :clientUuid
+                   and cc.useruuid is not null
+                 group by cc.useruuid
+                 order by max(coalesce(cc.activeto, '9999-12-31')) desc
                 """);
         query.setParameter("clientUuid", clientUuid);
+        query.setMaxResults(MAX_TRUSTWORKS_PEOPLE);
         @SuppressWarnings("unchecked")
         List<Object> uuids = query.getResultList();
         for (Object raw : uuids) {
