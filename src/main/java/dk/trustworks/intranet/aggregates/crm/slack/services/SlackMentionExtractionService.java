@@ -407,13 +407,13 @@ public class SlackMentionExtractionService {
             List<SlackDigestContent.Person> people = AccountSlackDigestService.people(element, "clientPeople");
             List<String> topics = AccountSlackDigestService.topics(element);
             double confidence = AccountSlackDigestService.confidence(element);
-            String relevance = floor(AccountSlackDigestService.relevance(
-                    AccountSlackDigestService.textOrNull(element, "relevance"), headline,
-                    !decisions.isEmpty() || !risks.isEmpty() || !clientAsks.isEmpty()));
+            String signalType = floor(SlackDigestContent.signalTypeOf(
+                    AccountSlackDigestService.textOrNull(element, "signalType")));
+            String relevance = SlackDigestContent.relevanceOf(signalType, headline);
 
             proposals.add(new Proposal(clientUuid, displayName, nameKey,
-                    new SlackDigestContent(headline, relevance, decisions, nextSteps, risks,
-                            clientAsks, people, topics, confidence),
+                    new SlackDigestContent(headline, signalType, relevance, decisions, nextSteps,
+                            risks, clientAsks, people, topics, confidence),
                     evidence));
         }
 
@@ -568,10 +568,14 @@ public class SlackMentionExtractionService {
      * A stored row is never {@code NONE}. The digest lane may honestly conclude that a whole
      * day was chatter, but a mention that got this far carries a headline and cited lines,
      * and calling that irrelevant would be the row arguing with itself.
+     *
+     * <p>The schema does not offer {@code NONE} here, so this only ever fires for a model
+     * that ignored its own enum. {@code RELATIONSHIP} is the floor because that is what a
+     * mention with nothing else to say IS — somebody talked about this company today.
      */
-    private static String floor(String relevance) {
-        return SlackDigestContent.RELEVANCE_HIGH.equals(relevance)
-                ? SlackDigestContent.RELEVANCE_HIGH : SlackDigestContent.RELEVANCE_LOW;
+    private static String floor(String signalType) {
+        return SlackDigestContent.SIGNAL_NONE.equals(signalType)
+                ? SlackDigestContent.SIGNAL_RELATIONSHIP : signalType;
     }
 
     /** {@code HIGH} first, each group in the model's own order, then cut. */
@@ -622,16 +626,17 @@ public class SlackMentionExtractionService {
      * sentence vouch for a doubtful one.
      */
     private static Mention merge(String clientUuid, List<Mention> parts) {
-        String relevance = parts.stream()
-                .anyMatch(part -> SlackDigestContent.RELEVANCE_HIGH.equals(part.content().relevance()))
-                ? SlackDigestContent.RELEVANCE_HIGH : SlackDigestContent.RELEVANCE_LOW;
+        String signalType = parts.stream()
+                .map(part -> part.content().signalType())
+                .reduce(SlackDigestContent.SIGNAL_NONE, SlackDigestContent::strongerSignal);
+        String relevance = SlackDigestContent.relevanceOf(signalType, "merged");
         double confidence = parts.stream().mapToDouble(part -> part.content().confidence()).min().orElse(0.0d);
 
         TreeSet<Integer> evidence = new TreeSet<>();
         parts.forEach(part -> evidence.addAll(part.evidence()));
 
         SlackDigestContent content = new SlackDigestContent(
-                headline(parts, relevance), relevance,
+                headline(parts, relevance), signalType, relevance,
                 mergeItems(parts, SlackDigestContent::decisions),
                 mergeItems(parts, SlackDigestContent::nextSteps),
                 mergeNotes(parts, SlackDigestContent::risks),

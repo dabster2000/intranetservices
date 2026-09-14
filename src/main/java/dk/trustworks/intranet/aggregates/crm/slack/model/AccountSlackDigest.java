@@ -76,7 +76,17 @@ public class AccountSlackDigest extends PanacheEntityBase {
     @Column(name = "permalink", length = 500)
     private String permalink;
 
-    /** {@code NONE}, {@code LOW} or {@code HIGH} — the model's own reading; null when it did not run. */
+    /**
+     * The KIND of account event, from {@code SlackDigestContent}'s closed set — the field
+     * {@code relevance} is derived from, and the one a cross-account feed filters on
+     * ("every EXTENSION signal this quarter"). A varchar and not an enum: an unknown
+     * value from a future prompt version degrades to NONE on read rather than failing
+     * the write of a row we already paid a model call for.
+     */
+    @Column(name = "signal_type", length = 20)
+    private String signalType;
+
+    /** {@code NONE}, {@code LOW} or {@code HIGH} — DERIVED from {@link #signalType}; null when the model did not run. */
     @Column(name = "relevance", length = 8)
     private String relevance;
 

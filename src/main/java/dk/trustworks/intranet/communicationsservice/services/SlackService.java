@@ -794,8 +794,9 @@ public class SlackService {
     /**
      * A channel message as {@code AccountSlackSyncService} needs it. {@code subtype} is
      * non-null for anything that is not a plain human message — joins, leaves, topic
-     * changes and bot posts ({@code bot_message} is stamped on for a message that only
-     * carries a {@code bot_id}) — so a caller drops those with one null check.
+     * changes and bot posts ({@code bot_message} is stamped on for any message carrying a
+     * {@code bot_id}, an {@code app_id} or a {@code bot_profile}) — so a caller drops those
+     * with one null check.
      * {@code replyCount} and {@code latestReply} are Slack's own thread bookkeeping on a
      * thread parent; both are zero/null on everything else.
      */
@@ -1036,11 +1037,36 @@ public class SlackService {
         return slackFailure(what, response);
     }
 
+    /**
+     * The three fields that mark a message as written by an APP rather than a person.
+     * Slack sets them inconsistently and a message needs only one of them to be a bot post:
+     * <ul>
+     *   <li>{@code bot_id} — the ordinary {@code chat.postMessage} with a bot token;</li>
+     *   <li>{@code app_id} — set when an app posts while appearing as a bot USER, which is
+     *       how a legacy bot user and a Workflow Builder step both arrive, and where
+     *       {@code bot_id} can be absent;</li>
+     *   <li>{@code bot_profile} — the inline profile Slack attaches to an app's post; the
+     *       one field present on some {@code conversations.replies} payloads that carry
+     *       neither id.</li>
+     * </ul>
+     * Testing only {@code bot_id}, as this did, lets the second and third shapes through.
+     * That matters here because MUTHER — the intranet's own mother bot — posts INTO the
+     * channels both CRM lanes read, so the intranet's own notifications would otherwise be
+     * digested as colleague conversation and, on the source-channel lane, mined for client
+     * names: the CRM reading its own output back in as client news.
+     */
+    private static boolean isAppPost(com.slack.api.model.Message message) {
+        return message.getBotId() != null
+                || message.getAppId() != null
+                || message.getBotProfile() != null;
+    }
+
     /** Package-private so the shape rules are unit-testable without Slack's static client. */
     static SlackChannelMessage toChannelMessage(com.slack.api.model.Message message) {
         String subtype = message.getSubtype();
-        if (subtype == null && message.getBotId() != null) {
-            // A bot post with no subtype (Block Kit posts from apps) — not a human message.
+        if (subtype == null && isAppPost(message)) {
+            // A bot post with no subtype (Block Kit posts from apps, bot users, workflow
+            // steps) — not a human message. See isAppPost for why one field is not enough.
             subtype = "bot_message";
         }
         return new SlackChannelMessage(

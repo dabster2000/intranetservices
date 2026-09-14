@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.crm.slack.ai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
@@ -53,7 +54,7 @@ import java.util.regex.Pattern;
 public final class AccountSlackDigestPrompts {
 
     /** Recorded on the digest row so a prompt change is attributable. */
-    public static final String PROMPT_VERSION = "account-slack-digest-v1";
+    public static final String PROMPT_VERSION = "account-slack-digest-v2";
 
     static final String DATA_START = "<<<SLACK";
     static final String DATA_END = "SLACK>>>";
@@ -72,7 +73,7 @@ public final class AccountSlackDigestPrompts {
 
     /** Schema-conformant fallback when the model explicitly refuses: nothing read. */
     public static final String REFUSAL_FALLBACK_JSON =
-            "{\"headline\":null,\"relevance\":\"NONE\",\"decisions\":[],\"nextSteps\":[],"
+            "{\"headline\":null,\"signalType\":\"NONE\",\"decisions\":[],\"nextSteps\":[],"
                     + "\"risks\":[],\"clientAsks\":[],\"clientPeople\":[],\"topics\":[],\"confidence\":0.0}";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -212,18 +213,56 @@ public final class AccountSlackDigestPrompts {
                 WHAT TO IGNORE: availability and working-location chatter ("jeg er hjemmefra i \
                 dag"), greetings, thanks, emoji-only messages, social talk, tooling and \
                 formatting tips, and anything not about this client's engagement. A day with \
-                only such messages is relevance "NONE" with a null headline and every list \
+                only such messages is signalType "NONE" with a null headline and every list \
                 empty. That is a correct and common answer — do not manufacture content to \
                 fill the lists.
 
-                RELEVANCE: "HIGH" when the day holds at least one decision, risk or client \
-                ask; "LOW" when it is about the engagement but only progress and status; \
-                "NONE" when nothing concerns the account.
+                SIGNAL TYPE: the single most consequential KIND of account event the day \
+                carries. This is the field that decides whether anybody is shown the day at \
+                all, so choose it on what the account owner would DO about it, never on how \
+                strongly the messages are worded.
+                  "WON" — a yes: signed, approved, awarded, or a verbal go-ahead.
+                  "LOST" — a no: rejected, cancelled, lost, or the client walking away.
+                  "EXTENSION" — a prolongation, a renewal, a contract period or an option \
+                being discussed, asked for or taken. Say EXTENSION for any talk of \
+                continuing beyond what is agreed, however tentative ("mulige forlængelser", \
+                "flerårigt samarbejde", "ind i 2027").
+                  "NEW_SCOPE" — work beyond what is contracted: a new phase, an upsell, a \
+                need the client has voiced, a change to what we are paid for or how (T/M, \
+                fast pris, rate).
+                  "PROPOSAL" — an offer, a pitch, a tender or a bid: sent, to be sent, or \
+                published by the client.
+                  "ESCALATION" — dissatisfaction, a complaint, impatience, an escalation: \
+                the RELATIONSHIP is at risk, not just the plan.
+                  "PROCUREMENT" — a purchasing, legal or contractual gate standing between \
+                us and the work.
+                  "ALLOCATION" — somebody joining or leaving the engagement, an FTE share \
+                changing, a start date.
+                  "COMPLIANCE" — a regulatory, legal or contractual exposure that would \
+                cost us if it is wrong: an unapproved dispensation, a missing clearance, a \
+                control we may not satisfy.
+                  "DELIVERY" — delivery status THE CLIENT CAN SEE: a date slipping, the \
+                client blocked from testing, a release held back, something we owe them \
+                that is late.
+                  "RELATIONSHIP" — a meeting, a call or a visit, or a person on the client \
+                side arriving, leaving or being named for the first time.
+                  "NONE" — nothing the account owner would act on.
+
+                OUR OWN ENGINEERING IS "NONE". Build and pipeline failures, flaky or broken \
+                tests, CVEs and dependency bumps, refactoring, code review, linting, \
+                environments, credentials and tool access, internal documentation and \
+                diagrams, our own ways of working: signalType "NONE", headline null, every \
+                list empty — no matter how much the messages sound like a risk, and no \
+                matter how many colleagues are worried about it. "E2E-testene fejler", "ny \
+                CVE rammer alle pipelines", "jeg mangler adgang til repoet" are all NONE. \
+                They become "DELIVERY" only when the messages say the client is waiting, \
+                blocked or told about it. This is the single most common mistake on this \
+                task: internal trouble is not account news.
 
                 HEADLINE: the ONE line the owner would want to read first, at most %d \
-                characters. Lead with the most consequential decision, risk or ask; join at \
+                characters. Lead with whatever earned the signalType; join at \
                 most two items with "; ". Do not start with the client's name or the channel \
-                name — the row already shows them. Null when relevance is "NONE".
+                name — the row already shows them. Null when signalType is "NONE".
 
                 RULES:
                   - Say only what the messages say. Never invent a decision, a date, a person \
@@ -333,7 +372,7 @@ public final class AccountSlackDigestPrompts {
 
     /**
      * The strict Structured-Outputs schema: every property in {@code required},
-     * {@code additionalProperties:false} on every object, closed enum on relevance.
+     * {@code additionalProperties:false} on every object, closed enum on signalType.
      * Optionality is a nullable type array, never an absent key.
      */
     public static ObjectNode schema() {
@@ -344,12 +383,13 @@ public final class AccountSlackDigestPrompts {
 
         nullableString(props.putObject("headline"));
 
-        ObjectNode relevance = props.putObject("relevance");
-        relevance.put("type", "string");
-        ArrayNode levels = relevance.putArray("enum");
-        levels.add("NONE");
-        levels.add("LOW");
-        levels.add("HIGH");
+        // relevance is NOT asked for: it is derived from signalType by
+        // SlackDigestContent.relevanceOf. One field the model can contradict is one
+        // reconciliation the backend does not have to get right.
+        ObjectNode signalType = props.putObject("signalType");
+        signalType.put("type", "string");
+        ArrayNode kinds = signalType.putArray("enum");
+        SlackDigestContent.PRIORITY.forEach(kinds::add);
 
         objectArray(props.putObject("decisions"), Map.of("text", false, "who", true, "when", true));
         objectArray(props.putObject("nextSteps"), Map.of("text", false, "who", true, "when", true));
@@ -360,7 +400,7 @@ public final class AccountSlackDigestPrompts {
         props.putObject("confidence").put("type", "number");
 
         ArrayNode required = root.putArray("required");
-        for (String name : List.of("headline", "relevance", "decisions", "nextSteps", "risks",
+        for (String name : List.of("headline", "signalType", "decisions", "nextSteps", "risks",
                 "clientAsks", "clientPeople", "topics", "confidence")) {
             required.add(name);
         }

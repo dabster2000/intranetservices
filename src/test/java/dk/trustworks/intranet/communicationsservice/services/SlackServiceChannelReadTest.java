@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.communicationsservice.services;
 
 import com.slack.api.methods.response.conversations.ConversationsHistoryResponse;
+import com.slack.api.model.BotProfile;
 import com.slack.api.model.Message;
 import org.junit.jupiter.api.Test;
 
@@ -69,5 +70,39 @@ class SlackServiceChannelReadTest {
         assertNull(converted.subtype());
         assertEquals(0, converted.replyCount(), "Slack omits reply_count on a non-parent; that is zero, not null");
         assertEquals("U1", converted.user());
+    }
+
+    /**
+     * MUTHER — the intranet's own mother bot — posts into the channels both CRM lanes
+     * read. Testing bot_id alone let two of its three shapes through: an app posting while
+     * appearing as a bot USER carries app_id with no bot_id, and some
+     * conversations.replies payloads carry only bot_profile. Either one reaching the
+     * digest means the intranet's own notifications are read as colleague conversation
+     * and, on the source-channel lane, mined for client names — the CRM reading its own
+     * output back in as client news.
+     */
+    @Test
+    void anAppPostIsABotPostWhicheverFieldSlackSets() {
+        Message byAppId = new Message();
+        byAppId.setTs("3.000000");
+        byAppId.setUser("U0BOTUSER");
+        byAppId.setAppId("A0MUTHER");
+        byAppId.setText("Ny bugrapport: #4711");
+        assertEquals("bot_message", SlackService.toChannelMessage(byAppId).subtype(),
+                "an app posting as a bot user has no bot_id");
+
+        Message byProfile = new Message();
+        byProfile.setTs("4.000000");
+        byProfile.setUser("U0BOTUSER");
+        byProfile.setBotProfile(new BotProfile());
+        byProfile.setText("Ugentlig digest");
+        assertEquals("bot_message", SlackService.toChannelMessage(byProfile).subtype());
+
+        Message realSubtype = new Message();
+        realSubtype.setTs("5.000000");
+        realSubtype.setUser("U1");
+        realSubtype.setSubtype("channel_join");
+        assertEquals("channel_join", SlackService.toChannelMessage(realSubtype).subtype(),
+                "a genuine subtype is never overwritten");
     }
 }

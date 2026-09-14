@@ -889,6 +889,7 @@ public class SlackSourceSyncService {
             }
             row.setChannelName(channel.channelName());
             row.setMessageCount(mention.messageCount());
+            row.setSignalType(mention.content().signalType());
             row.setRelevance(mention.content().relevance());
             row.setHeadline(mention.content().headline());
             row.setDigestJson(mention.digestJson());

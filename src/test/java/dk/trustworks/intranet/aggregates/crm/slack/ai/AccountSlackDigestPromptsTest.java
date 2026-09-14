@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.crm.slack.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -55,11 +56,13 @@ class AccountSlackDigestPromptsTest {
     }
 
     @Test
-    void relevanceIsAClosedSet() {
+    void theSignalTypeIsAClosedSetAndRelevanceIsNotAskedFor() {
         ObjectNode schema = AccountSlackDigestPrompts.schema();
-        List<String> levels = new ArrayList<>();
-        schema.path("properties").path("relevance").path("enum").forEach(node -> levels.add(node.asText()));
-        assertEquals(List.of("NONE", "LOW", "HIGH"), levels);
+        List<String> kinds = new ArrayList<>();
+        schema.path("properties").path("signalType").path("enum").forEach(node -> kinds.add(node.asText()));
+        assertEquals(SlackDigestContent.PRIORITY, kinds);
+        assertTrue(schema.path("properties").path("relevance").isMissingNode(),
+                "relevance is derived from signalType, never asked of the model");
     }
 
     @Test
@@ -82,7 +85,7 @@ class AccountSlackDigestPromptsTest {
         for (String field : required) {
             assertTrue(fallback.has(field), "fallback carries " + field);
         }
-        assertEquals("NONE", fallback.path("relevance").asText());
+        assertEquals("NONE", fallback.path("signalType").asText());
         assertTrue(fallback.path("headline").isNull());
     }
 

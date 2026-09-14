@@ -55,7 +55,7 @@ import java.util.Set;
 public final class SlackMentionPrompts {
 
     /** Recorded on every mention row so a prompt change is attributable. */
-    public static final String PROMPT_VERSION = "slack-mention-v1";
+    public static final String PROMPT_VERSION = "slack-mention-v2";
 
     static final String ACCOUNTS_START = "<<<ACCOUNTS";
     static final String ACCOUNTS_END = "ACCOUNTS>>>";
@@ -186,6 +186,11 @@ public final class SlackMentionPrompts {
                 not even when clients are there.
                   - Trustworks itself: our own strategy, our own numbers, our own internal \
                 projects, our own recruitment.
+                  - Our own engineering, even on a client's work: build and pipeline \
+                failures, flaky tests, CVEs and dependency bumps, refactoring, code \
+                review, environments, tool access, internal documentation. It becomes a \
+                mention only when the messages say the company is waiting, blocked or has \
+                been told.
                   - A company named only in passing, with nothing said about it.
 
                 ATTRIBUTION. clientId must be an id from the ACCOUNTS block, matched on the \
@@ -222,8 +227,39 @@ public final class SlackMentionPrompts {
                 their role when one is stated.
                   TOPICS — one to six short tags for what this mention is about, e.g. "GRC", \
                 "kontrakt", "kick-off".
-                  RELEVANCE — "HIGH" when the mention carries a decision, a risk or a client \
-                ask; "LOW" when it is a meeting, a call, a visit or plain progress.
+                  SIGNAL TYPE — the single most consequential KIND of account event this \
+                mention carries. It is what decides whether anybody is shown the row, so \
+                choose it on what the account owner would DO about it, never on how \
+                strongly the sentence is worded.
+                    "WON" — a yes: signed, approved, awarded, or a verbal go-ahead \
+                ("mundtligt ja", "de har sagt ja").
+                    "LOST" — a no: rejected, cancelled, lost, or the company walking away.
+                    "EXTENSION" — a prolongation, a renewal, a contract period or an \
+                option being discussed, asked for or taken. Say EXTENSION for any talk of \
+                continuing beyond what is agreed, however tentative — "kontraktfornyelser", \
+                "flerårigt samarbejde", "forlængelser ... ind i 2027", "året ud" all \
+                qualify, including when they are only on a meeting agenda.
+                    "NEW_SCOPE" — work beyond what is contracted: a new phase, an upsell, \
+                a need the company has voiced ("100%%-behov", "de mangler en BA'er"), or a \
+                change to what we are paid for or how (T/M, fast pris, rate).
+                    "PROPOSAL" — an offer, a pitch, a tender or a bid: sent, to be sent, \
+                or published by the company ("udbud offentliggjort", "forslaget sendes").
+                    "ESCALATION" — dissatisfaction, a complaint, impatience, an \
+                escalation: the RELATIONSHIP is at risk, not just the plan.
+                    "PROCUREMENT" — a purchasing, legal or contractual gate standing \
+                between us and the work ("procurement-runden mangler").
+                    "ALLOCATION" — somebody joining or leaving the engagement, an FTE \
+                share changing, a start date.
+                    "COMPLIANCE" — a regulatory, legal or contractual exposure that would \
+                cost us if it is wrong.
+                    "DELIVERY" — delivery status THE COMPANY CAN SEE: a date slipping, \
+                them blocked from testing, something we owe them that is late.
+                    "RELATIONSHIP" — a meeting, a call or a visit, or a person on the \
+                company's side arriving, leaving or being named. This is the type for the \
+                bare "kundemøde hos NN kl. 10.30" that is a mention on its own.
+                  Our own engineering is never a mention at all — see WHAT IS NEVER A \
+                MENTION. There is no "NONE" here: a mention you would grade NONE is a \
+                mention you should not have made.
                   CONFIDENCE — 0.0-1.0, your own confidence in that one mention.
 
                 RULES FOR EVERY FIELD:
@@ -517,11 +553,16 @@ public final class SlackMentionPrompts {
         nullableString(props.putObject("companyName"));
         props.putObject("headline").put("type", "string");
 
-        ObjectNode relevance = props.putObject("relevance");
-        relevance.put("type", "string");
-        ArrayNode levels = relevance.putArray("enum");
-        levels.add(SlackDigestContent.RELEVANCE_LOW);
-        levels.add(SlackDigestContent.RELEVANCE_HIGH);
+        // relevance is NOT asked for: it is derived from signalType by
+        // SlackDigestContent.relevanceOf. NONE is off the list here for the reason the
+        // javadoc above gives — a mention graded NONE is a contradiction — so the model
+        // is offered every type except that one.
+        ObjectNode signalType = props.putObject("signalType");
+        signalType.put("type", "string");
+        ArrayNode kinds = signalType.putArray("enum");
+        SlackDigestContent.PRIORITY.stream()
+                .filter(kind -> !SlackDigestContent.SIGNAL_NONE.equals(kind))
+                .forEach(kinds::add);
 
         objectArray(props.putObject("decisions"), required("text"), nullable("who"), nullable("when"));
         objectArray(props.putObject("nextSteps"), required("text"), nullable("who"), nullable("when"));
@@ -533,7 +574,7 @@ public final class SlackMentionPrompts {
         props.putObject("confidence").put("type", "number");
 
         ArrayNode itemRequired = item.putArray("required");
-        for (String name : List.of("clientId", "companyName", "headline", "relevance", "decisions",
+        for (String name : List.of("clientId", "companyName", "headline", "signalType", "decisions",
                 "nextSteps", "risks", "clientAsks", "clientPeople", "topics", "evidence", "confidence")) {
             itemRequired.add(name);
         }
