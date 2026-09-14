@@ -558,15 +558,45 @@ public class AccountActivityService {
     }
 
     /**
-     * Slack days — one row per Copenhagen day of the linked account space (V594).
+     * Slack days — one row per Copenhagen day of the linked account space that had
+     * something to say (V594).
      *
-     * <p><b>No message ever reaches this feed.</b> The row's line is the model's headline
-     * when it wrote one and a counts line ("#a_oersted: 14 messages (Mikkel, Jonas)") when
-     * it did not, so a day with activity is never silently absent. Under the line the row
-     * carries the validated reading — decisions, next steps, risks, client asks, people
-     * named, topics — and the deep link into Slack, which is the one place the actual
-     * words live. {@code refUuid} names the digest; nothing in Intra opens it yet, but a
-     * row that cannot name its source could never grow an affordance.
+     * <p><b>No message ever reaches this feed.</b> The row's line is the model's headline,
+     * and under it the row carries the validated reading — decisions, next steps, risks,
+     * client asks, people named, topics — plus the deep link into Slack, which is the one
+     * place the actual words live. {@code refUuid} names the digest; nothing in Intra
+     * opens it yet, but a row that cannot name its source could never grow an affordance.
+     *
+     * <h2>A day with no reading is not a row</h2>
+     * This used to emit every digested day, falling back to a counts line
+     * ("#a_novo: 4 messages (Nicolas, Stephan)") when the model wrote no headline, on the
+     * reasoning that "a day with activity is never silently absent". That reasoning
+     * confused two different readers. Whether the lane ran and what it cost is an
+     * operational question, and Settings → CRM answers it from {@code crm_slack_sync_run};
+     * the account timeline answers "what happened with this client", and a counts line
+     * says nothing about that. It is strictly worse than absence: it occupies a row, reads
+     * like news, and resolves to a thread about how to get a Coupa account.
+     *
+     * <p>The v2 rubric made this acute rather than causing it. Grading by what KIND of
+     * event a day held — instead of by whether the sentence contained a decision, a risk
+     * or an ask — correctly demotes our own engineering to NONE, so the first v2 run
+     * turned 8 empty days into 12 of 20. Every one of them was drawing a line on somebody's
+     * account page.
+     *
+     * <p>And they did not merely sit there. {@link #forClient} caps each source at the
+     * limit, merges, sorts by date and truncates to the limit again — so a nothing-row
+     * competes by date with a contract, a meeting or a note, and twelve of them push real
+     * history off the end of the feed.
+     *
+     * <p>So: no headline, no row. That is exactly what {@link #slackMentionRows} has always
+     * done ("a day the model found nothing to say about a client produces no row at all,
+     * rather than a row saying nothing"), and the two lanes disagreeing was the bug. The
+     * filter is in the query, not applied afterwards, so the limit is spent on rows that
+     * carry something.
+     *
+     * <p>Nothing is lost: the digest row, its counts, its participants and its cursor all
+     * still exist in {@code account_slack_digest}, which is what the next run reads to know
+     * where it got to.
      *
      * <p>{@code actor} is null: a day is many people, and they are listed in the digest.
      */
@@ -576,6 +606,7 @@ public class AccountActivityService {
                        permalink, relevance, headline, digest_json
                   from account_slack_digest
                  where client_uuid = :clientUuid
+                   and headline is not null and headline <> ''
                  order by digest_date desc
                 """);
         digests.setParameter("clientUuid", clientUuid);
@@ -650,7 +681,9 @@ public class AccountActivityService {
      *       is never {@code NONE}-relevant — a day the model found nothing to say about a
      *       client produces no row at all, rather than a row saying nothing. That makes
      *       {@link #slackSummary}'s counts fallback unreachable from here; the line goes
-     *       through it anyway, because two composers for one kind of row drift apart.</li>
+     *       through it anyway, because two composers for one kind of row drift apart. As of
+     *       the v2 rubric {@link #slackRows} filters the same way, so the fallback is now
+     *       unreachable from BOTH lanes and survives only as a guard.</li>
      * </ul>
      *
      * <p>{@code refType} is {@code SLACK_MENTION} so the tab can offer the dismissal on
