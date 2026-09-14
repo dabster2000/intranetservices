@@ -235,7 +235,7 @@ public class AccountSlackDigestService {
         };
     }
 
-    private static List<SlackDigestContent.Item> items(JsonNode node, String field) {
+    static List<SlackDigestContent.Item> items(JsonNode node, String field) {
         List<SlackDigestContent.Item> out = new ArrayList<>();
         JsonNode array = node.path(field);
         if (!array.isArray()) {
@@ -256,7 +256,7 @@ public class AccountSlackDigestService {
         return out;
     }
 
-    private static List<SlackDigestContent.Note> notes(JsonNode node, String field) {
+    static List<SlackDigestContent.Note> notes(JsonNode node, String field) {
         List<SlackDigestContent.Note> out = new ArrayList<>();
         JsonNode array = node.path(field);
         if (!array.isArray()) {
@@ -274,7 +274,7 @@ public class AccountSlackDigestService {
         return out;
     }
 
-    private static List<SlackDigestContent.Person> people(JsonNode node, String field) {
+    static List<SlackDigestContent.Person> people(JsonNode node, String field) {
         List<SlackDigestContent.Person> out = new ArrayList<>();
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         JsonNode array = node.path(field);
@@ -294,7 +294,7 @@ public class AccountSlackDigestService {
         return out;
     }
 
-    private static List<String> topics(JsonNode node) {
+    static List<String> topics(JsonNode node) {
         List<String> out = new ArrayList<>();
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         JsonNode array = node.path("topics");
@@ -345,7 +345,7 @@ public class AccountSlackDigestService {
         }
     }
 
-    private static double confidence(JsonNode node) {
+    static double confidence(JsonNode node) {
         JsonNode value = node.path("confidence");
         if (!value.isNumber()) {
             return 0.0d;
@@ -354,7 +354,7 @@ public class AccountSlackDigestService {
     }
 
     /** Structured Outputs expresses "absent" as JSON null, so blank and null are the same thing. */
-    private static String textOrNull(JsonNode node, String field) {
+    static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.path(field);
         if (!value.isTextual()) {
             return null;

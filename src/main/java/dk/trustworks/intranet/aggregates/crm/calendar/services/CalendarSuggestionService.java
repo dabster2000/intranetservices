@@ -295,7 +295,8 @@ public class CalendarSuggestionService {
                 row.setLinkedClientUuid(client.getUuid());
             }
             case "ADD" -> {
-                Client created = createProspect(request, domain, actor);
+                Client created = createProspect(request.name(), request.segment(), request.ownerUuid(),
+                        request.startPursuing(), "Seen in calendars — " + domain, actor);
                 attachDomain(created.getUuid(), domain, actor);
                 row.setStatus(UnmatchedDomainStatus.LINKED);
                 row.setLinkedClientUuid(created.getUuid());
@@ -329,9 +330,21 @@ public class CalendarSuggestionService {
      * Creates the company as a PROSPECT — name and sector, no billing details, no
      * e-conomic. Exactly what the Add-company dialog on the accounts list creates, because
      * it is the same act arriving through a different door.
+     *
+     * <p><b>Shared with the "Heard in Slack" lane</b> (spec §6.2), which answers the same
+     * question about the same population and must answer it identically — the duplicate-name
+     * rule below is the whole reason the 2026 batches produced twins, and a second
+     * implementation of "add the company somebody just saw" would lose it. The only thing a
+     * caller supplies beyond the Add-company dialog's own fields is {@code bandNote}: the
+     * sentence that records where the company came from, which is the one sentence the two
+     * doors do not share.
+     *
+     * @param bandNote what the band change is recorded as, when the caller asked to start
+     *                 pursuing; ignored otherwise
      */
-    private Client createProspect(CalendarSuggestionDecisionRequest request, String domain, String actor) {
-        String name = request.name() == null ? "" : request.name().trim();
+    public Client createProspect(String rawName, String segment, String ownerUuid,
+                                 boolean startPursuing, String bandNote, String actor) {
+        String name = rawName == null ? "" : rawName.trim();
         if (name.length() < 2) {
             throw new WebApplicationException("A company name needs at least two characters",
                     Response.Status.BAD_REQUEST);
@@ -347,21 +360,21 @@ public class CalendarSuggestionService {
         prospect.setUuid(UUID.randomUUID().toString());
         prospect.setName(name);
         prospect.setType(ClientType.PROSPECT);
-        prospect.setSegment(parseSegment(request.segment()));
+        prospect.setSegment(parseSegment(segment));
         prospect.setCreated(LocalDateTime.now());
-        if (request.ownerUuid() != null && !request.ownerUuid().isBlank()) {
-            String ownerUuid = request.ownerUuid().trim();
-            if (User.<User>findById(ownerUuid) == null) {
-                throw new WebApplicationException("Unknown colleague: " + ownerUuid, Response.Status.BAD_REQUEST);
+        if (ownerUuid != null && !ownerUuid.isBlank()) {
+            String owner = ownerUuid.trim();
+            if (User.<User>findById(owner) == null) {
+                throw new WebApplicationException("Unknown colleague: " + owner, Response.Status.BAD_REQUEST);
             }
-            prospect.setAccountmanager(ownerUuid);
+            prospect.setAccountmanager(owner);
         }
         prospect.persist();
 
         activityLogService.logCreated(prospect.getUuid(), ClientActivityLog.TYPE_CLIENT,
                 prospect.getUuid(), prospect.getName());
 
-        if (request.startPursuing()) {
+        if (startPursuing) {
             if (prospect.getAccountmanager() == null) {
                 throw new WebApplicationException(
                         "An Active account needs an owner — pick one, or add the company without pursuing it yet",
@@ -369,12 +382,15 @@ public class CalendarSuggestionService {
             }
             accountService.patch(prospect.getUuid(),
                     new dk.trustworks.intranet.aggregates.crm.account.dto.AccountPatchRequest(
-                            "ACTIVE", "Seen in calendars — " + domain,
+                            "ACTIVE", bandNote,
                             null, false, null, false, null, false, null, false),
                     actor);
         }
-        log.infof("Prospect created from a calendar suggestion: uuid=%s name=%s domain=%s actor=%s",
-                prospect.getUuid(), name, domain, actor);
+        // Ids and the actor only. The Slack door's names are company names a model read out
+        // of a channel, and those never reach an INFO line; each caller logs the decision
+        // this belongs to on the very next statement, with the key it was decided under.
+        log.infof("Prospect created from a suggestion: uuid=%s owner=%s actor=%s",
+                prospect.getUuid(), prospect.getAccountmanager(), actor);
         return prospect;
     }
 

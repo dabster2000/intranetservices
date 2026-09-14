@@ -21,6 +21,10 @@ import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDTO;
 import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDecisionRequest;
 import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSuggestionService;
 import dk.trustworks.intranet.aggregates.crm.plan.services.AccountPlanService;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackSuggestionDTO;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackSuggestionDecisionRequest;
+import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackMentionService;
+import dk.trustworks.intranet.aggregates.crm.slack.services.SlackUnmatchedCompanyService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -109,6 +113,12 @@ public class AccountResource {
     @Inject
     CalendarSuggestionService calendarSuggestions;
 
+    @Inject
+    SlackUnmatchedCompanyService slackSuggestions;
+
+    @Inject
+    AccountSlackMentionService slackMentions;
+
     @Context
     SecurityContext securityContext;
 
@@ -196,6 +206,78 @@ public class AccountResource {
     public Response decideCalendarSuggestion(@PathParam("domain") String domain,
                                              CalendarSuggestionDecisionRequest request) {
         calendarSuggestions.decide(domain, request, requireActor());
+        return Response.noContent().build();
+    }
+
+    /**
+     * "Heard in Slack": companies colleagues keep talking about in the general channels
+     * that Intra has never heard of (source-channel spec §6.2).
+     *
+     * <p>Deliberately BESIDE {@code calendar-suggestions} and, like it, BEFORE
+     * {@code /{clientUuid}} in this class. RESTEasy Reactive matches a literal path segment
+     * ahead of a template one, so the order is not what makes this work — but a reader
+     * looking for why {@code slack-suggestions} is not read as a client uuid should find
+     * the three of them next to each other.
+     *
+     * <p>The two panels ask the same question through different doors, which is why they
+     * are neighbours rather than one endpoint: a domain identifies a company by
+     * construction, a name somebody typed in a channel does not, and the row is keyed and
+     * aliased on that difference.
+     *
+     * <p>{@code accounts:read}, the class default: every employee can already read every
+     * account page, and a company name with a mention count is less than that.
+     */
+    @GET
+    @Path("/slack-suggestions")
+    public List<SlackSuggestionDTO> slackSuggestions(
+            @QueryParam("limit") @DefaultValue("25") int limit) {
+        return slackSuggestions.suggestions(limit);
+    }
+
+    /**
+     * Add the company, say it is a client we already have, or never ask again.
+     *
+     * <p>{@code accounts:write} — all three change what the CRM holds, and the ADD branch
+     * creates a company. The per-person gate is the BFF's own {@code requirePermission}.
+     *
+     * <p>Impersonation is refused: a decision here creates an account or writes a permanent
+     * deny-list entry against the name of the person who took it, and one taken by an admin
+     * wearing somebody else's identity would name the wrong person for ever.
+     */
+    @POST
+    @Path("/slack-suggestions/{nameKey}/decision")
+    @RolesAllowed({"accounts:write"})
+    public Response decideSlackSuggestion(@PathParam("nameKey") String nameKey,
+                                          SlackSuggestionDecisionRequest request) {
+        slackSuggestions.decide(nameKey, request, requireHumanActor());
+        return Response.noContent().build();
+    }
+
+    /**
+     * "This is not about this client" — takes one Slack mention off an account.
+     *
+     * <p>Body-less and idempotent: there is one thing to say about a mention and the button
+     * says it, so a double-click is a second call with the same meaning rather than a second
+     * decision. The client is part of the address and the service checks the row against it,
+     * so a mention on somebody else's account cannot be reached by guessing its uuid under
+     * an account this caller does own.
+     *
+     * <p>{@code accounts:write} gets the caller through the door; WHICH accounts they may
+     * act on is an ownership check in the service, because a scope cannot say "the owner of
+     * THIS account". Management is resolved here from the PERSON's roles and handed down —
+     * never from the security context, whose token is the BFF's own client credential and
+     * carries scopes rather than role names.
+     *
+     * <p>No restore endpoint (D2): the row is kept for audit, and undoing a dismissal is
+     * rare enough to be a conversation.
+     */
+    @POST
+    @Path("/{clientUuid}/slack-mentions/{uuid}/dismiss")
+    @RolesAllowed({"accounts:write"})
+    public Response dismissSlackMention(@PathParam("clientUuid") String clientUuid,
+                                        @PathParam("uuid") String uuid) {
+        String actor = requireHumanActor();
+        slackMentions.dismiss(clientUuid, uuid, actor, personRoles.isManagement(actor));
         return Response.noContent().build();
     }
 
@@ -311,5 +393,28 @@ public class AccountResource {
             throw new WebApplicationException("X-Requested-By is not a valid UUID", Response.Status.BAD_REQUEST);
         }
         return actor.trim();
+    }
+
+    /**
+     * The acting employee, and not an admin wearing their identity.
+     *
+     * <p>A second helper rather than a stricter {@link #requireActor()}, on purpose. The
+     * three writes that call the looser one — band and roles, the team, the domains — record
+     * who made an edit, and an administrator fixing one on somebody's behalf is a normal
+     * thing to do. The writes below are different in kind: they decide that a company exists
+     * or that a reading of a channel was wrong about an account, and the row keeps that
+     * person's name as the answer to "who decided this". Tightening the shared helper would
+     * change the behaviour of the three existing endpoints as a side effect of adding these.
+     *
+     * <p>Same shape, and the same reasoning, as {@code CalendarConsentResource} and
+     * {@code AccountSignalResource}.
+     */
+    private String requireHumanActor() {
+        if (requestHeaderHolder.isImpersonated()) {
+            throw new WebApplicationException(
+                    "This cannot be decided while impersonating — the decision records who took it",
+                    Response.Status.FORBIDDEN);
+        }
+        return requireActor();
     }
 }

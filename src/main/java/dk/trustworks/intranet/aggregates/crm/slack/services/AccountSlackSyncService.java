@@ -6,6 +6,9 @@ import dk.trustworks.intranet.aggregates.crm.slack.ai.AccountSlackDigestPrompts;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 import dk.trustworks.intranet.aggregates.crm.slack.model.AccountSlackDigest;
 import dk.trustworks.intranet.aggregates.crm.slack.model.AccountSlackDigestParticipant;
+import dk.trustworks.intranet.aggregates.crm.slack.model.SlackSyncRun;
+import dk.trustworks.intranet.aggregates.crm.slack.model.enums.SlackSyncLane;
+import dk.trustworks.intranet.aggregates.crm.slack.model.enums.SlackSyncTrigger;
 import dk.trustworks.intranet.communicationsservice.services.SlackChannelAccessException;
 import dk.trustworks.intranet.communicationsservice.services.SlackConfigurationException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
@@ -87,6 +90,12 @@ import java.util.function.Function;
  * move, so the next night re-reads the same window. A {@link SlackConfigurationException}
  * — a missing scope, a revoked token — is the same answer for every account, so the run
  * stops at the first one and says so at ERROR.
+ *
+ * <h2>What the run left behind</h2>
+ * Every pass opens and closes a {@code crm_slack_sync_run} row through
+ * {@link SlackSyncRunService}, which also holds the lane lock. The counters were only ever
+ * a log line before that, and "did it go last night" is a question an admin asks in a
+ * browser rather than in CloudWatch.
  */
 @JBossLog
 @ApplicationScoped
@@ -111,6 +120,9 @@ public class AccountSlackSyncService {
     static final String ERROR_NOT_IN_CHANNEL = "NOT_IN_CHANNEL";
     static final String ERROR_ARCHIVED = "ARCHIVED";
 
+    /** What a run that stopped on a misconfigured Slack app writes into {@code failure_code}. */
+    static final String FAILURE_SLACK_CONFIGURATION = "SLACK_CONFIGURATION";
+
     private static final DateTimeFormatter WALL_CLOCK = DateTimeFormatter.ofPattern("HH:mm");
 
     @Inject
@@ -122,11 +134,29 @@ public class AccountSlackSyncService {
     @Inject
     AccountSlackFeatureFlag featureFlag;
 
-    /** What one run did, for the log line and for a manual trigger to report. */
+    @Inject
+    SlackSyncRunService runService;
+
+    /**
+     * What one run did, for the log line, for a manual trigger to report, and for the
+     * {@code crm_slack_sync_run} row.
+     *
+     * <p>Both Slack lanes fill this same record, which is why two of its fields look idle
+     * from here. {@code unmatched} is always zero on this lane — a client's own space is
+     * already attached to a client, so there is no company left over to file as a hint — and
+     * {@code failureCode} is only ever set alongside {@code stoppedOnConfiguration}. One
+     * shape rather than two is what lets {@link SlackSyncRunService#finish} close either
+     * lane's row without asking which lane it is looking at.
+     *
+     * <p>{@code accounts} is the lane's own word for what it set out to read: account spaces
+     * here, listed source channels on the other lane. The column both land in is
+     * {@code channels}.
+     */
     public record SyncSummary(int accounts, int channelsRead, int daysDigested, int readings,
-                              int linkErrors, int failures, boolean stoppedOnConfiguration) {
+                              int unmatched, int linkErrors, int failures,
+                              boolean stoppedOnConfiguration, String failureCode) {
         static SyncSummary nothing() {
-            return new SyncSummary(0, 0, 0, 0, 0, 0, false);
+            return new SyncSummary(0, 0, 0, 0, 0, 0, 0, false, null);
         }
     }
 
@@ -137,14 +167,61 @@ public class AccountSlackSyncService {
         }
     }
 
-    /** One full pass over every linked account. */
-    public SyncSummary syncAll() {
-        boolean enabled = QuarkusTransaction.requiringNew().call(featureFlag::isEnabled);
-        if (!enabled) {
-            log.info("Account Slack sync is switched off (crm.slack.account-spaces.enabled=false)");
+    /**
+     * One full pass over every linked account, and the {@code crm_slack_sync_run} row that
+     * records it.
+     *
+     * <p>The trigger and the actor are arguments rather than something the job knows on its
+     * own because only one of the two kinds of run has a person behind it. {@code started_by}
+     * is the only way to ask, a month later, who set a particular run going, and a run nobody
+     * can attribute is a run nobody owns; the job passes {@link SlackSyncTrigger#SCHEDULED}
+     * and no actor.
+     *
+     * <p>The lane is taken first. {@code ConcurrentExecution.SKIP} on the job keeps two
+     * nightly runs apart and can do nothing at all about a run started through
+     * {@code POST /crm/slack/sync/ACCOUNT_SPACES} at 02:26 — so a scheduled run that finds
+     * the lane held stands down, which is precisely the case the scheduler cannot cover. A
+     * manual run arrives here from {@link SlackSyncRunService#runAsync} with the lane already
+     * taken on the request thread, and that is the one time a held lane is not a reason to
+     * stop: the holder <em>is</em> this run, and it gives the lane back itself.
+     *
+     * <p>The flag is read before the run row is opened, so a switched-off lane leaves no row
+     * — there is no run to record.
+     */
+    public SyncSummary syncAll(SlackSyncTrigger trigger, String actor) {
+        boolean tookLane = runService.tryAcquire(SlackSyncLane.ACCOUNT_SPACES);
+        if (!tookLane && trigger == SlackSyncTrigger.SCHEDULED) {
+            log.info("Account Slack sync: a manual run holds this lane — the nightly job stands down");
             return SyncSummary.nothing();
         }
+        try {
+            boolean enabled = QuarkusTransaction.requiringNew().call(featureFlag::isEnabled);
+            if (!enabled) {
+                log.info("Account Slack sync is switched off (crm.slack.account-spaces.enabled=false)");
+                return SyncSummary.nothing();
+            }
+            SlackSyncRun run = runService.start(SlackSyncLane.ACCOUNT_SPACES, trigger, actor);
+            SyncSummary summary;
+            try {
+                summary = sync();
+            } catch (RuntimeException e) {
+                // The per-account handling below catches everything it can; anything that got
+                // past it fell over the run itself, and the row says so rather than staying
+                // RUNNING for ever.
+                runService.fail(run, SlackSyncRunService.FAILURE_UNEXPECTED);
+                throw e;
+            }
+            runService.finish(run, summary);
+            return summary;
+        } finally {
+            if (tookLane) {
+                runService.release(SlackSyncLane.ACCOUNT_SPACES);
+            }
+        }
+    }
 
+    /** The pass itself, once the flag, the lane and the run row have been dealt with. */
+    private SyncSummary sync() {
         List<LinkedAccount> accounts = QuarkusTransaction.requiringNew().call(this::linkedAccounts);
         if (accounts.isEmpty()) {
             log.info("Account Slack sync: no account has a Slack space linked");
@@ -208,7 +285,9 @@ public class AccountSlackSyncService {
         log.infof("Account Slack sync done: accounts=%d channelsRead=%d days=%d readings=%d linkErrors=%d failures=%d%s",
                 accounts.size(), channelsRead, daysDigested, readings, linkErrors, failures,
                 stopped ? " STOPPED on configuration" : "");
-        return new SyncSummary(accounts.size(), channelsRead, daysDigested, readings, linkErrors, failures, stopped);
+        // No unmatched companies from this lane: see SyncSummary for why the field is here.
+        return new SyncSummary(accounts.size(), channelsRead, daysDigested, readings, 0, linkErrors, failures,
+                stopped, stopped ? FAILURE_SLACK_CONFIGURATION : null);
     }
 
     record AccountResult(int days, int readings) { }
@@ -442,9 +521,28 @@ public class AccountSlackSyncService {
      * day it has already digested.
      */
     static String digestUuid(String clientUuid, LocalDate date) {
+        return deterministicUuid(clientUuid + "|" + date);
+    }
+
+    /**
+     * The same kind of id for (client, channel, day) — the source-channel lane's key.
+     *
+     * <p>Three parts and not two, because that lane inverts the first one's arithmetic: one
+     * general channel talks about many clients, and one client gets talked about in several
+     * channels on the same day. {@link #digestUuid} hashes {@code clientUuid + "|" + date}
+     * and has nowhere to put the channel, so handing it a mention would land two channels'
+     * readings of the same client on one id and silently let the second overwrite the first.
+     * A sibling that hashes the full key is the only thing the unique constraint will accept.
+     */
+    static String mentionUuid(String clientUuid, String channelId, LocalDate date) {
+        return deterministicUuid(clientUuid + "|" + channelId + "|" + date);
+    }
+
+    /** SHA-1 over a natural key, worn as a uuid. Shared so the two keys cannot drift apart. */
+    private static String deterministicUuid(String key) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            byte[] hash = digest.digest((clientUuid + "|" + date).getBytes(StandardCharsets.UTF_8));
+            byte[] hash = digest.digest(key.getBytes(StandardCharsets.UTF_8));
             StringBuilder hex = new StringBuilder();
             for (int i = 0; i < 16; i++) {
                 hex.append(String.format("%02x", hash[i]));
