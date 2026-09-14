@@ -1,0 +1,100 @@
+-- ============================================================================
+-- V607 — how many of the people in the room were ours
+--
+-- Spec: docs/specs/intra-crm-relationships-people-2026-09-14.md §4.2, §5.1
+-- Domain: aggregates/crm/calendar
+--
+-- WHAT THIS DOES
+--   One column on account_meeting: own_attendee_count, how many attendees of a
+--   meeting were on our own tenant.
+--
+-- WHY
+--   The relationships tab is a record of who we know at a client. Today it also
+--   records our all-hands. AccountCalendarSyncService attributes a meeting to a
+--   client as soon as one attendee's domain matches, and a firm-wide internal
+--   event with one client address on the invitation is indistinguishable from a
+--   sales meeting once it is stored -- both arrive as "a meeting with this
+--   account", and the account with the most internal traffic comes out looking
+--   like the warmest relationship in the book. Arba Security's 77 meetings and
+--   Banedanmark's 60 are mostly this.
+--
+--   The signal that separates them is how many of OURS were there. Below eight,
+--   it is a meeting. At eight or more it is us talking to ourselves: eight is
+--   above any sales meeting or steering committee and below any firm-wide event,
+--   and a workshop with eight of ours at the client is delivery, which the sync
+--   already excludes for its own reasons.
+--
+--   So toMeeting counts attendees on our own tenant -- the same domain list
+--   CalendarUnmatchedDomainFilter already keeps (trustworks.dk, *.trustworks.dk,
+--   *.onmicrosoft.com) -- stores the number here, and drops the meeting when it
+--   crosses the threshold. The threshold itself is configuration
+--   (crm.calendar.internal-meeting.min-own-attendees, default 8), not a
+--   constant, so it can be tuned from a log line rather than a release.
+--
+-- WHY STORE THE COUNT WHEN THE MEETING IS DROPPED ANYWAY
+--   Because the drop is a JUDGEMENT and judgements need evidence. A stored count
+--   lets somebody ask afterwards why a meeting they remember is not on the tab,
+--   and lets the threshold be re-tuned against real data instead of a guess. It
+--   is also a bare integer: no attendee, no name, no address, nothing this
+--   column adds is personal data.
+--
+-- DEFAULT 0 AND WHAT IT MEANS
+--   0 reads as "not known", not as "no Trustworks person was there" -- every
+--   meeting has at least the mailbox owner. It cannot be backfilled: the count
+--   is not derivable from what is stored, because the attendees that would have
+--   supported it were filtered out under the old rules before they were written.
+--   Spec §8's datafix answers this by deleting every account_meeting row and
+--   re-reading 365 days from Graph under the new rules, so the default applies
+--   only between this migration and that re-sync. 0 is below the threshold in
+--   any case, so nothing existing is retro-classified as internal in the window.
+--
+-- WHY THE COLUMN GOES LAST AND NOT BESIDE attendee_count
+--   Reading order would put it next to its sibling. Instant ADD COLUMN wins:
+--   InnoDB adds a column with a literal DEFAULT at the END of the row instantly
+--   on every MariaDB 10.x, while adding one in the middle only became instant in
+--   10.4. Production is 10.11 and would manage either, but account_meeting is
+--   the one table this cut alters that is not empty, and a migration is the
+--   wrong place to depend on a server version nobody checked.
+--
+-- METADATA LOCK — the check this cut owes, and its answer
+--   V606 and V607 are the only ALTERs in the cut. A DDL migration that queues
+--   behind an open transaction holds the metadata lock and hangs boot, which has
+--   happened here before, so the question is asked rather than assumed.
+--
+--   account_meeting is written only by AccountCalendarSyncService, on the 02:20
+--   schedule, one short transaction per mailbox; every read path
+--   (AccountActivityService, AccountRelationshipService) is a single SELECT.
+--   Nothing holds it open across a request, and the migration runs at deploy,
+--   outside the 02:20 window. Combined with the instant add above, the lock is
+--   taken for a metadata change and released, with no table rebuild behind it.
+--
+-- RESERVED-WORD CHECK (MariaDB 10.11, written down because of the V534 `lines`
+--   incident). One new column name: `own_attendee_count`. `OWN` is not a
+--   MariaDB keyword, reserved or otherwise; `COUNT` is a function name and is
+--   only ever special immediately before an opening parenthesis, which it is not
+--   here and would not be inside a compound identifier anyway. `LINES` -- the
+--   word that broke V534 -- does not appear.
+--
+-- COLLATION: untouched. An INT column has none, and account_meeting keeps the
+--   utf8mb4 / utf8mb4_general_ci it got from V588.
+--
+-- STAGING SYNC: not re-emitted here. account_meeting is already excluded, by
+--   V588, and stays excluded; the single re-emission of sp_sync_prod_to_staging
+--   for this cut is in V608. See V604's header for why there is exactly one.
+--
+-- Idempotency: ADD COLUMN IF NOT EXISTS.
+--
+-- Author: Claude Code
+-- Date:   2026-09-14
+-- Rollback:
+--   ALTER TABLE account_meeting DROP COLUMN own_attendee_count;
+--   (The sync writes the column but does not read it back; dropping it loses
+--    only the evidence for a drop decision, never a meeting.)
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 1. The count. A bare integer -- no attendee, no name, no address.
+-- ----------------------------------------------------------------------------
+ALTER TABLE account_meeting
+    ADD COLUMN IF NOT EXISTS own_attendee_count INT NOT NULL DEFAULT 0
+        COMMENT 'How many attendees were on our own tenant; >= 8 means the event was internal (spec §4.2)';

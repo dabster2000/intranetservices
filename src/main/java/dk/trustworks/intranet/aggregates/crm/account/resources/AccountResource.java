@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.crm.account.resources;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountActivityDTO;
+import dk.trustworks.intranet.aggregates.crm.account.dto.AccountClaimRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDomainsRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountPatchRequest;
@@ -20,6 +21,9 @@ import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
 import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDTO;
 import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDecisionRequest;
 import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSuggestionService;
+import dk.trustworks.intranet.aggregates.crm.person.model.AccountRelationClaim;
+import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
+import dk.trustworks.intranet.aggregates.crm.person.services.AccountRelationshipClaimService;
 import dk.trustworks.intranet.aggregates.crm.plan.services.AccountPlanService;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackSuggestionDTO;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackSuggestionDecisionRequest;
@@ -32,6 +36,7 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.PATCH;
@@ -118,6 +123,13 @@ public class AccountResource {
 
     @Inject
     AccountSlackMentionService slackMentions;
+
+    @Inject
+    AccountRelationshipClaimService claimService;
+
+    /** The manual rebuild endpoint, and the post-commit hook on {@link #replaceDomains}. */
+    @Inject
+    AccountPersonService personService;
 
     @Context
     SecurityContext securityContext;
@@ -335,12 +347,163 @@ public class AccountResource {
         return accountService.replaceRoles(clientUuid, request, requireActor());
     }
 
+    /**
+     * Replaces the client's e-mail domains, then refreshes the person registry.
+     *
+     * <p>The rebuild is called from HERE and not from {@code AccountService.replaceDomains},
+     * for the same reason {@link #rebuildPeopleAfterDomainChange} spells out: that method is
+     * {@code @Transactional} and the rebuild suspends the caller's transaction, so a hook
+     * inside it would recompute the tab from the domain set as it was BEFORE this edit.
+     */
     @PUT
     @Path("/{clientUuid}/domains")
     @RolesAllowed({"accounts:write"})
     public List<ClientDomainDTO> replaceDomains(@PathParam("clientUuid") String clientUuid,
                                                 AccountDomainsRequest request) {
-        return accountService.replaceDomains(clientUuid, request, requireActor());
+        List<ClientDomainDTO> domains = accountService.replaceDomains(clientUuid, request, requireActor());
+        rebuildPeopleAfterDomainChange(clientUuid);
+        return domains;
+    }
+
+    /**
+     * Refreshes the person registry for this account after its domain set changed.
+     *
+     * <p>A domain is how a meeting is attributed to an account, so changing the set changes
+     * which people belong to which client — and the relationships tab reads
+     * {@code account_person}, not the raw sources. Without this hook the page would go on
+     * showing yesterday's answer until the 03:00 sweep, which reads as the domain edit not
+     * having worked.
+     *
+     * <p><b>Here rather than inside {@code AccountService.replaceDomains}</b>, which is
+     * {@code @Transactional}: {@code AccountPersonService.rebuild} opens
+     * {@code QuarkusTransaction.requiringNew()}, and requiring-new SUSPENDS the caller's
+     * transaction rather than joining it — so a rebuild fired from inside that method runs
+     * on a connection that cannot see the {@code client_domain} rows the same request just
+     * wrote, and faithfully rebuilds the old answer. It has to run after the commit, which
+     * means after the service method returns. Same rule, and the same words, as
+     * {@code TrustLinkResource.rebuildPeople} and {@code AccountSignalResource}.
+     *
+     * <p>The try/catch is still required even though the rebuild has its own transaction:
+     * an exception escaping here would fail a domain edit that has already been committed,
+     * and somebody's edit must never be lost because a derived table could not be refreshed.
+     * The failure is logged as a code and tonight's sweep picks it up.
+     *
+     * <p>A count and a uuid in the log, never a name: the rows this rebuilds are named third
+     * parties at a client.
+     *
+     * <p>Not called {@code rebuildPeople} — that name belongs to the endpoint below, and the
+     * two would collide on erasure.
+     */
+    private void rebuildPeopleAfterDomainChange(String clientUuid) {
+        try {
+            AccountPersonService.RebuildSummary summary = personService.rebuild(clientUuid);
+            log.infof("Account person registry rebuilt after a domain change: client=%s people=%d identities=%d",
+                    clientUuid, summary.peopleUpserted(), summary.identitiesUpserted());
+        } catch (RuntimeException e) {
+            log.warnf("Account person registry could not be rebuilt after a domain change: client=%s code=%s",
+                    clientUuid, e.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * "This is how I know her" — records or updates the caller's own claim on one person
+     * (spec §3.5).
+     *
+     * <p><b>{@code signals:write}, not {@code accounts:write}</b> (decision 6). Every employee
+     * may say how they know somebody; that is the whole value of the feature, and gating it on
+     * the sales tier would leave the firm's knowledge in the heads of the ~15 people who can
+     * edit an account. It is the same scope, and the same reasoning, as capturing a signal.
+     *
+     * <p><b>The claimant is {@code X-Requested-By} and can never be a body field.</b>
+     * {@link AccountClaimRequest} does not carry one. A claim in somebody else's name would
+     * also be a claim only that person could remove, since the service lets only the claimant
+     * delete.
+     *
+     * <p>The checks are hand-rolled here AND in the service. Bean Validation is not active in
+     * this codebase, so an annotation would be inert decoration; the double check is because
+     * the service is reachable from any future caller, and a constraint violation surfacing as
+     * a 500 is a worse answer than a 400 that says what the four strengths mean.
+     *
+     * <p>Returns the whole reshaped tab payload rather than the claim, so the caller replaces
+     * one SWR cache entry instead of reconciling a row: a claim changes the person's tier, the
+     * table's order, the colleague's {@code peopleKnown} and possibly
+     * {@code colleaguesWithContact}, and re-deriving that in the browser is how the two ends
+     * drift apart.
+     */
+    @PUT
+    @Path("/{clientUuid}/people/{personUuid}/claim")
+    @RolesAllowed({"signals:write"})
+    public AccountRelationshipsDTO claim(@PathParam("clientUuid") String clientUuid,
+                                         @PathParam("personUuid") String personUuid,
+                                         AccountClaimRequest request) {
+        String actor = requireHumanActor();
+        if (request == null || request.strength() == null) {
+            throw new WebApplicationException(
+                    "A relationship strength is required: 1 met once, 2 know each other, "
+                            + "3 good working relationship, 4 trusted",
+                    Response.Status.BAD_REQUEST);
+        }
+        int strength = request.strength();
+        if (strength < AccountRelationClaim.MIN_STRENGTH || strength > AccountRelationClaim.MAX_STRENGTH) {
+            throw new WebApplicationException(
+                    "A relationship strength is " + AccountRelationClaim.MIN_STRENGTH + " to "
+                            + AccountRelationClaim.MAX_STRENGTH,
+                    Response.Status.BAD_REQUEST);
+        }
+        String how = request.how() == null ? null : request.how().trim();
+        if (how != null && how.length() > AccountRelationClaim.MAX_HOW_CHARS) {
+            // Rejected rather than truncated: the text is a sentence somebody wrote about how
+            // they know a named third party, and half of it says something they did not mean.
+            throw new WebApplicationException(
+                    "How you know them is at most " + AccountRelationClaim.MAX_HOW_CHARS + " characters",
+                    Response.Status.BAD_REQUEST);
+        }
+
+        claimService.upsert(clientUuid, personUuid, actor, strength, how);
+        return relationshipService.forClient(clientUuid);
+    }
+
+    /**
+     * Removes the caller's own claim.
+     *
+     * <p>Only the claimant may. Somebody else's claim is a 403 and not a silent 404 — the
+     * caller asked to remove something that exists, and telling them it does not is the worse
+     * answer; a person who is not on this account is a 404, because that is all a caller is
+     * entitled to learn.
+     */
+    @DELETE
+    @Path("/{clientUuid}/people/{personUuid}/claim")
+    @RolesAllowed({"signals:write"})
+    public AccountRelationshipsDTO removeClaim(@PathParam("clientUuid") String clientUuid,
+                                               @PathParam("personUuid") String personUuid) {
+        claimService.delete(clientUuid, personUuid, requireHumanActor());
+        return relationshipService.forClient(clientUuid);
+    }
+
+    /**
+     * Rebuilds the person registry for this account and returns the refreshed tab.
+     *
+     * <p>The registry is derived and rebuilt nightly, with hooks after a signal, an alias
+     * change and a domain change. This is the manual lever for the fourth case: somebody has
+     * just fixed something upstream and wants the page to catch up now rather than tomorrow.
+     *
+     * <p>{@code accounts:write}: a rebuild reclassifies people — it decides which names are
+     * our own colleagues and which are the client's — and that is an account decision, not
+     * something every reader should be able to trigger on a 300-account portfolio.
+     *
+     * <p>No try/catch here, deliberately, unlike the three hooks. A hook must never be the
+     * thing that loses somebody's capture; this endpoint IS the rebuild, and a caller who
+     * pressed Refresh has to be told it did not work.
+     */
+    @POST
+    @Path("/{clientUuid}/people/rebuild")
+    @RolesAllowed({"accounts:write"})
+    public AccountRelationshipsDTO rebuildPeople(@PathParam("clientUuid") String clientUuid) {
+        String actor = requireActor();
+        AccountPersonService.RebuildSummary summary = personService.rebuild(clientUuid);
+        log.infof("Account person registry rebuilt on request: client=%s people=%d identities=%d actor=%s",
+                clientUuid, summary.peopleUpserted(), summary.identitiesUpserted(), actor);
+        return relationshipService.forClient(clientUuid);
     }
 
     // ------------------------------------------------------------------------

@@ -58,6 +58,8 @@ final class CalendarSyncTally {
     private int newlyLearnedEmails;
     private int deliveryDropped;
     private int colleagueOnlyDropped;
+    private int internalDropped;
+    private int colleagueByPlacement;
 
     /**
      * Records an address identified by name.
@@ -112,6 +114,33 @@ final class CalendarSyncTally {
         colleagueOnlyDropped++;
     }
 
+    /**
+     * A meeting dropped because enough of the room was ours that it was us talking to
+     * ourselves (spec §4.2).
+     *
+     * <p>Counted rather than silent because the threshold is configuration: the only way to
+     * know whether 8 is the right number is to watch this count move against
+     * {@code meetings}. 53 of Banedanmark's 60 meetings and most of Arba Security's 77 have
+     * eight or more of ours in them.
+     */
+    void internalDropped() {
+        internalDropped++;
+    }
+
+    /**
+     * An attendee identified as one of ours by the widened name rule — first and last token
+     * with anything between, allowed only because the person has a placement at this client
+     * (spec §4.1 rule b).
+     *
+     * <p>This is the one rule in the filter that could in principle take a real client
+     * person away, which is exactly why it is counted separately from the strict rules: a
+     * count that suddenly climbs is the evidence that it has started to. On production it
+     * should account for 66 attendee rows across five people.
+     */
+    void colleagueByPlacement() {
+        colleagueByPlacement++;
+    }
+
     Collection<LearnedColleagueEmail> learnedEmails() {
         return learnedEmails.values();
     }
@@ -130,5 +159,13 @@ final class CalendarSyncTally {
 
     int colleagueOnlyDroppedCount() {
         return colleagueOnlyDropped;
+    }
+
+    int internalDroppedCount() {
+        return internalDropped;
+    }
+
+    int colleagueByPlacementCount() {
+        return colleagueByPlacement;
     }
 }

@@ -509,6 +509,47 @@ dk:
         # all 294 client names succeeded, so 100 is a comfortable batch; it is a knob so a
         # slow day upstream can be met with smaller asks instead of a redeploy.
         company-batch-size: ${TRUSTLINK_COMPANY_BATCH_SIZE:100}
+      # ---- The people registry behind the Relationships tab ----
+      # account_person is derived from the four sources above and below — calendar,
+      # TrustLink, signals and Slack — and materialised so that a claim and a star have
+      # a row to point at that does not move when a mailbox spells a name differently
+      # tomorrow. The rebuild never deletes a person; rows leave only through the purge.
+      person:
+        rebuild:
+          # Defaults ON, unlike the sources it reads: the rebuild writes no new personal
+          # data, it only re-derives what calendar/TrustLink/signals/Slack already hold.
+          # An environment where those are all dark simply rebuilds nothing.
+          enabled: ${CRM_PERSON_REBUILD_ENABLED:true}
+      calendar:
+        internal-meeting:
+          # A calendar event with at least this many of OUR OWN people in it is an
+          # internal meeting that happened to have a guest, not contact with the client.
+          # Eight is above any sales meeting or steering committee and below any firm-wide
+          # event. It is configuration so it can be tuned from the internalDropped tally
+          # in a nightly log line rather than from a release.
+          min-own-attendees: ${CRM_INTERNAL_MEETING_MIN_OWN:8}
+      retention:
+        purge:
+          # THE KILL SWITCH, not the arming switch. This only decides whether the nightly
+          # job starts at all. What actually arms destruction is the app_settings row
+          # 'crm.retention.purge.enabled', seeded 'false' by V608 — flipping THAT row is
+          # the moment third-party personal data starts being deleted. Both must be true.
+          enabled: ${CRM_RETENTION_PURGE_ENABLED:true}
+          # Blast radius for one night, oldest account first. The first armed run on a CRM
+          # with years of backlog must not erase everything eligible at once; the work is
+          # irreversible and there is no undo.
+          #
+          # READ BY CrmRetentionParameters.configuredNightlyAccountCap, and SECOND in line:
+          # the app_settings row 'crm.retention.purge.nightly-account-cap' (seeded '10' by
+          # V608) wins while it holds a usable value, and this key is what a missing, blank or
+          # garbage row falls back to. To make CRM_RETENTION_PURGE_CAP the effective cap on an
+          # environment, delete that row — the fall-through is a supported state.
+          #
+          # This key shipped once with nothing reading it at all, which made the env var dead
+          # config: set on the task definition, redeployed, and the purge went on sweeping ten
+          # a night with no signal that the number had gone nowhere. If you touch either store,
+          # check the other in the same change.
+          nightly-account-cap: ${CRM_RETENTION_PURGE_CAP:10}
     expense:
       # Slack DM to the employee when an expense lands on them (AI block or
       # accounting send-back), plus the Monday reminder digest.

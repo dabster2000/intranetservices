@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.crm.signal.resources;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
 import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
+import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalDTO;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalRequest;
 import dk.trustworks.intranet.aggregates.crm.signal.dto.AccountSignalViewDTO;
@@ -36,8 +37,10 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -100,6 +103,10 @@ public class AccountSignalResource {
 
     @Inject
     PersonRoleService personRoles;
+
+    /** Only for the post-commit rebuild hook; the capture path itself never reads the registry. */
+    @Inject
+    AccountPersonService personService;
 
     /**
      * Every signal filed on one account — the plan tab's "People &amp; what we've heard",
@@ -206,7 +213,49 @@ public class AccountSignalResource {
         List<AccountSignalDTO> dtos = rows.stream()
                 .map(row -> AccountSignalDTO.from(row, colleagues))
                 .toList();
+        rebuildPeople(rows);
         return Response.status(Response.Status.CREATED).entity(dtos).build();
+    }
+
+    /**
+     * Refreshes the person registry for every account this capture named.
+     *
+     * <p><b>Here, and not inside {@code AccountSignalService.create}.</b> That method is one
+     * big {@code @Transactional}, so a rebuild inside it would run before the capture is
+     * committed — and, worse, an exception from it would roll the capture back. Losing what
+     * somebody just heard because a derived table could not be refreshed is precisely the loss
+     * this whole feature exists to prevent, which is why the hook is here, after the service
+     * call has returned and its transaction has committed.
+     *
+     * <p>Called bare: {@code AccountPersonService.rebuild} opens its own {@code requiringNew}
+     * transaction, so there is nothing to wrap it in. The try/catch stays regardless — a 500
+     * on the capture endpoint, after the row is safely stored, would send the author back to
+     * type it a second time.
+     *
+     * <p>One capture can name several accounts (V593), so each distinct client is rebuilt
+     * once. The log carries counts and uuids only: a signal names third parties by name and
+     * this is not the place for them.
+     */
+    private void rebuildPeople(List<AccountSignal> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<String> clients = new LinkedHashSet<>();
+        for (AccountSignal row : rows) {
+            if (row != null && row.getClientUuid() != null && !row.getClientUuid().isBlank()) {
+                clients.add(row.getClientUuid());
+            }
+        }
+        for (String clientUuid : clients) {
+            try {
+                AccountPersonService.RebuildSummary summary = personService.rebuild(clientUuid);
+                log.infof("Account person registry rebuilt after a signal: client=%s people=%d identities=%d",
+                        clientUuid, summary.peopleUpserted(), summary.identitiesUpserted());
+            } catch (RuntimeException e) {
+                log.warnf("Account person registry could not be rebuilt after a signal: client=%s code=%s",
+                        clientUuid, e.getClass().getSimpleName());
+            }
+        }
     }
 
     /**

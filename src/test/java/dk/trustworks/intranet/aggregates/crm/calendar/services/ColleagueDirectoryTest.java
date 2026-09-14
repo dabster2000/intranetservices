@@ -29,8 +29,14 @@ class ColleagueDirectoryTest {
 
     private static final String NICOLAS = "11111111-1111-1111-1111-111111111111";
     private static final String MALTHE = "22222222-2222-2222-2222-222222222222";
+    private static final String SARA = "33333333-3333-3333-3333-333333333333";
+    private static final String NINA = "44444444-4444-4444-4444-444444444444";
     private static final LocalDate MEETING_DAY = LocalDate.of(2026, 9, 12);
     private static final LocalDate LONG_AGO = LocalDate.of(2019, 1, 1);
+
+    /** The client somebody is placed at, and one they are not. */
+    private static final String BANE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    private static final String OTHER_CLIENT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
     // ------------------------------------------------------------------------
     // The name match
@@ -299,5 +305,148 @@ class ColleagueDirectoryTest {
                 "while she was ours");
         assertFalse(directory.isColleagueOn("Sandra Andersen", LocalDate.of(2026, 5, 8)),
                 "after she left — she is AP Pension's now, and a client contact");
+    }
+
+    // ------------------------------------------------------------------------
+    // Rule b — a name the client LENGTHENED, and only where we have been placed
+    // ------------------------------------------------------------------------
+
+    /**
+     * The shape the strict rules cannot reach: the client writes tokens IN BETWEEN the two
+     * our user row holds, so the run is not contiguous and the attendee name is longer
+     * rather than shorter. Spec §1.2 D1 — 66 attendee rows across five people, 53 of them
+     * Sara Vest's.
+     */
+    @Test
+    void aPlacedConsultantIsOursHoweverManyNamesTheClientPutsInTheMiddle() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(SARA, "Sara", "Vest", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(SARA, BANE)));
+
+        assertFalse(directory.isColleagueOn("Sara Louise Vest (XSVES)", MEETING_DAY),
+                "the strict rules cannot see her — that is the whole defect");
+        assertEquals(SARA, directory.colleagueUuidOn("Sara Louise Vest (XSVES)", MEETING_DAY, BANE));
+        assertTrue(directory.colleagueOn("Sara Louise Vest (XSVES)", MEETING_DAY, BANE).byPlacement(),
+                "and the run's log has to be able to say it was the widened rule that fired");
+    }
+
+    /**
+     * The confinement that makes rule b safe at all. Without the placement gate this rule
+     * matches any attendee who happens to share a first name and a surname with one of ours,
+     * and deletes them from the account.
+     */
+    @Test
+    void theSameNameAtAClientWeHaveNeverBeenPlacedAtIsNotOurs() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(NICOLAS, "Lars", "Jensen", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(NICOLAS, BANE)));
+
+        assertNull(directory.colleagueUuidOn("Lars Peter Jensen", MEETING_DAY, OTHER_CLIENT),
+                "our Lars has never worked here, so this is the client's own Lars Peter Jensen");
+        assertEquals(NICOLAS, directory.colleagueUuidOn("Lars Peter Jensen", MEETING_DAY, BANE),
+                "at the client he IS placed at, he is ours");
+    }
+
+    /** No client in hand means the question cannot be asked, so the widened rule is skipped. */
+    @Test
+    void theTwoArgumentFormNeverAppliesTheWidenedRule() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(SARA, "Sara", "Vest", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(SARA, BANE)));
+
+        assertNull(directory.colleagueUuidOn("Sara Louise Vest (XSVES)", MEETING_DAY));
+        assertNull(directory.colleagueUuidOn("Sara Louise Vest (XSVES)", MEETING_DAY, null));
+    }
+
+    /**
+     * Nina Schrøder Jakobsen, matched on {@code nina … jakobsen} alone. Our {@code user} row
+     * spells her surname Sch<b>ø</b>der and the client spells it Sch<b>r</b>øder; the rule
+     * never looks at the middle, so the typo costs nothing and the one-line fix to the user
+     * row (spec §12) is genuinely separate.
+     */
+    @Test
+    void aTypoInTheMiddleOfOurOwnUserRowDoesNotStopRuleB() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(NINA, "Nina", "Schøder Jakobsen", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(NINA, BANE)));
+
+        assertEquals(NINA, directory.colleagueUuidOn("Nina Schrøder Jakobsen (XNJAK)", MEETING_DAY, BANE));
+    }
+
+    /**
+     * A placement is permission to use the looser name rule and nothing else. Employment on
+     * the day of the meeting still decides, and a placed colleague who left and stayed at
+     * the client is that account's warmest contact.
+     */
+    @Test
+    void aPlacementDoesNotExemptAnybodyFromTheEmploymentTest() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(SARA, "Sara", "Vest", StatusType.ACTIVE, LONG_AGO),
+                        row(SARA, "Sara", "Vest", StatusType.TERMINATED, LocalDate.of(2026, 1, 31))),
+                List.of(new ColleagueDirectory.PlacementRow(SARA, BANE)));
+
+        assertEquals(SARA, directory.colleagueUuidOn("Sara Louise Vest (XSVES)", LocalDate.of(2025, 11, 4), BANE));
+        assertNull(directory.colleagueUuidOn("Sara Louise Vest (XSVES)", MEETING_DAY, BANE),
+                "she works at the client now");
+    }
+
+    /**
+     * A strict match must never be taken away by the looser rule finding somebody else,
+     * which is why rule a is run against everybody before rule b is run against anybody.
+     *
+     * <p>The collision is built to be decided by that ordering and by nothing else: the
+     * placed near-match carries the longer name, so it is the FIRST candidate the
+     * longest-name-first scan reaches. Interleaving the two rules per candidate would hand
+     * the attendee to her instead of to the person whose name is actually written out.
+     */
+    @Test
+    void theStrictRulesAreTriedAgainstEverybodyBeforeTheWidenedOneIsTriedAtAll() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(SARA, "Anna", "Birgitte Kirstine Hansen", StatusType.ACTIVE, LONG_AGO),
+                        row(NINA, "Mette", "Forbord", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(SARA, BANE)));
+
+        assertEquals(NINA, directory.colleagueUuidOn("Anna Mette Forbord Hansen", MEETING_DAY, BANE),
+                "the contiguous strict match wins, though the placed candidate is scanned first");
+        assertFalse(directory.colleagueOn("Anna Mette Forbord Hansen", MEETING_DAY, BANE).byPlacement());
+    }
+
+    @Test
+    void theAnchorsHaveToBeTwoPositionsInOrder() {
+        assertTrue(ColleagueDirectory.containsFirstAndLastOf(
+                List.of("sara", "louise", "vest", "xsves"), List.of("sara", "vest")));
+        assertTrue(ColleagueDirectory.containsFirstAndLastOf(
+                List.of("stmj", "stephan", "mosko", "jensen"), List.of("stephan", "jensen")));
+        assertFalse(ColleagueDirectory.containsFirstAndLastOf(
+                List.of("vest", "sara"), List.of("sara", "vest")), "in that order, not either order");
+        assertFalse(ColleagueDirectory.containsFirstAndLastOf(
+                List.of("sara"), List.of("sara", "vest")), "one token cannot hold both anchors");
+        assertFalse(ColleagueDirectory.containsFirstAndLastOf(
+                List.of("sara", "louise", "holm"), List.of("sara", "vest")));
+    }
+
+    @Test
+    void placementsAreCountedAndUnknownPeopleAreNotPlacedAnywhere() {
+        ColleagueDirectory directory = ColleagueDirectory.of(
+                List.of(row(SARA, "Sara", "Vest", StatusType.ACTIVE, LONG_AGO)),
+                List.of(new ColleagueDirectory.PlacementRow(SARA, BANE),
+                        new ColleagueDirectory.PlacementRow(SARA, BANE),
+                        new ColleagueDirectory.PlacementRow(SARA, OTHER_CLIENT),
+                        new ColleagueDirectory.PlacementRow(null, BANE)));
+
+        assertEquals(2, directory.placementCount(), "two assignments to the same client are one placement");
+        assertTrue(directory.isPlacedAt(SARA, BANE));
+        assertFalse(directory.isPlacedAt(NINA, BANE));
+        assertFalse(directory.isPlacedAt(SARA, null));
+        assertEquals(0, ColleagueDirectory.empty().placementCount());
+    }
+
+    /** A directory built without placements answers exactly as it did before rule b existed. */
+    @Test
+    void aDirectoryBuiltWithoutPlacementsCannotFireTheWidenedRule() {
+        ColleagueDirectory directory = directoryOf(row(SARA, "Sara", "Vest", StatusType.ACTIVE, LONG_AGO));
+
+        assertEquals(0, directory.placementCount());
+        assertNull(directory.colleagueUuidOn("Sara Louise Vest (XSVES)", MEETING_DAY, BANE));
     }
 }

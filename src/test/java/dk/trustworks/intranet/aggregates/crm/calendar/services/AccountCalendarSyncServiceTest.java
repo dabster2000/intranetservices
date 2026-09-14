@@ -6,9 +6,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,10 +36,20 @@ class AccountCalendarSyncServiceTest {
 
     private static final String ME = "11111111-1111-1111-1111-111111111111";
     private static final String MALTHE = "33333333-3333-3333-3333-333333333333";
+    /** A consultant with a placement, and therefore the one rule b is allowed to reach. */
+    private static final String PLACED = "55555555-5555-5555-5555-555555555555";
     private static final String CLIENT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     private static final String OTHER_CLIENT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     private static final Map<String, String> DOMAINS =
             Map.of("acme.dk", CLIENT, "beta.dk", OTHER_CLIENT);
+
+    /**
+     * The production default of
+     * {@code dk.trustworks.crm.calendar.internal-meeting.min-own-attendees}. Passed
+     * explicitly on every call because {@code toMeeting} holds no configuration of its own
+     * — the threshold arrives as an argument exactly as the tally does.
+     */
+    private static final int INTERNAL_MIN = 8;
 
     private final AccountCalendarSyncService service = new AccountCalendarSyncService();
 
@@ -156,7 +166,7 @@ class AccountCalendarSyncServiceTest {
         CalendarFilters filters = filtersWithContract(LocalDate.of(2026, 1, 1), null);
 
         assertNull(service.toMeeting(ME, event("evt-9", false, "2026-09-12T09:00:00", "2026-09-12T09:15:00",
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally));
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN));
         assertEquals(1, tally.deliveryDroppedCount(),
                 "the run has to be able to say WHY it kept nothing — meetings=0 alone cannot");
     }
@@ -172,7 +182,7 @@ class AccountCalendarSyncServiceTest {
         CalendarFilters filters = filtersWithContract(LocalDate.of(2026, 10, 1), null);
 
         var meeting = service.toMeeting(ME, event("evt-10", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally);
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting, "the assignment started three weeks after this meeting");
         assertEquals(0, tally.deliveryDroppedCount());
@@ -189,7 +199,7 @@ class AccountCalendarSyncServiceTest {
                 Map.of());
 
         assertNotNull(service.toMeeting(ME, event("evt-11", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally));
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN));
     }
 
     // ------------------------------------------------------------------------
@@ -208,7 +218,7 @@ class AccountCalendarSyncServiceTest {
 
         var meeting = service.toMeeting(ME, event("evt-12", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
                 attendee("mygx@acme.dk", "MYGX (Malthe Yde Andreasen)"),
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally);
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting);
         assertEquals(1, meeting.attendees().size(), "only the real client person is stored");
@@ -228,7 +238,7 @@ class AccountCalendarSyncServiceTest {
         CalendarFilters filters = filtersWithColleague(StatusType.TERMINATED, LocalDate.of(2026, 1, 31));
 
         var meeting = service.toMeeting(ME, event("evt-13", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                attendee("mygx@acme.dk", "Malthe Yde Andreasen")), DOMAINS, filters, tally);
+                attendee("mygx@acme.dk", "Malthe Yde Andreasen")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting, "he had left — this is a genuine client relationship");
         assertEquals(1, meeting.attendees().size());
@@ -254,7 +264,7 @@ class AccountCalendarSyncServiceTest {
 
         var meeting = service.toMeeting(ME, event("evt-14", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
                 attendee("mygx@acme.dk", null),
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally);
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting);
         assertEquals(1, meeting.attendees().size());
@@ -288,11 +298,11 @@ class AccountCalendarSyncServiceTest {
 
         // While he was ours: dropped, name or no name.
         assertNull(service.toMeeting(ME, event("evt-14b", false, "2026-03-02T09:00:00", "2026-03-02T10:00:00",
-                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally));
+                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally, INTERNAL_MIN));
 
         // After he left: a client contact, and the best kind — somebody who knows us.
         var after = service.toMeeting(ME, event("evt-14c", false, "2026-06-04T09:00:00", "2026-06-04T10:00:00",
-                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally);
+                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(after, "he had left by June — the address must stop filtering with him");
         assertEquals(1, after.attendees().size());
@@ -312,7 +322,7 @@ class AccountCalendarSyncServiceTest {
                 Map.of("mygx@acme.dk", MALTHE));
 
         var meeting = service.toMeeting(ME, event("evt-14d", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally);
+                attendee("mygx@acme.dk", null)), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting);
         assertEquals(1, meeting.attendees().size());
@@ -330,7 +340,7 @@ class AccountCalendarSyncServiceTest {
 
         service.toMeeting(ME, event("evt-15", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
                 attendee("mygx@acme.dk", "MYGX (Malthe Yde Andreasen)"),
-                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally);
+                attendee("mette@acme.dk", "Mette Kjær")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertTrue(filters.isColleagueEmailOn("mygx@acme.dk", LocalDate.of(2026, 9, 12)));
         assertEquals(1, tally.newlyLearnedEmails());
@@ -351,7 +361,7 @@ class AccountCalendarSyncServiceTest {
 
         assertNull(service.toMeeting(ME, event("evt-16", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
                 attendee("mygx@acme.dk", "MYGX (Malthe Yde Andreasen)"),
-                attendee("hans@trustworks.dk", "Hans Lassen")), DOMAINS, filters, tally));
+                attendee("hans@trustworks.dk", "Hans Lassen")), DOMAINS, filters, tally, INTERNAL_MIN));
         assertEquals(1, tally.colleagueOnlyDroppedCount());
         assertTrue(filters.isColleagueEmailOn("mygx@acme.dk", LocalDate.of(2026, 9, 12)),
                 "a dropped meeting still teaches the address — the drop IS the evidence");
@@ -373,7 +383,7 @@ class AccountCalendarSyncServiceTest {
                 Map.of());
 
         var meeting = service.toMeeting(ME, event("evt-17", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                attendee("marianne@acme.dk", "Marianne Hansen")), DOMAINS, filters, tally);
+                attendee("marianne@acme.dk", "Marianne Hansen")), DOMAINS, filters, tally, INTERNAL_MIN);
 
         assertNotNull(meeting, "Marianne Hansen is not Anne Hansen");
         assertEquals(1, meeting.attendees().size());
@@ -444,6 +454,258 @@ class AccountCalendarSyncServiceTest {
     }
 
     // ------------------------------------------------------------------------
+    // Rule b — the client writes a middle name our user row does not carry (spec §4.1)
+    // ------------------------------------------------------------------------
+
+    /**
+     * The five rows spec §1.2 D1 is written from, each one a Trustworks consultant on a
+     * client mailbox that the sync was storing as a client contact. Sara Vest alone is 53 of
+     * the 441 attendee rows on production, drawn on the Banedanmark page twice over: once on
+     * the left as a contract consultant and once on the right as somebody we know there.
+     *
+     * <p>None of them can be reached by the strict rules. The client's Exchange writes tokens
+     * IN BETWEEN the two our {@code user} row holds, so the run is not contiguous
+     * ({@code containsSequence}) and the attendee name is longer rather than shorter
+     * ({@code containsReductionOf}). The last row is matched on {@code nina … jakobsen}
+     * without any fuzzy matching at all — our own row spells her surname {@code Schøder}
+     * and the client spells it {@code Schrøder}, and the rule never looks at the middle.
+     */
+    private record D1Row(String firstName, String lastName, String asTheClientWritesIt) { }
+
+    private static final List<D1Row> D1_ROWS = List.of(
+            new D1Row("Sara", "Vest", "Sara Louise Vest (XSVES)"),
+            new D1Row("Stephan", "Jensen", "STMJ (Stephan Mosko Jensen)"),
+            new D1Row("Sebastian", "Frandsen", "Sebastian Bennett Frandsen (KEFM-KDS)"),
+            new D1Row("Mikal", "Weber", "Mikal Yoo Jin Linderod Weber (XMWEB)"),
+            new D1Row("Nina", "Schøder Jakobsen", "Nina Schrøder Jakobsen (XNJAK)"));
+
+    /** Each of the five, at a client they have been placed at: one of ours, not a contact. */
+    @Test
+    void aConsultantPlacedAtTheClientIsNotAClientContactHoweverTheClientSpellsThem() {
+        for (D1Row row : D1_ROWS) {
+            CalendarSyncTally tally = new CalendarSyncTally();
+            CalendarFilters filters = filtersWithPlacedColleague(row.firstName(), row.lastName(), CLIENT);
+
+            var meeting = service.toMeeting(ME, event("evt-b-" + row.lastName(), false,
+                            "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                            attendee("ext-alias@acme.dk", row.asTheClientWritesIt()),
+                            attendee("mette@acme.dk", "Mette Kjær")),
+                    DOMAINS, filters, tally, INTERNAL_MIN);
+
+            assertNotNull(meeting, "Mette is still a real meeting");
+            assertEquals(1, meeting.attendees().size(), row.asTheClientWritesIt() + " is one of ours");
+            assertEquals("mette@acme.dk", meeting.attendees().get(0).email());
+            assertEquals(1, tally.colleagueByPlacementCount(),
+                    "the widened rule is counted apart, because it is the one that could take a real person");
+        }
+    }
+
+    /**
+     * And the direction that matters more. The same five names at a client where nobody of
+     * ours has ever been placed are client people and stay client people — the rule is
+     * confined to placements precisely so that a "Lars Peter Jensen" somewhere we have never
+     * worked cannot be eaten by our own Lars Jensen.
+     */
+    @Test
+    void theSameNamesAtAClientWeHaveNeverBeenPlacedAtStayClientPeople() {
+        for (D1Row row : D1_ROWS) {
+            CalendarSyncTally tally = new CalendarSyncTally();
+            CalendarFilters filters = filtersWithPlacedColleague(row.firstName(), row.lastName(), OTHER_CLIENT);
+
+            var meeting = service.toMeeting(ME, event("evt-b-keep-" + row.lastName(), false,
+                            "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                            attendee("ext-alias@acme.dk", row.asTheClientWritesIt()),
+                            attendee("mette@acme.dk", "Mette Kjær")),
+                    DOMAINS, filters, tally, INTERNAL_MIN);
+
+            assertNotNull(meeting);
+            assertEquals(2, meeting.attendees().size(),
+                    row.asTheClientWritesIt() + " — placed at a DIFFERENT client, so a stranger here");
+            assertEquals(0, tally.colleagueByPlacementCount());
+        }
+    }
+
+    /** The name the rule is written against: a client person who shares both ends with one of ours. */
+    @Test
+    void larsPeterJensenAtAClientWeHaveNeverWorkedAtIsAClientPerson() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        CalendarFilters filters = filtersWithPlacedColleague("Lars", "Jensen", null);
+
+        var meeting = service.toMeeting(ME, event("evt-b-lars", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        attendee("lpj@acme.dk", "Lars Peter Jensen")),
+                DOMAINS, filters, tally, INTERNAL_MIN);
+
+        assertNotNull(meeting, "no placement, so the widened rule is never offered");
+        assertEquals(1, meeting.attendees().size());
+        assertEquals(0, tally.colleagueByPlacementCount());
+    }
+
+    /**
+     * A placement is permission to use the looser name rule, never permission to skip the
+     * employment test. Sara left in January; from then on she is Banedanmark's, and one of
+     * the warmest contacts that account has.
+     */
+    @Test
+    void aPlacedColleagueWhoHasLeftIsAClientContactAgain() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        CalendarFilters filters = CalendarFilters.of(
+                DeliveryContractIndex.empty(),
+                ColleagueDirectory.of(
+                        List.of(new ColleagueDirectory.ColleagueRow(
+                                        PLACED, "Sara", "Vest", StatusType.ACTIVE, LocalDate.of(2025, 9, 1)),
+                                new ColleagueDirectory.ColleagueRow(
+                                        PLACED, "Sara", "Vest", StatusType.TERMINATED, LocalDate.of(2026, 1, 31))),
+                        List.of(new ColleagueDirectory.PlacementRow(PLACED, CLIENT))),
+                Map.of());
+
+        assertNull(service.toMeeting(ME, event("evt-b-sara-while", false,
+                        "2025-11-04T09:00:00", "2025-11-04T10:00:00",
+                        attendee("xsves@acme.dk", "Sara Louise Vest (XSVES)")),
+                DOMAINS, filters, tally, INTERNAL_MIN), "while she was ours");
+
+        var after = service.toMeeting(ME, event("evt-b-sara-after", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        attendee("xsves@acme.dk", "Sara Louise Vest (XSVES)")),
+                DOMAINS, filters, tally, INTERNAL_MIN);
+
+        assertNotNull(after, "after she left — she works at the client now");
+        assertEquals(1, after.attendees().size());
+    }
+
+    // ------------------------------------------------------------------------
+    // §4.2 — our own all-hands is not a meeting with a client
+    // ------------------------------------------------------------------------
+
+    /**
+     * Arba Security's 77 "meetings" are one external guest on a recurring internal event
+     * seen by 22 mailboxes, and 53 of Banedanmark's 60 have eight or more people in them.
+     * Nothing in the sync used to look at how many of US were in the room.
+     */
+    @Test
+    void anEventWithEightOfOursInItIsDroppedAsInternal() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+
+        assertNull(service.toMeeting(ME, event("evt-int-8", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        ourPeopleAndOneClientPerson(8)),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN));
+        assertEquals(1, tally.internalDroppedCount(),
+                "the threshold is configuration, and this count is the only way to tell whether it is right");
+    }
+
+    /** Seven is a large sales meeting or a steering committee, and those are the point. */
+    @Test
+    void anEventWithSevenOfOursIsKeptAndTheCountIsStored() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+
+        var meeting = service.toMeeting(ME, event("evt-int-7", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        ourPeopleAndOneClientPerson(7)),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN);
+
+        assertNotNull(meeting);
+        assertEquals(7, meeting.ownAttendeeCount(), "stored, because the drop is a judgement and needs evidence");
+        assertEquals(8, meeting.attendeeCount());
+        assertEquals(1, meeting.attendees().size());
+        assertEquals(0, tally.internalDroppedCount());
+    }
+
+    /** A room booked on our own calendar is furniture, not a colleague filling the quota. */
+    @Test
+    void anOwnTenantRoomDoesNotCountTowardsTheInternalThreshold() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        var attendees = new ArrayList<>(List.of(ourPeopleAndOneClientPerson(7)));
+        attendees.add(resource("lokale-1@trustworks.dk", "Lokale 1"));
+
+        var meeting = service.toMeeting(ME, event("evt-int-room", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        attendees.toArray(new GraphCalendarClient.CalendarEventDetails.EventAttendee[0])),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN);
+
+        assertNotNull(meeting, "seven people and a room is seven people");
+        assertEquals(7, meeting.ownAttendeeCount());
+    }
+
+    /** {@code mail.trustworks.dk} and {@code trustworks.onmicrosoft.com} are both us. */
+    @Test
+    void subdomainsOfOurOwnTenantCountAsOurs() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+
+        assertNull(service.toMeeting(ME, event("evt-int-sub", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        attendee("hans@mail.trustworks.dk", "Hans Lassen"),
+                        attendee("svc@trustworks.onmicrosoft.com", "Service Account"),
+                        attendee("mette@acme.dk", "Mette Kjær")),
+                DOMAINS, CalendarFilters.empty(), tally, 2));
+        assertEquals(1, tally.internalDroppedCount());
+    }
+
+    /**
+     * The two spellings of "our own tenant" live in two classes — here, and in
+     * {@link CalendarUnmatchedDomainFilter}, which folds ours in with freemail and
+     * conferencing tooling to answer a different question. This is the assertion that keeps
+     * them from drifting apart: a domain that is ours must never be suggested as a company
+     * to add, and adding a tenant domain to only one of the two lists fails here.
+     */
+    @Test
+    void theOwnTenantListAgreesWithTheUnmatchedDomainFilter() {
+        for (String ours : List.of("trustworks.dk", "mail.trustworks.dk", "trustworks.onmicrosoft.com")) {
+            assertTrue(AccountCalendarSyncService.isOwnTenantDomain(ours), ours);
+            assertFalse(CalendarUnmatchedDomainFilter.isSuggestable(ours),
+                    ours + " is us — it must never be offered as a company to add");
+        }
+        assertTrue(AccountCalendarSyncService.isOwnTenantDomain("  TRUSTWORKS.DK  "),
+                "it trims and lower-cases its own argument");
+        assertFalse(AccountCalendarSyncService.isOwnTenantDomain("acme.dk"));
+        assertFalse(AccountCalendarSyncService.isOwnTenantDomain("nottrustworks.dk"),
+                "the suffixes carry a leading dot for exactly this");
+        assertFalse(AccountCalendarSyncService.isOwnTenantDomain("notonmicrosoft.com"));
+        assertFalse(AccountCalendarSyncService.isOwnTenantDomain(null));
+    }
+
+    /**
+     * An internal event is not evidence about anybody. It must not teach an address, and it
+     * must not tally an unknown company either — every conclusion drawn from it would have
+     * been drawn from our own all-hands.
+     */
+    @Test
+    void anInternalEventTeachesNoAddressAndTalliesNoDomain() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        CalendarFilters filters = filtersWithColleague(StatusType.ACTIVE, LocalDate.of(2020, 1, 1));
+        var attendees = new ArrayList<>(List.of(ourPeopleAndOneClientPerson(8)));
+        attendees.add(attendee("mygx@acme.dk", "MYGX (Malthe Yde Andreasen)"));
+        attendees.add(attendee("guest@unknown.dk", "A Guest"));
+
+        assertNull(service.toMeeting(ME, event("evt-int-quiet", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        attendees.toArray(new GraphCalendarClient.CalendarEventDetails.EventAttendee[0])),
+                DOMAINS, filters, tally, INTERNAL_MIN));
+
+        assertEquals(1, tally.internalDroppedCount());
+        assertFalse(tally.hasLearnedEmails(), "the drop happens before any attendee is read");
+        assertFalse(tally.hasUnmatchedDomains());
+    }
+
+    /**
+     * A threshold of zero switches the rule off rather than dropping everything. A typo in a
+     * config map should cost the firm an unfiltered night, not every meeting it has.
+     */
+    @Test
+    void aThresholdOfZeroSwitchesTheInternalRuleOffRatherThanDroppingEverything() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+
+        var meeting = service.toMeeting(ME, event("evt-int-off", false,
+                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                        ourPeopleAndOneClientPerson(20)),
+                DOMAINS, CalendarFilters.empty(), tally, 0);
+
+        assertNotNull(meeting);
+        assertEquals(20, meeting.ownAttendeeCount(), "still counted — only the drop is switched off");
+        assertEquals(0, tally.internalDroppedCount());
+    }
+
+    // ------------------------------------------------------------------------
     // Identity
     // ------------------------------------------------------------------------
 
@@ -490,7 +752,8 @@ class AccountCalendarSyncServiceTest {
     /** The ordinary case: no contracts, no colleagues, no learned addresses. */
     private AccountCalendarSyncService.PendingMeeting toMeeting(
             GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event) {
-        return service.toMeeting(ME, event, DOMAINS, CalendarFilters.empty(), new CalendarSyncTally());
+        return service.toMeeting(
+                ME, event, DOMAINS, CalendarFilters.empty(), new CalendarSyncTally(), INTERNAL_MIN);
     }
 
     /** The mailbox owner on an assignment at {@link #CLIENT} over the given window. */
@@ -500,6 +763,36 @@ class AccountCalendarSyncServiceTest {
                         new DeliveryContractIndex.DeliveryContractRow(CLIENT, ME, activeFrom, activeTo))),
                 ColleagueDirectory.empty(),
                 Map.of());
+    }
+
+    /**
+     * One employee, employed throughout, optionally placed at a client.
+     *
+     * @param placedAtClient the client they have been assigned to, or null for somebody we
+     *                       have never placed anywhere — which is what makes rule b
+     *                       unavailable and the attendee a client person
+     */
+    private static CalendarFilters filtersWithPlacedColleague(String firstName, String lastName,
+                                                              String placedAtClient) {
+        return CalendarFilters.of(
+                DeliveryContractIndex.empty(),
+                ColleagueDirectory.of(
+                        List.of(new ColleagueDirectory.ColleagueRow(
+                                PLACED, firstName, lastName, StatusType.ACTIVE, LocalDate.of(2020, 1, 1))),
+                        placedAtClient == null
+                                ? List.of()
+                                : List.of(new ColleagueDirectory.PlacementRow(PLACED, placedAtClient))),
+                Map.of());
+    }
+
+    /** {@code count} people on our own tenant, plus one real person at the client. */
+    private static GraphCalendarClient.CalendarEventDetails.EventAttendee[] ourPeopleAndOneClientPerson(int count) {
+        List<GraphCalendarClient.CalendarEventDetails.EventAttendee> attendees = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            attendees.add(attendee("colleague" + i + "@trustworks.dk", "Colleague " + i));
+        }
+        attendees.add(attendee("mette@acme.dk", "Mette Kjær"));
+        return attendees.toArray(new GraphCalendarClient.CalendarEventDetails.EventAttendee[0]);
     }
 
     /** Malthe Yde Andreasen, with one status row — ACTIVE or TERMINATED — from that date. */

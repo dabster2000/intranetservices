@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.trustlink.resources;
 
+import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
 import dk.trustworks.intranet.aggregates.crm.trustlink.dto.TrustLinkAliasDTO;
 import dk.trustworks.intranet.aggregates.crm.trustlink.dto.TrustLinkAliasesRequest;
 import dk.trustworks.intranet.aggregates.crm.trustlink.dto.TrustLinkSyncStateDTO;
@@ -90,6 +91,10 @@ public class TrustLinkResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    /** Only for the post-commit rebuild hook on {@link #replaceAliases}. */
+    @Inject
+    AccountPersonService personService;
+
     // ------------------------------------------------------------------------
     // Read
     // ------------------------------------------------------------------------
@@ -151,7 +156,40 @@ public class TrustLinkResource {
         List<String> names = request == null || request.companyNames() == null
                 ? List.of()
                 : request.companyNames();
-        return aliasService.replaceManualAliases(clientUuid, names, requireActor());
+        List<TrustLinkAliasDTO> aliases = aliasService.replaceManualAliases(clientUuid, names, requireActor());
+        rebuildPeople(clientUuid);
+        return aliases;
+    }
+
+    /**
+     * Refreshes the person registry for this account after its alias set changed.
+     *
+     * <p>The alias set decides which TrustLink connections attach to an account at all, so
+     * switching a company name on or off adds or removes people from
+     * {@code account_person} — and the relationships tab reads that table, not
+     * {@code trustlink_connection}. Without this hook the editor would appear to have done
+     * nothing until the 03:00 sweep, which is exactly the confusion the alias editor exists to
+     * remove.
+     *
+     * <p><b>Here rather than inside {@code replaceManualAliases}</b>, which is
+     * {@code @Transactional}: the rebuild has to see the committed alias rows, and a rebuild
+     * that threw inside that method would roll the person's alias edit back.
+     * {@code AccountPersonService.rebuild} opens its own {@code requiringNew} transaction, so
+     * it is called bare; the try/catch is still required, because an exception escaping here
+     * would fail a write that has already succeeded.
+     *
+     * <p>Counts and a uuid only. TrustLink rows are third-party PII — name, job title and
+     * LinkedIn profile of people who were never asked — and the log is not the place for them.
+     */
+    private void rebuildPeople(String clientUuid) {
+        try {
+            AccountPersonService.RebuildSummary summary = personService.rebuild(clientUuid);
+            log.infof("Account person registry rebuilt after an alias change: client=%s people=%d identities=%d",
+                    clientUuid, summary.peopleUpserted(), summary.identitiesUpserted());
+        } catch (RuntimeException e) {
+            log.warnf("Account person registry could not be rebuilt after an alias change: client=%s code=%s",
+                    clientUuid, e.getClass().getSimpleName());
+        }
     }
 
     /**

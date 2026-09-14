@@ -45,8 +45,8 @@ import java.util.UUID;
  * registration holds tenant-wide {@code Calendars.ReadWrite} and could open any mailbox —
  * that list is the rule Intra imposes on itself, and this is the one place it has to hold.
  *
- * <h2>Which meetings — four rules, and most of Graph's answer fails one of them</h2>
- * An event has to survive all four to be written. On production this throws away roughly
+ * <h2>Which meetings — five rules, and most of Graph's answer fails one of them</h2>
+ * An event has to survive all five to be written. On production this throws away roughly
  * two thirds of everything Graph returns, which is the point: the meetings that matter
  * were buried under the ones that do not.
  *
@@ -75,12 +75,29 @@ import java.util.UUID;
  *       <b>kept</b>: politi.dk never sends display names, and dropping the nameless would
  *       empty Rigspolitiet's whole relationship graph.</li>
  *
+ *   <li><b>Our own all-hands is not a meeting with a client</b> (spec §4.2). The moment one
+ *       attendee's domain matches, a firm-wide internal event with a single guest on it is
+ *       indistinguishable from a sales meeting — and the account with the most internal
+ *       traffic then comes out looking like the warmest relationship in the book. Arba
+ *       Security's 77 meetings are one external guest on 76 recurring internal events seen
+ *       by 22 mailboxes; 53 of Banedanmark's 60 have eight or more people in them. The
+ *       signal that separates the two is how many of OURS were there, so the attendees on
+ *       our own tenant are counted, stored on {@code account_meeting.own_attendee_count},
+ *       and the event is dropped once the count reaches the configured threshold. Eight by
+ *       default: above any sales meeting or steering committee, below any firm-wide event,
+ *       and a workshop with eight of ours at the client is delivery, which the next rule
+ *       excludes anyway. The threshold is configuration rather than a constant so it can be
+ *       re-tuned from a log line instead of a release.</li>
+ *
  *   <li><b>Our own consultants at the client are not client contacts</b> (decision D2). A
  *       consultant placed at a client gets a mailbox there — {@code mygx@novonordisk.com}
  *       is Malthe Yde Andreasen — so they arrived as EXTERNAL people the firm had "met"
  *       and were drawn as the firm's network into its own account. An attendee is dropped
- *       when the display name matches somebody employed here ON THE DAY OF THE MEETING, or
- *       when the address is already known to be a colleague's (see
+ *       when the display name matches somebody employed here ON THE DAY OF THE MEETING —
+ *       by the strict token rules for anybody, and by first-token-then-last-token for
+ *       somebody with a placement at that client (spec §4.1 rule b, the shape behind
+ *       "Sara Louise Vest (XSVES)" and 53 of the 441 attendee rows) — or when the address
+ *       is already known to be a colleague's (see
  *       {@link CalendarFilterService}). <b>Employment is part of the rule, not an
  *       optimisation</b>: a FORMER colleague now working at the client is one of the best
  *       client contacts the firm has and must be kept — and the address branch asks the
@@ -136,6 +153,23 @@ public class AccountCalendarSyncService {
      */
     static final String RESOURCE_ATTENDEE_TYPE = "resource";
 
+    /**
+     * Our own tenant, exactly as {@link CalendarUnmatchedDomainFilter} draws it: the bare
+     * domain, which lives in {@code AccountService.DENIED_DOMAINS} alongside the freemail
+     * hosts, plus the two suffix forms.
+     *
+     * <p><b>These two lists and that one move together or they leave a hole.</b> The filter
+     * asks "is this domain worth suggesting as a new client", which folds our own tenant in
+     * with freemail and conferencing tooling and cannot answer the question here; this asks
+     * "is this person one of ours", and only our own domains answer it. The cross-check is
+     * pinned by a test rather than by a comment — every domain this recognises must be one
+     * {@code CalendarUnmatchedDomainFilter.isSuggestable} refuses.
+     */
+    static final String OWN_TENANT_DOMAIN = "trustworks.dk";
+
+    /** Both carry a leading dot, so {@code notonmicrosoft.com} is not us. */
+    static final List<String> OWN_TENANT_DOMAIN_SUFFIXES = List.of(".trustworks.dk", ".onmicrosoft.com");
+
     private static final DateTimeFormatter GRAPH_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     @Inject
@@ -161,6 +195,18 @@ public class AccountCalendarSyncService {
     boolean syncEnabled;
 
     /**
+     * How many of our own people in a room make the event internal (spec §4.2).
+     *
+     * <p>Eight, and it is configuration rather than a constant on purpose: the only honest
+     * way to know whether eight is right is to watch {@code internalDropped} move against
+     * {@code meetings} in the nightly line, and re-tuning it must not need a release. A
+     * value of zero or less switches the rule off rather than dropping everything — a typo
+     * in a config map should cost the firm an unfiltered night, not every meeting it has.
+     */
+    @ConfigProperty(name = "dk.trustworks.crm.calendar.internal-meeting.min-own-attendees", defaultValue = "8")
+    int internalMeetingMinOwnAttendees;
+
+    /**
      * One full pass over every consenting mailbox.
      *
      * <p>A mailbox Graph refuses does not stop the run. One person on holiday with a
@@ -170,13 +216,13 @@ public class AccountCalendarSyncService {
     public CalendarSyncSummary syncAll() {
         if (!syncEnabled) {
             log.info("Account calendar sync is switched off (dk.trustworks.crm.calendar.sync.enabled=false)");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0);
+            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         Map<String, String> domainIndex = QuarkusTransaction.requiringNew().call(accountService::domainIndex);
         if (domainIndex.isEmpty()) {
             log.info("Account calendar sync: no client domains configured, nothing can be attributed");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0);
+            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         // Contracts, colleagues and learned addresses: read once, used by every mailbox.
@@ -193,6 +239,8 @@ public class AccountCalendarSyncService {
         int deliveryFiltered = 0;
         int colleagueFiltered = 0;
         int emailsLearned = 0;
+        int internalDropped = 0;
+        int colleagueByPlacement = 0;
 
         for (String userUuid : mailboxes) {
             try {
@@ -203,6 +251,8 @@ public class AccountCalendarSyncService {
                 deliveryFiltered += result.deliveryFiltered();
                 colleagueFiltered += result.colleagueFiltered();
                 emailsLearned += result.colleagueEmailsLearned();
+                internalDropped += result.internalDropped();
+                colleagueByPlacement += result.colleagueByPlacement();
             } catch (RuntimeException e) {
                 failures++;
                 // The message, not the stack, and never the event payload: a Graph error
@@ -217,11 +267,13 @@ public class AccountCalendarSyncService {
         QuarkusTransaction.requiringNew().run(suggestionService::refreshAggregates);
 
         log.infof("Account calendar sync done: mailboxes=%d events=%d meetings=%d attendees=%d failures=%d "
-                        + "deliveryFiltered=%d colleagueFiltered=%d colleagueEmailsLearned=%d",
+                        + "deliveryFiltered=%d colleagueFiltered=%d colleagueEmailsLearned=%d "
+                        + "internalDropped=%d colleagueByPlacement=%d (internalThreshold=%d)",
                 mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
-                deliveryFiltered, colleagueFiltered, emailsLearned);
+                deliveryFiltered, colleagueFiltered, emailsLearned,
+                internalDropped, colleagueByPlacement, internalMeetingMinOwnAttendees);
         return new CalendarSyncSummary(mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
-                deliveryFiltered, colleagueFiltered, emailsLearned);
+                deliveryFiltered, colleagueFiltered, emailsLearned, internalDropped, colleagueByPlacement);
     }
 
     record MailboxResult(int eventsSeen,
@@ -229,10 +281,12 @@ public class AccountCalendarSyncService {
                          int attendees,
                          int deliveryFiltered,
                          int colleagueFiltered,
-                         int colleagueEmailsLearned) {
+                         int colleagueEmailsLearned,
+                         int internalDropped,
+                         int colleagueByPlacement) {
 
         static MailboxResult nothing() {
-            return new MailboxResult(0, 0, 0, 0, 0, 0);
+            return new MailboxResult(0, 0, 0, 0, 0, 0, 0, 0);
         }
     }
 
@@ -272,7 +326,10 @@ public class AccountCalendarSyncService {
         CalendarSyncTally tally = new CalendarSyncTally();
         List<PendingMeeting> pending = new ArrayList<>();
         for (GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event : response.value()) {
-            PendingMeeting meeting = toMeeting(userUuid, event, domainIndex, filters, tally);
+            // The threshold is read here and handed down, because toMeeting has no
+            // configuration of its own — see its javadoc on staying pure.
+            PendingMeeting meeting =
+                    toMeeting(userUuid, event, domainIndex, filters, tally, internalMeetingMinOwnAttendees);
             if (meeting != null) {
                 pending.add(meeting);
             }
@@ -296,12 +353,27 @@ public class AccountCalendarSyncService {
                 attendeeRows,
                 tally.deliveryDroppedCount(),
                 tally.colleagueOnlyDroppedCount(),
-                tally.newlyLearnedEmails());
+                tally.newlyLearnedEmails(),
+                tally.internalDroppedCount(),
+                tally.colleagueByPlacementCount());
     }
 
     /**
-     * Turns one Graph event into a meeting, or null when it is not one we keep — the four
-     * rules in this class's javadoc, in the order they can be decided.
+     * Turns one Graph event into a meeting, or null when it is not one we keep — the five
+     * rules in this class's javadoc, in the order they can be decided:
+     *
+     * <pre>
+     *   rooms -> INTERNAL -> per attendee: domain index
+     *                                   -> colleague by name (strict, then placed)
+     *                                   -> colleague by address
+     *         -> nobody from the client left -> largest delegation wins -> delivery
+     * </pre>
+     *
+     * <p>The internal test comes before the attendee loop because an event that is our own
+     * all-hands is not evidence about anybody: attributing one guest's domain to a client,
+     * learning an address from it or tallying an unknown company off it would all be
+     * conclusions drawn from a meeting that never was one. The delivery test comes last
+     * because it is the only one that needs the winning client.
      *
      * <p>When attendees from two different clients are in the same meeting the one with
      * the most attendees wins. Splitting a meeting across accounts would double-count it in
@@ -317,18 +389,24 @@ public class AccountCalendarSyncService {
      * drops still teaches an address: the drop is precisely the evidence that the address
      * belongs to one of ours.
      *
-     * @param userUuid    the mailbox owner, and the person the delivery rule asks about
-     * @param event       one event from Graph's calendarView
-     * @param domainIndex {@code domain → clientUuid}, from {@code client_domain}
-     * @param filters     the run's contract index, colleague directory and known colleague
-     *                    addresses; its address set GROWS as this method identifies more
-     * @param tally       collects what was learned and why things were dropped
+     * @param userUuid           the mailbox owner, and the person the delivery rule asks about
+     * @param event              one event from Graph's calendarView
+     * @param domainIndex        {@code domain → clientUuid}, from {@code client_domain}
+     * @param filters            the run's contract index, colleague directory, placement
+     *                           index and known colleague addresses; its address set GROWS
+     *                           as this method identifies more
+     * @param tally              collects what was learned and why things were dropped
+     * @param minOwnAttendees    how many of our own people make the event internal (spec
+     *                           §4.2). A parameter rather than a field for the same reason
+     *                           {@code tally} is one: this method holds no configuration
+     *                           and reads no clock. Zero or less switches the rule off
      */
     PendingMeeting toMeeting(String userUuid,
                              GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event,
                              Map<String, String> domainIndex,
                              CalendarFilters filters,
-                             CalendarSyncTally tally) {
+                             CalendarSyncTally tally,
+                             int minOwnAttendees) {
         if (event == null || event.id() == null || Boolean.TRUE.equals(event.isCancelled())) {
             return null;
         }
@@ -341,6 +419,16 @@ public class AccountCalendarSyncService {
         // today: a meeting from eighteen months ago is judged against the contracts and
         // the employments that were in force eighteen months ago.
         LocalDate meetingDate = start.toLocalDate();
+
+        // How many of the room were ours, decided before anything is attributed to anybody.
+        // An internal event with one client guest on it must not teach an address or tally
+        // an unknown domain either: it is not a meeting with that company at all, and every
+        // conclusion drawn from it would be drawn from our own all-hands.
+        int ownAttendeeCount = countOwnTenantAttendees(event.attendees());
+        if (minOwnAttendees > 0 && ownAttendeeCount >= minOwnAttendees) {
+            tally.internalDropped();
+            return null;
+        }
 
         Map<String, List<PendingAttendee>> byClient = new LinkedHashMap<>();
         boolean sawClientAttendee = false;
@@ -372,15 +460,24 @@ public class AccountCalendarSyncService {
                 }
                 sawClientAttendee = true;
 
-                // D2, by name. The uuid is what makes this worth more than a boolean: it
-                // is written down against the address so the next run recognises it even
-                // when Graph sends no display name at all.
+                // D2, by name — the strict rules first and then, for somebody placed at
+                // THIS client, the widened one (spec §4.1 a then b). The client is passed
+                // in because rule b is only safe confined to placements: without it,
+                // "Lars Peter Jensen" matches our Lars Jensen and a client person is
+                // deleted. The uuid is what makes this worth more than a boolean: it is
+                // written down against the address so the next run recognises it even when
+                // Graph sends no display name at all.
                 String displayName = attendee.emailAddress().name();
-                String colleagueUuid = filters.colleagues().colleagueUuidOn(displayName, meetingDate);
-                if (colleagueUuid != null) {
-                    boolean firstTimeThisRun = filters.rememberColleagueEmail(normalised, colleagueUuid);
+                ColleagueDirectory.ColleagueMatch colleague =
+                        filters.colleagues().colleagueOn(displayName, meetingDate, clientUuid);
+                if (colleague != null) {
+                    if (colleague.byPlacement()) {
+                        tally.colleagueByPlacement();
+                    }
+                    boolean firstTimeThisRun = filters.rememberColleagueEmail(normalised, colleague.userUuid());
                     tally.learnedColleagueEmail(
-                            new LearnedColleagueEmail(normalised, colleagueUuid, displayName), firstTimeThisRun);
+                            new LearnedColleagueEmail(normalised, colleague.userUuid(), displayName),
+                            firstTimeThisRun);
                     continue;
                 }
                 // D2, by address. Covers the bare-address case the name rule cannot reach
@@ -426,7 +523,73 @@ public class AccountCalendarSyncService {
                 start,
                 Math.max(minutes, 0),
                 attendeeCount,
+                ownAttendeeCount,
                 winner.getValue());
+    }
+
+    /**
+     * How many attendees were on our own tenant (spec §4.2).
+     *
+     * <p>Rooms first, exactly as the attendee loop does it: a conference room booked on a
+     * Trustworks calendar is not one of our people, and counting it would push a meeting
+     * over the internal threshold on the strength of the furniture. Everything else the
+     * attendee loop in {@code toMeeting} skips — a null address, an address with no
+     * {@code @} — is skipped here too, so the count is over the same population.
+     *
+     * <p>Addresses are counted as they arrive, without de-duplication. Graph does not
+     * repeat an attendee on an event, and {@code attendeeCount} is already "the size of the
+     * room" on the same terms.
+     */
+    static int countOwnTenantAttendees(List<GraphCalendarClient.CalendarEventDetails.EventAttendee> attendees) {
+        if (attendees == null) {
+            return 0;
+        }
+        int count = 0;
+        for (GraphCalendarClient.CalendarEventDetails.EventAttendee attendee : attendees) {
+            if (isResourceAttendee(attendee)
+                    || attendee == null
+                    || attendee.emailAddress() == null) {
+                continue;
+            }
+            String email = attendee.emailAddress().address();
+            if (email == null || !email.contains("@")) {
+                continue;
+            }
+            String normalised = email.trim().toLowerCase(Locale.ROOT);
+            if (isOwnTenantDomain(normalised.substring(normalised.lastIndexOf('@') + 1))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Is this domain ours?
+     *
+     * <p>The bare tenant domain, or a subdomain of it, or anything under
+     * {@code onmicrosoft.com} — {@code mail.trustworks.dk} and
+     * {@code trustworks.onmicrosoft.com} are both Trustworks. The suffixes carry a leading
+     * dot so that {@code trustworks.dk} is matched by the exact test and a hypothetical
+     * {@code nottrustworks.dk} or {@code notonmicrosoft.com} is matched by neither.
+     *
+     * <p>It trims and lower-cases its own argument, like
+     * {@link CalendarUnmatchedDomainFilter#isSuggestable}, because the two are read
+     * together and one of them silently expecting pre-normalised input would be a trap.
+     */
+    static boolean isOwnTenantDomain(String domain) {
+        if (domain == null) {
+            return false;
+        }
+        String value = domain.trim().toLowerCase(Locale.ROOT);
+        if (value.equals(OWN_TENANT_DOMAIN)) {
+            return true;
+        }
+        for (String suffix : OWN_TENANT_DOMAIN_SUFFIXES) {
+            if (value.endsWith(suffix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -457,6 +620,7 @@ public class AccountCalendarSyncService {
             meeting.setOccurredAt(item.occurredAt());
             meeting.setDurationMinutes(item.durationMinutes());
             meeting.setAttendeeCount(item.attendeeCount());
+            meeting.setOwnAttendeeCount(item.ownAttendeeCount());
             meeting.setSyncedAt(now);
             meeting.persist();
 
@@ -536,5 +700,6 @@ public class AccountCalendarSyncService {
             LocalDateTime occurredAt,
             int durationMinutes,
             int attendeeCount,
+            int ownAttendeeCount,
             List<PendingAttendee> attendees) { }
 }
