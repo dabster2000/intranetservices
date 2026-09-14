@@ -23,4 +23,17 @@ public interface OpenAIClient {
             @HeaderParam("Authorization") String authorization,
             @HeaderParam("Content-Type") String contentType,
             String request);
+
+    /**
+     * The Images API ({@code POST /v1/images/generations}). The {@code gpt-image} family
+     * always answers with {@code data[].b64_json}; see {@link OpenAIService#generateImage}.
+     */
+    @POST
+    @Path("/images/generations")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    Response createImage(
+            @HeaderParam("Authorization") String authorization,
+            @HeaderParam("Content-Type") String contentType,
+            String request);
 }

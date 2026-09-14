@@ -1030,6 +1030,177 @@ public class OpenAIService {
         }
     }
 
+    /**
+     * Structured output + WEB SEARCH with the caller's own model, token budget, reasoning
+     * effort and storage choice — the {@link #askQuestionWithSchema(String, String, ObjectNode,
+     * String, String, String, int, boolean, String)} override plumbing, plus the built-in
+     * {@code web_search} tool.
+     *
+     * <p>Exists because {@link #askWithSchemaAndWebSearch(String, String, ObjectNode, String,
+     * String, String)} is welded to the global {@code openai.model}, which defaults to
+     * gpt-5-nano — a model that spends its whole output budget on hidden reasoning and answers
+     * {@code "{}"} for structured output (the staging failure recorded in application.yml).
+     * The client-enrichment jobs pin their own reasoning-class model and a low effort here.
+     *
+     * <p>Never throws: every failure is reported as {@code refusalFallbackJson} (or {@code "{}"}
+     * when none was given), the same contract as every other schema method in this class.
+     *
+     * @param userCountry     ISO country for the search's approximate location; null ⇒ DK
+     * @param reasoningEffort {@code reasoning.effort}; null/blank omits the node — REQUIRED for
+     *                        non-reasoning (gpt-4o-family) models
+     * @param store           the Responses API storage choice; false for privacy-sensitive input
+     */
+    public String askWithSchemaAndWebSearch(String system,
+                                           String userMsg,
+                                           ObjectNode jsonSchema,
+                                           String schemaName,
+                                           String refusalFallbackJson,
+                                           String userCountry,
+                                           String modelOverride,
+                                           int maxOutputTokensOverride,
+                                           String reasoningEffort,
+                                           boolean store) {
+        String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
+        String fallback = refusalFallbackJson != null ? refusalFallbackJson : "{}";
+        try {
+            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096, reasoningEffort);
+            req.put("store", store);
+
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null && !userCountry.isBlank() ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium");
+
+            ArrayNode include = req.putArray("include");
+            include.add("web_search_call.action.sources");
+
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+            user.put("content", userMsg);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (json_schema + web_search, pinned model). model=%s, bodySize=%d",
+                    chosenModel, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d model=%s %s",
+                        http.getStatus(), chosenModel, describeErrorEnvelope(payload));
+                return fallback;
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String refusal = extractRefusal(root);
+            if (refusal != null) {
+                log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
+                return fallback;
+            }
+            String out = extractOutputTextOrEmpty(root);
+            if ("{}".equals(out)) {
+                logEmptyOutputDiagnostics(root, chosenModel,
+                        maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+                return fallback;
+            }
+            return out;
+
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            log.errorf("[OpenAIService] Responses request failed (schema + web search, model=%s): status=%s %s",
+                    chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?",
+                    describeErrorEnvelope(errBody));
+            return fallback;
+        } catch (Exception e) {
+            log.errorf("[OpenAIService] Responses request failed (schema + web search, model=%s, error=%s)",
+                    chosenModel, describeFailureChain(e));
+            return fallback;
+        }
+    }
+
+    /**
+     * One image from the Images API ({@code POST /v1/images/generations}), as raw bytes.
+     *
+     * <p>The {@code gpt-image} family always answers base64 ({@code data[0].b64_json}) and
+     * rejects {@code response_format}; the older {@code dall-e} models default to a URL and
+     * need {@code response_format=b64_json} to answer inline. The request is shaped for
+     * whichever the caller named, so the model id stays a config value.
+     *
+     * <p>Never throws: a failed or empty generation is {@code null}, logged with the error
+     * envelope's class and code (never the prompt — the prompt names a client company).
+     *
+     * @param prompt  what to draw
+     * @param model   the image model id, e.g. {@code gpt-image-1}
+     * @param size    e.g. {@code 1024x1024}, {@code 1536x1024}
+     * @param quality {@code low}, {@code medium}, {@code high} for gpt-image; {@code standard}/{@code hd} for dall-e-3
+     * @return PNG bytes, or null
+     */
+    public byte[] generateImage(String prompt, String model, String size, String quality) {
+        String chosenModel = model != null && !model.isBlank() ? model : "gpt-image-1";
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", chosenModel);
+            req.put("prompt", prompt);
+            req.put("n", 1);
+            if (size != null && !size.isBlank()) req.put("size", size);
+            if (quality != null && !quality.isBlank()) req.put("quality", quality);
+            if (chosenModel.startsWith("dall-e")) {
+                req.put("response_format", "b64_json");
+            } else {
+                req.put("output_format", "png");
+                req.put("background", "opaque");
+            }
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending image generation. model=%s, bodySize=%d", chosenModel, body.length());
+
+            Response http = openAIClient.createImage("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] Image generation error status=%d model=%s %s",
+                        http.getStatus(), chosenModel, describeErrorEnvelope(payload));
+                return null;
+            }
+            JsonNode root = objectMapper.readTree(payload);
+            String b64 = root.path("data").path(0).path("b64_json").asText(null);
+            if (b64 == null || b64.isBlank()) {
+                log.warnf("[OpenAIService] Image generation answered without b64_json (model=%s)", chosenModel);
+                return null;
+            }
+            return java.util.Base64.getDecoder().decode(b64);
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            log.errorf("[OpenAIService] Image generation failed (model=%s): status=%s %s",
+                    chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?",
+                    describeErrorEnvelope(errBody));
+            return null;
+        } catch (Exception e) {
+            log.errorf("[OpenAIService] Image generation failed (model=%s, error=%s)",
+                    chosenModel, describeFailureChain(e));
+            return null;
+        }
+    }
+
     /** Exposes the configured vision model so callers can include it in their own logs. */
     public String getVisionModel() {
         return visionModel;
