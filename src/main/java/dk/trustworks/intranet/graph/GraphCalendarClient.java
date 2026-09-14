@@ -215,8 +215,9 @@ public interface GraphCalendarClient {
      * re-reads or skips events whenever Graph's own window semantics disagree
      * with our arithmetic.
      *
-     * @param select    the privacy boundary — see above; never widen it
-     * @param top       page size, capped by Graph at 250 for this collection
+     * @param select    the privacy boundary — see above; never widen it to a
+     *                  subject or a body
+     * @param top       page size; Graph documents 1 to 1000 for this collection
      * @param skipToken opaque continuation out of {@code @odata.nextLink}, or
      *                  null for the first page
      * @param skip      numeric continuation out of {@code @odata.nextLink}, or
@@ -239,8 +240,25 @@ public interface GraphCalendarClient {
 
     /**
      * {@code calendarView} response for the CRM sync: identity, bounds,
-     * cancellation and attendees. No subject and no body are mapped, so even a
-     * widened {@code $select} could not land them in a field.
+     * cancellation, the owner's own answer to the invitation and attendees. No
+     * subject and no body are mapped, so even a widened {@code $select} could
+     * not land them in a field.
+     *
+     * <p>Three identity fields, because one is not enough:
+     * <ul>
+     *   <li>{@code id} is the item in THIS mailbox — different for the same
+     *       meeting in every attendee's calendar.</li>
+     *   <li>{@code iCalUId} is the meeting itself, the same in every mailbox
+     *       and different for every occurrence of a series (verified against
+     *       two production mailboxes on 2026-09-14). It is what lets the account
+     *       timeline show one meeting with two of ours in it as one line.</li>
+     *   <li>{@code seriesMasterId} is present exactly when the event is an
+     *       occurrence or exception of a recurring series; {@code type} says the
+     *       same thing in words ({@code singleInstance}, {@code occurrence},
+     *       {@code exception}, {@code seriesMaster}). {@code calendarView}
+     *       expands a series into its occurrences, so a daily standup arrives
+     *       as one event per day, every one of them carrying the master's id.</li>
+     * </ul>
      */
     record AttendeeViewResponse(
         @JsonProperty("value") List<AttendeeViewEvent> value,
@@ -248,11 +266,24 @@ public interface GraphCalendarClient {
     ) {
         public record AttendeeViewEvent(
             String id,
+            @JsonProperty("iCalUId") String iCalUId,
+            String type,
+            String seriesMasterId,
             @JsonProperty("isCancelled") Boolean isCancelled,
             CalendarViewResponse.GraphDateTime start,
             CalendarViewResponse.GraphDateTime end,
+            EventResponseStatus responseStatus,
             List<CalendarEventDetails.EventAttendee> attendees
         ) { }
+
+        /**
+         * The mailbox owner's own answer to the invitation: {@code none},
+         * {@code organizer}, {@code tentativelyAccepted}, {@code accepted},
+         * {@code declined} or {@code notResponded}. Outlook normally removes a
+         * declined meeting from the calendar, but "decline and keep on
+         * calendar" exists, and a kept decline is still not a meeting attended.
+         */
+        public record EventResponseStatus(String response) { }
     }
 
     /**

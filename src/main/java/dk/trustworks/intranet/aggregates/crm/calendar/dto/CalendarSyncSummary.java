@@ -7,9 +7,10 @@ package dk.trustworks.intranet.aggregates.crm.calendar.dto;
  * <p><b>The drop counters are not decoration.</b> Since the delivery and
  * colleague-at-client filters went in (decisions D1/D2, 2026-09-14) the sync throws away
  * most of what Graph hands it — 630 of 960 meetings on production, and 158 of 206 on Novo
- * Nordisk alone. Without the counters, "the filters are working" and "Graph returned
- * nothing tonight" produce the identical line {@code meetings=0}, and the only way to tell
- * them apart would be to run the job by hand and read the mailbox by eye.
+ * Nordisk alone — and the recurring-series rule of the same day throws away more. Without
+ * the counters, "the filters are working" and "Graph returned nothing tonight" produce the
+ * identical line {@code meetings=0}, and the only way to tell them apart would be to run the
+ * job by hand and read the mailbox by eye.
  *
  * <p><b>And the read counters exist for the same reason one rung lower down.</b> Graph
  * pages {@code calendarView} and returns it oldest-first; for one release the sync asked
@@ -17,6 +18,13 @@ package dk.trustworks.intranet.aggregates.crm.calendar.dto;
  * earliest 250 events and lost the recent months without a single number moving.
  * {@code eventsSeen} says how much was read and only {@code readsTruncated} says whether
  * that was all of it.
+ *
+ * <p><b>The removal counters are the third kind.</b> The sync used to be append-only: a
+ * meeting that was cancelled, declined, moved, or re-judged by a rule after it had been
+ * written stayed on the account for ever, and half of every account's meetings were rows
+ * for events that had not happened yet. {@code staleRemoved} and {@code futureRemoved} say
+ * how much of that the run cleaned up, and {@code fullReads} says how many mailboxes had
+ * their whole twelve-month window re-judged rather than the last fortnight.
  *
  * @param mailboxes              how many consenting mailboxes were read
  * @param eventsSeen             calendar events returned by Graph
@@ -51,7 +59,8 @@ package dk.trustworks.intranet.aggregates.crm.calendar.dto;
  *                               meaningful.</b> A truncated read and a complete one both
  *                               end in {@code events=N}; only this says whether N was all
  *                               of them, and anything but zero means the relationship graph
- *                               was built from a partial calendar
+ *                               was built from a partial calendar. A truncated read also
+ *                               never reconciles, so nothing is removed on its evidence
  * @param massMeetingsFlagged    meetings kept but stored with NO attendee rows because the
  *                               winning client sent a delegation at or above the threshold
  *                               (spec §4.2). A fifty-person event is activity with the
@@ -62,6 +71,27 @@ package dk.trustworks.intranet.aggregates.crm.calendar.dto;
  *                               threshold is right: one meeting suppressing forty-seven
  *                               people is the shape the rule exists for, and a count that
  *                               climbs against few meetings says it has been set too low
+ * @param recurringDropped       occurrences of recurring series dropped, because a standing
+ *                               meeting — a standup, a weekly status, a steering cadence —
+ *                               is how a project is run and not somebody selling something.
+ *                               Expected to be large: a daily series is one event per
+ *                               working day per mailbox
+ * @param declinedDropped        invitations the mailbox owner declined and kept on the
+ *                               calendar. A meeting somebody said no to is not one they
+ *                               attended
+ * @param staleRemoved           stored rows deleted because a complete read of their window
+ *                               no longer produced them: the event was cancelled, deleted,
+ *                               declined, moved, or a rule now drops it. Only a COMPLETE
+ *                               read may remove anything — a truncated read proves nothing
+ *                               about the events on the pages it never fetched
+ * @param futureRemoved          stored rows deleted because their {@code occurred_at} was
+ *                               still ahead of the run. The window no longer reaches into
+ *                               the future, so after the first run on this rule the number
+ *                               is zero; anything else means a row was written by something
+ *                               that is not this sync
+ * @param fullReads              mailboxes read over the whole twelve-month window rather
+ *                               than the last fortnight: their first run, a Sunday, a
+ *                               backfill after V614, or a manual {@code ?full=true}
  */
 public record CalendarSyncSummary(
         int mailboxes,
@@ -77,16 +107,21 @@ public record CalendarSyncSummary(
         int graphPages,
         int readsTruncated,
         int massMeetingsFlagged,
-        int massAttendeesSuppressed) {
+        int massAttendeesSuppressed,
+        int recurringDropped,
+        int declinedDropped,
+        int staleRemoved,
+        int futureRemoved,
+        int fullReads) {
 
     /**
      * A run that never started — the kill switch is off, or no client domain is configured.
      *
      * <p>A named constant rather than a row of zeroes at each call site: the record has
-     * grown twice now, and a positional literal is where a counter silently lands in the
-     * wrong slot when it grows again.
+     * grown three times now, and a positional literal is where a counter silently lands in
+     * the wrong slot when it grows again.
      */
     public static CalendarSyncSummary nothing() {
-        return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 }

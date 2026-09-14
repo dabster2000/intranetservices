@@ -132,13 +132,25 @@ public class CalendarSuggestionService {
      */
     @Transactional
     public void refreshAggregates() {
-        LocalDate today = LocalDate.now();
+        // The calendar's own clock, not the JVM's. A sighting is dated by the meeting's
+        // Copenhagen day, and just after midnight in Copenhagen the JVM's UTC date is still
+        // yesterday — the future purge below would take today's sightings with it.
+        LocalDate today = CalendarTime.now().toLocalDate();
         LocalDate cutoff = today.minusMonths(RETENTION_MONTHS);
         LocalDate ninetyDaysAgo = today.minusDays(90);
 
         long purged = CalendarUnmatchedMeeting.delete("occurredOn < ?1", cutoff);
         if (purged > 0) {
             log.infof("Calendar suggestions: purged %d sightings older than %s", purged, cutoff);
+        }
+        // A sighting ahead of today can only have come from the forward window the sync no
+        // longer has. "Seen in calendars · last on 11 Dec" was a company we were GOING to
+        // meet, offered as one we keep meeting; the sync now reads nothing ahead of its
+        // clock, so these are the leftovers and they go.
+        long ahead = CalendarUnmatchedMeeting.delete("occurredOn > ?1", today);
+        if (ahead > 0) {
+            log.infof("Calendar suggestions: purged %d sightings dated after %s — meetings that had not happened",
+                    ahead, today);
         }
 
         @SuppressWarnings("unchecked")

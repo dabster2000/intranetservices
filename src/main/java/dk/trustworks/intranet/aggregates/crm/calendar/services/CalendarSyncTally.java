@@ -64,6 +64,8 @@ final class CalendarSyncTally {
     private int readsTruncated;
     private int massMeetingsFlagged;
     private int massAttendeesSuppressed;
+    private int recurringDropped;
+    private int declinedDropped;
 
     /**
      * Records an address identified by name.
@@ -176,6 +178,33 @@ final class CalendarSyncTally {
     }
 
     /**
+     * An occurrence of a recurring series, dropped because a standing meeting is a working
+     * cadence and not sales contact (decided 2026-09-14).
+     *
+     * <p>The count that says what the rule is doing. A daily standup with the client arrives
+     * from {@code calendarView} as one event per working day per mailbox — sixty rows for
+     * one series over six weeks from two mailboxes on Ældre Sagen — so this number is
+     * expected to be LARGE relative to {@code meetings}, and a run where it is zero is a run
+     * where either nobody has a standing meeting with a client or the series fields stopped
+     * arriving from Graph. Both are worth noticing.
+     */
+    void recurringDropped() {
+        recurringDropped++;
+    }
+
+    /**
+     * An invitation the mailbox owner declined, dropped because a meeting they said no to
+     * is not a meeting they attended.
+     *
+     * <p>Rare by construction — Outlook removes a declined meeting from the calendar unless
+     * the person chose to keep it — so this stays near zero and is counted so that "near
+     * zero" is a number rather than an assumption.
+     */
+    void declinedDropped() {
+        declinedDropped++;
+    }
+
+    /**
      * A meeting whose winning client delegation was big enough that the event is a mass
      * event rather than evidence of a personal relationship (spec §4.2): the meeting is
      * kept, its attendee rows are not written.
@@ -236,5 +265,13 @@ final class CalendarSyncTally {
 
     int massAttendeesSuppressedCount() {
         return massAttendeesSuppressed;
+    }
+
+    int recurringDroppedCount() {
+        return recurringDropped;
+    }
+
+    int declinedDroppedCount() {
+        return declinedDropped;
     }
 }

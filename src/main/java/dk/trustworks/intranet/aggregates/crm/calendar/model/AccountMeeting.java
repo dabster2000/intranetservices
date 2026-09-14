@@ -26,9 +26,19 @@ import java.time.LocalDateTime;
  * attendees produces two rows, which is exactly what the relationship graph needs: both of
  * them were there and both now have an edge. {@link #uuid} is derived deterministically
  * from {@code (graphEventId, userUuid)} so a re-sync updates the row instead of adding one.
+ * {@link #icalUid} is what says those two rows are ONE meeting: it is Graph's identifier for
+ * the event across calendars, and the account timeline folds rows that share it into a single
+ * line naming everybody of ours who was there.
+ *
+ * <p><b>Only meetings that have ended.</b> The sync's window closes at the moment the run
+ * starts and an event still running at that moment is left for the next night, so
+ * {@link #occurredAt} is never in the future. A row that no longer matches what the mailbox
+ * says — cancelled, deleted, declined, moved, or re-judged by a rule — is removed by the next
+ * complete read of the window it sits in.
  *
  * <p>Third-party personal data lives in {@link AccountMeetingAttendee}. The agreed
- * retention is 24 months after the account's last activity — the purge job is NOT built.
+ * retention is 24 months after the account's last activity, enforced by
+ * {@code CrmRetentionPurgeJob} (V608), which ships disarmed.
  */
 @Entity
 @Getter
@@ -82,4 +92,17 @@ public class AccountMeeting extends PanacheEntityBase {
 
     @Column(name = "synced_at", nullable = false)
     private LocalDateTime syncedAt;
+
+    /**
+     * Graph's {@code iCalUId}: the same for one meeting in every attendee's mailbox, and
+     * different for every occurrence of a series (V614).
+     *
+     * <p>Nullable, and null means "identity unknown", never "no identity": every row written
+     * before V614 is null until a full read of its mailbox rewrites it, and the feed renders
+     * such a row on its own exactly as it always did. Never used as a key on its own — always
+     * with {@code clientUuid} — because the same meeting can be attributed to two clients from
+     * two mailboxes only by a rule change, and folding across accounts would hide that.
+     */
+    @Column(name = "ical_uid", length = 255)
+    private String icalUid;
 }
