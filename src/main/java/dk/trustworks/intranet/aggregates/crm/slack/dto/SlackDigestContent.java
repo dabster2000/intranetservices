@@ -94,6 +94,19 @@ public record SlackDigestContent(
     public static final String SIGNAL_NEW_SCOPE = "NEW_SCOPE";
     /** An offer, a pitch, a tender or a bid — sent, to be sent, or published. */
     public static final String SIGNAL_PROPOSAL = "PROPOSAL";
+    /**
+     * A new opening: an inbound approach, somebody flagging a target, an explicit "we should
+     * be in on this". The one type that does NOT presuppose an engagement — it is how a
+     * company we have never worked with first earns a row.
+     *
+     * <p>Added after the first eleven types missed the case they were least likely to
+     * contain: they were derived from 43 readings of existing-engagement traffic, so the
+     * set had no word for new business. A colleague posting a prospect's LinkedIn note with
+     * "vi skal med i denne dialog... er det en du vil tage?" graded RELATIONSHIP — LOW,
+     * because a person at the company was named — which is the quietest thing the taxonomy
+     * could have said about the most actionable message in the channel.
+     */
+    public static final String SIGNAL_LEAD = "LEAD";
     /** A yes: signed, approved, awarded, or a verbal go-ahead. */
     public static final String SIGNAL_WON = "WON";
     /** A no: rejected, cancelled, lost, or a client walking away. */
@@ -117,6 +130,9 @@ public record SlackDigestContent(
      */
     public static final List<String> PRIORITY = List.of(
             SIGNAL_WON, SIGNAL_LOST, SIGNAL_EXTENSION, SIGNAL_NEW_SCOPE, SIGNAL_PROPOSAL,
+            // Below PROPOSAL on purpose: a proposal out is further along than an opening
+            // somebody has spotted, so on a day that holds both, the proposal is the news.
+            SIGNAL_LEAD,
             SIGNAL_ESCALATION, SIGNAL_PROCUREMENT, SIGNAL_ALLOCATION, SIGNAL_COMPLIANCE,
             SIGNAL_DELIVERY, SIGNAL_RELATIONSHIP, SIGNAL_NONE);
 
@@ -125,7 +141,7 @@ public record SlackDigestContent(
      * relationship, and that somebody should see this week.
      */
     private static final Set<String> HIGH_SIGNALS = Set.of(
-            SIGNAL_ALLOCATION, SIGNAL_EXTENSION, SIGNAL_NEW_SCOPE, SIGNAL_PROPOSAL,
+            SIGNAL_ALLOCATION, SIGNAL_EXTENSION, SIGNAL_NEW_SCOPE, SIGNAL_PROPOSAL, SIGNAL_LEAD,
             SIGNAL_WON, SIGNAL_LOST, SIGNAL_PROCUREMENT, SIGNAL_ESCALATION, SIGNAL_COMPLIANCE);
 
     /**
@@ -133,6 +149,14 @@ public record SlackDigestContent(
      * here" when somebody opens the account, and they never interrupt anybody.
      */
     private static final Set<String> LOW_SIGNALS = Set.of(SIGNAL_DELIVERY, SIGNAL_RELATIONSHIP);
+
+    /**
+     * The types that make a row HIGH, for a caller that has to ask the question in SQL.
+     * A copy, so nothing outside can widen the set that decides what is loud.
+     */
+    public static List<String> highSignals() {
+        return List.copyOf(HIGH_SIGNALS);
+    }
 
     /** The closed set, for validation. Order is PRIORITY's. */
     public static boolean isSignalType(String value) {

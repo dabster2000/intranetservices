@@ -55,7 +55,7 @@ import java.util.Set;
 public final class SlackMentionPrompts {
 
     /** Recorded on every mention row so a prompt change is attributable. */
-    public static final String PROMPT_VERSION = "slack-mention-v2";
+    public static final String PROMPT_VERSION = "slack-mention-v3";
 
     static final String ACCOUNTS_START = "<<<ACCOUNTS";
     static final String ACCOUNTS_END = "ACCOUNTS>>>";
@@ -244,6 +244,14 @@ public final class SlackMentionPrompts {
                 change to what we are paid for or how (T/M, fast pris, rate).
                     "PROPOSAL" — an offer, a pitch, a tender or a bid: sent, to be sent, \
                 or published by the company ("udbud offentliggjort", "forslaget sendes").
+                    "LEAD" — a NEW opening at this company: an inbound approach, somebody \
+                flagging them as a target, a person there inviting a conversation, an \
+                explicit "vi skal med i den dialog". This is the type for a company we do \
+                NOT already work with, and for a new door at one we do. Say LEAD even when \
+                nothing is agreed, nobody is assigned and the whole mention is one \
+                colleague's idea — an opening nobody has taken yet is the thing most worth \
+                saying out loud, and naming the person at the company is what makes it \
+                actionable rather than making it a RELATIONSHIP.
                     "ESCALATION" — dissatisfaction, a complaint, impatience, an \
                 escalation: the RELATIONSHIP is at risk, not just the plan.
                     "PROCUREMENT" — a purchasing, legal or contractual gate standing \

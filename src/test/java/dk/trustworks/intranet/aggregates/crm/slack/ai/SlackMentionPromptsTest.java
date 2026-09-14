@@ -387,7 +387,7 @@ class SlackMentionPromptsTest {
 
     @Test
     void thePromptVersionIsStampedOnEveryRow() {
-        assertEquals("slack-mention-v2", SlackMentionPrompts.PROMPT_VERSION,
+        assertEquals("slack-mention-v3", SlackMentionPrompts.PROMPT_VERSION,
                 "a prompt change that keeps the version leaves the stored rows unattributable");
     }
 

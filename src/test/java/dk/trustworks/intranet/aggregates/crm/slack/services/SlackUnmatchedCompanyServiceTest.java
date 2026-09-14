@@ -259,7 +259,7 @@ class SlackUnmatchedCompanyServiceTest {
             stubFindByIdFromStore(panache);
 
             service.record(List.of(new UnmatchedCompanySighting(NAME_KEY, DISPLAY, CHANNEL, DAY, 4,
-                    Arrays.asList(TOMMY, "  " + TOMMY + "  ", null, "", LUKAS), null)), NOW);
+                    Arrays.asList(TOMMY, "  " + TOMMY + "  ", null, "", LUKAS), null, null, null)), NOW);
 
             panache.verify(() -> PanacheEntityBase.delete("sightingUuid", sightingUuid()), times(1));
             assertEquals(2, authorsPersisted.size(), "the same colleague twice is one author row");
@@ -285,14 +285,14 @@ class SlackUnmatchedCompanyServiceTest {
             service.record(null, NOW);
             service.record(List.of(), NOW);
             service.record(Arrays.asList(
-                    new UnmatchedCompanySighting(null, DISPLAY, CHANNEL, DAY, 1, List.of(TOMMY), null),
-                    new UnmatchedCompanySighting("   ", DISPLAY, CHANNEL, DAY, 1, List.of(TOMMY), null),
-                    new UnmatchedCompanySighting(NAME_KEY, DISPLAY, null, DAY, 1, List.of(TOMMY), null),
-                    new UnmatchedCompanySighting(NAME_KEY, DISPLAY, CHANNEL, null, 1, List.of(TOMMY), null),
+                    new UnmatchedCompanySighting(null, DISPLAY, CHANNEL, DAY, 1, List.of(TOMMY), null, null, null),
+                    new UnmatchedCompanySighting("   ", DISPLAY, CHANNEL, DAY, 1, List.of(TOMMY), null, null, null),
+                    new UnmatchedCompanySighting(NAME_KEY, DISPLAY, null, DAY, 1, List.of(TOMMY), null, null, null),
+                    new UnmatchedCompanySighting(NAME_KEY, DISPLAY, CHANNEL, null, 1, List.of(TOMMY), null, null, null),
                     // Longer than the primary key. Dropped here rather than left to abort the
                     // whole day's transaction on a "data too long".
                     new UnmatchedCompanySighting("x".repeat(191), DISPLAY, CHANNEL, DAY, 1,
-                            List.of(TOMMY), null)), NOW);
+                            List.of(TOMMY), null, null, null)), NOW);
 
             assertTrue(companiesPersisted.isEmpty());
             assertTrue(sightingsPersisted.isEmpty());
@@ -838,7 +838,7 @@ class SlackUnmatchedCompanyServiceTest {
 
     private static UnmatchedCompanySighting sighting(String displayName, int mentions, String author) {
         return new UnmatchedCompanySighting(SlackUnmatchedCompanyService.nameKey(displayName),
-                displayName, CHANNEL, DAY, mentions, List.of(author), null);
+                displayName, CHANNEL, DAY, mentions, List.of(author), null, null, null);
     }
 
     private static String sightingUuid() {
@@ -968,10 +968,41 @@ class SlackUnmatchedCompanyServiceTest {
     @Test
     void aLikelyClientIsOfferedEvenFromASingleMention() {
         SlackUnmatchedCompany once = hint("nn", 1, 1);
-        assertFalse(SlackUnmatchedCompanyService.isActionable(once, null, Map.of("nn", 1)));
+        assertFalse(SlackUnmatchedCompanyService.isActionable(once, null, Map.of("nn", 1), false));
         assertTrue(SlackUnmatchedCompanyService.isActionable(once,
-                new SlackUnmatchedCompanyService.ClientMatch("uuid", "NOVO NORDISK A/S"), Map.of("nn", 1)));
+                new SlackUnmatchedCompanyService.ClientMatch("uuid", "NOVO NORDISK A/S"), Map.of("nn", 1), false));
     }
+
+    /**
+     * The three gates on creating a company without a person. Each one is here because the
+     * feature's own first two runs produced a name that would have been wrong to create:
+     * NN and Københavns Kommune were companies Intra already had, and LEGO, N1, Carlsberg
+     * and NexiGroup were single name-drops.
+     */
+    @Test
+    void aHintBecomesAProspectOnlyWhenItIsGradedHighAndMatchesNoClientWeHave() {
+        SlackUnmatchedCompany once = hint("gjensidige", 1, 1);
+        Map<String, Integer> oneChannel = Map.of("gjensidige", 1);
+        ClientMatchStub none = null;
+
+        // Graded HIGH, no client of ours answers to it -> create.
+        assertTrue(SlackUnmatchedCompanyService.isActionable(once, null, oneChannel, true));
+
+        // The model said nothing much. A name-drop is not a company.
+        assertFalse(SlackUnmatchedCompanyService.isActionable(once, null, oneChannel, false));
+
+        // Graded HIGH, but we already have them under another spelling. This is the NN case,
+        // and creating here is how a second NOVO NORDISK A/S gets into the CRM.
+        SlackUnmatchedCompanyService.ClientMatch existing =
+                new SlackUnmatchedCompanyService.ClientMatch("uuid", "NOVO NORDISK A/S");
+        assertTrue(SlackUnmatchedCompanyService.isActionable(hint("nn", 1, 1), existing, Map.of("nn", 1), true),
+                "still OFFERED to a person, so they can link it");
+        assertNotNull(existing, "but createProspectsFromConfidentHints skips any hint with a likely client");
+        assertEquals("NOVO NORDISK A/S", existing.name());
+    }
+
+    /** A stub type alias kept only so the test above reads as prose. */
+    private interface ClientMatchStub { }
 
     private static SlackUnmatchedCompany hint(String nameKey, int mentionsTotal, int peopleCount) {
         SlackUnmatchedCompany row = new SlackUnmatchedCompany();

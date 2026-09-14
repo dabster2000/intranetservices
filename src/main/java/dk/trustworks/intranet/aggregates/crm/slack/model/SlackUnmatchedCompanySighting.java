@@ -62,6 +62,18 @@ public class SlackUnmatchedCompanySighting extends PanacheEntityBase {
     @Column(name = "author_count", nullable = false)
     private int authorCount;
 
+    /**
+     * What the model made of this sighting, from {@code SlackDigestContent}'s closed set —
+     * the reason a first-time mention can be worth showing before it is a pattern. Null on
+     * every row written before V612, which reads as "not graded" and falls back to counts.
+     */
+    @Column(name = "signal_type", length = 20)
+    private String signalType;
+
+    /** The model's one line for this sighting, so the panel can say what it is. */
+    @Column(name = "headline", length = 200)
+    private String headline;
+
     @Column(name = "permalink", length = 500)
     private String permalink;
 }

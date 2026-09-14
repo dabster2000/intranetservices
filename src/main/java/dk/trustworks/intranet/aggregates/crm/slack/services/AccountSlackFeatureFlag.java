@@ -35,6 +35,18 @@ public class AccountSlackFeatureFlag {
 
     static final String SOURCE_CHANNELS_KEY = "crm.slack.source-channels.enabled";
 
+    /**
+     * Whether a company hint the model was confident about is created as a PROSPECT without
+     * anybody pressing Add.
+     *
+     * <p>Its own switch, and seeded {@code 'false'} by V613, because it is the only thing in
+     * this module that WRITES A CRM ROW with no person in the loop. The two lane switches
+     * above arm reading and spending; this one arms creating, and the failure modes are not
+     * comparable — a lane left on costs tokens, and this left on when the matcher is wrong
+     * costs duplicate companies that somebody has to merge by hand.
+     */
+    static final String AUTO_PROSPECT_KEY = "crm.slack.auto-prospect.enabled";
+
     @Inject
     AppSettingService appSettingService;
 
@@ -50,6 +62,15 @@ public class AccountSlackFeatureFlag {
     /** The nightly read of the general source channels and the mention extraction armed. */
     public boolean isSourceChannelsEnabled() {
         return appSettingService.findByKey(SOURCE_CHANNELS_KEY)
+                .map(AppSetting::getSettingValue)
+                .map(String::trim)
+                .map(Boolean::parseBoolean)
+                .orElse(false);
+    }
+
+    /** Creating a PROSPECT from a confident hint, with nobody in the loop, armed. */
+    public boolean isAutoProspectEnabled() {
+        return appSettingService.findByKey(AUTO_PROSPECT_KEY)
                 .map(AppSetting::getSettingValue)
                 .map(String::trim)
                 .map(Boolean::parseBoolean)
