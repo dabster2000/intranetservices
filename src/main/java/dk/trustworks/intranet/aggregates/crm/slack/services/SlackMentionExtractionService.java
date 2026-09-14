@@ -65,10 +65,13 @@ import java.util.function.Function;
  * round-trip holding a pooled connection is how this codebase has caused outages before.
  *
  * <p><b>Degradation, and the one distinction everything downstream turns on.</b>
- * {@link OpenAIService} never throws. Every non-2xx, every timeout and every exhausted token
- * budget comes back as the literal empty object; a model that refuses comes back as the
- * schema-conformant {@code {"mentions":[]}}. Those two are indistinguishable from here by
- * their emptiness and mean opposite things — the refusal, like a well-formed answer with an
+ * {@link OpenAIService} throws for exactly one failure — an exhausted credit balance, which
+ * is every call's failure rather than this one's and stops the run
+ * ({@link dk.trustworks.intranet.apis.openai.OpenAIQuotaException}). Everything else comes
+ * back as a body: every other non-2xx, every timeout and every exhausted token budget as the
+ * literal empty object, and a model that refuses as the schema-conformant
+ * {@code {"mentions":[]}}. Those last two are indistinguishable from here by their emptiness
+ * and mean opposite things — the refusal, like a well-formed answer with an
  * empty list, is an honest empty day, which most days of a general channel are, while the
  * empty object is a call that never happened. So a reading carries {@code failed}, and the
  * sync lane refuses to close a day whose model call failed: a rate-limit burst at 02:40 then
@@ -233,6 +236,8 @@ public class SlackMentionExtractionService {
      * @param colleagueNames every colleague's name, so one of them turning up as a company
      *                       name is dropped rather than filed as a prospect
      * @param lines          the day's messages, already rendered — never persisted
+     * @throws dk.trustworks.intranet.apis.openai.OpenAIQuotaException when the AI account is
+     *         out of credit — not this day's failure but every day's, so the lane stops
      */
     public Extraction extract(String channelName, LocalDate date, List<String> participants,
                               List<SlackMentionPrompts.Account> allowlist,
@@ -269,14 +274,18 @@ public class SlackMentionExtractionService {
         int offset = 0;
 
         for (SlackMentionPrompts.Chunk chunk : chunks) {
-            String json = openAIService.askQuestionWithSchema(
+            // Detailed rather than the String overload for one answer only: an exhausted
+            // credit balance throws out of here and stops the night. Every other failure
+            // stays the empty body the day-level handling below is built on.
+            String json = openAIService.askQuestionWithSchemaDetailed(
                     SlackMentionPrompts.systemPrompt(),
                     chunk.userPrompt(),
                     SlackMentionPrompts.schema(),
                     SCHEMA_NAME,
                     SlackMentionPrompts.REFUSAL_FALLBACK_JSON,
                     mentionModel, MAX_OUTPUT_TOKENS, false,
-                    mentionReasoningEffort.filter(e -> !e.isBlank()).orElse(null));
+                    mentionReasoningEffort.filter(e -> !e.isBlank()).orElse(null))
+                    .jsonOrThrowWhenOutOfCredit();
             Reading reading = parse(json, allowlistIds, chunk.lineCount(), linkedAliases, colleagueKeys);
             if (reading.failed()) {
                 // The day is going to be re-read whole tomorrow, so the chunks after this one
@@ -331,8 +340,9 @@ public class SlackMentionExtractionService {
      */
     Reading parse(String json, Set<String> allowlistIds, int lineCount,
                   Map<String, String> linkedAliases, Set<String> colleagueKeys) {
-        // OpenAIService never throws: it reports every failure as "{}" or blank. A caller
-        // that only try/catches silently accepts nothing — test for it explicitly.
+        // OpenAIService reports every failure that reaches here as "{}" or blank — the one
+        // it throws for never gets this far. A caller that only try/catches silently accepts
+        // nothing, so test for it explicitly.
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             log.warnf("Slack mention extraction returned no usable output (model=%s, prompt=%s)",
                     mentionModel, SlackMentionPrompts.PROMPT_VERSION);

@@ -207,12 +207,13 @@ public class SlackSyncRunService {
 
     /**
      * A run that could not read three channels still finished; one whose Slack app is
-     * misconfigured did not, because every remaining channel would have answered the same
-     * way. That is the whole distinction, and it is the only one the counters cannot make on
-     * their own.
+     * misconfigured, or whose AI account has no credit left, did not — because every
+     * remaining channel would have answered the same way. That is the whole distinction, and
+     * it is the only one the counters cannot make on their own. Which of the two it was is in
+     * {@code failure_code}.
      */
     private static SlackSyncRunStatus statusOf(SyncSummary summary) {
-        return summary != null && summary.stoppedOnConfiguration()
+        return summary != null && summary.stopped()
                 ? SlackSyncRunStatus.STOPPED
                 : SlackSyncRunStatus.DONE;
     }
