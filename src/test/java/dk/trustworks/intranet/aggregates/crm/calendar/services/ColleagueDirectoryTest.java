@@ -235,4 +235,69 @@ class ColleagueDirectoryTest {
     private static ColleagueDirectory directoryOf(ColleagueRow... rows) {
         return ColleagueDirectory.of(List.of(rows));
     }
+
+    // ------------------------------------------------------------------------
+    // A name the client SHORTENED
+    // ------------------------------------------------------------------------
+
+    /**
+     * Dagrofa's own case. It issued Nichlas Halberg Madsen the mailbox
+     * {@code extnim@dagrofa.dk} and wrote {@code "Nichlas Madsen"} on it — two tokens against
+     * our three, so the containment test could not reach it in that direction and ten
+     * meetings with our own consultant sat on the Dagrofa account as client contact.
+     */
+    @Test
+    void aClientThatDropsAMiddleNameIsStillOurColleague() {
+        ColleagueDirectory directory = ColleagueDirectory.of(List.of(new ColleagueDirectory.ColleagueRow(
+                "u-nichlas", "Nichlas", "Halberg Madsen", StatusType.ACTIVE, LocalDate.of(2020, 1, 1))));
+
+        assertTrue(directory.isColleagueOn("Nichlas Madsen", LocalDate.of(2026, 5, 11)));
+    }
+
+    /** And with the client's own prefix in front of it, which is the commoner shape. */
+    @Test
+    void aShortenedNameIsFoundInsideAClientPrefix() {
+        ColleagueDirectory directory = ColleagueDirectory.of(List.of(new ColleagueDirectory.ColleagueRow(
+                "u-emma", "Emma", "Juul Sandberg Andersen", StatusType.ACTIVE, LocalDate.of(2020, 1, 1))));
+
+        assertTrue(directory.isColleagueOn("EMAND (Emma Sandberg Andersen)", LocalDate.of(2026, 5, 11)),
+                "one middle name dropped, a client prefix added");
+    }
+
+    /**
+     * The shortening rule must not re-open the hole {@link #anAttendeeWhoseNameMerelyContainsAColleaguesNameDoesNotMatch()}
+     * closed. Every candidate window has to START on the employee's first token, and
+     * {@code marianne} is not {@code anne}.
+     */
+    @Test
+    void theShorteningRuleStillWillNotMatchMarianneAgainstAnne() {
+        ColleagueDirectory directory = ColleagueDirectory.of(List.of(new ColleagueDirectory.ColleagueRow(
+                "u-anne", "Anne", "Berit Hansen", StatusType.ACTIVE, LocalDate.of(2020, 1, 1))));
+
+        assertFalse(directory.isColleagueOn("Marianne Hansen", LocalDate.of(2026, 5, 11)));
+        assertFalse(directory.isColleagueOn("Berit Hansen", LocalDate.of(2026, 5, 11)),
+                "a window has to start on the FIRST name, not on a middle one");
+    }
+
+    /**
+     * The reason the shortening rule is safe to widen at all: employment still decides.
+     *
+     * <p>Production's own instance. Sandra Holm Andersen left on 2026-03-01 and works at AP
+     * Pension now; {@code sae@appension.dk} carries {@code "Sandra Andersen"} on a meeting
+     * dated 2026-05-08. The name rule finds her — and must then hand her back, because an
+     * ex-colleague inside a client is the single most valuable contact that account has.
+     */
+    @Test
+    void aShortenedNameBelongingToSomebodyWhoHasLeftIsNotOurs() {
+        ColleagueDirectory directory = ColleagueDirectory.of(List.of(
+                new ColleagueDirectory.ColleagueRow(
+                        "u-sandra", "Sandra", "Holm Andersen", StatusType.ACTIVE, LocalDate.of(2023, 1, 1)),
+                new ColleagueDirectory.ColleagueRow(
+                        "u-sandra", "Sandra", "Holm Andersen", StatusType.TERMINATED, LocalDate.of(2026, 3, 1))));
+
+        assertTrue(directory.isColleagueOn("Sandra Andersen", LocalDate.of(2026, 1, 15)),
+                "while she was ours");
+        assertFalse(directory.isColleagueOn("Sandra Andersen", LocalDate.of(2026, 5, 8)),
+                "after she left — she is AP Pension's now, and a client contact");
+    }
 }

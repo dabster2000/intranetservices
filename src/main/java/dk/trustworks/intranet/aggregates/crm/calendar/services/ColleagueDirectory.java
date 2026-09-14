@@ -176,7 +176,8 @@ final class ColleagueDirectory {
             return null;
         }
         for (Colleague colleague : colleagues) {
-            if (!containsSequence(attendeeTokens, colleague.tokens())) {
+            if (!containsSequence(attendeeTokens, colleague.tokens())
+                    && !containsReductionOf(attendeeTokens, colleague.tokens())) {
                 continue;
             }
             if (wasEmployedOn(colleague.statuses(), date)) {
@@ -277,6 +278,73 @@ final class ColleagueDirectory {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Does the attendee's name read as a SHORTENED form of this employee's — the same first
+     * name and the same final surname, with one or more of the employee's middle names left
+     * out?
+     *
+     * <p>{@link #containsSequence} only recognises an attendee name that contains the
+     * employee's in full, which covers the client that writes MORE than we hold
+     * ({@code "QNTE (Nicolas De Teilmann)"}) but not the one that writes LESS. Clients do
+     * both. Dagrofa issued Nichlas Halberg Madsen the mailbox {@code extnim@dagrofa.dk} and
+     * put {@code "Nichlas Madsen"} on it; our user row says {@code Nichlas} +
+     * {@code Halberg Madsen}, three tokens against the attendee's two, so the containment
+     * test could not match in that direction and ten meetings with our own consultant stayed
+     * on the Dagrofa account as client contact.
+     *
+     * <p>The rule: some CONTIGUOUS window of the attendee's tokens must start on the
+     * employee's first token, end on their last, and be an in-order subsequence of the
+     * employee's tokens. A window rather than the whole name, so a client prefix survives
+     * ({@code "NIM (Nichlas Madsen)"}); anchored on both ends, so it is a name shortened
+     * rather than a name that merely shares a word.
+     *
+     * <p><b>It cannot re-open the substring hole.</b> "Marianne Hansen" against an employee
+     * "Anne Hansen" still fails: every candidate window would have to START on {@code anne},
+     * and {@code marianne} is a different token. Tokens are compared whole here exactly as
+     * they are there.
+     *
+     * <p>Measured against production it adds five addresses, all of them consultants on an
+     * {@code ext}-prefixed client mailbox, each resolving to exactly one employee. One of
+     * the five — {@code sae@appension.dk}, Sandra Holm Andersen — is then KEPT anyway by the
+     * employment test, because she left on 2026-03-01 and the meeting is 2026-05-08: she
+     * works at AP Pension now, and she is the most valuable contact that account has.
+     */
+    static boolean containsReductionOf(List<String> attendeeTokens, List<String> employeeTokens) {
+        if (employeeTokens.size() < 3 || attendeeTokens.size() < 2) {
+            // Nothing to shorten: a two-token name has no middle to drop, and a one-token
+            // window is the single-name match this class refuses everywhere else.
+            return false;
+        }
+        String first = employeeTokens.get(0);
+        String last = employeeTokens.get(employeeTokens.size() - 1);
+        for (int start = 0; start < attendeeTokens.size(); start++) {
+            if (!attendeeTokens.get(start).equals(first)) {
+                continue;
+            }
+            for (int end = start + 1; end < attendeeTokens.size(); end++) {
+                if (!attendeeTokens.get(end).equals(last)) {
+                    continue;
+                }
+                if (end - start + 1 < employeeTokens.size()
+                        && isOrderedSubsequence(attendeeTokens.subList(start, end + 1), employeeTokens)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Every token of {@code needle}, in order, somewhere in {@code haystack}. */
+    private static boolean isOrderedSubsequence(List<String> needle, List<String> haystack) {
+        int i = 0;
+        for (String token : haystack) {
+            if (i < needle.size() && needle.get(i).equals(token)) {
+                i++;
+            }
+        }
+        return i == needle.size();
     }
 
     /**
