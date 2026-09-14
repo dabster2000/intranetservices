@@ -27,6 +27,11 @@
 --   2 the bubble name, trimmed: four bubble names carry a trailing \r
 --   3 the five pairs Hans confirmed on 2026-09-14 (spec §5). 'Forsvaret' and 'Rambøll'
 --     were genuinely ambiguous and he picked; the other three had one candidate each.
+--     'Forsvaret' was changed to Forsvarskommandoen on the same day, after a run against
+--     the local staging copy showed the first pick — Forsvarsministeriets Materiel- og
+--     Indkøbsstyrelse — had 0 contracts and nobody who had ever booked an hour on it,
+--     while Forsvarskommandoen had both. The bubble formed around work; put the people
+--     where the work is.
 --   The priority matters: a bubble that already carries a hand-made link must not also
 --   seed members onto a different client that happens to share its name.
 --
@@ -103,13 +108,14 @@ SELECT b.uuid, ca.client_uuid, 1
  WHERE b.type = 'ACCOUNT_TEAM'
    AND b.active = 1;
 
--- 3b. the bubble name, trimmed of the stray carriage returns four of them carry
+-- 3b. the bubble name, trimmed of the stray carriage returns four of them carry.
+--     CLIENT or PROSPECT — see 3c for why the type filter is not just 'CLIENT'.
 INSERT IGNORE INTO tmp_v598_bubble_client (bubble_uuid, client_uuid, priority)
 SELECT b.uuid, c.uuid, 2
   FROM bubbles b
   JOIN client c
     ON c.name = TRIM(REPLACE(REPLACE(b.name, '\r', ''), '\n', ''))
-   AND c.type = 'CLIENT'
+   AND c.type IN ('CLIENT', 'PROSPECT')
  WHERE b.type = 'ACCOUNT_TEAM'
    AND b.active = 1;
 
@@ -123,11 +129,17 @@ SELECT b.uuid, c.uuid, 3
         UNION ALL
         SELECT 'Udvikling og Forenklingsstyrrelsen', 'Udviklings- og Forenklingsstyrelsen'
         UNION ALL
-        SELECT 'Forsvaret', 'Forsvarsministeriets Materiel- og Indkøbsstyrelse'
+        SELECT 'Forsvaret', 'Forsvarskommandoen'
         UNION ALL
         SELECT 'Rambøll', 'Ramboll') m
     ON m.bubble_name = TRIM(REPLACE(REPLACE(b.name, '\r', ''), '\n', ''))
-  JOIN client c ON c.name = m.client_name AND c.type = 'CLIENT'
+  -- CLIENT or PROSPECT: "not a PARTNER" is what this filter means. On a fresh database
+  -- nothing is a PROSPECT yet when V598 runs (V600 comes later), so this changes no
+  -- outcome there — but it makes the statement independent of migration ORDER. Without
+  -- it, a re-run against a database that has already seen V600 silently stops resolving
+  -- every bubble whose client has since been typed PROSPECT, which is exactly what
+  -- happened locally to the Forsvaret pair.
+  JOIN client c ON c.name = m.client_name AND c.type IN ('CLIENT', 'PROSPECT')
  WHERE b.type = 'ACCOUNT_TEAM'
    AND b.active = 1;
 
