@@ -118,6 +118,8 @@ public class AccountSlackDigestService {
      * @param participants first names of the Trustworks people active that day
      * @param lines        the day's messages, already rendered — never persisted
      * @return the validated reading, or empty when the model was off or answered nothing usable
+     * @throws dk.trustworks.intranet.apis.openai.OpenAIQuotaException when the AI account is
+     *         out of credit — not this day's failure but every day's, so the lane stops
      */
     public Optional<SlackDigestContent> digest(String clientName, String channelName, LocalDate date,
                                                List<String> participants,
@@ -133,14 +135,18 @@ public class AccountSlackDigestService {
         if (lines == null || lines.isEmpty()) {
             return Optional.empty();
         }
-        String json = openAIService.askQuestionWithSchema(
+        // Detailed rather than the String overload for one answer only: an exhausted credit
+        // balance throws out of here and stops the run, because every remaining account
+        // would be refused identically. Every other failure stays an empty body.
+        String json = openAIService.askQuestionWithSchemaDetailed(
                 AccountSlackDigestPrompts.systemPrompt(),
                 AccountSlackDigestPrompts.userPrompt(clientName, channelName, date, participants, lines),
                 AccountSlackDigestPrompts.schema(),
                 SCHEMA_NAME,
                 AccountSlackDigestPrompts.REFUSAL_FALLBACK_JSON,
                 digestModel, MAX_OUTPUT_TOKENS, false,
-                digestReasoningEffort.filter(e -> !e.isBlank()).orElse(null));
+                digestReasoningEffort.filter(e -> !e.isBlank()).orElse(null))
+                .jsonOrThrowWhenOutOfCredit();
         return parse(json);
     }
 
@@ -156,7 +162,8 @@ public class AccountSlackDigestService {
      * answer, and a rule the model is asked to follow is not a rule the backend can rely on.
      */
     Optional<SlackDigestContent> parse(String json) {
-        // OpenAIService never throws: it reports every failure as "{}" or blank.
+        // OpenAIService reports every failure that reaches here as "{}" or blank — the one
+        // it throws for (an exhausted credit balance) never gets this far.
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             log.warnf("Account Slack digest returned no usable output (model=%s, prompt=%s)",
                     digestModel, AccountSlackDigestPrompts.PROMPT_VERSION);

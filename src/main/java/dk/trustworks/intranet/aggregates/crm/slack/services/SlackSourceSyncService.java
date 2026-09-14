@@ -19,6 +19,7 @@ import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackSyncServ
 import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackSyncService.SyncSummary;
 import dk.trustworks.intranet.aggregates.crm.slack.services.SlackMentionExtractionService.Extraction;
 import dk.trustworks.intranet.aggregates.crm.slack.services.SlackUnmatchedCompanyService.UnmatchedCompanySighting;
+import dk.trustworks.intranet.apis.openai.OpenAIQuotaException;
 import dk.trustworks.intranet.communicationsservice.services.SlackChannelAccessException;
 import dk.trustworks.intranet.communicationsservice.services.SlackConfigurationException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
@@ -98,8 +99,10 @@ import java.util.UUID;
  * verdict recorded on its own row and the loop continues — the fix is an invitation in
  * Slack and the next run re-checks it. A transient Slack or model failure is counted into
  * {@code failures} so the run row and the settings tab say so, the cursor does not move,
- * and the same window is re-read tomorrow. A {@link SlackConfigurationException} is the
- * same answer for every channel, so it is said once at ERROR and the run stops.
+ * and the same window is re-read tomorrow. A {@link SlackConfigurationException} and an
+ * {@link OpenAIQuotaException} are the same answer for every channel — a broken Slack app and
+ * an AI account with no credit left — so each is said once at ERROR, names itself in the run
+ * row's {@code failure_code}, and the run stops.
  */
 @JBossLog
 @ApplicationScoped
@@ -263,7 +266,9 @@ public class SlackSourceSyncService {
         int unmatched = 0;
         int linkErrors = 0;
         int failures = 0;
-        boolean stopped = false;
+        // Null until something makes the rest of the run pointless; then the reason, which is
+        // also what the run row and the settings card have to show.
+        String stopCode = null;
 
         for (SourceChannel channel : channels) {
             try {
@@ -286,7 +291,15 @@ public class SlackSourceSyncService {
             } catch (SlackConfigurationException e) {
                 // The same answer for every channel; say it once and stop.
                 log.errorf("Slack source sync stopped: the Slack app is misconfigured — %s", e.getMessage());
-                stopped = true;
+                stopCode = AccountSlackSyncService.FAILURE_SLACK_CONFIGURATION;
+                break;
+            } catch (OpenAIQuotaException e) {
+                // Also the same answer for every channel, and one no retry tonight can change:
+                // the balance is zero until somebody pays. On 2026-09-14 this arrived as three
+                // channels, three 429s and a run row reporting "3 failures" with no reason in
+                // it — the cost of counting a global refusal one item at a time.
+                log.errorf("Slack source sync stopped: the AI account is out of credit — %s", e.getMessage());
+                stopCode = AccountSlackSyncService.FAILURE_AI_QUOTA;
                 break;
             } catch (IOException | SlackApiException | RuntimeException e) {
                 failures++;
@@ -321,9 +334,9 @@ public class SlackSourceSyncService {
         log.infof("Slack source sync done: channels=%d read=%d days=%d mentions=%d unmatched=%d "
                         + "linkErrors=%d failures=%d prospects=%d%s",
                 channels.size(), channelsRead, days, mentions, unmatched, linkErrors, failures, prospects,
-                stopped ? " STOPPED on configuration" : "");
+                stopCode == null ? "" : " STOPPED on " + stopCode);
         return new SyncSummary(channels.size(), channelsRead, days, mentions, unmatched, linkErrors, failures,
-                stopped, stopped ? AccountSlackSyncService.FAILURE_SLACK_CONFIGURATION : null);
+                stopCode != null, stopCode);
     }
 
     /**

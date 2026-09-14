@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.crm.slack.model.SlackSyncRun;
 import dk.trustworks.intranet.aggregates.crm.slack.model.enums.SlackSyncLane;
 import dk.trustworks.intranet.aggregates.crm.slack.model.enums.SlackSyncTrigger;
 import dk.trustworks.intranet.communicationsservice.services.SlackChannelAccessException;
+import dk.trustworks.intranet.apis.openai.OpenAIQuotaException;
 import dk.trustworks.intranet.communicationsservice.services.SlackConfigurationException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService.SlackChannelMessage;
@@ -123,6 +124,13 @@ public class AccountSlackSyncService {
     /** What a run that stopped on a misconfigured Slack app writes into {@code failure_code}. */
     static final String FAILURE_SLACK_CONFIGURATION = "SLACK_CONFIGURATION";
 
+    /**
+     * What a run that stopped because the AI account is out of credit writes into
+     * {@code failure_code}. Both lanes use it; the frontend turns it into a sentence, because
+     * a bare code on a settings card is not something an admin can act on.
+     */
+    static final String FAILURE_AI_QUOTA = "AI_QUOTA";
+
     private static final DateTimeFormatter WALL_CLOCK = DateTimeFormatter.ofPattern("HH:mm");
 
     @Inject
@@ -144,9 +152,14 @@ public class AccountSlackSyncService {
      * <p>Both Slack lanes fill this same record, which is why two of its fields look idle
      * from here. {@code unmatched} is always zero on this lane — a client's own space is
      * already attached to a client, so there is no company left over to file as a hint — and
-     * {@code failureCode} is only ever set alongside {@code stoppedOnConfiguration}. One
-     * shape rather than two is what lets {@link SlackSyncRunService#finish} close either
-     * lane's row without asking which lane it is looking at.
+     * {@code failureCode} is set if and only if {@code stopped} is. One shape rather than two
+     * is what lets {@link SlackSyncRunService#finish} close either lane's row without asking
+     * which lane it is looking at.
+     *
+     * <p>{@code stopped} is "the run gave up on the rest", and there are two ways to earn it:
+     * a misconfigured Slack app and an AI account out of credit. What they have in common is
+     * the only thing that matters here — every remaining item would be answered identically,
+     * so continuing costs calls and buys nothing. {@code failureCode} says which.
      *
      * <p>{@code accounts} is the lane's own word for what it set out to read: account spaces
      * here, listed source channels on the other lane. The column both land in is
@@ -154,7 +167,7 @@ public class AccountSlackSyncService {
      */
     public record SyncSummary(int accounts, int channelsRead, int daysDigested, int readings,
                               int unmatched, int linkErrors, int failures,
-                              boolean stoppedOnConfiguration, String failureCode) {
+                              boolean stopped, String failureCode) {
         static SyncSummary nothing() {
             return new SyncSummary(0, 0, 0, 0, 0, 0, 0, false, null);
         }
@@ -234,7 +247,9 @@ public class AccountSlackSyncService {
         int readings = 0;
         int linkErrors = 0;
         int failures = 0;
-        boolean stopped = false;
+        // Null until something makes the rest of the run pointless; then the reason, which is
+        // also what the run row and the settings card have to show.
+        String stopCode = null;
 
         for (LinkedAccount account : accounts) {
             try {
@@ -272,7 +287,14 @@ public class AccountSlackSyncService {
             } catch (SlackConfigurationException e) {
                 // The same answer for every account; say it once and stop.
                 log.errorf("Account Slack sync stopped: the Slack app is misconfigured — %s", e.getMessage());
-                stopped = true;
+                stopCode = FAILURE_SLACK_CONFIGURATION;
+                break;
+            } catch (OpenAIQuotaException e) {
+                // Also the same answer for every account, and one no retry tonight can change:
+                // the balance is zero until somebody pays. Counting it per account would buy
+                // one refusal per account and a run row that says "N failures" and nothing else.
+                log.errorf("Account Slack sync stopped: the AI account is out of credit — %s", e.getMessage());
+                stopCode = FAILURE_AI_QUOTA;
                 break;
             } catch (IOException | SlackApiException | RuntimeException e) {
                 failures++;
@@ -284,10 +306,10 @@ public class AccountSlackSyncService {
 
         log.infof("Account Slack sync done: accounts=%d channelsRead=%d days=%d readings=%d linkErrors=%d failures=%d%s",
                 accounts.size(), channelsRead, daysDigested, readings, linkErrors, failures,
-                stopped ? " STOPPED on configuration" : "");
+                stopCode == null ? "" : " STOPPED on " + stopCode);
         // No unmatched companies from this lane: see SyncSummary for why the field is here.
         return new SyncSummary(accounts.size(), channelsRead, daysDigested, readings, 0, linkErrors, failures,
-                stopped, stopped ? FAILURE_SLACK_CONFIGURATION : null);
+                stopCode != null, stopCode);
     }
 
     record AccountResult(int days, int readings) { }

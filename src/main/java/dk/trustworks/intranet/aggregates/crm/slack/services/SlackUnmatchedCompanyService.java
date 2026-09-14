@@ -502,8 +502,24 @@ public class SlackUnmatchedCompanyService {
      * nightly CVR job finds these rows with {@code type = 'PROSPECT' and cvr is null} and
      * fills them from the register, which is the only source that can be right.
      *
+     * <h2>Why it carries its own transaction</h2>
+     * Like {@link #refreshAggregates()} above it, and for the same reason: the source lane
+     * calls both of them at the end of a run that deliberately holds no transaction across
+     * its Slack and model calls, and on a MANUAL run that lane is a {@code ManagedExecutor}
+     * worker with no request context either. Without this the first Panache read threw
+     * "neither a transaction nor a CDI request context is active" — intermittently, because a
+     * pooled worker thread sometimes still carried a finished request's context, which is a
+     * worse failure than always: it made the step look like it worked.
+     *
+     * <p>One transaction for the whole loop rather than one per hint, because
+     * {@code createProspect} throws only before it writes anything — a name under two
+     * characters, an owner that does not exist — so the catch below continues over a clean
+     * transaction. Anything that fails AFTER a write is not a bad hint but a broken run, and
+     * rolling the batch back is then the right answer.
+     *
      * @return how many companies were created
      */
+    @Transactional
     public int createProspectsFromConfidentHints(String actor) {
         if (!featureFlag.isAutoProspectEnabled()) {
             return 0;

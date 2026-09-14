@@ -25,6 +25,76 @@ public class OpenAIService {
     private static final int MAX_ERROR_FIELD_CHARS = 200;
     private static final int MAX_ERROR_MESSAGE_CHARS = 500;
 
+    /**
+     * The provider's own words for "this account cannot pay for this call".
+     *
+     * <p>Deliberately matched on {@code type}/{@code code} and never on HTTP 429 alone: an
+     * ordinary rate limit is also a 429, and those two want opposite handling. A rate limit
+     * is transient and the caller should count it and come back; an exhausted credit balance
+     * is answered identically for every call until somebody pays, so a caller in a loop
+     * should stop rather than spend the rest of the loop collecting the same refusal.
+     */
+    private static final String QUOTA_ERROR_TYPE = "insufficient_quota";
+    private static final java.util.Set<String> QUOTA_ERROR_CODES = java.util.Set.of(
+            "insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached");
+
+    /**
+     * The identifying fields of an OpenAI error envelope — never its prose.
+     *
+     * <p>{@code type} and {@code code} come from a closed API-level vocabulary and cannot
+     * carry request content, which is what makes them safe to hand to a caller (and to a
+     * log) under the same allow-list doctrine {@link #describeErrorEnvelope(String)} states
+     * at length. The {@code message} is not here for exactly that reason.
+     *
+     * @param status the HTTP status, or 0 when the call never reached a response
+     */
+    public record ProviderError(int status, String type, String code) {
+
+        /**
+         * Whether the provider refused because the account is out of credit — the one
+         * failure no retry, and no amount of waiting, can clear.
+         */
+        public boolean isQuotaExhausted() {
+            return QUOTA_ERROR_TYPE.equals(type) || (code != null && QUOTA_ERROR_CODES.contains(code));
+        }
+
+        @Override
+        public String toString() {
+            return "status=" + status + " type=" + (type == null ? "<none>" : type)
+                    + " code=" + (code == null ? "<none>" : code);
+        }
+    }
+
+    /**
+     * A structured-output answer together with what the provider said when there was no
+     * answer at all.
+     *
+     * <p>{@link #askQuestionWithSchema} reports every failure as the literal {@code "{}"},
+     * which is the right contract for a caller that can only degrade — but it makes an
+     * exhausted credit balance indistinguishable from a busy model, and a nightly lane
+     * looping over twenty channels then pays for twenty identical refusals and reports
+     * twenty anonymous failures. This overload exists for those callers: same request, same
+     * logging, and the envelope kept instead of thrown away.
+     *
+     * @param json  the model's answer, the refusal fallback, or {@code "{}"} — never null
+     * @param error what the provider said when the call did not happen, else null
+     */
+    public record SchemaAnswer(String json, ProviderError error) {
+
+        /**
+         * The answer, unless the account is out of credit — which is not this call's failure
+         * but every call's, and is reported as such.
+         *
+         * @throws OpenAIQuotaException when the provider refused for billing reasons
+         */
+        public String jsonOrThrowWhenOutOfCredit() {
+            if (error != null && error.isQuotaExhausted()) {
+                throw new OpenAIQuotaException(error);
+            }
+            return json;
+        }
+    }
+
 
     @Inject
     @RestClient
@@ -229,10 +299,39 @@ public class OpenAIService {
                 modelOverride, maxOutputTokensOverride, store, reasoningEffort);
     }
 
+    /**
+     * Structured output, with the provider's verdict kept.
+     *
+     * <p>Same request, same model, same privacy posture as
+     * {@link #askQuestionWithSchema(String, String, ObjectNode, String, String, String, int, boolean, String)}
+     * — the only difference is that a call the provider REFUSED is distinguishable from a
+     * call that answered nothing useful. Use it from a loop; use the String overloads
+     * everywhere else, where "no answer" is the whole of what a caller can act on.
+     */
+    public SchemaAnswer askQuestionWithSchemaDetailed(String system, String userMsg, ObjectNode jsonSchema,
+                                                      String schemaName, String refusalFallbackJson,
+                                                      String modelOverride, int maxOutputTokensOverride,
+                                                      boolean store, String reasoningEffort) {
+        return askQuestionWithSchemaAnswer(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
+                modelOverride, maxOutputTokensOverride, store, reasoningEffort);
+    }
+
+    /**
+     * The String contract every existing caller has: every failure, refusal included, is
+     * reported as a body and never as an exception.
+     */
     private String askQuestionWithSchemaInternal(String system, String userMsg, ObjectNode jsonSchema,
                                                  String schemaName, String refusalFallbackJson,
                                                  String modelOverride, int maxOutputTokensOverride,
                                                  Boolean store, String reasoningEffort) {
+        return askQuestionWithSchemaAnswer(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
+                modelOverride, maxOutputTokensOverride, store, reasoningEffort).json();
+    }
+
+    private SchemaAnswer askQuestionWithSchemaAnswer(String system, String userMsg, ObjectNode jsonSchema,
+                                                     String schemaName, String refusalFallbackJson,
+                                                     String modelOverride, int maxOutputTokensOverride,
+                                                     Boolean store, String reasoningEffort) {
         String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
             ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
@@ -266,7 +365,7 @@ public class OpenAIService {
                     log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s",
                             http.getStatus(), chosenModel, payload);
                 }
-                return "{}";
+                return new SchemaAnswer("{}", providerError(http.getStatus(), payload));
             }
 
             JsonNode root = objectMapper.readTree(payload);
@@ -277,14 +376,14 @@ public class OpenAIService {
                 } else {
                     log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
                 }
-                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+                return new SchemaAnswer(refusalFallbackJson != null ? refusalFallbackJson : "{}", null);
             }
             String out = extractOutputTextOrEmpty(root);
             if ("{}".equals(out)) {
                 logEmptyOutputDiagnostics(root, chosenModel,
                         maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
             }
-            return out;
+            return new SchemaAnswer(out, null);
 
         } catch (jakarta.ws.rs.WebApplicationException e) {
             // The REST client throws for 4xx/5xx before the status branch above runs; the
@@ -303,7 +402,8 @@ public class OpenAIService {
                 log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s body=%s",
                         chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?", errBody);
             }
-            return "{}";
+            return new SchemaAnswer("{}", providerError(
+                    e.getResponse() != null ? e.getResponse().getStatus() : 0, errBody));
         } catch (Exception e) {
             if (Boolean.FALSE.equals(store)) {
                 log.errorf("[OpenAIService] Responses request failed (schema, model=%s, error=%s; payload suppressed)",
@@ -311,7 +411,9 @@ public class OpenAIService {
             } else {
                 log.errorf(e, "[OpenAIService] Responses request failed (schema, model=%s)", chosenModel);
             }
-            return "{}";
+            // No envelope this code could read: a timeout, a connection reset, or an answer
+            // that was not JSON at all. Nothing to pass on but the emptiness.
+            return new SchemaAnswer("{}", null);
         }
     }
 
@@ -1490,6 +1592,40 @@ public class OpenAIService {
      * Every field is capped and newline-stripped: none of them carries a length contract,
      * and a proxy error body is not OpenAI's at all.
      */
+    /**
+     * The identifying half of an error envelope, for a caller rather than for a log.
+     *
+     * <p>Reads only {@code type} and {@code code}, and only when the body really is
+     * OpenAI's envelope: a proxy's HTML error page and a half-received stream both arrive
+     * here, and neither says anything about quota. An unreadable body is therefore reported
+     * as a status with no verdict, which is handled as an ordinary transient failure.
+     */
+    static ProviderError providerError(int status, String body) {
+        if (body == null || body.isBlank()) {
+            return new ProviderError(status, null, null);
+        }
+        JsonNode error;
+        try {
+            error = ERROR_MAPPER.readTree(body).path("error");
+        } catch (Exception e) {
+            return new ProviderError(status, null, null);
+        }
+        if (!error.isObject()) {
+            return new ProviderError(status, null, null);
+        }
+        return new ProviderError(status, rawErrorField(error, "type"), rawErrorField(error, "code"));
+    }
+
+    /** One envelope field as the provider spelled it, or null. Capped like every other. */
+    private static String rawErrorField(JsonNode error, String name) {
+        JsonNode value = error.path(name);
+        if (value.isMissingNode() || value.isNull() || !value.isValueNode()) {
+            return null;
+        }
+        String text = value.asText();
+        return text.isBlank() ? null : logSafe(text, MAX_ERROR_FIELD_CHARS);
+    }
+
     static String describeErrorEnvelope(String body) {
         if (body == null || body.isBlank()) {
             return "no body";
