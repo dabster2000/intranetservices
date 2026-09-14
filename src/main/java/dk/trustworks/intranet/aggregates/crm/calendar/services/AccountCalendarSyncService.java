@@ -87,7 +87,19 @@ import java.util.UUID;
  *       default: above any sales meeting or steering committee, below any firm-wide event,
  *       and a workshop with eight of ours at the client is delivery, which the next rule
  *       excludes anyway. The threshold is configuration rather than a constant so it can be
- *       re-tuned from a log line instead of a release.</li>
+ *       re-tuned from a log line instead of a release.
+ *
+ *       <p><b>The same rule from the other side: a mass event AT the client.</b> Counting
+ *       only OUR OWN people caught "a meeting that was really ours with a guest on it" and
+ *       said nothing about the event where we were the guests. One meeting at Banedanmark
+ *       with fifty people in it stored forty-seven client attendee rows, and each of those
+ *       forty-seven then appeared on the account as somebody the firm had met. Firm-wide,
+ *       ten meetings with eleven or more attendees produced 132 of the 330 client attendee
+ *       rows. So when the WINNING client's delegation reaches its own threshold the
+ *       {@code account_meeting} row is kept — a fifty-person event is real activity with
+ *       the account — and NO attendee rows are written for it: the event is not evidence
+ *       that anybody knows anybody. Ten by default, and configuration for the same reason
+ *       eight is.</li>
  *
  *   <li><b>Our own consultants at the client are not client contacts</b> (decision D2). A
  *       consultant placed at a client gets a mailbox there — {@code mygx@novonordisk.com}
@@ -143,8 +155,31 @@ public class AccountCalendarSyncService {
     static final int INCREMENTAL_BACK_DAYS = 14;
     static final int FORWARD_DAYS = 90;
 
-    /** Graph's page cap for calendarView. Bigger asks are silently truncated anyway. */
+    /**
+     * Graph's page cap for calendarView. Bigger asks are silently truncated anyway.
+     *
+     * <p><b>A page size, never a limit.</b> It was read as a limit for one release and the
+     * cost was the whole point of the feature: Graph returns calendarView OLDEST-FIRST, so
+     * a mailbox with more than 250 events in the 455-day first-run window kept the earliest
+     * 250 and the read stopped — the months that vanished were the RECENT ones. The stored
+     * meetings showed the cliff plainly (Sep 2025: 12, falling to Jul: 1, Aug: 0), and the
+     * COO, who demonstrably met clients that month, was invisible on their accounts. The
+     * continuation is followed in {@link #readCalendar} until Graph stops offering one.
+     */
     static final int PAGE_SIZE = 250;
+
+    /**
+     * Runaway guard on the continuation loop — not an expected bound.
+     *
+     * <p>Forty pages is 10,000 events in a 455-day window: twenty-two meetings every single
+     * day for fifteen months, which no mailbox in this firm has. Hitting it therefore means
+     * a continuation that never terminates, not a busy person, and the loop stops rather
+     * than reading Graph forever inside the nightly job. Because the guard cannot be told
+     * apart from a complete read by the event count alone, a truncated read is COUNTED —
+     * see {@link CalendarSyncTally#readTruncated()} — so "we read everything" and "we
+     * stopped early" can never render as the same line.
+     */
+    static final int MAX_PAGES = 40;
 
     /**
      * The {@code attendee.type} Microsoft Graph puts on a meeting room or a piece of
@@ -207,6 +242,27 @@ public class AccountCalendarSyncService {
     int internalMeetingMinOwnAttendees;
 
     /**
+     * How many people from ONE client in a room make the event a mass event rather than
+     * evidence that anybody knows anybody (spec §4.2, the other side of the same coin).
+     *
+     * <p>The internal rule above is one-sided: it catches "a meeting that was really ours
+     * with a guest on it" and says nothing about "a mass event at the client where we were
+     * the guests". Both are the same category. One event at Banedanmark with fifty people
+     * in it stored forty-seven client attendee rows, and every one of those forty-seven
+     * then read "met x1 — 228 d ago" on the account as though somebody had actually talked
+     * to them. Firm-wide, ten meetings with eleven or more attendees produced 132 of the 330
+     * client attendee rows: eight per cent of the meetings, forty per cent of the people.
+     *
+     * <p>Ten, and configuration for the same reason the internal threshold is: the honest
+     * way to know whether ten is right is to watch {@code massMeetingsFlagged} move against
+     * {@code meetings} in the nightly line and re-tune it without a release. On production
+     * ten catches delegations of 47, 27, 14 and 14 and leaves 9 and below alone. Zero or
+     * less switches the rule off rather than suppressing every attendee the firm has.
+     */
+    @ConfigProperty(name = "dk.trustworks.crm.calendar.mass-meeting.min-client-attendees", defaultValue = "10")
+    int massMeetingMinClientAttendees;
+
+    /**
      * One full pass over every consenting mailbox.
      *
      * <p>A mailbox Graph refuses does not stop the run. One person on holiday with a
@@ -216,13 +272,13 @@ public class AccountCalendarSyncService {
     public CalendarSyncSummary syncAll() {
         if (!syncEnabled) {
             log.info("Account calendar sync is switched off (dk.trustworks.crm.calendar.sync.enabled=false)");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return CalendarSyncSummary.nothing();
         }
 
         Map<String, String> domainIndex = QuarkusTransaction.requiringNew().call(accountService::domainIndex);
         if (domainIndex.isEmpty()) {
             log.info("Account calendar sync: no client domains configured, nothing can be attributed");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return CalendarSyncSummary.nothing();
         }
 
         // Contracts, colleagues and learned addresses: read once, used by every mailbox.
@@ -241,6 +297,10 @@ public class AccountCalendarSyncService {
         int emailsLearned = 0;
         int internalDropped = 0;
         int colleagueByPlacement = 0;
+        int graphPages = 0;
+        int readsTruncated = 0;
+        int massMeetingsFlagged = 0;
+        int massAttendeesSuppressed = 0;
 
         for (String userUuid : mailboxes) {
             try {
@@ -253,6 +313,10 @@ public class AccountCalendarSyncService {
                 emailsLearned += result.colleagueEmailsLearned();
                 internalDropped += result.internalDropped();
                 colleagueByPlacement += result.colleagueByPlacement();
+                graphPages += result.graphPages();
+                readsTruncated += result.readsTruncated();
+                massMeetingsFlagged += result.massMeetingsFlagged();
+                massAttendeesSuppressed += result.massAttendeesSuppressed();
             } catch (RuntimeException e) {
                 failures++;
                 // The message, not the stack, and never the event payload: a Graph error
@@ -266,14 +330,23 @@ public class AccountCalendarSyncService {
         // incremental window re-reads the same fortnight every night.
         QuarkusTransaction.requiringNew().run(suggestionService::refreshAggregates);
 
+        // graphPages and readsTruncated ride in the same line as the drop counters and for
+        // the same reason: a truncated read and a complete one both end in "events=N", and
+        // the truncated one is the shape that quietly loses the recent half of a calendar.
+        // readsTruncated=0 is the assertion that events=N is ALL of them.
         log.infof("Account calendar sync done: mailboxes=%d events=%d meetings=%d attendees=%d failures=%d "
                         + "deliveryFiltered=%d colleagueFiltered=%d colleagueEmailsLearned=%d "
-                        + "internalDropped=%d colleagueByPlacement=%d (internalThreshold=%d)",
+                        + "internalDropped=%d colleagueByPlacement=%d graphPages=%d readsTruncated=%d "
+                        + "massMeetingsFlagged=%d massAttendeesSuppressed=%d "
+                        + "(internalThreshold=%d massThreshold=%d)",
                 mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
                 deliveryFiltered, colleagueFiltered, emailsLearned,
-                internalDropped, colleagueByPlacement, internalMeetingMinOwnAttendees);
+                internalDropped, colleagueByPlacement, graphPages, readsTruncated,
+                massMeetingsFlagged, massAttendeesSuppressed,
+                internalMeetingMinOwnAttendees, massMeetingMinClientAttendees);
         return new CalendarSyncSummary(mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
-                deliveryFiltered, colleagueFiltered, emailsLearned, internalDropped, colleagueByPlacement);
+                deliveryFiltered, colleagueFiltered, emailsLearned, internalDropped, colleagueByPlacement,
+                graphPages, readsTruncated, massMeetingsFlagged, massAttendeesSuppressed);
     }
 
     record MailboxResult(int eventsSeen,
@@ -283,10 +356,27 @@ public class AccountCalendarSyncService {
                          int colleagueFiltered,
                          int colleagueEmailsLearned,
                          int internalDropped,
-                         int colleagueByPlacement) {
+                         int colleagueByPlacement,
+                         int graphPages,
+                         int readsTruncated,
+                         int massMeetingsFlagged,
+                         int massAttendeesSuppressed) {
 
         static MailboxResult nothing() {
-            return new MailboxResult(0, 0, 0, 0, 0, 0, 0, 0);
+            return new MailboxResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+
+        /**
+         * The same nothing, but admitting that Graph WAS asked.
+         *
+         * <p>A mailbox with an empty calendar and a mailbox whose read gave up halfway both
+         * produce no meetings; only these two numbers tell them apart, so the read counters
+         * survive the early return that the rest of the counters have nothing to say about.
+         */
+        MailboxResult withRead(int pages, int truncated) {
+            return new MailboxResult(eventsSeen, meetingsKept, attendees, deliveryFiltered,
+                    colleagueFiltered, colleagueEmailsLearned, internalDropped, colleagueByPlacement,
+                    pages, truncated, massMeetingsFlagged, massAttendeesSuppressed);
         }
     }
 
@@ -307,29 +397,43 @@ public class AccountCalendarSyncService {
         LocalDateTime from = now.minusDays(firstRun ? FIRST_RUN_BACK_DAYS : INCREMENTAL_BACK_DAYS);
         LocalDateTime to = now.plusDays(FORWARD_DAYS);
 
-        GraphCalendarClient.AttendeeViewResponse response;
+        // The tally is opened BEFORE the read, not after it: how many pages the read took
+        // and whether it finished are facts about the mailbox's pass, exactly like the
+        // reasons meetings were dropped, and a mailbox that yields no events at all still
+        // has to be able to say whether that was the whole calendar.
+        CalendarSyncTally tally = new CalendarSyncTally();
+
+        // One permit for the WHOLE continuation loop, not one per page. The limiter exists
+        // to stop two passes hammering the same mailbox; releasing it between pages would
+        // let a second reader interleave halfway through somebody's calendar.
+        CalendarRead read;
         if (!limiter.tryAcquire(principal)) {
             log.warnf("Graph mailbox %s busy — skipping this run", userUuid);
             return MailboxResult.nothing();
         }
         try {
-            response = graphClient.calendarViewWithAttendees(
-                    principal, from.format(GRAPH_TIME), to.format(GRAPH_TIME), SELECT, PAGE_SIZE);
+            read = readCalendar(userUuid, principal, from.format(GRAPH_TIME), to.format(GRAPH_TIME));
         } finally {
             limiter.release(principal);
         }
-
-        if (response == null || response.value() == null || response.value().isEmpty()) {
-            return MailboxResult.nothing();
+        tally.graphPagesFetched(read.pages());
+        if (!read.complete()) {
+            tally.readTruncated();
         }
 
-        CalendarSyncTally tally = new CalendarSyncTally();
+        if (read.events().isEmpty()) {
+            // Still report the pages: "no events" and "we could not finish asking" are
+            // different answers and MailboxResult.nothing() would render them the same.
+            return MailboxResult.nothing()
+                    .withRead(tally.graphPagesCount(), tally.readsTruncatedCount());
+        }
+
         List<PendingMeeting> pending = new ArrayList<>();
-        for (GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event : response.value()) {
-            // The threshold is read here and handed down, because toMeeting has no
+        for (GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event : read.events()) {
+            // Both thresholds are read here and handed down, because toMeeting has no
             // configuration of its own — see its javadoc on staying pure.
-            PendingMeeting meeting =
-                    toMeeting(userUuid, event, domainIndex, filters, tally, internalMeetingMinOwnAttendees);
+            PendingMeeting meeting = toMeeting(userUuid, event, domainIndex, filters, tally,
+                    internalMeetingMinOwnAttendees, massMeetingMinClientAttendees);
             if (meeting != null) {
                 pending.add(meeting);
             }
@@ -348,15 +452,174 @@ public class AccountCalendarSyncService {
             });
         }
         return new MailboxResult(
-                response.value().size(),
+                read.events().size(),
                 pending.size(),
                 attendeeRows,
                 tally.deliveryDroppedCount(),
                 tally.colleagueOnlyDroppedCount(),
                 tally.newlyLearnedEmails(),
                 tally.internalDroppedCount(),
-                tally.colleagueByPlacementCount());
+                tally.colleagueByPlacementCount(),
+                tally.graphPagesCount(),
+                tally.readsTruncatedCount(),
+                tally.massMeetingsFlaggedCount(),
+                tally.massAttendeesSuppressedCount());
     }
+
+    /**
+     * Every event Graph has for this mailbox in the window, following {@code @odata.nextLink}
+     * to the end.
+     *
+     * <p><b>Why this loop exists.</b> {@link #PAGE_SIZE} is a page size and was read as a
+     * limit: one request, {@code $top=250}, no continuation. Graph returns calendarView
+     * OLDEST-FIRST, so every mailbox with more than 250 events in the 455-day first-run
+     * window kept its earliest 250 and lost everything after — the recent months, which are
+     * the entire subject of "when did we last really talk to them". A production run read
+     * 11,373 events over 50 mailboxes, an average of 227 against a cap of 250, and the
+     * stored meetings fell from 12 in Sep 2025 to 1 in Jul and 0 in Aug 2026.
+     *
+     * <p><b>It reports whether it finished.</b> A truncated read and a complete one both
+     * end in a list of events; only {@link CalendarRead#complete()} distinguishes "that is
+     * all of them" from "we stopped early", and the caller counts the difference so the
+     * nightly line can never state one as the other. Truncation has three causes and all
+     * three are counted the same way: the {@link #MAX_PAGES} guard, a continuation page
+     * that came back with no {@code value} at all after Graph promised more, and a
+     * {@code nextLink} naming a continuation in a form we do not read.
+     *
+     * <p><b>A Graph failure is NOT swallowed here</b>, unlike the rooms lookup this loop is
+     * otherwise copied from. A throwing mailbox must keep reaching {@code syncAll}'s catch
+     * so it counts as a {@code failure}: degrading it to "a short read" would make a
+     * mailbox Graph refuses indistinguishable from a mailbox with a quiet fortnight, and
+     * the whole reason these counters exist is that those two must never look alike.
+     *
+     * @param userUuid  the mailbox owner, for the log line — never the address
+     * @param principal the mailbox to read
+     */
+    CalendarRead readCalendar(String userUuid, String principal, String startDateTime, String endDateTime) {
+        List<GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent> events = new ArrayList<>();
+        GraphContinuation continuation = null;
+        int page = 0;
+        boolean complete = true;
+        do {
+            GraphCalendarClient.AttendeeViewResponse response = graphClient.calendarViewWithAttendees(
+                    principal, startDateTime, endDateTime, SELECT, PAGE_SIZE,
+                    continuation == null ? null : continuation.skipToken(),
+                    continuation == null ? null : continuation.skip());
+            page++;
+            if (response == null || response.value() == null) {
+                // Nothing on the FIRST request is an empty window, which is ordinary for a
+                // mailbox with a quiet fortnight. Nothing on a CONTINUATION is a truncation:
+                // Graph said there was more and then did not hand it over.
+                if (page > 1) {
+                    complete = false;
+                }
+                break;
+            }
+            events.addAll(response.value());
+
+            String nextLink = response.odataNextLink();
+            continuation = parseContinuation(nextLink);
+            if (nextLink != null && !nextLink.isBlank() && continuation == null) {
+                // Graph says there is more but names the continuation in a way we do not
+                // read. Stopping silently here is exactly how a calendar quietly stops
+                // being the whole calendar.
+                log.warnf("Account calendar sync: mailbox %s had an @odata.nextLink with no readable "
+                        + "continuation — read truncated after %d page(s), %d event(s)", userUuid, page, events.size());
+                complete = false;
+                break;
+            }
+            if (continuation != null && page >= MAX_PAGES) {
+                // Counts only — never the mailbox address and never an attendee name; a
+                // calendar read's log line must stay as free of people as the $select is.
+                log.warnf("Account calendar sync: mailbox %s hit the %d-page guard after %d event(s) "
+                        + "— read truncated", userUuid, MAX_PAGES, events.size());
+                complete = false;
+                break;
+            }
+        } while (continuation != null);
+        return new CalendarRead(events, page, complete);
+    }
+
+    /**
+     * The continuation out of an {@code @odata.nextLink}, or null when there is no next page
+     * — or when the link names one in a form we cannot read, which stops the loop rather
+     * than making it spin on the same page.
+     *
+     * <p>Both spellings, because Graph is not consistent on this collection: calendarView
+     * commonly continues with a numeric {@code $skip} while other collections use an opaque
+     * {@code $skiptoken}. Whichever the link carried is the one that goes back; neither is
+     * ever computed here. Paging a calendar by a number of our own arithmetic re-reads or
+     * skips events the moment Graph's window semantics and ours disagree, and a skipped
+     * event is an account meeting that never existed.
+     */
+    static GraphContinuation parseContinuation(String nextLink) {
+        if (nextLink == null || nextLink.isBlank()) {
+            return null;
+        }
+        String skipToken = null;
+        Integer skip = null;
+        try {
+            String query = java.net.URI.create(nextLink).getRawQuery();
+            if (query == null) {
+                return null;
+            }
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                String key = java.net.URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8);
+                String value = java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+                if (key.equalsIgnoreCase("$skiptoken") || key.equalsIgnoreCase("skiptoken")) {
+                    skipToken = value.isBlank() ? null : value;
+                } else if (key.equalsIgnoreCase("$skip") || key.equalsIgnoreCase("skip")) {
+                    skip = parsePositiveInt(value);
+                }
+            }
+        } catch (RuntimeException e) {
+            // An unparseable link stops pagination; it must never throw the mailbox away,
+            // because the pages already read are real meetings.
+            log.warnf("Account calendar sync: could not read an @odata.nextLink — stopping pagination: %s",
+                    e.getMessage());
+            return null;
+        }
+        return skipToken == null && skip == null ? null : new GraphContinuation(skipToken, skip);
+    }
+
+    /**
+     * A {@code $skip} value, or null when it is not a positive whole number. Zero is null
+     * on purpose: {@code $skip=0} is the first page again, and honouring it is an infinite
+     * loop rather than a continuation.
+     */
+    private static Integer parsePositiveInt(String value) {
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * What Graph named as the next page. Exactly one of the two is normally set; both are
+     * handed back untouched and a null one is omitted from the request.
+     */
+    record GraphContinuation(String skipToken, Integer skip) { }
+
+    /**
+     * One mailbox's events plus whether that is ALL of them.
+     *
+     * <p>The distinction is the whole fix: a list of 250 events that stopped at a page
+     * boundary and a list of 250 events that is the entire calendar are the same list, and
+     * one of them is missing the months the feature is about.
+     *
+     * @param events   every event the read collected, in Graph's own order
+     * @param pages    how many requests it took, complete or not
+     * @param complete false when the read stopped before Graph ran out of pages
+     */
+    record CalendarRead(List<GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent> events,
+                        int pages,
+                        boolean complete) { }
 
     /**
      * Turns one Graph event into a meeting, or null when it is not one we keep — the five
@@ -366,7 +629,8 @@ public class AccountCalendarSyncService {
      *   rooms -> INTERNAL -> per attendee: domain index
      *                                   -> colleague by name (strict, then placed)
      *                                   -> colleague by address
-     *         -> nobody from the client left -> largest delegation wins -> delivery
+     *         -> nobody from the client left -> largest delegation wins
+     *         -> MASS EVENT (keep the meeting, store no attendees) -> delivery
      * </pre>
      *
      * <p>The internal test comes before the attendee loop because an event that is our own
@@ -400,13 +664,18 @@ public class AccountCalendarSyncService {
      *                           §4.2). A parameter rather than a field for the same reason
      *                           {@code tally} is one: this method holds no configuration
      *                           and reads no clock. Zero or less switches the rule off
+     * @param minClientAttendees how many people from the WINNING client make the event a
+     *                           mass event whose attendees are no evidence of a personal
+     *                           relationship. A parameter for exactly the same reason.
+     *                           Zero or less switches the rule off
      */
     PendingMeeting toMeeting(String userUuid,
                              GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event,
                              Map<String, String> domainIndex,
                              CalendarFilters filters,
                              CalendarSyncTally tally,
-                             int minOwnAttendees) {
+                             int minOwnAttendees,
+                             int minClientAttendees) {
         if (event == null || event.id() == null || Boolean.TRUE.equals(event.isCancelled())) {
             return null;
         }
@@ -508,10 +777,35 @@ public class AccountCalendarSyncService {
                 .max((a, b) -> Integer.compare(a.getValue().size(), b.getValue().size()))
                 .orElseThrow();
 
-        // D1, last: the winning client is the one the delivery question is about.
+        // The mass event, decided here because it is a question about the WINNING
+        // delegation and there is no delegation to measure until the winner is known.
+        //
+        // KEEP THE MEETING, DROP THE ATTENDEES — and that asymmetry is the whole rule. A
+        // fifty-person event at Banedanmark IS activity with that account and belongs on
+        // its timeline; what it is not is evidence that anybody in this firm knows the
+        // forty-seven people who were in the room. Stored as attendees they each became a
+        // person on the account reading "met x1 — 228 d ago", which is a relationship the
+        // firm does not have. §7's retention purge already leaves account_meeting rows with
+        // no attendees behind, and AccountActivityService.joinNames renders exactly that
+        // shape as "Meeting with the client", so nothing downstream is surprised by it.
+        boolean massMeeting = minClientAttendees > 0 && winner.getValue().size() >= minClientAttendees;
+
+        // D1, last: the winning client is the one the delivery question is about. The mass
+        // rule above deliberately does not return, so this still runs on exactly the
+        // meetings it ran on before — a mass event the mailbox owner was delivering is
+        // still a delivery drop, and is counted as one rather than as two things at once.
         if (filters.delivery().isDelivering(winner.getKey(), userUuid, meetingDate)) {
             tally.deliveryDropped();
             return null;
+        }
+
+        // Tallied only now that the meeting is actually being written. Counting it before
+        // the delivery check would attribute suppressed attendee rows to meetings that were
+        // never stored, and the number's only job is to say how many people the threshold
+        // took off real meetings — the evidence for re-tuning it from a log line.
+        List<PendingAttendee> attendees = massMeeting ? List.of() : winner.getValue();
+        if (massMeeting) {
+            tally.massMeeting(winner.getValue().size());
         }
 
         int minutes = end == null ? 0 : (int) Duration.between(start, end).toMinutes();
@@ -524,7 +818,7 @@ public class AccountCalendarSyncService {
                 Math.max(minutes, 0),
                 attendeeCount,
                 ownAttendeeCount,
-                winner.getValue());
+                attendees);
     }
 
     /**

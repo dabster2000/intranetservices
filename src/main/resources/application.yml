@@ -521,6 +521,22 @@ dk:
           # An environment where those are all dark simply rebuilds nothing.
           enabled: ${CRM_PERSON_REBUILD_ENABLED:true}
       calendar:
+        mass-meeting:
+          # The mirror image of internal-meeting below, and it exists because that rule was
+          # one-sided: it caught "a meeting that was really ours with a guest" but not "a mass
+          # event at the client where we were the guests". One 50-person event at Banedanmark
+          # on 2026-01-29 had two of ours in it, so the internal rule never fired, and it
+          # manufactured 47 people we supposedly "knew" — every one of them reading
+          # "met x1" on the same day. Firm-wide, 10 such meetings produced 132 of 330 client
+          # attendee rows: 8% of the meetings, 40% of the people.
+          #
+          # At or above this many people from the WINNING client, the meeting is kept — it is
+          # real activity and belongs on the timeline — but no attendee rows are stored, so it
+          # draws no relationships. A town hall is not evidence that anyone knows anyone.
+          # Ten leaves genuine delegations of nine and below alone. Tune it from the
+          # massMeetingsFlagged tally in the nightly log line, not from a release; 0 or less
+          # switches the rule off.
+          min-client-attendees: ${CRM_MASS_MEETING_MIN_CLIENT:10}
         internal-meeting:
           # A calendar event with at least this many of OUR OWN people in it is an
           # internal meeting that happened to have a guest, not contact with the client.
