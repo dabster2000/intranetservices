@@ -159,9 +159,11 @@ class ClientEnrichmentRulesTest {
         assertEquals(500, staging.logoNightlyCap());
         assertEquals(20, staging.sectorNightlyCap());
         assertFalse(staging.nightlyAllowedHere());
+        assertFalse(staging.registryCallsAllowedHere(), "staging never calls the CVR registry — the key and quota are production's");
         assertNull(staging.reasoningEffort(), "a blank effort omits the reasoning node");
         ClientEnrichmentConfig production = ClientEnrichmentTestConfig.with("production", 20, 10, 20, "low");
         assertTrue(production.nightlyAllowedHere());
+        assertTrue(production.registryCallsAllowedHere());
         assertEquals("low", production.reasoningEffort());
         assertNull(ClientEnrichmentTestConfig.with("production", 1, 1, 1, null).reasoningEffort());
     }

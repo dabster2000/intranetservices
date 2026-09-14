@@ -80,6 +80,14 @@ public class ClientEnrichmentConfig {
 
     public boolean nightlyAllowedHere() { return !"staging".equalsIgnoreCase(environmentId); }
 
+    /**
+     * Whether this environment may call the CVR registry at all — nightly, from a manual
+     * run, from a retry, from an accept. Staging may not (Hans, 2026-09-14): the Virkdata
+     * key is production's, its daily quota is shared with the client form's Look up
+     * button, and the second staging rehearsal spent that quota in two minutes.
+     */
+    public boolean registryCallsAllowedHere() { return !"staging".equalsIgnoreCase(environmentId); }
+
     public String environmentId() { return environmentId; }
 
     public int cvrNightlyCap() { return clamp(cvrNightlyCap); }
