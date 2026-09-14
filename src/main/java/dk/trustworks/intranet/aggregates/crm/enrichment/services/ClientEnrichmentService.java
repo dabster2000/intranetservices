@@ -170,7 +170,7 @@ public class ClientEnrichmentService {
                 try {
                     cvrService.verify(clientUuid);
                 } catch (CvrEnrichmentService.QuotaExhausted e) {
-                    throw new WebApplicationException("The CVR registry's daily quota is used up — try again tomorrow", 429);
+                    throw new WebApplicationException("The CVR registry refused (" + e.getMessage() + ") — try again later", 429);
                 }
             }
             case SECTOR -> sectorService.verify(clientUuid);
@@ -417,21 +417,36 @@ public class ClientEnrichmentService {
 
     private void runCvr(LocalDateTime now) {
         List<String> queue = repository.eligibleForCvr(config.cvrNightlyCap(), now.minusDays(config.cvrRetryAfterDays()));
-        int done = 0, failed = 0;
+        int done = 0, failed = 0, stopped = 0;
         for (String uuid : queue) {
             if (shutdown.isShuttingDown()) break;
             try {
                 Optional<CvrEnrichmentStatus> status = cvrService.verify(uuid);
                 if (status.isPresent() && status.get() == CvrEnrichmentStatus.FAILED) failed++; else done++;
             } catch (CvrEnrichmentService.QuotaExhausted e) {
-                log.warn("CVR pass stopped: the registry's quota is exhausted for today");
+                // The rows not reached stay PENDING and are first in tomorrow's queue.
+                stopped = queue.size() - done - failed;
+                log.warnf("CVR pass stopped with %d of %d left: %s", stopped, queue.size(), e.getMessage());
                 break;
             } catch (RuntimeException e) {
                 failed++;
                 log.errorf(e, "CVR check crashed for client=%s", uuid);
             }
+            // A client costs up to two registry calls (name search, then lookup). The second
+            // rehearsal fired ~20 calls in two minutes and the registry answered 401 to every
+            // call after that; a pause between clients keeps the pass under a burst limit.
+            pause(config.cvrPacingMs());
         }
-        log.infof("CVR pass finished: queued=%d done=%d failed=%d", queue.size(), done, failed);
+        log.infof("CVR pass finished: queued=%d done=%d failed=%d stopped=%d", queue.size(), done, failed, stopped);
+    }
+
+    private static void pause(long millis) {
+        if (millis <= 0) return;
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void runSector(LocalDateTime now) {

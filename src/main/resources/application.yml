@@ -596,6 +596,11 @@ dk:
           # Finds the CVR of a client that has none, with web search. The registry verifies
           # every proposal before anything is written (CvrEnrichmentService).
           finder-model: ${CRM_ENRICHMENT_CVR_FINDER_MODEL:gpt-5.6-terra}
+          # Pause between clients. A client costs up to two Virkdata calls; the staging
+          # rehearsal of 2026-09-14 fired ~20 calls in two minutes and the registry answered
+          # 401 to everything after that. A 401 or 429 stops the pass for the night; this
+          # keeps it from getting there.
+          pacing-ms: ${CRM_ENRICHMENT_CVR_PACING_MS:3000}
         logo:
           nightly-cap: ${CRM_ENRICHMENT_LOGO_CAP:10}
           retry-after-days: ${CRM_ENRICHMENT_LOGO_RETRY_DAYS:14}
