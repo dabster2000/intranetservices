@@ -5,6 +5,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.Task;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.crm.services.TaskService;
@@ -221,6 +222,15 @@ public class PublicResource {
         client.setCrmid(null);
         client.setSegment(ClientSegment.OTHER);
         client.setManaged("EXTERNAL");
+        // A PROSPECT, not a CLIENT. This endpoint names the companies a consultant's CV
+        // mentions — Aalto University, KeyCore, Alpha Solutions — and it has no CVR for any
+        // of them and no way to get one. Creating them as CLIENTs made this the one door
+        // into the client table that asked for nothing at all: V600 found every row it had
+        // ever written and reclassified it to PROSPECT precisely because none had ever been
+        // billed. It now writes what that backfill concluded, so no unbillable row can be
+        // born a customer. The first contract still graduates one, through the gate in
+        // ContractService.save that asks for the registration number.
+        client.setType(ClientType.PROSPECT);
 
         clientAPI.save(client);
 

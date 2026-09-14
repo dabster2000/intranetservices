@@ -166,9 +166,12 @@ public class ClientResource {
     @POST
     @RolesAllowed({"crm:write"})
     @Operation(summary = "Create a client", description = "Creates a new client with find-or-create deduplication. " +
+            "A CLIENT or a PARTNER must carry a company registration number — eight digits for a Danish CVR, " +
+            "a registry number of the issuing country's own shape otherwise — and is refused with HTTP 400 without one. " +
+            "A PROSPECT is not asked for one. " +
             "If a CVR is provided and a client with that CVR already exists, the existing client is returned (HTTP 200) " +
-            "with an X-Client-Existing header. If no CVR but a matching name exists, the client is still created (HTTP 201) " +
-            "with an X-Client-Duplicate-Warning header.")
+            "with an X-Client-Existing header. If no CVR but a matching name exists — which now only a prospect can " +
+            "reach — the client is still created (HTTP 201) with an X-Client-Duplicate-Warning header.")
     @APIResponses({
             @APIResponse(responseCode = "201", description = "Client created"),
             @APIResponse(responseCode = "200", description = "Existing client returned (CVR match)"),
@@ -467,6 +470,12 @@ public class ClientResource {
      * the first minute they are true — and they are the SAME rules, from
      * {@link ClientBillingValidator}, so a company cannot pass one gate and fail the other.
      * Format checks on whatever was filled in still apply.
+     *
+     * <p><b>A CLIENT or a PARTNER is, in every country.</b> The registration number used to
+     * be asked for only when {@code billingCountry} was DK, which made the country dropdown
+     * a way past the rule. {@link ClientBillingValidator#billingProblem} now asks for one
+     * whatever the country and lets the country decide only the format, so this branch is
+     * the whole of the enforcement for both the create and the update path.
      */
     private Response validateClient(Client client) {
         String problem = client.getType() == ClientType.PROSPECT

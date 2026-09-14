@@ -122,8 +122,21 @@ public class ClientEnrichmentRepository {
     /**
      * Danish rows whose CVR question is open: never checked, or a failed lookup old enough
      * to try again. The terminal answers — CANDIDATE, NOT_FOUND, INVALID, DUPLICATE,
-     * DISMISSED — wait for a person. Oldest attempt first, newest client first among the
-     * untouched, so a client added yesterday is verified before one added in 2019.
+     * DISMISSED — wait for a person. Oldest attempt first, then billable rows, then newest
+     * client first among the untouched.
+     *
+     * <p><b>Billable rows go first</b> (Hans, 2026-09-14). Since no CLIENT or PARTNER can be
+     * created without a registration number, the ones still missing it are all legacy — 41
+     * of them on the day this changed, every one created in 2025 or earlier, TV2 and DDB and
+     * Udenrigsministeriet among them. For those a missing CVR is now a rule violation that
+     * blocks the edit form, where for a prospect it is an absence by design. Newest-first
+     * alone would have buried all 41 behind 126 prospects created this year: at a cap of
+     * twenty a night against a backlog that size, the rows that actually block somebody
+     * would have been reached last.
+     *
+     * <p>The key sits AFTER the attempt timestamp on purpose. "Oldest attempt first" is what
+     * stops a row that keeps failing from starving the untouched ones, and a priority that
+     * outranked it would let a retried client take a slot from one nobody has ever looked at.
      */
     @Transactional(Transactional.TxType.REQUIRED)
     @SuppressWarnings("unchecked")
@@ -135,7 +148,10 @@ public class ClientEnrichmentRepository {
                 JOIN client c ON c.uuid = e.client_uuid
                 WHERE e.cvr_status = 'PENDING'
                    OR (e.cvr_status = 'FAILED' AND (e.cvr_checked_at IS NULL OR e.cvr_checked_at < :retryBefore))
-                ORDER BY COALESCE(e.cvr_checked_at, '1970-01-01'), c.created DESC, c.uuid
+                ORDER BY COALESCE(e.cvr_checked_at, '1970-01-01'),
+                         CASE WHEN c.type = 'PROSPECT' THEN 1 ELSE 0 END,
+                         c.created DESC,
+                         c.uuid
                 LIMIT :limit
                 """)
                 .setParameter("retryBefore", retryBefore)

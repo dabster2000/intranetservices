@@ -1,14 +1,17 @@
 package dk.trustworks.intranet.dao.crm.services;
 
 import dk.trustworks.intranet.contracts.model.ContractProject;
+import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.Task;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.model.enums.TaskType;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import io.quarkus.panache.common.Sort;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
@@ -54,6 +57,7 @@ public class ProjectService {
 
     @Transactional
     public Project save(Project project) {
+        requireBillableClient(project);
         project.setUuid(UUID.randomUUID().toString());
         project.persist();
         notify(project.getUuid());
@@ -61,6 +65,38 @@ public class ProjectService {
         log.infof("Project created: uuid=%s, name=%s",
                 project.getUuid(), project.getName());
         return project;
+    }
+
+    /**
+     * A project belongs to a company Intra may bill.
+     *
+     * <p>Contracts and the e-conomic sync have refused prospects since the type existed;
+     * projects were the one thing left that would take one silently. Nothing downstream
+     * could invoice it — an invoice needs a contract, and the contract gate holds — but the
+     * row was real, it carried work and budgets, and the account looked like a delivery
+     * that had never been sold.
+     *
+     * <p>The refusal is deliberately the same shape as the graduation refusal in
+     * {@code ContractService.graduateProspect}: name the company, say what it is, and send
+     * the person to the form that fixes it. A prospect becomes a customer by getting its
+     * registration number and its first contract — never by having a project hung on it.
+     *
+     * <p>A missing or unknown client is not this method's business; the project's own
+     * validation owns that, and inventing an error for it here would report the wrong
+     * problem.
+     */
+    private void requireBillableClient(Project project) {
+        if (project == null || project.getClientuuid() == null || project.getClientuuid().isBlank()) {
+            return;
+        }
+        Client client = Client.findById(project.getClientuuid().trim());
+        if (client == null || client.getType() != ClientType.PROSPECT) {
+            return;
+        }
+        throw new BadRequestException(
+                client.getName() + " is a prospect — a company Intra has never billed — so it cannot "
+                        + "have a project. Add its registration number on the client form and create the "
+                        + "contract; the first contract makes it a customer.");
     }
 
     @Transactional
