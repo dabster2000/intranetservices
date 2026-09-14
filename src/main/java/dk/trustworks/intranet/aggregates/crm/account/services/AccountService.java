@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.crm.account.services;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDomainsRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountPatchRequest;
+import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRolesRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.BandHistoryDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.ClientDomainDTO;
@@ -12,6 +13,7 @@ import dk.trustworks.intranet.aggregates.crm.account.model.ClientAccountRole;
 import dk.trustworks.intranet.aggregates.crm.account.model.ClientBandHistory;
 import dk.trustworks.intranet.aggregates.crm.account.model.ClientDomain;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountBand;
+import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountRelationship;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountRoleType;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.DomainSource;
 import dk.trustworks.intranet.aggregates.crm.sector.dto.SectorRefDTO;
@@ -22,6 +24,8 @@ import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.enums.BubbleType;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
+import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,8 +36,10 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -52,8 +58,8 @@ import java.util.UUID;
  * be the act that decides its band — several hundred clients have never been triaged and
  * a row conjured by a page view would make "Backlog" look like somebody's judgement.
  *
- * <p><b>The default band is DERIVED, not a flat Backlog.</b> A client with a running
- * contract or an open lead is {@link AccountBand#ACTIVE} even before anybody triages it,
+ * <p><b>The default band is DERIVED, not a flat Backlog.</b> A client with a consultant
+ * on site or an open lead is {@link AccountBand#ACTIVE} even before anybody triages it,
  * because it demonstrably is. Spec §3.1 says as much from the other direction — "creating
  * a lead on a Backlog account promotes it to Active" — so an untriaged client with three
  * consultants on site was never really Backlog. Defaulting everything to the floor instead
@@ -61,10 +67,27 @@ import java.util.UUID;
  * a feature nobody would ever find. The derived value is still only a default: it is
  * marked {@code isDefault} and the first real decision overwrites it.
  *
- * <p><b>The owner is not stored here.</b> {@code client.accountmanager} stays the source
- * of truth (spec §9.7 left the migration open). Whenever this service touches an account
- * it re-syncs the {@code RESPONSIBLE} role row to match, so the two representations can
- * never drift apart while both exist.
+ * <p><b>"Running work" is an ASSIGNMENT, not a contract status.</b> This asked
+ * {@code contracts.status in ('SIGNED','TIME','BUDGET')} until 2026-09-14, and contracts
+ * are almost never closed: production held 622 SIGNED, 71 TIME, 9 BUDGET and 11 CLOSED.
+ * So 129 clients read as running and defaulted to Active while 103 of them had nobody on
+ * site — the last consultant had rolled off, some of them years before. The sector page's
+ * Backlog count, the unowned count and the 90-day quiet rule all inherited the error. The
+ * predicate is now a {@code contract_consultants} row whose {@code activeto} is today or
+ * later, on a contract in one of those three statuses, which is the same question the
+ * CUSTOMER relationship asks.
+ *
+ * <p><b>The owner is not stored here, and not mirrored either.</b>
+ * {@code client.accountmanager} is the single store since V598. A {@code RESPONSIBLE} role
+ * row used to be rewritten alongside it on every write path — and read by nothing, ever —
+ * so it was deleted rather than kept in step. {@link #patch} can now write the owner
+ * itself, so promoting a Backlog account and giving it an owner is one call instead of a
+ * 409 and a round trip to the client form.
+ *
+ * <p><b>The four relationships are derived per read and never stored</b> (spec §2.1):
+ * customer, former customer, prospect, contact. See {@link #relationshipsForAll()}. The
+ * band stays the attention axis and the relationship the history axis; neither changes the
+ * other.
  *
  * <p>Validation is hand-rolled. Bean validation is NOT active in this codebase —
  * {@code quarkus-hibernate-validator} is absent from the build, so every {@code @NotBlank}
@@ -83,11 +106,21 @@ public class AccountService {
     private static final int BAND_HISTORY_LIMIT = 5;
 
     /**
+     * How far ahead "every assignment ends soon" looks, in days. Matches
+     * {@code CONTRACT_EXPIRING_WITHIN_DAYS} in the frontend and the sector page's own
+     * expiring-contract flag.
+     */
+    public static final int EXPIRING_WITHIN_DAYS = 90;
+
+    /** A date no assignment reaches — what an open-ended {@code activeto} is read as. */
+    private static final String OPEN_ENDED = "9999-12-31";
+
+    /**
      * Domains that identify nobody. A meeting with someone on gmail.com says nothing
      * about which account it belongs to, and claiming our own domain would attribute
      * every internal meeting to a client. Mirrors the deny-list V585 seeds with.
      */
-    static final List<String> DENIED_DOMAINS = List.of(
+    public static final List<String> DENIED_DOMAINS = List.of(
             "gmail.com", "googlemail.com", "hotmail.com", "hotmail.dk", "outlook.com",
             "outlook.dk", "live.dk", "live.com", "yahoo.com", "yahoo.dk", "icloud.com",
             "me.com", "mac.com", "msn.com", "protonmail.com", "proton.me", "mail.dk",
@@ -105,6 +138,9 @@ public class AccountService {
     @Inject
     SectorPlanService sectorPlanService;
 
+    @Inject
+    ClientActivityLogService activityLogService;
+
     // ------------------------------------------------------------------------
     // Read
     // ------------------------------------------------------------------------
@@ -119,18 +155,17 @@ public class AccountService {
 
         AccountBand band = account == null ? defaultBandFor(clientUuid) : account.getBand();
         String gtmBubbleUuid = account == null ? null : account.getGtmBubbleUuid();
-        String accountTeamBubbleUuid = account == null ? null : account.getAccountTeamBubbleUuid();
         ClientSegment segment = SectorService.segmentOf(client);
 
         return new AccountDTO(
                 clientUuid,
                 band.name(),
                 resolvePerson(client.getAccountmanager()),
-                supportedBy(clientUuid),
+                peopleInRole(clientUuid, AccountRoleType.SUPPORTED_BY),
+                peopleInRole(clientUuid, AccountRoleType.MEMBER),
                 gtmBubbleUuid,
                 bubbleName(gtmBubbleUuid),
-                accountTeamBubbleUuid,
-                bubbleName(accountTeamBubbleUuid),
+                relationshipFor(clientUuid, band),
                 new SectorRefDTO(segment.name(), segment.getDisplayName(), sectorLeadService.currentLead(segment)),
                 sectorPlanService.reference(segment),
                 account == null ? null : account.getSlackSpace(),
@@ -142,13 +177,13 @@ public class AccountService {
                 account == null);
     }
 
-    /** Supported-by, in the order the rows were created. */
-    public List<PersonDTO> supportedBy(String clientUuid) {
+    /** One role's people on one account, in the order the rows were created. */
+    public List<PersonDTO> peopleInRole(String clientUuid, AccountRoleType role) {
         List<ClientAccountRole> roles = ClientAccountRole
-                .list("clientUuid = ?1 and role = ?2 order by createdAt", clientUuid, AccountRoleType.SUPPORTED_BY);
+                .list("clientUuid = ?1 and role = ?2 order by createdAt", clientUuid, role);
         List<PersonDTO> people = new ArrayList<>();
-        for (ClientAccountRole role : roles) {
-            PersonDTO person = resolvePerson(role.getUserUuid());
+        for (ClientAccountRole row : roles) {
+            PersonDTO person = resolvePerson(row.getUserUuid());
             if (person != null) {
                 people.add(person);
             }
@@ -156,18 +191,38 @@ public class AccountService {
         return people;
     }
 
-    /** Supported-by for many clients at once — one query for the whole accounts list. */
-    public Map<String, List<PersonDTO>> supportedByForAll() {
+    /** Supported-by, in the order the rows were created. */
+    public List<PersonDTO> supportedBy(String clientUuid) {
+        return peopleInRole(clientUuid, AccountRoleType.SUPPORTED_BY);
+    }
+
+    /** The account team (V598), in the order the rows were created. */
+    public List<PersonDTO> members(String clientUuid) {
+        return peopleInRole(clientUuid, AccountRoleType.MEMBER);
+    }
+
+    /** One role's people for many clients at once — one query for the whole accounts list. */
+    public Map<String, List<PersonDTO>> peopleInRoleForAll(AccountRoleType role) {
         List<ClientAccountRole> roles = ClientAccountRole
-                .list("role = ?1 order by clientUuid, createdAt", AccountRoleType.SUPPORTED_BY);
+                .list("role = ?1 order by clientUuid, createdAt", role);
         Map<String, List<PersonDTO>> byClient = new LinkedHashMap<>();
-        for (ClientAccountRole role : roles) {
-            PersonDTO person = resolvePerson(role.getUserUuid());
+        for (ClientAccountRole row : roles) {
+            PersonDTO person = resolvePerson(row.getUserUuid());
             if (person != null) {
-                byClient.computeIfAbsent(role.getClientUuid(), key -> new ArrayList<>()).add(person);
+                byClient.computeIfAbsent(row.getClientUuid(), key -> new ArrayList<>()).add(person);
             }
         }
         return byClient;
+    }
+
+    /** Supported-by for many clients at once. */
+    public Map<String, List<PersonDTO>> supportedByForAll() {
+        return peopleInRoleForAll(AccountRoleType.SUPPORTED_BY);
+    }
+
+    /** The account team for many clients at once. */
+    public Map<String, List<PersonDTO>> membersForAll() {
+        return peopleInRoleForAll(AccountRoleType.MEMBER);
     }
 
     /**
@@ -190,32 +245,74 @@ public class AccountService {
     }
 
     /**
-     * What band a client reads as before anybody has triaged it: ACTIVE when there is
-     * running work, BACKLOG when there is not.
+     * What band a client reads as before anybody has triaged it: ACTIVE when somebody is
+     * on site or a lead is open, BACKLOG when neither.
+     *
+     * <p>The first clause is an ASSIGNMENT, not a contract status — see the class javadoc
+     * for the 103 clients the old predicate called Active with nobody there.
      */
     AccountBand defaultBandFor(String clientUuid) {
         Object result = em.createNativeQuery("""
                 select exists(
-                    select 1 from contracts ct
-                     where ct.clientuuid = :clientUuid and ct.status in ('SIGNED','TIME','BUDGET')
+                    select 1
+                      from contract_consultants cc
+                      join contracts ct on ct.uuid = cc.contractuuid
+                     where ct.clientuuid = :clientUuid
+                       and ct.status in ('SIGNED','TIME','BUDGET')
+                       and coalesce(cc.activeto, :openEnded) >= :today
                 ) or exists(
                     select 1 from sales_lead l
                      where l.clientuuid = :clientUuid and l.status not in ('WON','LOST')
                 )
                 """)
                 .setParameter("clientUuid", clientUuid)
+                .setParameter("openEnded", OPEN_ENDED)
+                .setParameter("today", LocalDate.now().toString())
                 .getSingleResult();
         return toBoolean(result) ? AccountBand.ACTIVE : AccountBand.BACKLOG;
     }
 
-    /** Every client with a running contract or an open lead, in one query. */
+    /** Every client with a consultant on site today or an open lead. */
     Set<String> clientsWithRunningWork() {
-        @SuppressWarnings("unchecked")
-        List<Object> rows = em.createNativeQuery("""
-                select distinct clientuuid from contracts where status in ('SIGNED','TIME','BUDGET')
-                union
+        Set<String> uuids = new LinkedHashSet<>(customerClients());
+        uuids.addAll(clientsWithOpenLead());
+        return uuids;
+    }
+
+    /**
+     * Every client a consultant is assigned to today or later — the CUSTOMER predicate
+     * (spec §2.1), and the first half of {@link #clientsWithRunningWork()}.
+     */
+    Set<String> customerClients() {
+        return uuidSet(em.createNativeQuery("""
+                select distinct ct.clientuuid
+                  from contract_consultants cc
+                  join contracts ct on ct.uuid = cc.contractuuid
+                 where ct.status in ('SIGNED','TIME','BUDGET')
+                   and coalesce(cc.activeto, :openEnded) >= :today
+                """)
+                .setParameter("openEnded", OPEN_ENDED)
+                .setParameter("today", LocalDate.now().toString()));
+    }
+
+    /**
+     * Every client with a lead that is neither won nor lost.
+     *
+     * <p>Sub-leads are counted, unlike the sector card's own open-lead number which filters
+     * {@code salesleaduuid is null}. The question here is "is anybody actively selling to
+     * this company", and an extension lead hanging off another lead is still somebody
+     * selling; the sector card is counting distinct opportunities, which is a different
+     * question with a different right answer.
+     */
+    Set<String> clientsWithOpenLead() {
+        return uuidSet(em.createNativeQuery("""
                 select distinct clientuuid from sales_lead where status not in ('WON','LOST')
-                """).getResultList();
+                """));
+    }
+
+    private static Set<String> uuidSet(jakarta.persistence.Query query) {
+        @SuppressWarnings("unchecked")
+        List<Object> rows = query.getResultList();
         Set<String> uuids = new LinkedHashSet<>();
         for (Object row : rows) {
             if (row != null) {
@@ -231,6 +328,293 @@ public class AccountService {
             return flag;
         }
         return value instanceof Number number && number.intValue() != 0;
+    }
+
+    // ------------------------------------------------------------------------
+    // The four relationships (spec §2.1) — derived, never stored
+    // ------------------------------------------------------------------------
+
+    /**
+     * Everything the four relationships are computed from, read once for the whole client
+     * table.
+     *
+     * <p>A record rather than six loose maps because {@link #describe} has to apply the
+     * rules in ORDER and the order is the whole design: customer beats former, former
+     * beats prospect, prospect beats contact. A former customer being chased reads
+     * <i>Former · win-back</i> and never <i>Prospect</i> — the history is the fact, the
+     * band is the intent, and both show.
+     *
+     * @param firstAssignment earliest {@code contract_consultants.activefrom} per client
+     * @param lastAssignment  latest {@code activeto} per client, over assignments of any
+     *                        contract status — "we worked here until March 2024" is true
+     *                        whatever the contract was later set to
+     * @param runningUntil    latest {@code activeto} over assignments on a
+     *                        SIGNED/TIME/BUDGET contract, with an open-ended one read as
+     *                        9999-12-31. {@code >= today} is the CUSTOMER predicate, and
+     *                        {@code <= today + 90} on top of that is "every assignment
+     *                        ends within 90 days"
+     * @param everWorked      any contract row (any status) or any work row
+     * @param contractCounts  contracts ever, any status
+     * @param openLeads       leads that are neither won nor lost
+     */
+    public record RelationshipFacts(
+            Map<String, LocalDate> firstAssignment,
+            Map<String, LocalDate> lastAssignment,
+            Map<String, LocalDate> runningUntil,
+            Set<String> everWorked,
+            Map<String, Integer> contractCounts,
+            Map<String, Integer> openLeads) {
+
+        /** One client's relationship, given the band it reads as and the day being asked about. */
+        public AccountRelationshipDTO describe(String clientUuid, AccountBand band, LocalDate today) {
+            LocalDate running = runningUntil.get(clientUuid);
+            boolean customer = running != null && !running.isBefore(today);
+            int leads = openLeads.getOrDefault(clientUuid, 0);
+            boolean pursued = leads > 0 || band != AccountBand.BACKLOG;
+
+            AccountRelationship relationship;
+            if (customer) {
+                relationship = AccountRelationship.CUSTOMER;
+            } else if (everWorked.contains(clientUuid)) {
+                relationship = AccountRelationship.FORMER;
+            } else if (pursued) {
+                relationship = AccountRelationship.PROSPECT;
+            } else {
+                relationship = AccountRelationship.CONTACT;
+            }
+
+            return new AccountRelationshipDTO(
+                    relationship.name(),
+                    firstAssignment.get(clientUuid),
+                    lastAssignment.get(clientUuid),
+                    contractCounts.getOrDefault(clientUuid, 0),
+                    relationship == AccountRelationship.FORMER && pursued,
+                    customer && !running.isAfter(today.plusDays(EXPIRING_WITHIN_DAYS)),
+                    leads);
+        }
+    }
+
+    /**
+     * The relationship of every client, in one pass.
+     *
+     * <p>Four aggregates over the whole table rather than four queries per row — the list
+     * renders several hundred clients. The bands are passed in because
+     * {@link #bandsForAll()} has already read them for the same response, and because the
+     * PROSPECT rule reads the band: computing them twice would be two extra queries for an
+     * answer already in hand.
+     */
+    public Map<String, AccountRelationshipDTO> relationshipsForAll(Map<String, AccountBand> bands) {
+        RelationshipFacts facts = relationshipFacts();
+        LocalDate today = LocalDate.now();
+        Map<String, AccountRelationshipDTO> byClient = new LinkedHashMap<>();
+        for (Client client : clientService.listAllClients()) {
+            String uuid = client.getUuid();
+            byClient.put(uuid, facts.describe(uuid, bands.getOrDefault(uuid, AccountBand.BACKLOG), today));
+        }
+        return byClient;
+    }
+
+    /** The relationship of every client, reading the bands itself. */
+    public Map<String, AccountRelationshipDTO> relationshipsForAll() {
+        return relationshipsForAll(bandsForAll());
+    }
+
+    /** One client's relationship. The account page reads one account, so it asks for one. */
+    public AccountRelationshipDTO relationshipFor(String clientUuid, AccountBand band) {
+        return relationshipFacts(clientUuid).describe(clientUuid, band, LocalDate.now());
+    }
+
+    /** Every fact, for every client. */
+    RelationshipFacts relationshipFacts() {
+        return relationshipFacts(null);
+    }
+
+    /**
+     * Every fact, optionally narrowed to one client.
+     *
+     * <p>One spelling of each rule with a {@code :scope} guard rather than two copies:
+     * the rules are subtle enough that two spellings would drift, and a drifted predicate
+     * here shows up as the list and the page disagreeing about what a company is.
+     *
+     * <p>The guard binds the EMPTY STRING for "every client" rather than a null. A null
+     * bound into a native query has no inferable SQL type and Hibernate refuses it; the
+     * sentinel is never a real uuid, so the two readings cannot collide.
+     */
+    RelationshipFacts relationshipFacts(String clientUuid) {
+        String scope = clientUuid == null ? "" : clientUuid.trim();
+
+        Map<String, LocalDate> firstAssignment = new HashMap<>();
+        Map<String, LocalDate> lastAssignment = new HashMap<>();
+        Map<String, LocalDate> runningUntil = new HashMap<>();
+        @SuppressWarnings("unchecked")
+        List<Object[]> spans = em.createNativeQuery("""
+                select ct.clientuuid,
+                       min(cc.activefrom),
+                       max(cc.activeto),
+                       max(case when ct.status in ('SIGNED','TIME','BUDGET')
+                                then coalesce(cc.activeto, :openEnded) end)
+                  from contract_consultants cc
+                  join contracts ct on ct.uuid = cc.contractuuid
+                 where ct.clientuuid is not null
+                   and (:scope = '' or ct.clientuuid = :scope)
+                 group by ct.clientuuid
+                """)
+                .setParameter("openEnded", OPEN_ENDED)
+                .setParameter("scope", scope)
+                .getResultList();
+        for (Object[] row : spans) {
+            String uuid = String.valueOf(row[0]);
+            putDate(firstAssignment, uuid, row[1]);
+            putDate(lastAssignment, uuid, row[2]);
+            putDate(runningUntil, uuid, row[3]);
+        }
+
+        Set<String> everWorked = uuidSet(em.createNativeQuery("""
+                select distinct clientuuid from contracts
+                 where clientuuid is not null and (:scope = '' or clientuuid = :scope)
+                union
+                select distinct clientuuid from work
+                 where clientuuid is not null and (:scope = '' or clientuuid = :scope)
+                """)
+                .setParameter("scope", scope));
+
+        Map<String, Integer> contractCounts = countByClient("""
+                select clientuuid, count(*) from contracts
+                 where clientuuid is not null and (:scope = '' or clientuuid = :scope)
+                 group by clientuuid
+                """, scope);
+
+        Map<String, Integer> openLeads = countByClient("""
+                select clientuuid, count(*) from sales_lead
+                 where clientuuid is not null and status not in ('WON','LOST')
+                   and (:scope = '' or clientuuid = :scope)
+                 group by clientuuid
+                """, scope);
+
+        return new RelationshipFacts(firstAssignment, lastAssignment, runningUntil,
+                everWorked, contractCounts, openLeads);
+    }
+
+    /**
+     * How many colleagues have an edge to somebody at each company — the Contacts view's
+     * "who knows them", counted for the whole list in one query.
+     *
+     * <p>The same three sources the relationship graph draws from: a meeting both were in,
+     * a signal a colleague filed, a LinkedIn connection mirrored from TrustLink. A
+     * TrustLink name that resolved to no Intra user still counts as a person, under its raw
+     * name — dropping it would under-count exactly the accounts where the connection is all
+     * we have, which are the contacts this column exists for.
+     */
+    public Map<String, Integer> knownByForAll() {
+        return countByClient("""
+                select k.client_uuid, count(*) from (
+                    select client_uuid, user_uuid as person from account_meeting where user_uuid is not null
+                    union
+                    select client_uuid, author_uuid from account_signal where author_uuid is not null
+                    union
+                    select s.client_uuid, sc.user_uuid
+                      from account_signal_colleague sc
+                      join account_signal s on s.uuid = sc.signal_uuid
+                     where sc.user_uuid is not null
+                    union
+                    select c.client_uuid, coalesce(t.user_uuid, concat('name:', t.trustworker_name))
+                      from trustlink_connection_trustworker t
+                      join trustlink_connection c on c.uuid = t.connection_uuid
+                      join trustlink_company_alias a on a.client_uuid = c.client_uuid
+                                                    and a.company_name = c.company_name
+                                                    and a.enabled = 1
+                ) k
+                 group by k.client_uuid
+                """, "");
+    }
+
+    /**
+     * How many signals have been filed on each company — the Contacts view's "Heard".
+     *
+     * <p>Every signal, not only the undecided ones. On a contact the question is "has
+     * anybody here heard anything about them", and a signal somebody has already parked
+     * still answers it.
+     */
+    public Map<String, Integer> signalCountForAll() {
+        return countByClient("""
+                select client_uuid, count(*) from account_signal group by client_uuid
+                """, "");
+    }
+
+    /**
+     * Who put each company into Intra, from its {@code CREATED} activity-log row.
+     *
+     * <p>The Contacts view shows it beside the date because the two answer one question
+     * together: a company added on 25 August by somebody who added eleven that day is a
+     * different kind of row from one a partner added after a meeting. Rows created before
+     * the activity log existed, or by a job, simply have no entry — the column then shows
+     * the date alone rather than inventing an author.
+     */
+    public Map<String, PersonDTO> addedByForAll() {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                select l.client_uuid, min(l.modified_by)
+                  from client_activity_log l
+                 where l.entity_type = 'CLIENT' and l.action = 'CREATED'
+                 group by l.client_uuid
+                """).getResultList();
+        Map<String, PersonDTO> byClient = new HashMap<>();
+        Map<String, PersonDTO> resolved = new HashMap<>();
+        for (Object[] row : rows) {
+            if (row[0] == null || row[1] == null) {
+                continue;
+            }
+            String actor = row[1].toString();
+            PersonDTO person = resolved.computeIfAbsent(actor, this::resolvePerson);
+            if (person != null) {
+                byClient.put(row[0].toString(), person);
+            }
+        }
+        return byClient;
+    }
+
+    /** {@code clientuuid → count}, for a query that selects exactly those two columns. */
+    private Map<String, Integer> countByClient(String sql, String scope) {
+        jakarta.persistence.Query query = em.createNativeQuery(sql);
+        if (sql.contains(":scope")) {
+            query.setParameter("scope", scope);
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+        Map<String, Integer> counts = new HashMap<>();
+        for (Object[] row : rows) {
+            if (row[0] != null && row[1] instanceof Number number) {
+                counts.put(row[0].toString(), number.intValue());
+            }
+        }
+        return counts;
+    }
+
+    /** MariaDB hands a DATE back as a {@code java.sql.Date} or a {@code LocalDate} by driver. */
+    private static void putDate(Map<String, LocalDate> target, String clientUuid, Object value) {
+        LocalDate date = toLocalDate(value);
+        if (date != null) {
+            target.put(clientUuid, date);
+        }
+    }
+
+    public static LocalDate toLocalDate(Object value) {
+        if (value instanceof LocalDate date) {
+            return date;
+        }
+        if (value instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate();
+        }
+        if (value instanceof java.sql.Timestamp timestamp) {
+            return timestamp.toLocalDateTime().toLocalDate();
+        }
+        if (value instanceof java.util.Date date) {
+            return date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+        }
+        if (value instanceof CharSequence text && text.length() >= 10) {
+            return LocalDate.parse(text.subSequence(0, 10).toString());
+        }
+        return null;
     }
 
     public List<ClientDomainDTO> domains(String clientUuid) {
@@ -276,7 +660,9 @@ public class AccountService {
      *
      * <p>Promoting an unowned client out of Backlog is refused: spec §3.1 requires an
      * owner on Strategic and Active accounts, and an owned band with nobody in it is the
-     * exact hole the band was invented to close.
+     * exact hole the band was invented to close. {@code ownerUuid} is applied BEFORE that
+     * check, so "Start pursuing" — band and owner in one dialog — is one call and never
+     * the 409 followed by a round trip to the client form it used to be.
      */
     @Transactional
     public AccountDTO patch(String clientUuid, AccountPatchRequest request, String actor) {
@@ -296,6 +682,27 @@ public class AccountService {
             account.setBand(AccountBand.BACKLOG);
             account.setCreatedAt(now);
             account.setCreatedBy(actor);
+        }
+
+        // The owner first: a band promotion in the same request depends on it, and the
+        // owner is client.accountmanager — the single store since V598, written here so
+        // the account page never has to send people to the client form for one field.
+        if (request.clearOwner()) {
+            if (!isBlank(client.getAccountmanager())) {
+                logOwnerChange(client, null, actor);
+                client.setAccountmanager(null);
+                client.persist();
+            }
+        } else if (request.ownerUuid() != null && !request.ownerUuid().isBlank()) {
+            String ownerUuid = request.ownerUuid().trim();
+            if (User.<User>findById(ownerUuid) == null) {
+                throw new WebApplicationException("Unknown colleague: " + ownerUuid, Response.Status.BAD_REQUEST);
+            }
+            if (!Objects.equals(client.getAccountmanager(), ownerUuid)) {
+                logOwnerChange(client, ownerUuid, actor);
+                client.setAccountmanager(ownerUuid);
+                client.persist();
+            }
         }
 
         if (request.band() != null && !request.band().isBlank()) {
@@ -331,9 +738,9 @@ public class AccountService {
             account.setSlackSpace(normalised);
         }
 
-        // A GTM team is a FOCUS bubble — Offentlig Digitalisering, Grøn Omstilling, ... The
-        // ACCOUNT_TEAM bubbles are per client and live in their own column below; pointing
-        // gtm_bubble_uuid at one would make the GTM tab list Ørsted as a go-to-market team.
+        // A GTM team is a FOCUS bubble — Offentlig Digitalisering, Grøn Omstilling, ...
+        // Pointing gtm_bubble_uuid at a per-client ACCOUNT_TEAM bubble would make the GTM
+        // tab list Ørsted as a go-to-market team, which is why the type is checked.
         if (request.clearGtmBubble()) {
             account.setGtmBubbleUuid(null);
         } else if (request.gtmBubbleUuid() != null && !request.gtmBubbleUuid().isBlank()) {
@@ -341,38 +748,96 @@ public class AccountService {
                     "A GTM team is a focus-area bubble — pick one of those"));
         }
 
-        if (request.clearAccountTeamBubble()) {
-            account.setAccountTeamBubbleUuid(null);
-        } else if (request.accountTeamBubbleUuid() != null && !request.accountTeamBubbleUuid().isBlank()) {
-            account.setAccountTeamBubbleUuid(requireBubble(request.accountTeamBubbleUuid(), BubbleType.ACCOUNT_TEAM,
-                    "An account team is an account-team bubble — pick one of those"));
-        }
-
         account.setModifiedAt(now);
         account.setModifiedBy(actor);
         account.persist();
 
-        syncResponsibleRole(clientUuid, client.getAccountmanager(), actor, now);
-
-        log.infof("Account patched: client=%s band=%s actor=%s", clientUuid, account.getBand(), actor);
+        log.infof("Account patched: client=%s band=%s owner=%s actor=%s",
+                clientUuid, account.getBand(), client.getAccountmanager(), actor);
         return read(clientUuid);
     }
 
     /**
-     * Replaces the Supported-by list wholesale. A PUT rather than add/remove: the UI edits
-     * the set, and replacing it means no interleaved edit can leave a stale row behind.
+     * Replaces who is on the account — supporters and the team — in one transaction.
+     *
+     * <p>A PUT rather than add/remove: the UI edits the sets, and replacing them means no
+     * interleaved edit can leave a stale row behind. Both sets are written together
+     * because the rules span them: a person may not be in both, and neither may be the
+     * owner.
+     *
+     * <p><b>Null is not empty.</b> A null list leaves that set alone — so an older
+     * frontend that only knows about supporters cannot silently empty the account team,
+     * and an editor that only touched one list need not send the other. An empty list
+     * clears the set.
      */
     @Transactional
-    public AccountDTO replaceSupportedBy(String clientUuid, AccountRolesRequest request, String actor) {
+    public AccountDTO replaceRoles(String clientUuid, AccountRolesRequest request, String actor) {
         Client client = requireClient(clientUuid);
         requireActor(actor);
-        List<String> requested = request == null || request.supportedByUuids() == null
-                ? List.of()
-                : request.supportedByUuids();
 
-        // LinkedHashSet: the same person twice in the payload is a UI slip, not an error,
-        // and the order the caller chose is the order the header shows.
+        List<String> supportedByRaw = request == null ? null : request.supportedByUuids();
+        List<String> membersRaw = request == null ? null : request.memberUuids();
+        if (supportedByRaw == null && membersRaw == null) {
+            // Nothing to do, but still answer with the account rather than a 400: a PUT
+            // that changes nothing is not an error, and the caller wants the current state.
+            return read(clientUuid);
+        }
+
+        LinkedHashSet<String> supporters = resolveColleagues(supportedByRaw);
+        LinkedHashSet<String> members = resolveColleagues(membersRaw);
+
+        // The two sets are checked against each other only when both were sent. When one
+        // is null the other is compared with what is already stored, so a half-payload
+        // cannot create the duplicate this refuses.
+        LinkedHashSet<String> effectiveSupporters =
+                supportedByRaw == null ? storedUuids(clientUuid, AccountRoleType.SUPPORTED_BY) : supporters;
+        LinkedHashSet<String> effectiveMembers =
+                membersRaw == null ? storedUuids(clientUuid, AccountRoleType.MEMBER) : members;
+
+        for (String uuid : effectiveSupporters) {
+            if (effectiveMembers.contains(uuid)) {
+                throw new WebApplicationException(
+                        nameOf(uuid) + " is listed both as supporting the account and on its team — pick one",
+                        Response.Status.BAD_REQUEST);
+            }
+        }
+        String owner = client.getAccountmanager();
+        if (!isBlank(owner)) {
+            String ownerUuid = owner.trim();
+            if (effectiveSupporters.contains(ownerUuid) || effectiveMembers.contains(ownerUuid)) {
+                throw new WebApplicationException(
+                        nameOf(ownerUuid) + " already owns this account — the owner is not also a supporter or a member",
+                        Response.Status.BAD_REQUEST);
+            }
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        if (supportedByRaw != null) {
+            writeRole(clientUuid, AccountRoleType.SUPPORTED_BY, supporters, actor, now);
+        }
+        if (membersRaw != null) {
+            writeRole(clientUuid, AccountRoleType.MEMBER, members, actor, now);
+        }
+
+        log.infof("Account roles replaced: client=%s supportedBy=%s members=%s actor=%s",
+                clientUuid,
+                supportedByRaw == null ? "unchanged" : String.valueOf(supporters.size()),
+                membersRaw == null ? "unchanged" : String.valueOf(members.size()),
+                actor);
+        return read(clientUuid);
+    }
+
+    /**
+     * Trims, de-duplicates and checks that every uuid is somebody.
+     *
+     * <p>LinkedHashSet: the same person twice in the payload is a UI slip, not an error,
+     * and the order the caller chose is the order the header shows.
+     */
+    private LinkedHashSet<String> resolveColleagues(List<String> requested) {
         LinkedHashSet<String> wanted = new LinkedHashSet<>();
+        if (requested == null) {
+            return wanted;
+        }
         for (String uuid : requested) {
             if (uuid == null || uuid.isBlank()) {
                 continue;
@@ -383,16 +848,31 @@ public class AccountService {
             }
             wanted.add(trimmed);
         }
+        return wanted;
+    }
 
-        ClientAccountRole.delete("clientUuid = ?1 and role = ?2", clientUuid, AccountRoleType.SUPPORTED_BY);
-        LocalDateTime now = LocalDateTime.now();
-        for (String userUuid : wanted) {
-            persistRole(clientUuid, userUuid, AccountRoleType.SUPPORTED_BY, actor, now);
+    private LinkedHashSet<String> storedUuids(String clientUuid, AccountRoleType role) {
+        List<ClientAccountRole> rows = ClientAccountRole
+                .list("clientUuid = ?1 and role = ?2 order by createdAt", clientUuid, role);
+        LinkedHashSet<String> uuids = new LinkedHashSet<>();
+        for (ClientAccountRole row : rows) {
+            uuids.add(row.getUserUuid());
         }
-        syncResponsibleRole(clientUuid, client.getAccountmanager(), actor, now);
+        return uuids;
+    }
 
-        log.infof("Account supported-by replaced: client=%s count=%d actor=%s", clientUuid, wanted.size(), actor);
-        return read(clientUuid);
+    private void writeRole(String clientUuid, AccountRoleType role, LinkedHashSet<String> wanted,
+                           String actor, LocalDateTime now) {
+        ClientAccountRole.delete("clientUuid = ?1 and role = ?2", clientUuid, role);
+        for (String userUuid : wanted) {
+            persistRole(clientUuid, userUuid, role, actor, now);
+        }
+    }
+
+    /** A name for an error message; the uuid itself when the person cannot be resolved. */
+    private String nameOf(String userUuid) {
+        PersonDTO person = resolvePerson(userUuid);
+        return person == null ? userUuid : person.name();
     }
 
     /**
@@ -455,14 +935,18 @@ public class AccountService {
     // ------------------------------------------------------------------------
 
     /**
-     * Keeps the {@code RESPONSIBLE} row equal to {@code client.accountmanager}. Called
-     * from every write path, so the moment anyone touches an account the two agree again —
-     * even when the owner was changed on the client form, which knows nothing about roles.
+     * Records an owner change on the client's activity log, so the account timeline shows
+     * it the same way it shows one made on the client form.
      */
-    private void syncResponsibleRole(String clientUuid, String ownerUuid, String actor, LocalDateTime now) {
-        ClientAccountRole.delete("clientUuid = ?1 and role = ?2", clientUuid, AccountRoleType.RESPONSIBLE);
-        if (!isBlank(ownerUuid) && User.<User>findById(ownerUuid.trim()) != null) {
-            persistRole(clientUuid, ownerUuid.trim(), AccountRoleType.RESPONSIBLE, actor, now);
+    private void logOwnerChange(Client client, String newOwnerUuid, String actor) {
+        try {
+            activityLogService.logFieldChange(client.getUuid(), ClientActivityLog.TYPE_CLIENT,
+                    client.getUuid(), client.getName(), "accountmanager",
+                    client.getAccountmanager(), newOwnerUuid);
+        } catch (RuntimeException e) {
+            // The log is a record of the change, not the change itself. Losing the row is
+            // bad; refusing the owner somebody just picked because the log failed is worse.
+            log.warnf(e, "Could not log the owner change on client %s (actor=%s)", client.getUuid(), actor);
         }
     }
 

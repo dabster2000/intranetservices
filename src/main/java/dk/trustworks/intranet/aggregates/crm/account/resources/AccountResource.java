@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDomainsRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountPatchRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRateDTO;
+import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRolesRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountSummaryDTO;
@@ -16,6 +17,9 @@ import dk.trustworks.intranet.aggregates.crm.account.services.AccountRateService
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountRelationshipService;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountService;
 import dk.trustworks.intranet.aggregates.crm.account.services.PersonRoleService;
+import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDTO;
+import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSuggestionDecisionRequest;
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSuggestionService;
 import dk.trustworks.intranet.aggregates.crm.plan.services.AccountPlanService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
@@ -27,6 +31,7 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.PATCH;
+import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -101,6 +106,9 @@ public class AccountResource {
     @Inject
     PersonRoleService personRoles;
 
+    @Inject
+    CalendarSuggestionService calendarSuggestions;
+
     @Context
     SecurityContext securityContext;
 
@@ -124,7 +132,14 @@ public class AccountResource {
     @GET
     public List<AccountSummaryDTO> summaries() {
         Map<String, AccountBand> bands = accountService.bandsForAll();
+        // The relationships read the bands, so the bands are computed once and handed on
+        // rather than derived twice from the same tables.
+        Map<String, AccountRelationshipDTO> relationships = accountService.relationshipsForAll(bands);
         Map<String, List<PersonDTO>> supported = accountService.supportedByForAll();
+        Map<String, List<PersonDTO>> members = accountService.membersForAll();
+        Map<String, Integer> knownBy = accountService.knownByForAll();
+        Map<String, Integer> signals = accountService.signalCountForAll();
+        Map<String, PersonDTO> addedBy = accountService.addedByForAll();
         Map<String, AccountActivityDTO> lastActivity = activityService.lastActivityForAll();
         Map<String, AccountPlanService.PlanSummary> plans = planService.summariesForAll();
 
@@ -136,13 +151,52 @@ public class AccountResource {
             rows.add(new AccountSummaryDTO(
                     uuid,
                     band.name(),
+                    relationships.get(uuid),
                     supported.getOrDefault(uuid, List.of()),
+                    members.getOrDefault(uuid, List.of()),
+                    knownBy.getOrDefault(uuid, 0),
+                    signals.getOrDefault(uuid, 0),
+                    addedBy.get(uuid),
                     plan == null ? null : plan.rag(),
                     plan == null ? null : plan.updatedAt(),
                     plan != null && plan.started(),
                     lastActivity.get(uuid)));
         }
         return rows;
+    }
+
+    /**
+     * "Seen in calendars": companies colleagues keep meeting that Intra does not know
+     * (spec §2.5, cut 2).
+     *
+     * <p>Deliberately BEFORE {@code /{clientUuid}} in this class. RESTEasy Reactive matches
+     * a literal path segment ahead of a template one, so the order is not what makes this
+     * work — but a reader looking for why {@code calendar-suggestions} is not read as a
+     * client uuid should find the two next to each other.
+     *
+     * <p>{@code accounts:read}, the class default: every employee can already read every
+     * account page, and a domain with a meeting count is less than that.
+     */
+    @GET
+    @Path("/calendar-suggestions")
+    public List<CalendarSuggestionDTO> calendarSuggestions(
+            @QueryParam("limit") @DefaultValue("25") int limit) {
+        return calendarSuggestions.suggestions(limit);
+    }
+
+    /**
+     * Add the company, link the domain to a client we already have, or never ask again.
+     *
+     * <p>{@code accounts:write} — all three change what the CRM holds, and the ADD branch
+     * creates a company. The per-person gate is the BFF's own {@code requirePermission}.
+     */
+    @POST
+    @Path("/calendar-suggestions/{domain}/decision")
+    @RolesAllowed({"accounts:write"})
+    public Response decideCalendarSuggestion(@PathParam("domain") String domain,
+                                             CalendarSuggestionDecisionRequest request) {
+        calendarSuggestions.decide(domain, request, requireActor());
+        return Response.noContent().build();
     }
 
     @GET
@@ -186,11 +240,17 @@ public class AccountResource {
         return accountService.patch(clientUuid, request, requireActor());
     }
 
+    /**
+     * Who is on the account: supporters and the team, replaced wholesale.
+     *
+     * <p>A null list in the body leaves that set alone, so a caller that only edits one of
+     * them cannot empty the other by omission.
+     */
     @PUT
     @Path("/{clientUuid}/roles")
     @RolesAllowed({"accounts:write"})
     public AccountDTO replaceRoles(@PathParam("clientUuid") String clientUuid, AccountRolesRequest request) {
-        return accountService.replaceSupportedBy(clientUuid, request, requireActor());
+        return accountService.replaceRoles(clientUuid, request, requireActor());
     }
 
     @PUT

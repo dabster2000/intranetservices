@@ -8,9 +8,13 @@ import dk.trustworks.intranet.contracts.exceptions.ContractValidationException.V
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
+import dk.trustworks.intranet.aggregates.client.events.ClientGraduatedEvent;
+import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
+import dk.trustworks.intranet.dao.crm.services.ClientBillingValidator;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
@@ -19,6 +23,7 @@ import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import jakarta.persistence.*;
 import jakarta.transaction.Transactional;
@@ -46,6 +51,9 @@ public class ContractService {
 
     @Inject
     ClientActivityLogService activityLogService;
+
+    @Inject
+    Event<ClientGraduatedEvent> clientGraduated;
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
@@ -324,6 +332,11 @@ public class ContractService {
             validationService.enforceValidation(report);
         }
 
+        // A prospect's first contract makes it a customer. This is the one place every
+        // contract is persisted, including the won-lead prefill, which is why the
+        // transition lives here and not on a form somebody could forget to use.
+        graduateProspect(contract.getClientuuid());
+
         contract.setContractConsultants(new HashSet<>());
         if(contract.getUuid()==null || contract.getUuid().trim().isEmpty()) contract.setUuid(UUID.randomUUID().toString());
         Contract.persist(contract);
@@ -336,6 +349,51 @@ public class ContractService {
         log.infof("Saved contract uuid=%s, client=%s, status=%s, user=%s",
                 contract.getUuid(), contract.getClientuuid(), contract.getStatus(), userUuid);
         return contract;
+    }
+
+    /**
+     * PROSPECT → CLIENT, on the first contract. One way, automatic, and nothing anywhere
+     * flips it back.
+     *
+     * <p><b>Billing completeness is enforced HERE</b>, with the same rules the client form
+     * uses ({@link ClientBillingValidator}), because this is the first minute they are
+     * true. A prospect is a company Intra knows and has never billed: asking it for a CVR
+     * is what stopped people writing these companies down at all. The refusal names the
+     * missing field so the contract wizard can send the person to the client form rather
+     * than to a shrug.
+     *
+     * <p>The e-conomic customer is created by {@link ClientGraduatedEvent}'s observer after
+     * this transaction commits — never inside it, and never for a contract that rolls back.
+     *
+     * <p>A missing or unknown client is not this method's business: the contract's own
+     * validation owns that, and a graduation step that invented an error message for it
+     * would report the wrong problem.
+     */
+    void graduateProspect(String clientUuid) {
+        if (clientUuid == null || clientUuid.isBlank()) {
+            return;
+        }
+        Client client = Client.findById(clientUuid.trim());
+        if (client == null || client.getType() != ClientType.PROSPECT) {
+            return;
+        }
+
+        String problem = ClientBillingValidator.billingProblem(client);
+        if (problem != null) {
+            throw new BadRequestException(
+                    client.getName() + " has never been billed and its billing details are not complete: "
+                            + problem + ". Fill them in on the client form before creating the contract.");
+        }
+
+        client.setType(ClientType.CLIENT);
+        client.persist();
+
+        activityLogService.logFieldChange(client.getUuid(), ClientActivityLog.TYPE_CLIENT,
+                client.getUuid(), client.getName(), "type", ClientType.PROSPECT.name(), ClientType.CLIENT.name());
+
+        clientGraduated.fire(new ClientGraduatedEvent(client.getUuid(), client.getName()));
+        log.infof("Prospect graduated to customer on its first contract: uuid=%s name=%s",
+                client.getUuid(), client.getName());
     }
 
     @Transactional

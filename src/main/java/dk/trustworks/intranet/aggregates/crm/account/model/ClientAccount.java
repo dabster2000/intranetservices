@@ -25,10 +25,10 @@ import java.time.LocalDateTime;
  * never creates a row to answer a read; the row appears the first time a person changes
  * something.
  *
- * <p>The owner is deliberately NOT a column here. {@code client.accountmanager} remains
- * the source of truth (spec §9.7 left that migration open) and a
- * {@link ClientAccountRole} row of type {@code RESPONSIBLE} is kept in step with it, so
- * there is exactly one place to change an owner and no chance of the two drifting.
+ * <p>The owner is deliberately NOT a column here, and since V598 it is not mirrored
+ * anywhere either: {@code client.accountmanager} is the single store. The people on the
+ * account — supporters and the team — are {@link ClientAccountRole} rows, which is now the
+ * only table that answers "who is on this account".
  *
  * <p>Never a REST body — the resource takes
  * {@code dk.trustworks.intranet.aggregates.crm.account.dto.AccountPatchRequest}.
@@ -50,16 +50,13 @@ public class ClientAccount extends PanacheEntityBase {
 
     /**
      * The GTM team: a {@code FOCUS} bubble ({@code bubbles.uuid}) such as Offentlig
-     * Digitalisering or Grøn Omstilling. Not the client's own account-team bubble — that
-     * is {@link #accountTeamBubbleUuid}. {@code AccountService} refuses any other bubble
-     * type here (V591).
+     * Digitalisering or Grøn Omstilling. {@code AccountService} refuses any other bubble
+     * type here (V591). The client's own {@code ACCOUNT_TEAM} bubble used to have a column
+     * beside this one; V598 moved its members into {@code client_account_role} and V599
+     * dropped the column.
      */
     @Column(name = "gtm_bubble_uuid", length = 36)
     private String gtmBubbleUuid;
-
-    /** The client's own {@code ACCOUNT_TEAM} bubble ({@code bubbles.uuid}), when it has one. */
-    @Column(name = "account_team_bubble_uuid", length = 36)
-    private String accountTeamBubbleUuid;
 
     /** Channel name without the leading {@code #}, e.g. {@code a_oersted}. */
     @Column(name = "slack_space", length = 80)

@@ -53,8 +53,18 @@ import java.util.UUID;
  * <ol>
  *   <li><b>Somebody from a known client has to be in it.</b> At least one attendee's
  *       e-mail domain must match a {@code client_domain} row. Internal meetings, personal
- *       appointments and meetings with companies we do not serve are dropped without being
- *       written anywhere. Cancelled and undated events are dropped here too.</li>
+ *       appointments and meetings with companies we do not serve are not kept as meetings.
+ *       Cancelled and undated events are dropped here too.
+ *
+ *       <p><b>An unmatched domain is no longer dropped silently</b> (spec §2.5, V601). Only
+ *       34 of 307 clients have a domain, so this rule was quietly discarding exactly the
+ *       companies the customers/prospects/contacts split exists for — the ones several
+ *       colleagues keep meeting and Intra has never heard of. The DOMAIN and the DAY are
+ *       tallied into {@code calendar_unmatched_meeting} and surface on the Contacts view as
+ *       "Seen in calendars" with three things to do about them. Never an attendee, never a
+ *       subject: a domain identifies a company, not a person, which is a smaller footprint
+ *       than {@code account_meeting_attendee} already has. Freemail, our own and
+ *       deny-listed domains never land there.</li>
  *
  *   <li><b>Room and equipment attendees are not people</b> (decision D3). Graph marks them
  *       {@code type="resource"}, and {@code "KIT-LLV-Modelokale-2@politi.dk"} on a client
@@ -142,6 +152,9 @@ public class AccountCalendarSyncService {
     CalendarFilterService filterService;
 
     @Inject
+    CalendarSuggestionService suggestionService;
+
+    @Inject
     GraphMailboxConcurrencyLimiter limiter;
 
     @ConfigProperty(name = "dk.trustworks.crm.calendar.sync.enabled", defaultValue = "false")
@@ -197,6 +210,11 @@ public class AccountCalendarSyncService {
                 log.warnf("Account calendar sync failed for mailbox %s: %s", userUuid, e.getMessage());
             }
         }
+
+        // The per-domain counts are recomputed from the ledger once, after every mailbox
+        // has written its sightings — never incremented as they arrive, because the
+        // incremental window re-reads the same fortnight every night.
+        QuarkusTransaction.requiringNew().run(suggestionService::refreshAggregates);
 
         log.infof("Account calendar sync done: mailboxes=%d events=%d meetings=%d attendees=%d failures=%d "
                         + "deliveryFiltered=%d colleagueFiltered=%d colleagueEmailsLearned=%d",
@@ -261,7 +279,7 @@ public class AccountCalendarSyncService {
         }
 
         int attendeeRows = pending.stream().mapToInt(meeting -> meeting.attendees().size()).sum();
-        if (!pending.isEmpty() || tally.hasLearnedEmails()) {
+        if (!pending.isEmpty() || tally.hasLearnedEmails() || tally.hasUnmatchedDomains()) {
             // One transaction, opened after the last Graph call for this mailbox and closed
             // before the next one. The learned addresses ride along in it rather than in a
             // second transaction of their own: they are a by-product of the same pass and
@@ -269,6 +287,7 @@ public class AccountCalendarSyncService {
             QuarkusTransaction.requiringNew().run(() -> {
                 persist(pending, now);
                 filterService.rememberColleagueEmails(tally.learnedEmails(), now);
+                suggestionService.record(userUuid, tally.unmatchedDomains(), now);
             });
         }
         return new MailboxResult(
@@ -344,6 +363,11 @@ public class AccountCalendarSyncService {
                 String domain = normalised.substring(normalised.lastIndexOf('@') + 1);
                 String clientUuid = domainIndex.get(domain);
                 if (clientUuid == null) {
+                    // Nobody claims this domain. Write down THAT, so a company several
+                    // colleagues keep meeting stops being invisible (spec §2.5).
+                    if (CalendarUnmatchedDomainFilter.isSuggestable(domain)) {
+                        tally.unmatchedDomain(domain, event.id(), meetingDate);
+                    }
                     continue;
                 }
                 sawClientAttendee = true;

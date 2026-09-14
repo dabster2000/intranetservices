@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.aggregates.crm.sector.services;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountActivityDTO;
+import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
 import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountBand;
+import dk.trustworks.intranet.aggregates.crm.account.model.enums.AccountRelationship;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountActivityService;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountRateService;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountService;
@@ -196,6 +198,7 @@ public class SectorService {
             int fiscalYear,
             List<Client> clients,
             Map<String, AccountBand> bands,
+            Map<String, AccountRelationshipDTO> relationships,
             Map<String, AccountPlanService.PlanSummary> plans,
             Map<String, AccountActivityDTO> lastActivity,
             Map<String, Integer> openLeads,
@@ -223,6 +226,17 @@ public class SectorService {
         AccountBand bandOf(Client client) {
             return bands.getOrDefault(client.getUuid(), AccountBand.BACKLOG);
         }
+
+        /**
+         * A company Intra knows and has never billed, with no open lead and no decided
+         * band. Nothing is expected of one: it raises no alert, needs no owner, counts in
+         * no plan coverage and is never quiet.
+         */
+        boolean isContact(Client client) {
+            AccountRelationshipDTO relationship = relationships.get(client.getUuid());
+            return relationship != null
+                    && AccountRelationship.CONTACT.name().equals(relationship.relationship());
+        }
     }
 
     private Context load() {
@@ -232,11 +246,17 @@ public class SectorService {
         for (SectorPlan plan : SectorPlan.<SectorPlan>listAll()) {
             sectorPlans.put(plan.getSegment(), plan);
         }
+        // Clients AND prospects. A sector has to partition every company Intra knows,
+        // and after 2026-09-14 most of the companies nobody has billed are typed PROSPECT
+        // — leaving them out would have made a sector's contact count permanently zero.
+        // Partners are still out: an intermediary billing entity is not an account.
+        Map<String, AccountBand> bands = accountService.bandsForAll();
         return new Context(
                 today,
                 fiscalYear,
-                clientService.listByType(ClientType.CLIENT),
-                accountService.bandsForAll(),
+                clientService.listByTypes(List.of(ClientType.CLIENT, ClientType.PROSPECT)),
+                bands,
+                accountService.relationshipsForAll(bands),
                 accountPlanService.summariesForAll(),
                 activityService.lastActivityForAll(),
                 countByClient("""
@@ -280,6 +300,7 @@ public class SectorService {
         int strategic = 0;
         int active = 0;
         int backlog = 0;
+        int contacts = 0;
         int unowned = 0;
         int quiet = 0;
         int openLeads = 0;
@@ -295,10 +316,15 @@ public class SectorService {
         for (Client client : context.clientsIn(segment)) {
             String uuid = client.getUuid();
             AccountBand band = context.bandOf(client);
-            switch (band) {
-                case STRATEGIC -> strategic++;
-                case ACTIVE -> active++;
-                default -> backlog++;
+            boolean isContact = context.isContact(client);
+            if (isContact) {
+                contacts++;
+            } else {
+                switch (band) {
+                    case STRATEGIC -> strategic++;
+                    case ACTIVE -> active++;
+                    default -> backlog++;
+                }
             }
             openLeads += context.openLeads().getOrDefault(uuid, 0);
             pipeline += context.weightedPipeline().getOrDefault(uuid, 0.0);
@@ -336,7 +362,7 @@ public class SectorService {
                 segment.name(),
                 segment.getDisplayName(),
                 context.leads().get(segment),
-                new SectorSummaryDTO.AccountsByBandDTO(strategic, active, backlog, unowned),
+                new SectorSummaryDTO.AccountsByBandDTO(strategic, active, backlog, contacts, unowned),
                 quiet,
                 context.fiscalYear(),
                 round(revenue),
