@@ -51,6 +51,38 @@ class ClientBillingValidatorTest {
     }
 
     @Test
+    void aForeignRegistrationNumberIsJudgedByTheForeignFormat() {
+        // Eight digits is the Danish shape and nobody else's. A Swedish organisationsnummer
+        // has a hyphen and ten digits; refusing it as "not exactly 8 digits" would make the
+        // registration number impossible to fill in for the very clients it was extended to.
+        assertNull(ClientBillingValidator.formatProblem(client("Ørsted Sverige", "SE", "556016-0680")));
+        assertNull(ClientBillingValidator.formatProblem(client("Beispiel GmbH", "DE", "HRB 12345")));
+        assertNull(ClientBillingValidator.formatProblem(client("Voorbeeld BV", "NL", "12345678")));
+    }
+
+    @Test
+    void aForeignRegistrationNumberTooShortOrTooLongIsRefused() {
+        // The ceiling is client.cvr, varchar(20): a longer value is truncated on the way in
+        // and then never matches the registry again.
+        assertNotNull(ClientBillingValidator.formatProblem(client("Kort AB", "SE", "12")));
+        assertNotNull(ClientBillingValidator.formatProblem(
+                client("Lang AB", "SE", "123456789012345678901")));
+        assertNotNull(ClientBillingValidator.formatProblem(client("Tegn AB", "SE", "556016_0680")));
+    }
+
+    @Test
+    void aBlankCountryIsReadAsDanishSoTheStrictFormatApplies() {
+        // ContractService.graduateProspect validates a row straight out of the database,
+        // where the country may never have been set. Falling through to the lax foreign
+        // format there would let junk into the one gate that stands between a prospect and
+        // an invoice.
+        assertEquals("CVR must be exactly 8 digits",
+                ClientBillingValidator.formatProblem(client("DSB", null, "1234")));
+        assertEquals("CVR is required",
+                ClientBillingValidator.billingProblem(client("DSB", null, null)));
+    }
+
+    @Test
     void aMalformedCountryOrCurrencyIsRefused() {
         Client badCountry = client("DSB", "Denmark", null);
         assertEquals("Invalid country code", ClientBillingValidator.formatProblem(badCountry));
@@ -66,14 +98,25 @@ class ClientBillingValidatorTest {
 
     @Test
     void aDanishBillingClientNeedsACvr() {
-        assertEquals("CVR is required for Danish clients",
+        assertEquals("CVR is required",
                 ClientBillingValidator.billingProblem(client("DSB", "DK", null)));
         assertNull(ClientBillingValidator.billingProblem(client("DSB", "DK", "12345678")));
     }
 
+    /**
+     * The country dropdown is not a way past the rule.
+     *
+     * <p>This test asserted the opposite until 2026-09-14: a client outside Denmark needed
+     * no registration number at all, so picking SE was enough to create a customer
+     * identified by nothing but a name somebody typed. The reason for the rule — an invoiced
+     * company is one that exists in a public registry — does not stop at the border, so the
+     * country now decides the FORMAT of the number and never whether it is asked for.
+     */
     @Test
-    void aNonDanishBillingClientDoesNotNeedACvr() {
-        assertNull(ClientBillingValidator.billingProblem(client("Ørsted Sverige", "SE", null)));
+    void aNonDanishBillingClientNeedsItsOwnRegistrationNumber() {
+        assertEquals("A company registration number is required for clients outside Denmark",
+                ClientBillingValidator.billingProblem(client("Ørsted Sverige", "SE", null)));
+        assertNull(ClientBillingValidator.billingProblem(client("Ørsted Sverige", "SE", "556016-0680")));
     }
 
     /**
@@ -92,5 +135,23 @@ class ClientBillingValidatorTest {
         assertNull(ClientBillingValidator.formatProblem(prospect));
         // …and the billing gate still refuses it, which is what graduation runs.
         assertTrue(ClientBillingValidator.billingProblem(prospect).contains("CVR is required"));
+    }
+
+    /**
+     * Both gates read one method, so they cannot drift apart.
+     *
+     * <p>The dangerous drift is the quiet direction: a row that passes the client form and
+     * is therefore never asked again reaching an invoice without a registration number. The
+     * form and {@code ContractService.graduateProspect} both call
+     * {@link ClientBillingValidator#billingProblem}, so the assertion that matters is simply
+     * that one method answers — there is no second implementation to compare it against.
+     */
+    @Test
+    void theSameAnswerServesTheFormAndTheGraduationGate() {
+        Client foreignWithoutNumber = client("Example Ltd", "GB", null);
+        assertNotNull(ClientBillingValidator.billingProblem(foreignWithoutNumber));
+
+        foreignWithoutNumber.setCvr("SC123456");
+        assertNull(ClientBillingValidator.billingProblem(foreignWithoutNumber));
     }
 }
