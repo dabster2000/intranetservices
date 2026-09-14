@@ -692,7 +692,7 @@ class SlackUnmatchedCompanyServiceTest {
     // ------------------------------------------------------------------------
 
     @Test
-    void onlyUndecidedNamesAreSuggestedAndTheLimitIsClamped() {
+    void onlyUndecidedNamesAreReadAndAlwaysInOnePageShape() {
         @SuppressWarnings("unchecked")
         PanacheQuery<SlackUnmatchedCompany> query = mock(PanacheQuery.class);
         when(query.page(anyInt(), anyInt())).thenReturn(query);
@@ -711,9 +711,13 @@ class SlackUnmatchedCompanyServiceTest {
             assertTrue(service.suggestions(10_000).isEmpty());
             assertTrue(service.suggestions(SlackUnmatchedCompanyService.DEFAULT_LIMIT).isEmpty());
 
-            verify(query, times(2)).page(0, 1);
-            verify(query).page(0, SlackUnmatchedCompanyService.MAX_LIMIT);
-            verify(query).page(0, SlackUnmatchedCompanyService.DEFAULT_LIMIT);
+            // One page shape, always MAX_LIMIT, whatever the caller asked for. The
+            // actionable test runs in Java — it needs the client list and the channel
+            // spread — so paging to the caller's limit first would let held-back rows eat
+            // the page and hide offerable ones behind them. The caller's limit is clamped
+            // and applied to the FILTERED list instead; with no rows there is nothing to
+            // truncate here, and the truncation itself is covered where rows exist.
+            verify(query, times(4)).page(0, SlackUnmatchedCompanyService.MAX_LIMIT);
         }
     }
 
@@ -876,5 +880,105 @@ class SlackUnmatchedCompanyServiceTest {
 
     private static int status(WebApplicationException thrown) {
         return thrown.getResponse().getStatus();
+    }
+
+    // ------------------------------------------------------------------------
+    // Is this hint a company we already have?
+    //
+    // Every name below is a real one out of production on 2026-09-14. The rule is
+    // deliberately narrow: a wrong link files another company's news on a client's page,
+    // where somebody reads it as fact, and that is far worse than a hint nobody links.
+    // ------------------------------------------------------------------------
+
+    /** The initials the match is taken against — legal forms dropped, one-word names refused. */
+    @Test
+    void initialsSkipTheLegalFormAndRefuseAOneWordName() {
+        assertEquals("nn", SlackUnmatchedCompanyService.initialsOf("novo nordisk a s"));
+        assertEquals("nnf", SlackUnmatchedCompanyService.initialsOf("novo nordisk foundation"));
+        assertEquals("nh", SlackUnmatchedCompanyService.initialsOf("novo holdings a s"));
+        assertEquals("", SlackUnmatchedCompanyService.initialsOf("klimadatastyrelsen"),
+                "a one-word name has a one-letter initial, which would match half the workspace");
+        assertEquals("", SlackUnmatchedCompanyService.initialsOf("banedanmark"));
+    }
+
+    /**
+     * NN was filed as an unknown company twice, while NOVO NORDISK A/S sat in the same
+     * database with a linked Slack channel in this very feature.
+     */
+    @Test
+    void anAbbreviationFindsTheClientItStandsFor() {
+        assertTrue(match("nn", "novo nordisk a s"));
+        assertFalse(match("nn", "novo nordisk foundation"),
+                "initials are taken from EVERY word, so NN is not the Foundation");
+        assertFalse(match("nn", "novo holdings a s"));
+        assertFalse(match("nn", "novonesis"));
+    }
+
+    /** "Københavns Kommune" against "Københavns Kommune KFF". */
+    @Test
+    void aMultiWordPrefixFindsTheQualifiedClient() {
+        assertTrue(match("kobenhavns kommune", "kobenhavns kommune kff"));
+        assertTrue(match("novo nordisk", "novo nordisk engineering nne"));
+    }
+
+    /**
+     * The case that must NOT match. One word of a multi-word name fits several clients, and
+     * "Novo" is four of them — so a single-word hint never matches by prefix.
+     */
+    @Test
+    void aSingleWordIsNeverAPrefixMatch() {
+        assertFalse(match("novo", "novo nordisk a s"));
+        assertFalse(match("novo", "novo holdings a s"));
+        assertFalse(match("kobenhavns", "kobenhavns kommune kff"));
+    }
+
+    /** An abbreviation nobody answers to stays unmatched, which is how LEGO and N1 reach a person. */
+    @Test
+    void anUnknownNameMatchesNothing() {
+        assertFalse(match("lego", "novo nordisk a s"));
+        assertFalse(match("n1", "novo nordisk a s"));
+        assertFalse(match("carlsberg", "novo nordisk a s"));
+    }
+
+    private static boolean match(String hintKey, String clientKey) {
+        return SlackUnmatchedCompanyService.matches(hintKey, clientKey,
+                SlackUnmatchedCompanyService.initialsOf(clientKey));
+    }
+
+    // ------------------------------------------------------------------------
+    // Is it worth showing yet?
+    // ------------------------------------------------------------------------
+
+    /**
+     * All nine hints of the first run had been heard once, by one colleague, in one
+     * channel. Any second occurrence of any kind is enough to make it a pattern.
+     */
+    @Test
+    void oneMentionByOnePersonInOneChannelIsNotYetAPattern() {
+        assertFalse(SlackUnmatchedCompanyService.isCorroborated(hint("lego", 1, 1), Map.of("lego", 1)));
+        assertTrue(SlackUnmatchedCompanyService.isCorroborated(hint("lego", 2, 1), Map.of("lego", 1)),
+                "heard twice");
+        assertTrue(SlackUnmatchedCompanyService.isCorroborated(hint("lego", 1, 2), Map.of("lego", 1)),
+                "two colleagues");
+        assertTrue(SlackUnmatchedCompanyService.isCorroborated(hint("lego", 1, 1), Map.of("lego", 2)),
+                "two channels");
+    }
+
+    /** A name we probably already have is offered whatever its count — linking it is the point. */
+    @Test
+    void aLikelyClientIsOfferedEvenFromASingleMention() {
+        SlackUnmatchedCompany once = hint("nn", 1, 1);
+        assertFalse(SlackUnmatchedCompanyService.isActionable(once, null, Map.of("nn", 1)));
+        assertTrue(SlackUnmatchedCompanyService.isActionable(once,
+                new SlackUnmatchedCompanyService.ClientMatch("uuid", "NOVO NORDISK A/S"), Map.of("nn", 1)));
+    }
+
+    private static SlackUnmatchedCompany hint(String nameKey, int mentionsTotal, int peopleCount) {
+        SlackUnmatchedCompany row = new SlackUnmatchedCompany();
+        row.setNameKey(nameKey);
+        row.setDisplayName(nameKey);
+        row.setMentionsTotal(mentionsTotal);
+        row.setPeopleCount(peopleCount);
+        return row;
     }
 }
