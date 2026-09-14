@@ -195,6 +195,32 @@ public interface GraphCalendarClient {
      * app registration could read any of them, and {@code CalendarConsentService}
      * is the rule Intra imposes on itself.
      *
+     * <p><b>This is a PAGED call and the caller has to treat it as one.</b>
+     * {@code $top} is a page size, not a limit, and Graph returns
+     * {@code calendarView} oldest-first — so the version of this method that
+     * took no continuation handed back the EARLIEST {@code $top} events in the
+     * window and silently stopped. On a 455-day first-run window at 250 per
+     * page that lost the most recent months, which is the half the relationship
+     * graph is actually about. The continuation arrives in
+     * {@code @odata.nextLink}; both parameters below are that link's own
+     * continuation, read back out of it and handed straight back.
+     *
+     * <p>Two of them because Graph is not consistent about which it names on
+     * this collection: {@code calendarView} commonly continues with
+     * {@code $skip}, other shapes with an opaque {@code $skiptoken}. Whichever
+     * the link carried is passed and the other stays null — a null
+     * {@code @QueryParam} is omitted from the request, exactly as
+     * {@link #listRoomsPaged} relies on for its first page. Never invent a
+     * value for either: paging a calendar by a number we computed ourselves
+     * re-reads or skips events whenever Graph's own window semantics disagree
+     * with our arithmetic.
+     *
+     * @param select    the privacy boundary — see above; never widen it
+     * @param top       page size, capped by Graph at 250 for this collection
+     * @param skipToken opaque continuation out of {@code @odata.nextLink}, or
+     *                  null for the first page
+     * @param skip      numeric continuation out of {@code @odata.nextLink}, or
+     *                  null for the first page
      * @see <a href="https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview">List calendarView</a>
      */
     @GET
@@ -206,7 +232,9 @@ public interface GraphCalendarClient {
         @QueryParam("startDateTime") String startDateTime,
         @QueryParam("endDateTime") String endDateTime,
         @QueryParam("$select") String select,
-        @QueryParam("$top") Integer top
+        @QueryParam("$top") Integer top,
+        @QueryParam("$skiptoken") String skipToken,
+        @QueryParam("$skip") Integer skip
     );
 
     /**

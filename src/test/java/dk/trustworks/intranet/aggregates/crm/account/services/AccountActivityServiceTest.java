@@ -9,6 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The summary composition in {@link AccountActivityService}.
@@ -28,11 +29,20 @@ class AccountActivityServiceTest {
     }
 
     /**
-     * No headline — the model was off, failed, or read the day as chatter — still gives a
-     * true sentence with the counts and who was talking, never an absent row.
+     * The counts fallback, which no longer reaches the timeline from either lane: a digest
+     * without a headline is filtered out of {@code slackRows}' query, and a mention always
+     * has one. It is kept, and kept tested, as the guard for a row that somehow arrives
+     * with no line — the alternative is a null summary reaching the browser.
+     *
+     * <p>It used to be the digest lane's normal answer for a quiet day, on the reasoning
+     * that "a day with activity is never silently absent". That put lines like
+     * "#a_novo: 4 messages (Nicolas, Stephan)" on client timelines — a row that reads like
+     * news, says nothing, and resolves to a thread about getting a Coupa account. See
+     * {@code slackRows}' javadoc for why absence is the better answer and where the
+     * operational fact lives instead.
      */
     @Test
-    void aSlackDayWithoutAHeadlineReadsAsItsCounts() {
+    void theCountsFallbackStillComposesASentenceForAnyRowThatReachesIt() {
         assertEquals("#a_e-nettet: 17 messages (Marta, Nicky)",
                 AccountActivityService.slackSummary("a_e-nettet", null, 14, 3, List.of("Marta", "Nicky")));
         assertEquals("#a_e-nettet: 1 message",
@@ -40,6 +50,23 @@ class AccountActivityServiceTest {
                 "no participant resolved — staging nulls slackusername — and still a sentence");
         assertEquals("#a_e-nettet: 5 messages (A, B, C +1 more)",
                 AccountActivityService.slackSummary("a_e-nettet", null, 5, 0, List.of("A", "B", "C", "D")));
+    }
+
+    /**
+     * The predicate that keeps a nothing-day off the account timeline. The query needs a
+     * database to run, so what is locked here is that the filter is still IN it — the
+     * regression this guards against is somebody simplifying the where-clause back to
+     * client_uuid alone, which is how twelve empty rows reached production on 2026-09-14.
+     */
+    @Test
+    void theDigestQueryKeepsDaysWithNoHeadlineOutOfTheFeed() throws Exception {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/dk/trustworks/intranet/aggregates/crm/account/services/AccountActivityService.java"));
+        int from = source.indexOf("from account_slack_digest");
+        assertTrue(from > 0, "the digest query moved — find it and re-point this test");
+        String where = source.substring(from, source.indexOf("order by digest_date desc", from));
+        assertTrue(where.contains("headline is not null"),
+                "a digest with no headline must not become a timeline row");
     }
 
     @Test

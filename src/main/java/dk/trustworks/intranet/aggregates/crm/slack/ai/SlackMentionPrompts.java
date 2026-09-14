@@ -55,7 +55,7 @@ import java.util.Set;
 public final class SlackMentionPrompts {
 
     /** Recorded on every mention row so a prompt change is attributable. */
-    public static final String PROMPT_VERSION = "slack-mention-v2";
+    public static final String PROMPT_VERSION = "slack-mention-v3";
 
     static final String ACCOUNTS_START = "<<<ACCOUNTS";
     static final String ACCOUNTS_END = "ACCOUNTS>>>";
@@ -244,6 +244,12 @@ public final class SlackMentionPrompts {
                 change to what we are paid for or how (T/M, fast pris, rate).
                     "PROPOSAL" — an offer, a pitch, a tender or a bid: sent, to be sent, \
                 or published by the company ("udbud offentliggjort", "forslaget sendes").
+                    "LEAD" — a NEW opening: an inbound approach, somebody flagging a \
+                company as a target, a person there inviting a conversation, an explicit \
+                "vi skal med i den dialog" — and ALSO any meeting, call or visit at a \
+                company that is NOT in the ACCOUNTS block. Say LEAD even when nothing is \
+                agreed, nobody is assigned and the whole mention is one colleague's idea: \
+                an opening nobody has taken yet is the thing most worth saying out loud.
                     "ESCALATION" — dissatisfaction, a complaint, impatience, an \
                 escalation: the RELATIONSHIP is at risk, not just the plan.
                     "PROCUREMENT" — a purchasing, legal or contractual gate standing \
@@ -254,9 +260,17 @@ public final class SlackMentionPrompts {
                 cost us if it is wrong.
                     "DELIVERY" — delivery status THE COMPANY CAN SEE: a date slipping, \
                 them blocked from testing, something we owe them that is late.
-                    "RELATIONSHIP" — a meeting, a call or a visit, or a person on the \
-                company's side arriving, leaving or being named. This is the type for the \
-                bare "kundemøde hos NN kl. 10.30" that is a mention on its own.
+                    "RELATIONSHIP" — a meeting, a call or a visit at a company that IS \
+                in the ACCOUNTS block, or a person on such a company's side arriving, \
+                leaving or being named. This is the type for the bare "kundemøde hos NN \
+                kl. 10.30" that is a mention on its own.
+                  LEAD OR RELATIONSHIP — the one rule that decides between them. A meeting \
+                is not the same news depending on who it is with. At a company we already \
+                work with it is a meeting, and that is RELATIONSHIP. At a company that is \
+                NOT in the ACCOUNTS block it is the first door into a company we do not \
+                have, and that is LEAD — "møde med CAE hos <ukendt firma>" is a LEAD, not a \
+                contact. You already know which case you are in: it is whether you can set \
+                clientId from the ACCOUNTS block or have to leave it null.
                   Our own engineering is never a mention at all — see WHAT IS NEVER A \
                 MENTION. There is no "NONE" here: a mention you would grade NONE is a \
                 mention you should not have made.

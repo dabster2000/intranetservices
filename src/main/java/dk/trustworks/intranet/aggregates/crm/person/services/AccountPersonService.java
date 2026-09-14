@@ -597,7 +597,7 @@ public class AccountPersonService {
      *
      * <p><b>This is the defect the whole cut exists to fix, so the rule is spelled out.</b> A
      * name resolves to a user when their {@code PersonNames.key} are equal <i>and</i> one of
-     * two things is true:
+     * three things is true:
      * <ul>
      *   <li><b>strict</b> — the employee's tokens are a contiguous run in the person's name,
      *       or the person's name is a reduction of the employee's. Exactly
@@ -607,25 +607,59 @@ public class AccountPersonService {
      *       already means the first and the last token match, so this is spec §4.1 rule b:
      *       {@code [sara, louise, vest, xsves]} ⊇ {@code sara … vest},
      *       {@code [stmj, stephan, mosko, jensen]} ⊇ {@code stephan … jensen}.</li>
+     *   <li><b>anchors, and only for somebody who has LEFT</b> — rule b's name shape
+     *       ({@link #spansFirstAndLast}) with <b>no</b> placement required. See the asymmetry
+     *       below; this is the branch that makes Janni alumni.</li>
      * </ul>
      *
-     * <p><b>A key match alone is not enough and must never become enough.</b> "Lars Peter
-     * Jensen" at a client where no Lars Jensen of ours has ever worked keys to
+     * <p><b>A key match alone is not enough to HIDE anybody, and must never become enough.</b>
+     * "Lars Peter Jensen" at a client where no Lars Jensen of ours has ever worked keys to
      * {@code lars|jensen} just like our Lars Jensen does, and he is a client person who must
-     * stay one (spec §4.1). The placement is what separates the two cases; dropping it turns
-     * every common Danish name at every account into a colleague and deletes real contacts
-     * from the page with nothing to show it happened.
+     * stay one (spec §4.1). The placement is what separates the two cases; dropping it from
+     * the {@code COLLEAGUE} side would turn every common Danish name at every account into a
+     * colleague and delete real contacts from the page with nothing to show it happened.
      *
      * <p>Then employment, asked about <b>today</b> and not about the day of any meeting:
      * employed is {@code COLLEAGUE} (never shown), not employed is {@code ALUMNI} (shown, and
      * ranked warm). That is what makes a re-hire flip back at the next rebuild (defect D2) and
      * a leaver become the warm contact they are (defect D4).
      *
+     * <h2>Why the two outcomes are NOT held to the same strictness — do not harmonise them</h2>
+     * The first cut applied one test to both, and production came back with <b>zero</b>
+     * {@code ALUMNI} rows against the three spec §10.5 names. Janni Thoft is the worked
+     * example: our {@code user} row says "Janni Thoft", Ældre Sagen's Exchange writes "Janni
+     * Høyer Thoft", she has been terminated since 2019-11-01, and she has <b>no</b>
+     * {@code contract_consultants} row at Ældre Sagen at all — she went to WORK for the
+     * client, she was never placed there. Strict fails both ways ("janni thoft" is not a
+     * contiguous run inside "janni høyer thoft", and {@code isReductionOf} needs three
+     * employee tokens where she has two); placement fails because there is none. So the
+     * warmest contact the account has read as a stranger.
+     *
+     * <p>The two outcomes carry <b>opposite risk</b>, so they get opposite strictness:
+     * <ul>
+     *   <li>{@code COLLEAGUE} <b>HIDES</b> a person — they appear on no tab and in no count,
+     *       and nothing on the page says it happened. A false positive there is silent and
+     *       permanent, so that branch keeps both of its gates: strict tokens, or a placement
+     *       at this client.</li>
+     *   <li>{@code ALUMNI} only <b>LABELS AND PROMOTES</b> a person — they are still there,
+     *       with a chip and a warm rank. A false positive there is visible on the page and a
+     *       reader can see it is wrong, which makes it cheap. So a candidate who is not
+     *       employed today is allowed in on the anchors alone.</li>
+     * </ul>
+     * That asymmetry <b>is</b> the design. The cost is real and accepted: a terminated
+     * "Lars Jensen" of ours makes a client's "Lars Peter Jensen" read as alumni. The
+     * alternative — one rule for both — is the state production is in today, and it costs the
+     * firm its warmest doors. Anyone tempted to tidy this into a single predicate is undoing a
+     * fix, not a duplication.
+     *
      * <p>When several users share one key and more than one matches — two of ours with the
-     * same first and last name — a strict match beats a placement-only one, because a token
-     * match is evidence about <i>which</i> of them this is; then an employed user beats a
-     * former one, because showing our own consultant as a client contact is the failure this
-     * code exists to prevent; then the lower uuid, so the answer is stable.
+     * same first and last name — the stronger evidence wins: a strict token match beats a
+     * placement, a placement beats the anchors, because each is evidence about <i>which</i> of
+     * them this is; then an employed user beats a former one, because showing our own
+     * consultant as a client contact is the failure this code exists to prevent; then the
+     * lower uuid, so the answer is stable. An employed user therefore can never lose to an
+     * anchors-only former one, so widening the {@code ALUMNI} side cannot downgrade a
+     * {@code COLLEAGUE} that the old rule already found.
      *
      * @param placedHere user uuids with a placement at this client; may be null
      */
@@ -644,17 +678,15 @@ public class AccountPersonService {
 
         List<String> personTokens = PersonNames.tokens(name);
         ColleagueIndex.Entry best = null;
-        boolean bestStrict = false;
+        int bestEvidence = NO_MATCH;
         for (ColleagueIndex.Entry candidate : candidates) {
-            boolean strict = PersonNames.containsSequence(personTokens, candidate.tokens())
-                    || PersonNames.isReductionOf(personTokens, candidate.tokens());
-            boolean placed = placedHere != null && placedHere.contains(candidate.userUuid());
-            if (!strict && !placed) {
+            int evidence = evidenceFor(personTokens, candidate, placedHere);
+            if (evidence == NO_MATCH) {
                 continue;
             }
-            if (best == null || outranksAsMatch(candidate, strict, best, bestStrict)) {
+            if (best == null || outranksAsMatch(candidate, evidence, best, bestEvidence)) {
                 best = candidate;
-                bestStrict = strict;
+                bestEvidence = evidence;
             }
         }
         if (best == null) {
@@ -665,10 +697,85 @@ public class AccountPersonService {
                 best.userUuid());
     }
 
-    private static boolean outranksAsMatch(ColleagueIndex.Entry candidate, boolean candidateStrict,
-                                           ColleagueIndex.Entry best, boolean bestStrict) {
-        if (candidateStrict != bestStrict) {
-            return candidateStrict;
+    /** The employee's tokens are in the person's name whole and adjacent, or the other way round. */
+    private static final int EVIDENCE_STRICT = 3;
+
+    /** Key equality plus a placement at THIS client — spec §4.1 rule b, gate and all. */
+    private static final int EVIDENCE_PLACED = 2;
+
+    /** Rule b's name shape with no placement behind it. Only ever reached for a leaver. */
+    private static final int EVIDENCE_ANCHORS = 1;
+
+    /** Not this person. Deliberately below every other level so the comparison needs no branch. */
+    private static final int NO_MATCH = 0;
+
+    /**
+     * How strongly this candidate is evidenced as the person, or {@link #NO_MATCH}.
+     *
+     * <p>Ordered, not boolean, because the three ways in are not equally good and two of ours
+     * can share a name key. Strict tokens say <i>which</i> of them it is; a placement says
+     * only that one of them was here; the anchors say neither, which is why they are offered
+     * to nobody who could be hidden by them.
+     *
+     * <p><b>The {@code employedToday()} test on the last branch is the whole safety property
+     * of this change.</b> It is what makes the widened rule unable to produce a
+     * {@code COLLEAGUE}: a candidate who is employed today never reaches it, so the only kind
+     * it can ever yield is {@code ALUMNI} — a chip and a warm rank on a person who stays on
+     * the page. Delete that one condition and every client's "Lars Peter Jensen" disappears
+     * behind our own Lars Jensen, silently, on every tab. Note this asks about TODAY, like the
+     * rest of the registry; the calendar sync goes on asking about the meeting date for what
+     * it STORES, and the two questions must not be merged.
+     */
+    private static int evidenceFor(List<String> personTokens, ColleagueIndex.Entry candidate,
+                                   Set<String> placedHere) {
+        if (PersonNames.containsSequence(personTokens, candidate.tokens())
+                || PersonNames.isReductionOf(personTokens, candidate.tokens())) {
+            return EVIDENCE_STRICT;
+        }
+        if (placedHere != null && placedHere.contains(candidate.userUuid())) {
+            return EVIDENCE_PLACED;
+        }
+        if (!candidate.employedToday() && spansFirstAndLast(personTokens, candidate.tokens())) {
+            return EVIDENCE_ANCHORS;
+        }
+        return NO_MATCH;
+    }
+
+    /**
+     * Spec §4.1 rule b's name shape: the employee's <b>first</b> token and <b>last</b> token
+     * both occur in the person's tokens, <b>in that order</b>, with anything in between —
+     * {@code [janni, høyer, thoft]} ⊇ {@code janni … thoft}.
+     *
+     * <p>The same shape {@code ColleagueDirectory.containsFirstAndLastOf} applies at sync
+     * time, spelled the same way so the two cannot drift: the first occurrence of the first
+     * token is the anchor, because it leaves the most room for the last token to follow, and
+     * the last token is searched for <b>strictly after</b> it, so one token can never satisfy
+     * both ends. Whole-token equality comes from {@link PersonNames#containsSequence} rather
+     * than from a scan written here — a second token matcher in this codebase is how
+     * "Marianne Hansen" ends up matching "Anne Hansen".
+     *
+     * <p>It has no adjacency test and no length test, so on its own it matches anybody who
+     * shares a first name and a surname with one of ours. {@link #evidenceFor} is the only
+     * caller and it offers this rule to former colleagues only, for the reason set out on
+     * {@link #classify}.
+     */
+    private static boolean spansFirstAndLast(List<String> personTokens, List<String> employeeTokens) {
+        if (employeeTokens.size() < 2 || personTokens.size() < 2) {
+            // A one-token name has no two ends to anchor, on either side.
+            return false;
+        }
+        int start = personTokens.indexOf(employeeTokens.get(0));
+        if (start < 0) {
+            return false;
+        }
+        List<String> last = List.of(employeeTokens.get(employeeTokens.size() - 1));
+        return PersonNames.containsSequence(personTokens.subList(start + 1, personTokens.size()), last);
+    }
+
+    private static boolean outranksAsMatch(ColleagueIndex.Entry candidate, int candidateEvidence,
+                                           ColleagueIndex.Entry best, int bestEvidence) {
+        if (candidateEvidence != bestEvidence) {
+            return candidateEvidence > bestEvidence;
         }
         if (candidate.employedToday() != best.employedToday()) {
             return candidate.employedToday();

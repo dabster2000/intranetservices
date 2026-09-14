@@ -60,6 +60,10 @@ final class CalendarSyncTally {
     private int colleagueOnlyDropped;
     private int internalDropped;
     private int colleagueByPlacement;
+    private int graphPages;
+    private int readsTruncated;
+    private int massMeetingsFlagged;
+    private int massAttendeesSuppressed;
 
     /**
      * Records an address identified by name.
@@ -141,6 +145,55 @@ final class CalendarSyncTally {
         colleagueByPlacement++;
     }
 
+    /**
+     * How many Graph requests this mailbox's read took.
+     *
+     * <p>The one counter here that is not about a rule. It exists because
+     * {@code $top} was read as a limit for one release: one request, 250 events,
+     * no continuation, and Graph hands back calendarView OLDEST-first — so a busy mailbox
+     * kept its earliest 250 events and lost the recent months, which are the only ones
+     * "when did we last really talk to them" is asking about. pages=1 everywhere is what a
+     * read that has stopped following the continuation looks like from the outside.
+     */
+    void graphPagesFetched(int pages) {
+        if (pages > 0) {
+            graphPages += pages;
+        }
+    }
+
+    /**
+     * A read that stopped before Graph ran out of pages — the runaway guard, a promised
+     * continuation page that came back empty, or a {@code @odata.nextLink} naming its
+     * continuation in a form we do not read.
+     *
+     * <p>Counted rather than logged and forgotten, because a truncated read and a complete
+     * one produce the same {@code events=N} in the nightly line and only one of them is the
+     * whole calendar. {@code readsTruncated=0} is the assertion that the count is all of
+     * them; anything else says the relationship graph is built on a partial read.
+     */
+    void readTruncated() {
+        readsTruncated++;
+    }
+
+    /**
+     * A meeting whose winning client delegation was big enough that the event is a mass
+     * event rather than evidence of a personal relationship (spec §4.2): the meeting is
+     * kept, its attendee rows are not written.
+     *
+     * @param suppressed how many client attendee rows the event would otherwise have
+     *                   written. Counted alongside the meeting because the two answer
+     *                   different questions — how often the rule fires, and how many people
+     *                   it takes off the accounts — and the second is what says whether ten
+     *                   is the right threshold. On production ten catches delegations of
+     *                   47, 27, 14 and 14
+     */
+    void massMeeting(int suppressed) {
+        massMeetingsFlagged++;
+        if (suppressed > 0) {
+            massAttendeesSuppressed += suppressed;
+        }
+    }
+
     Collection<LearnedColleagueEmail> learnedEmails() {
         return learnedEmails.values();
     }
@@ -167,5 +220,21 @@ final class CalendarSyncTally {
 
     int colleagueByPlacementCount() {
         return colleagueByPlacement;
+    }
+
+    int graphPagesCount() {
+        return graphPages;
+    }
+
+    int readsTruncatedCount() {
+        return readsTruncated;
+    }
+
+    int massMeetingsFlaggedCount() {
+        return massMeetingsFlagged;
+    }
+
+    int massAttendeesSuppressedCount() {
+        return massAttendeesSuppressed;
     }
 }

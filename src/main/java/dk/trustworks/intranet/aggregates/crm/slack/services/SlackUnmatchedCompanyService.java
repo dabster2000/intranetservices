@@ -35,6 +35,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.HashMap;
+import java.util.HashSet;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 
 /**
  * "Heard in Slack" — the companies colleagues keep talking about in general channels that
@@ -106,6 +110,9 @@ public class SlackUnmatchedCompanyService {
     @Inject
     CalendarSuggestionService prospects;
 
+    @Inject
+    AccountSlackFeatureFlag featureFlag;
+
     // ------------------------------------------------------------------------
     // Write — from the sync
     // ------------------------------------------------------------------------
@@ -128,7 +135,8 @@ public class SlackUnmatchedCompanyService {
      */
     public record UnmatchedCompanySighting(String nameKey, String displayName, String channelId,
                                            LocalDate sightedOn, int mentionCount,
-                                           Collection<String> authorUuids, String permalink) { }
+                                           Collection<String> authorUuids, String permalink,
+                                           String signalType, String headline) { }
 
     /**
      * Writes one read's sightings.
@@ -168,6 +176,8 @@ public class SlackUnmatchedCompanyService {
             }
             Set<String> authors = distinct(sighting.authorUuids());
             row.setMentionCount(Math.max(sighting.mentionCount(), 0));
+            row.setSignalType(SlackDigestContent.signalTypeOf(sighting.signalType()));
+            row.setHeadline(sighting.headline());
             row.setAuthorCount(authors.size());
             if (sighting.permalink() != null) {
                 row.setPermalink(sighting.permalink());
@@ -321,21 +331,83 @@ public class SlackUnmatchedCompanyService {
     // ------------------------------------------------------------------------
 
     /**
-     * Names nobody has decided on, the ones people talk about most first.
+     * Names nobody has decided on that are worth deciding on, the ones people talk about
+     * most first.
      *
      * <p>Ordered by recent mentions and then by how many colleagues are involved: a company
      * three people mentioned last month is a better suggestion than one somebody named nine
      * times two years ago.
+     *
+     * <h2>What this now leaves out, and why</h2>
+     * The first two production runs filled this panel with names nobody could act on. Of
+     * nine hints on 2026-09-14, four were companies Intra already has — {@code NN} is NOVO
+     * NORDISK A/S, which has a linked account space in this very feature; {@code KDS} is
+     * Klimadatastyrelsen; {@code Devoteam} exists twice, and the duplicate row is what made
+     * its alias ambiguous; {@code Københavns Kommune} is "Københavns Kommune KFF". Every one
+     * of the nine had been heard exactly once, by one colleague, in one channel. A panel
+     * asking somebody to judge nine things, four of which are wrong and none of which is a
+     * pattern, does not get used.
+     *
+     * <p>So a hint is offered when it is ACTIONABLE, which is one of two things:
+     * <ul>
+     *   <li>{@link #likelyClient} found a company we already have. Then the row is worth
+     *       one click whatever its count: linking it teaches the alias map, and the name
+     *       resolves on every future run instead of coming back here for ever.</li>
+     *   <li>It is {@code corroborated} — heard on more than one day, or by more than one
+     *       colleague, or in more than one channel. One person naming a company once is
+     *       not yet news.</li>
+     * </ul>
+     *
+     * <p>Everything else keeps accumulating, silently, and appears the moment it crosses
+     * either bar. <b>Nothing is deleted and nothing is decided on anybody's behalf</b> — the
+     * row, its sightings and its authors all stay in the table, and the count of what is
+     * held back is logged so an empty panel is never a mystery.
+     *
+     * <p>The cost of being wrong here is asymmetric, which is why the bars are low and the
+     * client match is conservative: a hint held back one more week costs a week, and a hint
+     * wrongly auto-linked files another company's news on a client's page where somebody
+     * will read it as fact.
      */
     public List<SlackSuggestionDTO> suggestions(int limit) {
         int capped = Math.min(Math.max(limit, 1), MAX_LIMIT);
-        List<SlackUnmatchedCompany> rows = SlackUnmatchedCompany
+        // Read past the cap: the actionable test below runs in Java (it needs the client
+        // list), so paging to `capped` first would let held-back rows eat the page and
+        // hide offerable ones behind them.
+        List<SlackUnmatchedCompany> candidates = SlackUnmatchedCompany
                 .find("status = ?1 order by mentions90d desc, peopleCount desc, mentionsTotal desc, nameKey",
                         UnmatchedCompanyStatus.NEW)
-                .page(0, capped)
+                .page(0, MAX_LIMIT)
                 .list();
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, ClientMatch> likely = likelyClients(candidates);
+        List<String> candidateKeys = candidates.stream().map(SlackUnmatchedCompany::getNameKey).toList();
+        Map<String, Integer> channelSpread = channelSpread(candidateKeys);
+        Set<String> gradedHigh = gradedHigh(candidateKeys);
+
+        List<SlackUnmatchedCompany> rows = new ArrayList<>();
+        int heldBack = 0;
+        for (SlackUnmatchedCompany candidate : candidates) {
+            if (isActionable(candidate, likely.get(candidate.getNameKey()), channelSpread,
+                    gradedHigh.contains(candidate.getNameKey()))) {
+                rows.add(candidate);
+            } else {
+                heldBack++;
+            }
+        }
+        if (heldBack > 0) {
+            // Counts only. A company name is the one thing this module deliberately does not
+            // write to a log it does not control.
+            log.infof("Slack suggestions: %d name(s) held back — heard once, by one colleague,"
+                    + " in one channel, and matching no client we have", heldBack);
+        }
         if (rows.isEmpty()) {
             return List.of();
+        }
+        if (rows.size() > capped) {
+            rows = rows.subList(0, capped);
         }
 
         List<String> nameKeys = rows.stream().map(SlackUnmatchedCompany::getNameKey).toList();
@@ -381,9 +453,295 @@ public class SlackUnmatchedCompanyService {
                     channels,
                     people,
                     Math.max(row.getPeopleCount(), people.size()),
-                    trail == null ? null : trail.permalink()));
+                    trail == null ? null : trail.permalink(),
+                    likely.containsKey(row.getNameKey()) ? likely.get(row.getNameKey()).uuid() : null,
+                    likely.containsKey(row.getNameKey()) ? likely.get(row.getNameKey()).name() : null,
+                    isCorroborated(row, channelSpread)));
         }
         return suggestions;
+    }
+
+    // ------------------------------------------------------------------------
+    // A company nobody has heard of, created as a prospect
+    // ------------------------------------------------------------------------
+
+    /**
+     * Turns the hints the model was confident about into PROSPECT rows, so a new company
+     * has an account page from the morning after it is first talked about instead of
+     * waiting for somebody to notice a panel.
+     *
+     * <h2>Why this is gated three ways</h2>
+     * This writes CRM rows from model output, which is the thing the hints panel exists to
+     * avoid. The evidence for caution is this feature's own first two runs: of nine hints,
+     * four were companies Intra already had under another spelling — {@code NN} for NOVO
+     * NORDISK A/S, {@code KDS} for Klimadatastyrelsen, {@code Devoteam} (twice over), and
+     * {@code Københavns Kommune} for "Københavns Kommune KFF". {@code createProspect} only
+     * de-duplicates on an EXACT name, so unguarded this would have created a client called
+     * "NN" beside NOVO NORDISK A/S — and a duplicate client row is what broke this very
+     * module's alias resolution for Devoteam.
+     *
+     * <p>So a name is created only when all three hold:
+     * <ul>
+     *   <li><b>The flag is on.</b> It writes client rows without a person in the loop, and
+     *       turning that off must not need a deploy.</li>
+     *   <li><b>{@link #likelyClients} found nothing.</b> The prefix-and-initials matcher is
+     *       what stands between this and a second Novo Nordisk.</li>
+     *   <li><b>The model graded a sighting HIGH.</b> A passing name-drop does not become a
+     *       row in the CRM; a LEAD, a PROPOSAL or a tender does.</li>
+     * </ul>
+     *
+     * <p>The hint is then LINKED to what was created, so it leaves the panel and its name
+     * becomes an alias — the same end state as somebody pressing Add, reached without them.
+     * {@code createProspect} returns the existing client rather than duplicating when the
+     * name matches one exactly, so a race with a human pressing Add resolves to one company.
+     *
+     * <h2>No CVR</h2>
+     * The row is created with {@code cvr} null on purpose. A CVR is an identifier that ends
+     * up on invoices and in e-conomic, and a model asked for one will produce eight
+     * plausible digits for a company it has never seen. Nothing here guesses it: the
+     * nightly CVR job finds these rows with {@code type = 'PROSPECT' and cvr is null} and
+     * fills them from the register, which is the only source that can be right.
+     *
+     * @return how many companies were created
+     */
+    public int createProspectsFromConfidentHints(String actor) {
+        if (!featureFlag.isAutoProspectEnabled()) {
+            return 0;
+        }
+        List<SlackUnmatchedCompany> candidates = SlackUnmatchedCompany
+                .find("status = ?1", UnmatchedCompanyStatus.NEW)
+                .page(0, MAX_LIMIT)
+                .list();
+        if (candidates.isEmpty()) {
+            return 0;
+        }
+        List<String> keys = candidates.stream().map(SlackUnmatchedCompany::getNameKey).toList();
+        Map<String, ClientMatch> likely = likelyClients(candidates);
+        Set<String> gradedHigh = gradedHigh(keys);
+
+        int created = 0;
+        for (SlackUnmatchedCompany row : candidates) {
+            if (likely.containsKey(row.getNameKey()) || !gradedHigh.contains(row.getNameKey())) {
+                continue;
+            }
+            try {
+                Client prospect = prospects.createProspect(row.getDisplayName(), null, null, false,
+                        "Heard in Slack — " + row.getDisplayName(), actor);
+                row.setStatus(UnmatchedCompanyStatus.LINKED);
+                row.setLinkedClientUuid(prospect.getUuid());
+                row.setDecidedBy(actor);
+                row.setDecidedAt(LocalDateTime.now());
+                row.setUpdatedAt(LocalDateTime.now());
+                row.persist();
+                created++;
+                // The uuid, never the name: a company name a model read out of somebody's
+                // sentence does not go to a log this module does not control.
+                log.infof("Slack hint created a prospect: client=%s actor=%s", prospect.getUuid(), actor);
+            } catch (WebApplicationException e) {
+                // A name of one character, or an owner that vanished. One bad hint does not
+                // stop the rest, and the hint stays NEW so a person still sees it.
+                log.warnf("Slack hint could not be created as a prospect (%s)", e.getResponse().getStatus());
+            }
+        }
+        return created;
+    }
+
+    // ------------------------------------------------------------------------
+    // Is this name a company we already have?
+    // ------------------------------------------------------------------------
+
+    /** A client a hint probably already is. */
+    record ClientMatch(String uuid, String name) {
+    }
+
+    /**
+     * Words that say what KIND of company something is, not which one. Dropped before
+     * initials are taken, so "NOVO NORDISK A/S" yields NN and not NNAS.
+     *
+     * <p>The Danish forms written with a slash — A/S, I/S, K/S, P/S — do not appear here,
+     * because {@code nameKey} has already turned the slash into a space by the time this
+     * runs: "a s" is two words of one letter each, and {@link #initialsOf} drops any word
+     * that short. That rule covers all four at once and needs no list to be kept current.
+     */
+    private static final Set<String> LEGAL_FORMS = Set.of(
+            "as", "aps", "is", "ks", "ps", "amba", "fmba", "smba",
+            "gmbh", "ltd", "plc", "inc", "llc", "oy", "nv", "bv", "sa", "ag");
+
+    /** An abbreviation worth testing is 2-5 letters and no digits — "NN", "DOMST", "UFST". */
+    private static final Pattern ABBREVIATION = Pattern.compile("^\\p{IsAlphabetic}{2,5}$");
+
+    /**
+     * For each hint, the one client it probably already is — or nothing.
+     *
+     * <p>Two rules, both token-adjacent, because a looser one files another company's news
+     * on a client's page:
+     * <ul>
+     *   <li><b>Prefix at a word boundary.</b> "Københavns Kommune" is "Københavns Kommune
+     *       KFF" with a qualifier; "Novo" is NOT "Novo Nordisk", because a hint that is one
+     *       word of a multi-word name is exactly the ambiguous case — it would fit Novo
+     *       Holdings, Novo Nordisk, Novonesis and the Foundation alike. So the hint must
+     *       carry at least two words to match by prefix.</li>
+     *   <li><b>Initials of every significant word.</b> "NN" is NOVO NORDISK A/S. Every
+     *       word counts, never a prefix of the words: taking the first two of "Novo Nordisk
+     *       Foundation" would also yield NN and make the match ambiguous with the one that
+     *       is actually right.</li>
+     * </ul>
+     *
+     * <p>A hint that fits two clients gets neither — the same rule
+     * {@code SlackSourceSyncService.resolveAliases} applies to an ambiguous alias, and for
+     * the same reason: when two are possible, neither is meant. That is what keeps the
+     * duplicate "Devoteam" rows from producing a confident wrong answer.
+     */
+    private Map<String, ClientMatch> likelyClients(List<SlackUnmatchedCompany> candidates) {
+        Set<String> keys = new HashSet<>();
+        for (SlackUnmatchedCompany candidate : candidates) {
+            keys.add(candidate.getNameKey());
+        }
+        Map<String, ClientMatch> found = new HashMap<>();
+        Set<String> ambiguous = new HashSet<>();
+        for (Client client : Client.<Client>listAll()) {
+            String name = client.getName();
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            String clientKey = SlackMentionExtractionService.nameKey(name);
+            if (clientKey.isEmpty()) {
+                continue;
+            }
+            String initials = initialsOf(clientKey);
+            for (String key : keys) {
+                if (ambiguous.contains(key) || !matches(key, clientKey, initials)) {
+                    continue;
+                }
+                ClientMatch existing = found.get(key);
+                if (existing != null && !existing.uuid().equals(client.getUuid())) {
+                    // Two clients answer to it — including the case where one client is
+                    // simply in the table twice. Offer neither.
+                    found.remove(key);
+                    ambiguous.add(key);
+                    continue;
+                }
+                found.put(key, new ClientMatch(client.getUuid(), name));
+            }
+        }
+        return found;
+    }
+
+    /** Does this hint key name that client, by prefix or by initials? Package-private: this is the
+     * rule a wrong link would come from, so it is tested directly rather than through Panache. */
+    static boolean matches(String hintKey, String clientKey, String clientInitials) {
+        if (hintKey.isEmpty() || clientKey.isEmpty()) {
+            return false;
+        }
+        if (hintKey.equals(clientKey)) {
+            return true;
+        }
+        // Prefix, at a word boundary, and only for a hint that is itself several words.
+        if (hintKey.contains(" ") && clientKey.startsWith(hintKey + " ")) {
+            return true;
+        }
+        return !clientInitials.isEmpty()
+                && ABBREVIATION.matcher(hintKey).matches()
+                && hintKey.equals(clientInitials);
+    }
+
+    /**
+     * The first letter of every word that carries identity — not a legal form, and not a
+     * single letter. Empty when fewer than two remain, because a one-word company has a
+     * one-letter initial and that would match most of the workspace.
+     */
+    static String initialsOf(String clientKey) {
+        StringBuilder initials = new StringBuilder();
+        int words = 0;
+        for (String word : clientKey.split(" ")) {
+            // length < 2 catches the halves of A/S, I/S, K/S and P/S after normalisation.
+            if (word.length() < 2 || LEGAL_FORMS.contains(word)) {
+                continue;
+            }
+            words++;
+            initials.append(word.charAt(0));
+        }
+        // A one-word name has a one-letter initial, which would match far too much.
+        return words < 2 ? "" : initials.toString();
+    }
+
+    // ------------------------------------------------------------------------
+    // Is this name worth showing yet?
+    // ------------------------------------------------------------------------
+
+    /** {@code name → distinct source channels it has been heard in}. */
+    private Map<String, Integer> channelSpread(List<String> nameKeys) {
+        if (nameKeys.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                select name_key, count(distinct channel_id) as channels
+                  from slack_unmatched_company_sighting
+                 where name_key in (:names)
+                 group by name_key
+                """)
+                .setParameter("names", nameKeys)
+                .getResultList();
+        Map<String, Integer> spread = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            spread.put(String.valueOf(row[0]), intOf(row[1]));
+        }
+        return spread;
+    }
+
+    /**
+     * The names any sighting of which the model graded HIGH.
+     *
+     * <p>Asked of the sightings rather than of the aggregate on purpose: the aggregate is
+     * counts, and a name heard twice — once as a passing mention and once as a real opening
+     * — must still be offered on the strength of the opening. One HIGH sighting is enough,
+     * for ever, which is also why nothing here decays: a lead nobody acted on does not stop
+     * having been a lead.
+     */
+    private Set<String> gradedHigh(List<String> nameKeys) {
+        if (nameKeys.isEmpty()) {
+            return Set.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<String> rows = em.createNativeQuery("""
+                select distinct name_key
+                  from slack_unmatched_company_sighting
+                 where name_key in (:names)
+                   and signal_type in (:signals)
+                """)
+                .setParameter("names", nameKeys)
+                .setParameter("signals", SlackDigestContent.highSignals())
+                .getResultList();
+        return new HashSet<>(rows);
+    }
+
+    /**
+     * More than one day, more than one colleague, or more than one channel. Any one of the
+     * three is enough: three people saying it once each is a pattern, and so is one person
+     * saying it in three channels, and so is one person saying it three weeks running.
+     */
+    static boolean isCorroborated(SlackUnmatchedCompany row, Map<String, Integer> channelSpread) {
+        return row.getMentionsTotal() > 1
+                || row.getPeopleCount() > 1
+                || channelSpread.getOrDefault(row.getNameKey(), 1) > 1;
+    }
+
+    /**
+     * Worth a person's attention: we probably have them already, the model graded one of
+     * their sightings HIGH, or it is a pattern.
+     *
+     * <p>The middle test is the one that matters most and was missing longest. A company
+     * nobody has heard of, named once, by one person, in one channel, is exactly the shape
+     * of a first inbound — and that is also the shape of a name-drop. The counts cannot
+     * tell them apart and never could; the model already had, and the verdict was being
+     * discarded before it reached this table (V612). With it, "vi skal med i denne dialog"
+     * about a company we do not have is offered the morning after it is said, instead of
+     * waiting for somebody to say the name a second time.
+     */
+    static boolean isActionable(SlackUnmatchedCompany row, ClientMatch likely,
+                                Map<String, Integer> channelSpread, boolean gradedHigh) {
+        return likely != null || gradedHigh || isCorroborated(row, channelSpread);
     }
 
     /** {@code name → colleagues who wrote about it}, most recently heard first. */

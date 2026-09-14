@@ -385,9 +385,31 @@ class SlackMentionPromptsTest {
         assertTrue(system.contains("{\"mentions\": []}"), "an empty day is a correct and common answer");
     }
 
+    /**
+     * The tie-break between LEAD and RELATIONSHIP, which decides whether a company we do not
+     * have ever reaches anybody.
+     *
+     * <p>Both types claimed "Møde med CAE hos NexiGroup" when LEAD was added: it is a bare
+     * meeting line (RELATIONSHIP by its own words) at a company that is not a client (LEAD by
+     * its own words). The model had no way to break the tie, and the answer decides
+     * everything downstream — RELATIONSHIP is LOW, so the hint waits for a second mention and
+     * is never auto-created; LEAD is HIGH, so it surfaces the morning after and can become a
+     * prospect. A coin flip cannot sit under that.
+     */
+    @Test
+    void aMeetingAtACompanyWeDoNotHaveIsALeadAndNotAContact() {
+        String system = SlackMentionPrompts.systemPrompt();
+
+        assertTrue(system.contains("LEAD OR RELATIONSHIP"),
+                "the tie-break has to be stated, not implied by two overlapping definitions");
+        assertTrue(system.contains("NOT in the ACCOUNTS block it is the first door"));
+        assertTrue(system.contains("whether you can set"),
+                "the rule has to name the signal the model can actually observe — clientId");
+    }
+
     @Test
     void thePromptVersionIsStampedOnEveryRow() {
-        assertEquals("slack-mention-v2", SlackMentionPrompts.PROMPT_VERSION,
+        assertEquals("slack-mention-v3", SlackMentionPrompts.PROMPT_VERSION,
                 "a prompt change that keeps the version leaves the stored rows unattributable");
     }
 

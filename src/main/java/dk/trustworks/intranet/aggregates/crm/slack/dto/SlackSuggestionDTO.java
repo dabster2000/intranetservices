@@ -41,6 +41,17 @@ import java.util.List;
  * @param people         colleagues who wrote about them, most recent first, capped
  * @param peopleTotal    how many colleagues in total, before the cap
  * @param permalink      the most recent sighting that had one; null when none did
+ * @param likelyClientUuid a client this name probably already IS, or null. Conservative and
+ *                       token-adjacent: an exact prefix at a word boundary, or the initials
+ *                       of every significant word. A name that fits two clients gets none.
+ *                       It is a SUGGESTION for a person to accept, never an automatic link —
+ *                       a wrong link is far worse than a missing one, because it silently
+ *                       files somebody else's news on an account.
+ * @param likelyClientName that client's name, for the row to say what it is offering
+ * @param corroborated   heard on more than one day, or by more than one colleague, or in
+ *                       more than one channel. A single mention by one person in one channel
+ *                       is not yet a pattern; see {@code suggestions} for what is done with
+ *                       that.
  */
 public record SlackSuggestionDTO(
         String nameKey,
@@ -52,5 +63,8 @@ public record SlackSuggestionDTO(
         List<String> channels,
         List<PersonDTO> people,
         int peopleTotal,
-        String permalink) {
+        String permalink,
+        String likelyClientUuid,
+        String likelyClientName,
+        boolean corroborated) {
 }

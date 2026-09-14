@@ -106,6 +106,13 @@ import java.util.UUID;
 public class SlackSourceSyncService {
 
     /**
+     * Who a hint created without a person is attributed to. Not null and not blank: the
+     * decision columns exist so that a company appearing in the CRM can always be traced
+     * to whoever put it there, and "the nightly job did" is an answer.
+     */
+    static final String SYSTEM_ACTOR = "system";
+
+    /**
      * Deliberately the account-space lane's numbers rather than copies of them: the two
      * lanes read the same workspace with the same token and the same idea of a day, and a
      * lookback that differed between them would mean a thread reply reaching one lane and
@@ -295,9 +302,25 @@ public class SlackSourceSyncService {
         // inside it.
         unmatchedService.refreshAggregates();
 
+        // AFTER the aggregates, because the decision reads the counts and the sighting
+        // ledger the refresh just settled. Off by default (V613); when on, it creates only
+        // the names the model graded HIGH that match no company we already have, and leaves
+        // every other hint for a person. A failure here must not fail a run that has already
+        // written its digests, so it is counted and swallowed like a channel failure.
+        int prospects = 0;
+        try {
+            // SYSTEM_ACTOR even on a manual run: whoever pressed Run now asked for the
+            // channels to be READ. Creating a company was this rule's decision, not
+            // theirs, and attributing it to them would put their name on a judgement
+            // they never made.
+            prospects = unmatchedService.createProspectsFromConfidentHints(SYSTEM_ACTOR);
+        } catch (RuntimeException e) {
+            log.warnf("Slack source sync: creating prospects from hints failed (%s)", e.getMessage());
+        }
+
         log.infof("Slack source sync done: channels=%d read=%d days=%d mentions=%d unmatched=%d "
-                        + "linkErrors=%d failures=%d%s",
-                channels.size(), channelsRead, days, mentions, unmatched, linkErrors, failures,
+                        + "linkErrors=%d failures=%d prospects=%d%s",
+                channels.size(), channelsRead, days, mentions, unmatched, linkErrors, failures, prospects,
                 stopped ? " STOPPED on configuration" : "");
         return new SyncSummary(channels.size(), channelsRead, days, mentions, unmatched, linkErrors, failures,
                 stopped, stopped ? AccountSlackSyncService.FAILURE_SLACK_CONFIGURATION : null);
@@ -608,7 +631,8 @@ public class SlackSourceSyncService {
                     userByTs, colleagues).keySet();
             sightings.add(new UnmatchedCompanySighting(sighting.nameKey(), sighting.displayName(),
                     channel.channelId(), date, sighting.evidence().size(), authors,
-                    permalinkOf(channel.channelId(), sighting.evidence(), extraction.tsByLine())));
+                    permalinkOf(channel.channelId(), sighting.evidence(), extraction.tsByLine()),
+                    sighting.signalType(), sighting.headline()));
         }
         return sightings;
     }

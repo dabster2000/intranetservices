@@ -54,7 +54,7 @@ import java.util.regex.Pattern;
 public final class AccountSlackDigestPrompts {
 
     /** Recorded on the digest row so a prompt change is attributable. */
-    public static final String PROMPT_VERSION = "account-slack-digest-v2";
+    public static final String PROMPT_VERSION = "account-slack-digest-v3";
 
     static final String DATA_START = "<<<SLACK";
     static final String DATA_END = "SLACK>>>";
@@ -232,6 +232,11 @@ public final class AccountSlackDigestPrompts {
                 fast pris, rate).
                   "PROPOSAL" — an offer, a pitch, a tender or a bid: sent, to be sent, or \
                 published by the client.
+                  "LEAD" — a NEW opening rather than more of the existing engagement: the \
+                client opening a door we are not yet through, a new unit or subsidiary \
+                asking for something, somebody there inviting us into a conversation. Say \
+                LEAD even when nothing is agreed and nobody has been assigned — an opening \
+                nobody has taken yet is exactly the thing that needs saying out loud.
                   "ESCALATION" — dissatisfaction, a complaint, impatience, an escalation: \
                 the RELATIONSHIP is at risk, not just the plan.
                   "PROCUREMENT" — a purchasing, legal or contractual gate standing between \

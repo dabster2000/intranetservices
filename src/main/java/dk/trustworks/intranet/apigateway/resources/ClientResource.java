@@ -54,6 +54,15 @@ public class ClientResource {
     @Inject
     dk.trustworks.intranet.aggregates.crm.news.ClientNewsService clientNewsService;
 
+    /**
+     * The after-write hooks of the nightly enrichment jobs: a client saved under OTHER gets
+     * its sector checked asynchronously, and an edit that changes the CVR or the sector is
+     * written down on the enrichment row (V610). Never on the request's critical path —
+     * both hooks catch their own failures.
+     */
+    @Inject
+    dk.trustworks.intranet.aggregates.crm.enrichment.services.ClientEnrichmentService clientEnrichmentService;
+
     @GET
     @Path("/{uuid}/news")
     @Produces("application/json")
@@ -213,6 +222,9 @@ public class ClientResource {
         activityLogService.logCreated(created.getUuid(),
                 ClientActivityLog.TYPE_CLIENT, created.getUuid(), created.getName());
 
+        // Sector OTHER? The AI checks it now, off the request thread (enrichment hook).
+        clientEnrichmentService.onClientCreated(created);
+
         log.infof("Created client uuid=%s, name=%s, user=%s", created.getUuid(), created.getName(), userUuid);
 
         // Fire-and-forget sync to every configured e-conomic agreement. Sync service
@@ -277,6 +289,10 @@ public class ClientResource {
         }
 
         clientAPI.updateOne(client);
+
+        // What the person decided about the CVR and the sector, for the enrichment jobs —
+        // and the sector check now, if the row is (still) OTHER.
+        clientEnrichmentService.onClientUpdated(oldClient, client);
 
         // Log field-level changes
         if (oldClient != null) {

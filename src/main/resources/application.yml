@@ -521,6 +521,22 @@ dk:
           # An environment where those are all dark simply rebuilds nothing.
           enabled: ${CRM_PERSON_REBUILD_ENABLED:true}
       calendar:
+        mass-meeting:
+          # The mirror image of internal-meeting below, and it exists because that rule was
+          # one-sided: it caught "a meeting that was really ours with a guest" but not "a mass
+          # event at the client where we were the guests". One 50-person event at Banedanmark
+          # on 2026-01-29 had two of ours in it, so the internal rule never fired, and it
+          # manufactured 47 people we supposedly "knew" — every one of them reading
+          # "met x1" on the same day. Firm-wide, 10 such meetings produced 132 of 330 client
+          # attendee rows: 8% of the meetings, 40% of the people.
+          #
+          # At or above this many people from the WINNING client, the meeting is kept — it is
+          # real activity and belongs on the timeline — but no attendee rows are stored, so it
+          # draws no relationships. A town hall is not evidence that anyone knows anyone.
+          # Ten leaves genuine delegations of nine and below alone. Tune it from the
+          # massMeetingsFlagged tally in the nightly log line, not from a release; 0 or less
+          # switches the rule off.
+          min-client-attendees: ${CRM_MASS_MEETING_MIN_CLIENT:10}
         internal-meeting:
           # A calendar event with at least this many of OUR OWN people in it is an
           # internal meeting that happened to have a guest, not contact with the client.
@@ -550,6 +566,57 @@ dk:
           # a night with no signal that the number had gone nowhere. If you touch either store,
           # check the other in the same change.
           nightly-account-cap: ${CRM_RETENTION_PURGE_CAP:10}
+      # ---- Nightly client enrichment (V610): CVR verification, logo hunt, sector check ----
+      # Three jobs in one 04:00 Copenhagen pass (ClientEnrichmentJob), each under its own
+      # per-night cap, plus the on-edit sector check (ClientSectorVerifyConsumer).
+      #
+      # TWO SWITCHES AND A GATE. `enabled` here is the deploy-time kill switch (env var);
+      # the app_settings row 'crm.enrichment.enabled' (seeded 'true' by V610) is the
+      # runtime one, flipped through PUT /app-settings without a deploy. Both must be on.
+      # The nightly cron ALSO refuses where dk.trustworks.environment.id is `staging`:
+      # staging's database is a nightly copy of production's and it shares production's
+      # S3 bucket, Virkdata key and OpenAI key, so the cron there would redo production's
+      # work every night for ever. POST /clients/enrichment/run ignores that gate, which is
+      # how a run is rehearsed on staging — EXCEPT for the CVR pass: staging never calls the
+      # CVR registry at all (not nightly, not manually, not from a retry or an accept),
+      # because Virkdata's daily quota is shared with the client form's Look up button in
+      # production and one staging rehearsal spent it in two minutes (2026-09-14).
+      #
+      # The caps were chosen small on purpose (20 CVR, 10 logos, 20 sectors a night): the
+      # backlog clears in two to three weeks and one bad night cannot burn the Virkdata
+      # quota or a few hundred image generations. Raise per environment with the env vars.
+      enrichment:
+        enabled: ${CRM_ENRICHMENT_ENABLED:true}
+        # reasoning.effort for the three model calls (all reasoning-class by default). An
+        # EMPTY value omits the node — required if any *-model below is ever pointed at a
+        # non-reasoning (gpt-4o-family) model. Optional<String> at the injection point for
+        # the SRCFG00040 reason documented on every other reasoning-effort key in this file.
+        reasoning-effort: ${CRM_ENRICHMENT_REASONING_EFFORT:low}
+        cvr:
+          nightly-cap: ${CRM_ENRICHMENT_CVR_CAP:20}
+          # A FAILED lookup (registry error, not "unknown CVR") is retried after this many days.
+          retry-after-days: ${CRM_ENRICHMENT_CVR_RETRY_DAYS:7}
+          # Finds the CVR of a client that has none, with web search. The registry verifies
+          # every proposal before anything is written (CvrEnrichmentService).
+          finder-model: ${CRM_ENRICHMENT_CVR_FINDER_MODEL:gpt-5.6-terra}
+          # Pause between clients. A client costs up to two Virkdata calls; the staging
+          # rehearsal of 2026-09-14 fired ~20 calls in two minutes and the registry answered
+          # 401 to everything after that. A 401 or 429 stops the pass for the night; this
+          # keeps it from getting there.
+          pacing-ms: ${CRM_ENRICHMENT_CVR_PACING_MS:3000}
+        logo:
+          nightly-cap: ${CRM_ENRICHMENT_LOGO_CAP:10}
+          retry-after-days: ${CRM_ENRICHMENT_LOGO_RETRY_DAYS:14}
+          # Finds a direct image URL, with web search; SafeImageDownloader fetches it.
+          finder-model: ${CRM_ENRICHMENT_LOGO_FINDER_MODEL:gpt-5.6-terra}
+          # Draws a logo when nothing usable was found online (POST /v1/images/generations).
+          image-model: ${CRM_ENRICHMENT_LOGO_IMAGE_MODEL:gpt-image-1}
+          # The most a found logo may weigh before the download is cut off.
+          max-download-bytes: ${CRM_ENRICHMENT_LOGO_MAX_BYTES:5242880}
+        sector:
+          nightly-cap: ${CRM_ENRICHMENT_SECTOR_CAP:20}
+          retry-after-days: ${CRM_ENRICHMENT_SECTOR_RETRY_DAYS:7}
+          model: ${CRM_ENRICHMENT_SECTOR_MODEL:gpt-5.6-terra}
     expense:
       # Slack DM to the employee when an expense lands on them (AI block or
       # accounting send-back), plus the Monday reminder digest.

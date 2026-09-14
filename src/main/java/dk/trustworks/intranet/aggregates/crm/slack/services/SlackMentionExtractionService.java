@@ -161,7 +161,18 @@ public class SlackMentionExtractionService {
      * account: the name as the model wrote it, the key it is deduplicated by, and the lines
      * it rests on — from which the sync derives the colleagues who wrote about it.
      */
-    public record UnmatchedSighting(String displayName, String nameKey, List<Integer> evidence) {
+    /**
+     * A company the model named that Intra does not have.
+     *
+     * <p>{@code signalType} and {@code headline} are the model's verdict on the sighting,
+     * carried rather than discarded. They used to stop here: an unmatched company kept only
+     * its name, its evidence and a count, so the hints panel could rank names by how often
+     * they were said and by nothing else — and a first-time inbound opportunity looked
+     * exactly like a name-drop. Both are nullable, because a merged sighting keeps the
+     * strongest verdict of its parts and a sighting from an older prompt has none.
+     */
+    public record UnmatchedSighting(String displayName, String nameKey, List<Integer> evidence,
+                                    String signalType, String headline) {
     }
 
     /**
@@ -283,7 +294,7 @@ public class SlackMentionExtractionService {
             }
             for (UnmatchedSighting sighting : reading.unmatched()) {
                 unmatched.add(new UnmatchedSighting(sighting.displayName(), sighting.nameKey(),
-                        shift(sighting.evidence(), offset)));
+                        shift(sighting.evidence(), offset), sighting.signalType(), sighting.headline()));
             }
             droppedAsColleague += reading.droppedAsColleague();
             offset += chunk.lineCount();
@@ -432,7 +443,8 @@ public class SlackMentionExtractionService {
             if (proposal.clientUuid() != null) {
                 mentions.add(new Mention(proposal.clientUuid(), proposal.content(), proposal.evidence()));
             } else {
-                unmatched.add(new UnmatchedSighting(proposal.displayName(), proposal.nameKey(), proposal.evidence()));
+                unmatched.add(new UnmatchedSighting(proposal.displayName(), proposal.nameKey(),
+                        proposal.evidence(), proposal.content().signalType(), proposal.content().headline()));
             }
         }
         return new Reading(mergeMentions(mentions), mergeSightings(unmatched), droppedAsColleague, false);
@@ -743,9 +755,16 @@ public class SlackMentionExtractionService {
             }
             TreeSet<Integer> evidence = new TreeSet<>(seen.evidence());
             evidence.addAll(sighting.evidence());
-            // The spelling first seen wins, as the hints table's display_name does.
+            // The spelling first seen wins, as the hints table's display_name does. The
+            // VERDICT does not: the strongest of the day's readings is the one worth
+            // keeping, and its headline goes with it so the two never describe different
+            // sentences.
+            String signal = SlackDigestContent.strongerSignal(seen.signalType(), sighting.signalType());
+            String headline = signal != null && signal.equals(sighting.signalType())
+                    && !signal.equals(seen.signalType()) ? sighting.headline() : seen.headline();
             byName.put(sighting.nameKey(),
-                    new UnmatchedSighting(seen.displayName(), seen.nameKey(), List.copyOf(evidence)));
+                    new UnmatchedSighting(seen.displayName(), seen.nameKey(), List.copyOf(evidence),
+                            signal, headline));
         }
         return List.copyOf(byName.values());
     }
