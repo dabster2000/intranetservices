@@ -20,9 +20,9 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Status;
 import jakarta.transaction.Synchronization;
 import jakarta.transaction.TransactionSynchronizationRegistry;
+import jakarta.annotation.PreDestroy;
 import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,6 +32,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -76,9 +78,29 @@ public class ClientEnrichmentService {
     @Inject SchedulerShutdownGuard shutdown;
     @Inject EventBus eventBus;
     @Inject TransactionSynchronizationRegistry txSyncRegistry;
-    @Inject ManagedExecutor managedExecutor;
+
+    /**
+     * A plain thread, deliberately NOT the {@code ManagedExecutor}. That executor propagates
+     * the submitting HTTP request's CDI request context onto the worker, and that context
+     * is terminated the moment the {@code 202} is written — so every request-scoped lookup
+     * the run makes afterwards ({@code RequestHeaderHolder} behind the activity log, most of
+     * all) dies with {@code ContextNotActiveException}. The second staging rehearsal
+     * (2026-09-14) failed on exactly that, the same way the employee-document maintenance
+     * runs once did. A plain thread carries no stale context, and
+     * {@link #withRequestContext} gives the run a fresh one of its own.
+     */
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "client-enrichment-run");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow();
+    }
 
     // ------------------------------------------------------------------------
     // Reads
@@ -152,7 +174,7 @@ public class ClientEnrichmentService {
                 }
             }
             case SECTOR -> sectorService.verify(clientUuid);
-            case LOGO -> managedExecutor.submit(() -> withRequestContext(() -> {
+            case LOGO -> executor.submit(() -> withRequestContext(() -> {
                 try {
                     logoService.enrich(clientUuid);
                 } catch (RuntimeException e) {
@@ -335,7 +357,7 @@ public class ClientEnrichmentService {
         requireEnabled();
         if (!running.compareAndSet(false, true)) return false;
         try {
-            managedExecutor.submit(() -> {
+            executor.submit(() -> {
                 try {
                     withRequestContext(() -> run(jobs, "manual by " + actor));
                 } catch (RuntimeException e) {
@@ -365,6 +387,10 @@ public class ClientEnrichmentService {
      */
     static void withRequestContext(Runnable work) {
         ManagedContext requestContext = Arc.container().requestContext();
+        // On the run's own thread nothing is active and a fresh context is opened here. On a
+        // scheduler or Vert.x worker thread that already holds a real one, it is used as is.
+        // A PROPAGATED context — the ManagedExecutor case above — must never reach this
+        // method: it reads as active and then dies underneath the run.
         if (requestContext.isActive()) {
             work.run();
             return;
