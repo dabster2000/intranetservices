@@ -24,6 +24,16 @@ package dk.trustworks.intranet.aggregates.crm.calendar.dto;
  *                               written to {@code crm_colleague_client_email}; this settles
  *                               to zero once the population is known, so a run that is
  *                               still learning is a run whose filter is still improving
+ * @param internalDropped        meetings dropped because enough of the room was ours that
+ *                               the event was us talking to ourselves (spec §4.2). The
+ *                               threshold behind it is configuration, and this count is the
+ *                               only way to tell whether the configured number is right
+ * @param colleagueByPlacement   attendees identified as ours by the widened name rule —
+ *                               first and last token with anything between, allowed only
+ *                               for somebody placed at that client (spec §4.1 rule b). It
+ *                               is the one rule here that could take a real client person
+ *                               away, so it is counted apart from the strict ones: a count
+ *                               that climbs unexpectedly is the evidence it has started to
  */
 public record CalendarSyncSummary(
         int mailboxes,
@@ -33,5 +43,7 @@ public record CalendarSyncSummary(
         int failures,
         int deliveryFiltered,
         int colleagueFiltered,
-        int colleagueEmailsLearned) {
+        int colleagueEmailsLearned,
+        int internalDropped,
+        int colleagueByPlacement) {
 }

@@ -32,9 +32,17 @@ import java.time.LocalDateTime;
  * Names are never typed into this table from nowhere; they come from a colleague who said
  * where they heard it.
  *
+ * <p><b>Two ways a row gets here</b> (spec §3.6, V606). A seat typed into the plan — "the
+ * programme director, whoever that turns out to be" — has no {@link #personUuid} and usually
+ * a {@link #unit}. A <i>star</i> on the relationships tab has a {@link #personUuid} pointing
+ * at the {@code account_person} row it was placed on, its {@link #name} and {@link #title}
+ * copied off that row at the moment of starring, and no unit at all: the sources behind the
+ * registry give a name and sometimes a job title, never an org unit.
+ *
  * <p><b>Third-party personal data.</b> Purpose is commercial relationship management. The
  * agreed retention is 24 months after the account's last activity, after which the name is
- * nulled — the purge job is NOT built, so nothing enforces that yet.
+ * nulled — {@code CrmRetentionPurgeService} (V608) does that, and nulls {@link #personUuid}
+ * with it, since there is no foreign key to cascade from.
  */
 @Entity
 @Getter
@@ -50,6 +58,21 @@ public class ClientPlanStakeholder extends PanacheEntityBase {
     @Column(name = "client_uuid", length = 36, nullable = false)
     private String clientUuid;
 
+    /**
+     * The {@code account_person} row a star was placed on (V606), or null for a seat typed
+     * into the plan by hand — and for a row the V608 purge has erased.
+     *
+     * <p><b>Deliberately not a foreign key</b>, though the spec asked for one:
+     * {@code client_plan_stakeholder} is copied to staging by {@code sp_sync_prod_to_staging}
+     * and {@code account_person} is excluded from it, and a constraint that holds in one
+     * database and not the other is a trap rather than a constraint. The
+     * {@code ON DELETE SET NULL} the spec wanted happens in code, in
+     * {@code CrmRetentionPurgeService}, which also has to null {@link #name} — something no
+     * cascade could do for a copied string.
+     */
+    @Column(name = "person_uuid", length = 36)
+    private String personUuid;
+
     /** Null when only the seat is known, not the person in it. */
     @Column(name = "name", length = 255)
     private String name;
@@ -61,7 +84,14 @@ public class ClientPlanStakeholder extends PanacheEntityBase {
     @Column(name = "title", length = 255, nullable = false)
     private String title;
 
-    @Column(name = "unit", length = 255, nullable = false)
+    /**
+     * The org unit a hand-typed stakeholder sits in ("IT Operations", "Indkøb"). NULL-able
+     * since V606, and null on every starred person: the registry never carries a unit, and a
+     * renderer that joins title and unit with a comma would print "CIO, " with nothing after
+     * it on every starred row. Null rather than the old "—" placeholder, so the two cases —
+     * "no unit" and "somebody typed a dash" — stay distinguishable.
+     */
+    @Column(name = "unit", length = 255)
     private String unit;
 
     @Enumerated(EnumType.STRING)

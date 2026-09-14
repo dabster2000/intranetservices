@@ -62,6 +62,24 @@ public class AccountMeeting extends PanacheEntityBase {
     @Column(name = "attendee_count", nullable = false)
     private int attendeeCount;
 
+    /**
+     * How many of those were on our own tenant (spec §4.2, V607).
+     *
+     * <p>The number that separates a meeting with a client from our own all-hands with one
+     * client address on the invitation. At or above the configured threshold — eight by
+     * default — the event is dropped as internal and never reaches this table at all, so
+     * every stored row is below it. The count is kept anyway because the drop is a
+     * judgement and a judgement needs evidence: it is what lets somebody ask afterwards why
+     * a meeting they remember is not on the tab, and what lets the threshold be re-tuned
+     * against real data instead of a guess.
+     *
+     * <p>A bare integer, and deliberately so — no attendee, no name, no address. Rows
+     * written before V607 read 0, which means "not known" rather than "none of us was
+     * there"; every meeting has at least the mailbox owner in it.
+     */
+    @Column(name = "own_attendee_count", nullable = false)
+    private int ownAttendeeCount;
+
     @Column(name = "synced_at", nullable = false)
     private LocalDateTime syncedAt;
 }

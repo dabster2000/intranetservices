@@ -141,6 +141,12 @@ public class AccountService {
     @Inject
     ClientActivityLogService activityLogService;
 
+    // No AccountPersonService here, on purpose. Every write in this class runs inside a
+    // @Transactional method, and AccountPersonService.rebuild opens QuarkusTransaction
+    // .requiringNew(), which suspends the caller's transaction — a rebuild triggered from a
+    // service method therefore reads the state from BEFORE that method's own writes. The
+    // registry hooks belong in the resources, after commit; see replaceDomains' javadoc.
+
     // ------------------------------------------------------------------------
     // Read
     // ------------------------------------------------------------------------
@@ -549,13 +555,25 @@ public class AccountService {
      * different kind of row from one a partner added after a meeting. Rows created before
      * the activity log existed, or by a job, simply have no entry — the column then shows
      * the date alone rather than inventing an author.
+     *
+     * <p><b>{@code field_name is null} is not decoration — it is what keeps this column
+     * honest.</b> {@code client_activity_log} has no "this is a creation" flag beyond
+     * {@code action}, and {@code min(modified_by)} over a {@code CHAR(36)} is lexicographic,
+     * so ANY other writer of a {@code CLIENT} + {@code CREATED} row can take the column over
+     * for a client — permanently, and for a client that predates the log it becomes the only
+     * candidate. The two genuine writers ({@code ClientResource} and
+     * {@code CalendarSuggestionService}) both go through {@code logCreated}, which writes a
+     * null field name; every per-field writer names a field. So the predicate reads "a row
+     * about the client itself, not about one of its fields" and costs nothing, while a future
+     * feature that logs a {@code CREATED} row with a field name — the relationship claim was
+     * one — cannot silently rewrite who added the company.
      */
     public Map<String, PersonDTO> addedByForAll() {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 select l.client_uuid, min(l.modified_by)
                   from client_activity_log l
-                 where l.entity_type = 'CLIENT' and l.action = 'CREATED'
+                 where l.entity_type = 'CLIENT' and l.action = 'CREATED' and l.field_name is null
                  group by l.client_uuid
                 """).getResultList();
         Map<String, PersonDTO> byClient = new HashMap<>();
@@ -882,6 +900,17 @@ public class AccountService {
      * that another client already holds is a 409 that names the other client, because the
      * alternative — silently moving it — would silently move that client's meeting history
      * too.
+     *
+     * <p><b>The person-registry rebuild that a domain change triggers is NOT here.</b> It
+     * hangs off {@code AccountResource.replaceDomains}, after this method returns and its
+     * transaction has committed, exactly as the two sibling hooks do
+     * ({@code AccountSignalResource}, {@code TrustLinkResource}). This method is
+     * {@code @Transactional}, and {@code AccountPersonService.rebuild} opens
+     * {@code QuarkusTransaction.requiringNew()}, which SUSPENDS the caller's transaction —
+     * so a rebuild called from in here cannot see the {@code client_domain} rows this
+     * request just wrote and recomputes every placement from the OLD domain set. The tab
+     * would then keep its pre-edit classification until the 03:00 sweep, which reads as the
+     * domain edit not having worked at all.
      */
     @Transactional
     public List<ClientDomainDTO> replaceDomains(String clientUuid, AccountDomainsRequest request, String actor) {

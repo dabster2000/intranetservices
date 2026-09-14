@@ -145,6 +145,22 @@ public class AccountPlanResource {
 
     // ---- People on the plan ------------------------------------------------
 
+    /**
+     * Puts a person on the plan. Three callers, one endpoint: a seat typed into the plan, a
+     * name promoted from a signal, and — since the 2026-09-14 cut — a <b>star</b> on the
+     * relationships tab, which sends {@code personUuid} and lets the server copy the name and
+     * title off the registry (spec §3.6).
+     *
+     * <p>A star on an account with no plan <b>starts the plan</b>, in the same transaction.
+     * That is deliberately not a second call to {@code POST /account-plans/{clientUuid}} from
+     * the browser: two requests would leave a window where the plan exists and the star does
+     * not, and that endpoint is not create-only — re-posting it on an existing plan wipes the
+     * sentences it does not carry.
+     *
+     * <p>{@code accounts:write}, like every other plan edit. Starring is a plan change, so it
+     * is gated as one; recording that you personally know somebody is not, and lives on its
+     * own endpoint under {@code signals:write}.
+     */
     @POST
     @Path("/{clientUuid}/stakeholders")
     @RolesAllowed({"accounts:write"})
@@ -162,6 +178,7 @@ public class AccountPlanResource {
         return planService.updateStakeholder(clientUuid, stakeholderUuid, request, requireActor());
     }
 
+    /** Takes a person off the plan — and this is what unstarring one does (spec §3.6). */
     @DELETE
     @Path("/{clientUuid}/stakeholders/{stakeholderUuid}")
     @RolesAllowed({"accounts:write"})

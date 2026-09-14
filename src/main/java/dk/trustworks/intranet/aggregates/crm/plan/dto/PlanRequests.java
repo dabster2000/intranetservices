@@ -95,7 +95,22 @@ public final class PlanRequests {
             String fromSuggestionId) {
     }
 
+    /**
+     * A person on the plan — either a seat somebody typed, or a star somebody placed on the
+     * relationships tab (spec §3.6).
+     *
+     * @param personUuid the registry person being starred. When it is present the server
+     *                   reads that {@code account_person} row — on <b>this</b> client, or it
+     *                   is a 404 — and copies {@code name} and {@code title} off it, ignoring
+     *                   whatever those fields say in this body. The registry is the authority
+     *                   on who somebody is; a body that could rename a person would let one
+     *                   account's plan disagree with every other surface about the same human.
+     *                   Null for a seat typed by hand or a name promoted from a signal.
+     * @param unit       optional since V606, and null on a star. The old "—" default is gone:
+     *                   a placeholder unit renders as a real one everywhere the row is shown.
+     */
     public record StakeholderRequest(
+            String personUuid,
             String name,
             String roleLabel,
             String title,
@@ -105,14 +120,18 @@ public final class PlanRequests {
             String fromSignalUuid,
             List<RelationRequest> relations) {
 
-        /** One Trustworks person's rating of this stakeholder. Replaces the whole set. */
+        /**
+         * Where the owner wants one colleague's relationship with this stakeholder to be.
+         * Replaces the whole set.
+         *
+         * <p>{@code current}, {@code lastInteraction} and {@code source} are gone with their
+         * columns (V606). A colleague's own strength is a claim now, on its own endpoint,
+         * written by the colleague and nobody else.
+         */
         public record RelationRequest(
                 String userUuid,
-                int current,
                 int target,
-                String role,
-                LocalDate lastInteraction,
-                String source) {
+                String role) {
         }
     }
 

@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.crm.plan.services;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
+import dk.trustworks.intranet.aggregates.crm.person.model.AccountPerson;
+import dk.trustworks.intranet.aggregates.crm.person.model.enums.AccountPersonKind;
 import dk.trustworks.intranet.aggregates.crm.plan.dto.AccountPlanDTO;
 import dk.trustworks.intranet.aggregates.crm.plan.dto.PlanRequests;
 import dk.trustworks.intranet.aggregates.crm.plan.model.ClientPlan;
@@ -24,7 +26,6 @@ import dk.trustworks.intranet.aggregates.crm.plan.model.enums.PlanRag;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.PlanSlot;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.PlanStatus;
 import dk.trustworks.intranet.aggregates.crm.plan.model.enums.RelationRole;
-import dk.trustworks.intranet.aggregates.crm.plan.model.enums.RelationSource;
 import dk.trustworks.intranet.aggregates.crm.sector.services.SectorPlanService;
 import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.crm.model.Client;
@@ -43,10 +44,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -70,6 +73,12 @@ import java.util.UUID;
  *       numbers the meeting actually looked at survive every later edit.</li>
  * </ul>
  *
+ * <p><b>A star is a stakeholder</b> (spec §3.6). Since the 2026-09-14 cut, "matters here" on
+ * the relationships tab writes a {@code client_plan_stakeholder} row through
+ * {@link #addStakeholder}, with the name and title copied off the {@code account_person}
+ * registry rather than taken from the body, and on an account with no plan it starts the plan
+ * in the same transaction. Unstarring is {@link #removeStakeholder}.
+ *
  * <p>Validation is hand-rolled: {@code quarkus-hibernate-validator} is absent from this
  * build, so every {@code @NotBlank} would be inert decoration.
  *
@@ -92,6 +101,28 @@ public class AccountPlanService {
     public static final int MAX_OUTCOME_CHARS = 1000;
     public static final int MAX_DECISION_CHARS = 500;
     public static final int MAX_NAME_CHARS = 255;
+
+    /**
+     * How far out the first review lands when a <b>star</b> starts a plan (spec §3.6).
+     *
+     * <p><b>This is the first default for {@code next_review} anywhere in the backend.</b>
+     * The column has always been {@code DATE NULL} with no DDL default, {@code start},
+     * {@code patch} and {@code closeReview} all store exactly what the caller sent, and the
+     * only "+90 days" in the system lived in two frontend dialogs ({@code StartPlanDialog},
+     * {@code CloseReviewDialog}). A star has no dialog to carry one: the popover asks for a
+     * buying role and an influence and nothing else, and a plan created with no review date
+     * reads as a gap in {@code planDerivations} from the moment it exists. Ninety days is the
+     * number those two dialogs already seed, so the plan a star creates and the plan a person
+     * starts by hand come out of the box the same.
+     */
+    public static final int STARRED_PLAN_FIRST_REVIEW_DAYS = 90;
+
+    /**
+     * The 409 a write gets on an account with no plan. Shared by {@link #requirePlan} and by
+     * {@link #addStakeholder}, which answers it for everything except a star — a star creates
+     * the plan instead.
+     */
+    private static final String NO_PLAN_YET = "This account has no plan yet — start one first";
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -231,16 +262,14 @@ public class AccountPlanService {
             for (ClientPlanRelation relation : relations) {
                 relationDtos.add(new AccountPlanDTO.PlanStakeholderDTO.PlanRelationDTO(
                         person(relation.getUserUuid()),
-                        relation.getCurrentLevel(),
                         relation.getTargetLevel(),
                         relation.getRole().name(),
-                        relation.getLastInteraction(),
-                        relation.getSource().name(),
                         person(relation.getAssessedBy()),
                         toDate(relation.getAssessedAt())));
             }
             out.add(new AccountPlanDTO.PlanStakeholderDTO(
-                    row.getUuid(), row.getName(), row.getRoleLabel(), row.getTitle(), row.getUnit(),
+                    row.getUuid(), row.getPersonUuid(), row.getName(), row.getRoleLabel(),
+                    row.getTitle(), row.getUnit(),
                     row.getBuying().name(), row.getInfluence().name(), toDate(row.getValidatedAt()),
                     row.getFromSignalUuid(), relationDtos));
         }
@@ -474,14 +503,42 @@ public class AccountPlanService {
     // Write — stakeholders
     // ------------------------------------------------------------------------
 
+    /**
+     * Puts a person on the plan — a seat somebody typed, or a star somebody placed on the
+     * relationships tab (spec §3.6).
+     *
+     * <p><b>A star on an account with no plan starts the plan</b>, here, in this
+     * transaction. Starring is one click on a person's row and the person doing it is saying
+     * "this one matters here"; answering that with the 409 every other write gets would mean
+     * the click failed and the account still has nothing. So the star creates the plan and
+     * the seat together: either both rows land or neither does, and there is no window in
+     * which an account holds a stakeholder whose plan was never written.
+     *
+     * <p>It does <b>not</b> do that by calling {@link #start}. {@code POST /account-plans/{uuid}}
+     * is not create-only: it re-runs {@link #setSentence} for all four slots unconditionally,
+     * and a blank sentence <i>deletes</i> the row, so calling it on an account that already
+     * has a plan would silently wipe three of its four sentences. The plan is written
+     * directly below instead, and only when there is none.
+     *
+     * <p>Everything else keeps the old behaviour exactly: a seat with no {@code personUuid}
+     * on a planless account still gets the 409, because those arrive from the plan tab, which
+     * a planless account never shows.
+     */
     @Transactional
     public AccountPlanDTO addStakeholder(String clientUuid, PlanRequests.StakeholderRequest request, String actor) {
-        ClientPlan plan = requirePlan(clientUuid);
+        requireClient(clientUuid);
         requireActor(actor);
         if (request == null) {
             throw new WebApplicationException("A body is required", Response.Status.BAD_REQUEST);
         }
         LocalDateTime now = LocalDateTime.now();
+        ClientPlan plan = ClientPlan.findById(clientUuid);
+        if (plan == null) {
+            if (isBlank(request.personUuid())) {
+                throw new WebApplicationException(NO_PLAN_YET, Response.Status.CONFLICT);
+            }
+            plan = startPlanForStar(clientUuid, actor, now);
+        }
         ClientPlanStakeholder stakeholder = new ClientPlanStakeholder();
         stakeholder.setUuid(UUID.randomUUID().toString());
         stakeholder.setClientUuid(clientUuid);
@@ -492,6 +549,34 @@ public class AccountPlanService {
         replaceRelations(stakeholder.getUuid(), request.relations(), actor, now);
         touch(plan, actor, now);
         return read(clientUuid);
+    }
+
+    /**
+     * The empty plan a star creates on an account that had none (spec §3.6).
+     *
+     * <p>All four sentences are left <b>absent</b> rather than written blank — that is what
+     * "all sentences empty" has to mean here, because {@link #setSentence} deletes a slot on
+     * blank text and {@code planGaps()} in the browser asks whether a slot exists. The plan
+     * therefore reports itself as four open sentences, which it is: nobody has written them.
+     *
+     * <p>Health is left unassessed (null) for the same reason — nobody has assessed it — and
+     * {@code next_review} gets the one default this backend has: today plus
+     * {@value #STARRED_PLAN_FIRST_REVIEW_DAYS} days. See
+     * {@link #STARRED_PLAN_FIRST_REVIEW_DAYS} for why a null there would be worse.
+     */
+    private ClientPlan startPlanForStar(String clientUuid, String actor, LocalDateTime now) {
+        ClientPlan plan = new ClientPlan();
+        plan.setClientUuid(clientUuid);
+        plan.setStatus(PlanStatus.ACTIVE);
+        plan.setVersion(1);
+        plan.setNextReview(now.toLocalDate().plusDays(STARRED_PLAN_FIRST_REVIEW_DAYS));
+        plan.setCreatedAt(now);
+        plan.setCreatedBy(actor);
+        plan.setUpdatedAt(now);
+        plan.setUpdatedBy(actor);
+        plan.persist();
+        log.infof("Account plan started by a star: client=%s actor=%s", clientUuid, actor);
+        return plan;
     }
 
     @Transactional
@@ -510,6 +595,15 @@ public class AccountPlanService {
         return read(clientUuid);
     }
 
+    /**
+     * Takes a person off the plan. This is also what unstarring on the relationships tab
+     * does (spec §3.6): a star <i>is</i> this row, so removing the star removes the seat.
+     *
+     * <p>A hard delete, as it always was — there is no tombstone and no {@code closed_at}
+     * here. The plan itself survives, even when this was its only person: an account whose
+     * plan was started by a star and then unstarred keeps the plan, because deleting it
+     * would also delete every sentence, objective and action written since.
+     */
     @Transactional
     public AccountPlanDTO removeStakeholder(String clientUuid, String stakeholderUuid, String actor) {
         ClientPlan plan = requirePlan(clientUuid);
@@ -736,16 +830,40 @@ public class AccountPlanService {
         action.setModifiedBy(actor);
     }
 
-    private void applyStakeholder(ClientPlanStakeholder stakeholder, PlanRequests.StakeholderRequest request,
-                                  String actor, LocalDateTime now, boolean creating) {
+    /**
+     * Applies a body to a stakeholder row.
+     *
+     * <p><b>A star's name and title come off the registry, not off the body.</b> When
+     * {@code personUuid} is present the {@code account_person} row is read — scoped to this
+     * stakeholder's own client, which is the whole IDOR guard — and its name and title
+     * overwrite whatever the request said, deliberately last so the registry wins. The star
+     * popover has no name field and nobody types a contact into the plan any more; a body
+     * that could still rename the person would let this one account's plan disagree with the
+     * relationships tab, the overview and every other account about the same human.
+     *
+     * <p>{@code unit} is no longer defaulted to an em dash. It is NULL-able since V606 and a
+     * starred person has no unit at all, so a placeholder here would be rendered as a real
+     * org unit everywhere the row is shown — the "CIO, " the spec calls out.
+     *
+     * <p>Package-private rather than private so the DB-free tier can reach it: its callers
+     * are transactional and cannot be tested without a database.
+     */
+    void applyStakeholder(ClientPlanStakeholder stakeholder, PlanRequests.StakeholderRequest request,
+                          String actor, LocalDateTime now, boolean creating) {
         if (request != null) {
+            AccountPerson starred = starredPerson(stakeholder.getClientUuid(), request.personUuid());
             if (request.name() != null) stakeholder.setName(trimTo(request.name(), MAX_NAME_CHARS));
             if (request.roleLabel() != null) stakeholder.setRoleLabel(trimTo(request.roleLabel(), MAX_NAME_CHARS));
             if (creating || request.title() != null) {
                 stakeholder.setTitle(orDefault(trimTo(request.title(), MAX_NAME_CHARS), "—"));
             }
             if (creating || request.unit() != null) {
-                stakeholder.setUnit(orDefault(trimTo(request.unit(), MAX_NAME_CHARS), "—"));
+                stakeholder.setUnit(trimTo(request.unit(), MAX_NAME_CHARS));
+            }
+            if (starred != null) {
+                stakeholder.setPersonUuid(starred.getUuid());
+                stakeholder.setName(trimTo(starred.getName(), MAX_NAME_CHARS));
+                stakeholder.setTitle(orDefault(trimTo(starred.getTitle(), MAX_NAME_CHARS), "—"));
             }
             if (creating || request.buying() != null) {
                 stakeholder.setBuying(parse(BuyingRole.class,
@@ -768,26 +886,72 @@ public class AccountPlanService {
         stakeholder.setModifiedBy(actor);
     }
 
-    private void replaceRelations(String stakeholderUuid,
-                                  List<PlanRequests.StakeholderRequest.RelationRequest> relations,
-                                  String actor, LocalDateTime now) {
+    /**
+     * The registry person a star was placed on, or null when the body named none.
+     *
+     * <p><b>The client is the boundary.</b> The lookup takes the client off the row being
+     * written and the person off the body and requires both to match one registry row; a
+     * person on another account answers 404, never 403, because "that person is not on this
+     * account" is all a caller is entitled to learn. Looking a person up by uuid alone would
+     * let anybody holding {@code accounts:write} on one account pull a person from any other
+     * onto their plan — the insecure direct object reference this codebase has shipped
+     * before.
+     *
+     * <p>A {@code COLLEAGUE} row is refused the same way. Those are our own consultants,
+     * kept in the registry so the rebuild remembers they are not client contacts, and they
+     * never leave the backend; starring one would put a Trustworks employee on a client's
+     * plan as their stakeholder, which is the exact defect this whole cut exists to fix.
+     *
+     * <p>Package-private so the fast tier can pin both refusals.
+     */
+    static AccountPerson starredPerson(String clientUuid, String personUuid) {
+        if (isBlank(personUuid)) {
+            return null;
+        }
+        AccountPerson person = AccountPerson.findOnClient(clientUuid, personUuid.trim());
+        if (person == null || person.getKind() == AccountPersonKind.COLLEAGUE) {
+            throw new WebApplicationException("Unknown person on this account", Response.Status.NOT_FOUND);
+        }
+        return person;
+    }
+
+    /**
+     * Rewrites the whole target-level set for one stakeholder.
+     *
+     * <p><b>One entry per colleague.</b> {@code uq_plan_relation (stakeholder_uuid,
+     * user_uuid)} is a unique key, and until this cut nothing de-duplicated the incoming
+     * list — {@code replaceObjectiveLeads} has called {@code .distinct()} since it was
+     * written, this did not. A body naming the same colleague twice therefore deleted every
+     * relation and then failed at flush with a constraint violation surfacing as a 500, and
+     * a latent 500 is a 500. The first entry for a colleague wins; the rest are skipped, the
+     * way a de-duplicated list of leads behaves.
+     *
+     * <p>Package-private so the fast tier can pin that de-duplication.
+     */
+    void replaceRelations(String stakeholderUuid,
+                          List<PlanRequests.StakeholderRequest.RelationRequest> relations,
+                          String actor, LocalDateTime now) {
         ClientPlanRelation.delete("stakeholderUuid", stakeholderUuid);
         if (relations == null) {
             return;
         }
+        Set<String> seen = new HashSet<>();
         for (PlanRequests.StakeholderRequest.RelationRequest request : relations) {
             if (request == null || isBlank(request.userUuid())) {
+                continue;
+            }
+            String userUuid = requireUser(request.userUuid());
+            if (!seen.add(userUuid)) {
                 continue;
             }
             ClientPlanRelation relation = new ClientPlanRelation();
             relation.setUuid(UUID.randomUUID().toString());
             relation.setStakeholderUuid(stakeholderUuid);
-            relation.setUserUuid(requireUser(request.userUuid()));
-            relation.setCurrentLevel(clamp(request.current()));
+            relation.setUserUuid(userUuid);
             relation.setTargetLevel(clamp(request.target()));
             relation.setRole(parse(RelationRole.class, orDefault(request.role(), "SUPPORTING"), "role"));
-            relation.setLastInteraction(request.lastInteraction());
-            relation.setSource(parse(RelationSource.class, orDefault(request.source(), "CONTRACT"), "source"));
+            // Always the caller and now, never what the client sent: a target somebody else
+            // is recorded as having set is not a rating, it is a forgery.
             relation.setAssessedBy(actor);
             relation.setAssessedAt(now);
             relation.persist();
@@ -1011,8 +1175,7 @@ public class AccountPlanService {
         requireClient(clientUuid);
         ClientPlan plan = ClientPlan.findById(clientUuid);
         if (plan == null) {
-            throw new WebApplicationException(
-                    "This account has no plan yet — start one first", Response.Status.CONFLICT);
+            throw new WebApplicationException(NO_PLAN_YET, Response.Status.CONFLICT);
         }
         return plan;
     }

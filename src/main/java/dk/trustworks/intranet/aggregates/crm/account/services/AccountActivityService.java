@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.crm.account.services;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountActivityDTO;
+import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestDTO;
 import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackDigestService;
@@ -21,6 +22,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -88,6 +90,18 @@ public class AccountActivityService {
     /** Only for reading the stored digest JSON back; it never calls a model from here. */
     @Inject
     AccountSlackDigestService slackDigestService;
+
+    /**
+     * What the person registry calls the person at each address on this account.
+     *
+     * <p>The feed and the people table must not disagree about what somebody is called, and
+     * before the registry existed they did: the feed rendered whatever the mailbox typed while
+     * the table rendered its own pick. The registry is now the single answer and
+     * {@link AccountRelationshipService#bestExternalNames} is the fallback for an address no
+     * rebuild has reached yet.
+     */
+    @Inject
+    AccountPersonService personService;
 
     /** Every source for one client, newest first, capped. */
     public List<AccountActivityDTO> forClient(String clientUuid, int limit) {
@@ -461,6 +475,10 @@ public class AccountActivityService {
             named.add(new String[]{asString(row[1]), asString(row[2])});
         }
         Map<String, String> namesByEmail = AccountRelationshipService.bestExternalNames(named);
+        // The registry first. It has already decided that "STMJ (Stephan Mosko Jensen)" and
+        // "Stephan Jensen" are one person and what that person is called; asking the raw
+        // attendee rows again would put the feed back to spelling them two different ways.
+        Map<String, String> registryNames = personService.displayNamesByEmail(clientUuid);
 
         // A set, because resolving by address makes one new collision possible: two
         // addresses of one person that carry the same display name were two attendee rows
@@ -468,7 +486,10 @@ public class AccountActivityService {
         // replaces.
         Map<String, Set<String>> namesByMeeting = new LinkedHashMap<>();
         for (Object[] row : attendeeRows) {
-            String name = AccountRelationshipService.externalNameOf(asString(row[1]), namesByEmail);
+            String name = registryName(registryNames, asString(row[1]));
+            if (name == null) {
+                name = AccountRelationshipService.externalNameOf(asString(row[1]), namesByEmail);
+            }
             if (name == null) {
                 continue;
             }
@@ -752,6 +773,26 @@ public class AccountActivityService {
         return user.getFirstname() != null && !user.getFirstname().isBlank()
                 ? user.getFirstname()
                 : user.getUsername();
+    }
+
+    /**
+     * What the registry calls the person at this address, or null when it has never seen it.
+     *
+     * <p>Keyed on the lower-cased address exactly as {@code displayNamesByEmail} returns it.
+     * {@link Locale#ROOT}, never the default locale — a Turkish default lower-cases {@code I}
+     * to a dotless {@code ı} and an address quietly stops matching itself, which would show up
+     * as the feed silently falling back to the mailbox's own spelling for one person.
+     */
+    private static String registryName(Map<String, String> registryNames, String email) {
+        if (registryNames == null || registryNames.isEmpty() || email == null) {
+            return null;
+        }
+        String key = email.trim().toLowerCase(Locale.ROOT);
+        if (key.isEmpty()) {
+            return null;
+        }
+        String name = registryNames.get(key);
+        return name == null || name.isBlank() ? null : name;
     }
 
     static String joinNames(List<String> names) {

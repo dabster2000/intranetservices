@@ -19,14 +19,14 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * The database half of the calendar filters: it reads the three things
+ * The database half of the calendar filters: it reads the four things
  * {@link AccountCalendarSyncService} needs in order to tell a sales meeting from a standup,
  * and it writes back the one thing the sync works out for itself.
  *
  * <h2>Read once per run, never per mailbox</h2>
  * {@link #load()} is called exactly once at the top of {@code syncAll()}, inside its own
- * short transaction, in the same breath as the domain index and the consent list. The three
- * queries behind it are whole-table reads of the contract, employee-status and
+ * short transaction, in the same breath as the domain index and the consent list. The
+ * queries behind it are whole-table reads of the contract, employee-status, placement and
  * learned-address tables — per mailbox they would be a hundred repetitions of the same
  * answer, and worse, they could not be done at all without either holding a transaction
  * across a Graph call or opening one between every pair of them. The §P9 M1 rule at the top
@@ -71,10 +71,11 @@ public class CalendarFilterService {
     CalendarFilters load() {
         CalendarFilters filters = CalendarFilters.of(
                 DeliveryContractIndex.of(loadDeliveryContracts()),
-                ColleagueDirectory.of(loadColleagues()),
+                ColleagueDirectory.of(loadColleagues(), loadPlacements()),
                 loadColleagueClientEmails());
-        log.infof("Calendar filters loaded: deliveryPairs=%d colleagues=%d knownColleagueEmails=%d",
-                filters.delivery().size(), filters.colleagues().size(), filters.knownColleagueEmailCount());
+        log.infof("Calendar filters loaded: deliveryPairs=%d colleagues=%d placements=%d knownColleagueEmails=%d",
+                filters.delivery().size(), filters.colleagues().size(),
+                filters.colleagues().placementCount(), filters.knownColleagueEmailCount());
         return filters;
     }
 
@@ -136,6 +137,70 @@ public class CalendarFilterService {
                     userUuid, asString(row[1]), asString(row[2]), status, statusDate));
         }
         return rows;
+    }
+
+    /**
+     * Every client each employee has ever been placed at — the gate on the widened name
+     * rule (spec §4.1 rule b).
+     *
+     * <p>Two sources, because there are two ways we know somebody sits at a client. The
+     * first is the assignment itself, every {@code contract_consultants} row the person ever
+     * had. The second is an address we have already learned to be theirs: a mailbox issued
+     * by the client's own domain is the strongest possible evidence that they were there,
+     * and it covers the consultant whose assignment was never registered as a contract line.
+     *
+     * <p><b>Deliberately read separately from {@link #loadDeliveryContracts()}</b>, even
+     * though the first query is that one without its dates. The delivery index drops rows
+     * whose window is inverted and cares about exactly when somebody sat there; this asks
+     * only whether they ever did, and a row that is useless as a window is still perfectly
+     * good evidence of a placement. Deriving one from the other would quietly couple the
+     * name rule to the delivery rule's row hygiene, and a {@code DISTINCT} over two narrow
+     * columns is cheap — production has ~300 clients and ~200 employees.
+     *
+     * <p><b>No date predicate</b>, for the same reason the delivery load has none and then
+     * some: this index answers "could our Sara Vest plausibly be the Sara on a Banedanmark
+     * invitation at all", and an assignment that finished in 2023 answers it. The
+     * employment-on-the-meeting-date test in {@link ColleagueDirectory} is what decides
+     * whether the attendee is dropped.
+     */
+    private List<ColleagueDirectory.PlacementRow> loadPlacements() {
+        List<ColleagueDirectory.PlacementRow> rows = new ArrayList<>();
+
+        // The client hangs off the contract, not off the assignment line — same join the
+        // delivery load uses, and the only place contract_consultants carries a client.
+        Query assignments = em.createNativeQuery("""
+                select distinct cc.useruuid, ct.clientuuid
+                  from contract_consultants cc
+                  join contracts ct on ct.uuid = cc.contractuuid
+                 where cc.useruuid is not null
+                   and ct.clientuuid is not null
+                """);
+        collectPlacements(assignments, rows);
+
+        // An address the sync has already proved is a colleague's, on a domain a client
+        // claims. substring_index(email, '@', -1) is the domain; both columns are written
+        // lower-cased and both tables are utf8mb4_general_ci, so the join is a plain match.
+        Query learned = em.createNativeQuery("""
+                select distinct cce.user_uuid, cd.client_uuid
+                  from crm_colleague_client_email cce
+                  join client_domain cd on cd.domain = substring_index(cce.email, '@', -1)
+                 where cce.user_uuid is not null
+                """);
+        collectPlacements(learned, rows);
+
+        return rows;
+    }
+
+    /** Both placement queries answer with (user, client) in that order. */
+    private static void collectPlacements(Query query, List<ColleagueDirectory.PlacementRow> rows) {
+        for (Object[] row : resultsOf(query)) {
+            String userUuid = asString(row[0]);
+            String clientUuid = asString(row[1]);
+            if (userUuid == null || clientUuid == null) {
+                continue;
+            }
+            rows.add(new ColleagueDirectory.PlacementRow(userUuid.trim(), clientUuid.trim()));
+        }
     }
 
     /**

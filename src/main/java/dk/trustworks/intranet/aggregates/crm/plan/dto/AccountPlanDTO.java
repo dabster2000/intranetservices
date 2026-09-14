@@ -92,8 +92,19 @@ public record AccountPlanDTO(
             String fromSuggestionId) {
     }
 
+    /**
+     * @param personUuid the {@code account_person} row this seat stars (spec §3.6), and the
+     *                   join key the plan tab uses to find the person's coverage in the
+     *                   relationships read. Null on a seat typed into the plan by hand, and
+     *                   on a row promoted from a signal — those fall back to matching by
+     *                   name, which is all a signal ever carried.
+     * @param unit       null on a starred person: the registry knows a name and sometimes a
+     *                   title, never an org unit, and "CIO, " with an empty tail is worse
+     *                   than the title alone
+     */
     public record PlanStakeholderDTO(
             String id,
+            String personUuid,
             String name,
             String roleLabel,
             String title,
@@ -105,16 +116,21 @@ public record AccountPlanDTO(
             List<PlanRelationDTO> relations) {
 
         /**
-         * @param assessedBy who made the rating, and {@code assessedAt} when — a rating
+         * Where the owner wants this relationship, and nothing about where it is today.
+         *
+         * <p>{@code current}, {@code lastInteraction} and {@code source} left the payload
+         * with their columns in the 2026-09-14 cut (V606): how well a colleague knows
+         * somebody is now that colleague's own claim and the calendar's {@code MET} edges,
+         * both of which the relationships read carries. The plan keeps only the target,
+         * because only the account owner can say what it should be.
+         *
+         * @param assessedBy who set the target, and {@code assessedAt} when — a number
          *                   nobody stands behind is an opinion pretending to be a fact
          */
         public record PlanRelationDTO(
                 PersonDTO person,
-                int current,
                 int target,
                 String role,
-                LocalDate lastInteraction,
-                String source,
                 PersonDTO assessedBy,
                 LocalDate assessedAt) {
         }
