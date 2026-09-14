@@ -14,8 +14,8 @@ import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
+import dk.trustworks.intranet.dao.crm.services.ClientBillingValidator;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
-import dk.trustworks.intranet.utils.EanValidator;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ClientActivityLogDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
@@ -83,19 +83,42 @@ public class ClientResource {
     @Inject
     EconomicsCustomerSyncService economicsCustomerSyncService;
 
-    private static final Set<String> VALID_CURRENCIES = Set.of("DKK", "EUR", "NOK", "SEK", "USD", "GBP");
-    private static final java.util.regex.Pattern CVR_PATTERN = java.util.regex.Pattern.compile("^\\d{8}$");
-    private static final java.util.regex.Pattern COUNTRY_PATTERN = java.util.regex.Pattern.compile("^[A-Z]{2}$");
-
     @GET
     @Operation(summary = "List clients filtered by type",
-            description = "Lists clients filtered by `type` (default CLIENT). " +
-                    "PARTNERs are excluded unless explicitly requested via ?type=PARTNER — " +
-                    "this hard-filter applies defense-in-depth at the resource layer. " +
-                    "SPEC-INV-001 §3.4, §8.8.")
+            description = "Lists clients filtered by `type` (default CLIENT). Accepts a comma " +
+                    "list, e.g. ?type=CLIENT,PROSPECT for the accounts list and the lead form. " +
+                    "PARTNERs and PROSPECTs are excluded unless explicitly requested — this " +
+                    "hard-filter applies defense-in-depth at the resource layer. " +
+                    "SPEC-INV-001 §3.4, §8.8; CRM relationships spec §5.")
     public List<Client> findAll(
-            @QueryParam("type") @DefaultValue("CLIENT") ClientType type) {
-        return clientAPI.listByType(type);
+            @QueryParam("type") @DefaultValue("CLIENT") String type) {
+        return clientAPI.listByTypes(parseTypes(type));
+    }
+
+    /**
+     * {@code ?type=} as a comma list.
+     *
+     * <p><b>The default stays CLIENT alone.</b> A third value on {@code ClientType} is
+     * only safe because every existing consumer keeps excluding it until it opts in, so an
+     * unparseable or empty parameter must degrade to CLIENT rather than to everything —
+     * the failure mode of the other reading is a prospect in the invoice picker.
+     */
+    static Set<ClientType> parseTypes(String raw) {
+        Set<ClientType> types = new LinkedHashSet<>();
+        if (raw != null) {
+            for (String part : raw.split(",")) {
+                String value = part.trim().toUpperCase(Locale.ROOT);
+                if (value.isEmpty()) {
+                    continue;
+                }
+                try {
+                    types.add(ClientType.valueOf(value));
+                } catch (IllegalArgumentException e) {
+                    throw new BadRequestException("Unknown client type: " + part.trim());
+                }
+            }
+        }
+        return types.isEmpty() ? Set.of(ClientType.CLIENT) : types;
     }
 
     @GET
@@ -196,7 +219,14 @@ public class ClientResource {
         // records per-agreement failures to client_economics_sync_failures for the
         // retry batchlet; defensively wrap so a transient error never fails the
         // resource response. SPEC-INV-001 §3.3, §7.2.
-        syncClientToEconomicsSafe(created, "create");
+        //
+        // NOT for a prospect. Every client created on this form used to become a customer
+        // in both e-conomic agreements the same minute, which is what made "add the
+        // company somebody had a coffee with" a bookkeeping act. For a prospect the sync
+        // moves to graduation — the first contract, in ContractService.save.
+        if (created.getType() != ClientType.PROSPECT) {
+            syncClientToEconomicsSafe(created, "create");
+        }
 
         Response.ResponseBuilder responseBuilder = Response.status(Response.Status.CREATED).entity(created);
         if (duplicateWarningUuid != null) {
@@ -233,6 +263,18 @@ public class ClientResource {
 
         // Load old state for change logging
         Client oldClient = clientAPI.findByUuid(client.getUuid());
+
+        // PROSPECT → CLIENT is a promotion somebody may make by hand (filling the billing
+        // details early is exactly what the account page offers a link for). The reverse
+        // is refused: a company we have billed is a customer for ever, and a form that
+        // could quietly un-bill one would be the `active` flag all over again.
+        if (oldClient != null
+                && oldClient.getType() != ClientType.PROSPECT
+                && client.getType() == ClientType.PROSPECT) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "A client cannot be turned back into a prospect"))
+                    .build();
+        }
 
         clientAPI.updateOne(client);
 
@@ -314,8 +356,10 @@ public class ClientResource {
 
         // Propagate field updates to every configured e-conomic agreement.
         // Non-blocking — failures are captured in client_economics_sync_failures.
-        // SPEC-INV-001 §3.3, §7.2.
-        syncClientToEconomicsSafe(client, "update");
+        // SPEC-INV-001 §3.3, §7.2. A prospect has no e-conomic customer to update.
+        if (client.getType() != ClientType.PROSPECT) {
+            syncClientToEconomicsSafe(client, "update");
+        }
 
         return Response.ok().build();
     }
@@ -399,55 +443,24 @@ public class ClientResource {
 
     /**
      * Validates client billing fields. Returns a 400 Response if validation fails, or null if valid.
+     *
+     * <p><b>A PROSPECT is not asked for billing completeness.</b> It has never been billed
+     * and may never be: requiring a CVR to write down that somebody had a coffee with a
+     * company is the reason people were not writing it down. The same rules are enforced in
+     * {@code ContractService.save} the moment a contract makes the row a customer, which is
+     * the first minute they are true — and they are the SAME rules, from
+     * {@link ClientBillingValidator}, so a company cannot pass one gate and fail the other.
+     * Format checks on whatever was filled in still apply.
      */
     private Response validateClient(Client client) {
-        // Name is required, min 2 characters
-        if (client.getName() == null || client.getName().trim().length() < 2) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", "Client name is required (min 2 characters)"))
-                    .build();
+        String problem = client.getType() == ClientType.PROSPECT
+                ? ClientBillingValidator.formatProblem(client)
+                : ClientBillingValidator.billingProblem(client);
+        if (problem == null) {
+            return null;
         }
-
-        // Validate country code format
-        String country = client.getBillingCountry();
-        if (country != null && !country.isBlank() && !COUNTRY_PATTERN.matcher(country).matches()) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", "Invalid country code"))
-                    .build();
-        }
-
-        // Validate currency code
-        String currency = client.getCurrency();
-        if (currency != null && !currency.isBlank() && !VALID_CURRENCIES.contains(currency)) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", "Invalid currency code"))
-                    .build();
-        }
-
-        // CVR validation for Danish clients
-        boolean isDanish = "DK".equals(country);
-        String cvr = client.getCvr();
-        if (isDanish) {
-            if (cvr == null || cvr.isBlank()) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity(Map.of("error", "CVR is required for Danish clients"))
-                        .build();
-            }
-            if (!CVR_PATTERN.matcher(cvr.trim()).matches()) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity(Map.of("error", "CVR must be exactly 8 digits"))
-                        .build();
-            }
-        }
-
-        // EAN validation (GS1 Modulo 10) — optional field, but must be valid if present
-        String ean = client.getEan();
-        if (ean != null && !ean.isBlank() && !EanValidator.isValid(ean)) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", "EAN must be exactly 13 digits and pass GS1 Modulo 10"))
-                    .build();
-        }
-
-        return null;
+        return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", problem))
+                .build();
     }
 }

@@ -15,11 +15,16 @@ import lombok.Setter;
 import java.time.LocalDateTime;
 
 /**
- * One person's role on one account (CRM spec §3.1): Responsible, or Supported by.
+ * One person's role on one account: Supported by, or a member of the account team.
  *
- * <p>The unique key is {@code (client_uuid, user_uuid, role)}, so the same person can be
- * both the Responsible and a supporter without the write path having to think about it —
- * though {@code AccountService} does not create that combination.
+ * <p>Since V598 this is the only table that answers "who is on this account". The owner
+ * is {@code client.accountmanager} and is never written here; the {@code ACCOUNT_TEAM}
+ * bubbles' membership was migrated into {@code MEMBER} rows and those bubbles stopped
+ * being a store.
+ *
+ * <p>The unique key is {@code (client_uuid, user_uuid, role)}, but
+ * {@code AccountService.replaceRoles} refuses the same person in both lists and refuses
+ * the account's owner in either — a person appears on an account once.
  */
 @Entity
 @Getter

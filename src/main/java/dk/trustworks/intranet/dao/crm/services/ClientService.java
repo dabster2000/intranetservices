@@ -43,6 +43,25 @@ public class ClientService {
         return Client.list("type = ?1", Sort.ascending("name"), type);
     }
 
+    /**
+     * Lists clients of any of several types.
+     *
+     * <p>Exists because {@code PROSPECT} (2026-09-14) is a value most callers must keep
+     * excluding — the invoice picker, devices, the timesheet chain — while a few need it
+     * beside {@code CLIENT}: the accounts list, the lead form's client picker and the
+     * signal box. Every one of those is an explicit opt-in at the call site, which is the
+     * whole reason prospects were made a third {@code type} rather than a flag.
+     *
+     * <p>An empty or null list answers with nothing rather than with everything: a filter
+     * that silently widens is how a prospect ends up in an invoice.
+     */
+    public List<Client> listByTypes(java.util.Collection<ClientType> types) {
+        if (types == null || types.isEmpty()) {
+            return List.of();
+        }
+        return Client.list("type in ?1", Sort.ascending("name"), List.copyOf(types));
+    }
+
     @Transactional
     public Client save(Client client) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;

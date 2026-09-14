@@ -9,6 +9,8 @@ import dk.trustworks.intranet.aggregates.crm.signal.model.enums.SignalType;
 import dk.trustworks.intranet.aggregates.crm.sector.services.SectorLeadService;
 import dk.trustworks.intranet.aggregates.crm.sector.services.SectorService;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -129,7 +131,16 @@ public class AccountSignalService {
                     Response.Status.BAD_REQUEST);
         }
         String text = requireText(request.text());
-        List<String> clientUuids = requireClients(request.allClientUuids());
+
+        // Companies the author named that Intra does not know yet, created here so the
+        // company and the signal land in one transaction. Same transaction is the point:
+        // a company row left behind by a signal that failed to save is litter nobody will
+        // ever find, and a signal thrown away because its company did not exist is the
+        // exact loss this whole feature is about.
+        List<String> created = createProspects(request.allNewCompanies(), authorUuid);
+        List<String> everyNamedClient = new ArrayList<>(request.allClientUuids());
+        everyNamedClient.addAll(created);
+        List<String> clientUuids = requireClients(everyNamedClient);
         List<String> colleagueUuids = requireColleagues(request.allColleagueUuids(), authorUuid);
 
         // One timestamp and one capture uuid for the whole capture. Minting either per
@@ -420,6 +431,68 @@ public class AccountSignalService {
      *
      * <p>Order is the author's. The first account they named is the one they led with.
      */
+    /**
+     * Creates the companies the author named as {@code PROSPECT} rows.
+     *
+     * <p>Two fields — name and sector — and no e-conomic sync, exactly as the Add-company
+     * dialog on the accounts list. The fuzzy-name check the list dialog runs is NOT
+     * repeated here: the picker showed the author every existing match while they typed,
+     * so a name that reaches this point is one they looked at the alternatives for. An
+     * exact case-insensitive match is still reused rather than duplicated, because that one
+     * is not a judgement call.
+     *
+     * <p>{@code crm:write} is not required. Decision 2 of the relationships spec: every
+     * employee who can file a signal may name the company it is about, because the signals
+     * worth the most are about companies Trustworks does not serve yet and today they
+     * cannot be filed at all.
+     */
+    private List<String> createProspects(List<AccountSignalRequest.NewCompany> companies, String authorUuid) {
+        List<String> uuids = new ArrayList<>();
+        if (companies.isEmpty()) {
+            return uuids;
+        }
+        if (companies.size() > MAX_CLIENTS_PER_CAPTURE) {
+            throw new WebApplicationException(
+                    "One line can name at most " + MAX_CLIENTS_PER_CAPTURE + " accounts",
+                    Response.Status.BAD_REQUEST);
+        }
+        for (AccountSignalRequest.NewCompany company : companies) {
+            String name = company.name().trim();
+            if (name.length() < 2) {
+                throw new WebApplicationException("A company name needs at least two characters",
+                        Response.Status.BAD_REQUEST);
+            }
+            Client existing = clientService.findByExactNameIgnoreCase(name);
+            if (existing != null) {
+                uuids.add(existing.getUuid());
+                continue;
+            }
+            Client prospect = new Client();
+            prospect.setUuid(UUID.randomUUID().toString());
+            prospect.setName(name);
+            prospect.setType(ClientType.PROSPECT);
+            prospect.setSegment(parseSegment(company.segment()));
+            prospect.setCreated(LocalDateTime.now());
+            prospect.persist();
+            uuids.add(prospect.getUuid());
+            log.infof("Prospect created from the signal box: uuid=%s name=%s author=%s",
+                    prospect.getUuid(), name, authorUuid);
+        }
+        return uuids;
+    }
+
+    /** An unknown or missing sector is OTHER — a mistyped one is not worth losing a signal over. */
+    private static ClientSegment parseSegment(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return ClientSegment.OTHER;
+        }
+        try {
+            return ClientSegment.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return ClientSegment.OTHER;
+        }
+    }
+
     private List<String> requireClients(List<String> clientUuids) {
         if (clientUuids == null || clientUuids.isEmpty()) {
             throw new WebApplicationException("Pick the client with @ first", Response.Status.BAD_REQUEST);

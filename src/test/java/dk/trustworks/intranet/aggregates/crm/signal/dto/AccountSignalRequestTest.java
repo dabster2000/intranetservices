@@ -25,7 +25,29 @@ class AccountSignalRequestTest {
     private static final String TOBIAS = "ca0e1027-061f-49e7-b66a-a487c815f5a0";
 
     private static AccountSignalRequest request(String single, List<String> plural, List<String> colleagues) {
-        return new AccountSignalRequest(single, plural, "heard something", null, null, null, null, colleagues);
+        return new AccountSignalRequest(single, plural, "heard something", null, null, null, null, colleagues, null);
+    }
+
+    /**
+     * Companies the author named that Intra does not know yet (relationships spec §4.3).
+     *
+     * <p>Absent is the common case and must read as an empty list, not as a null the
+     * service has to guard — the same posture as the colleague list above.
+     */
+    @Test
+    void namedCompaniesAreDroppedWhenBlankAndNeverNull() {
+        assertEquals(List.of(), request(null, List.of(RIGSPOLITIET), null).allNewCompanies());
+
+        AccountSignalRequest withCompanies = new AccountSignalRequest(
+                null, List.of(), "heard something", null, null, null, null, null,
+                java.util.Arrays.asList(
+                        new AccountSignalRequest.NewCompany("DSB", "PUBLIC"),
+                        null,
+                        new AccountSignalRequest.NewCompany("  ", "PUBLIC"),
+                        new AccountSignalRequest.NewCompany(null, null)));
+
+        assertEquals(1, withCompanies.allNewCompanies().size());
+        assertEquals("DSB", withCompanies.allNewCompanies().get(0).name());
     }
 
     /** The case this release exists for: both accounts must come through, in order. */

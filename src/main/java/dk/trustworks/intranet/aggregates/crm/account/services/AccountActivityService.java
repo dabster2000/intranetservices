@@ -33,6 +33,7 @@ import java.util.Set;
  *
  * <table>
  *   <tr><td>CONTRACT</td><td>{@code client_activity_log} rows about contracts</td></tr>
+ *   <tr><td>RELATIONSHIP</td><td>{@code client_activity_log} rows where {@code client.type} changed — a prospect becoming a customer</td></tr>
  *   <tr><td>LEAD</td><td>{@code sales_lead} created / won / lost and {@code sales_lead_stage_history}</td></tr>
  *   <tr><td>SIGNAL</td><td>{@code account_signal} captured and decided</td></tr>
  *   <tr><td>KYC</td><td>{@code questionnaire_submission} about the client</td></tr>
@@ -88,6 +89,7 @@ public class AccountActivityService {
 
         List<AccountActivityDTO> rows = new ArrayList<>();
         rows.addAll(contractRows(clientUuid, capped));
+        rows.addAll(relationshipRows(clientUuid, capped));
         rows.addAll(leadRows(clientUuid, capped));
         rows.addAll(stageRows(clientUuid, capped));
         rows.addAll(signalRows(clientUuid, capped));
@@ -114,6 +116,10 @@ public class AccountActivityService {
                 select client_uuid, max(modified_at) from client_activity_log
                  where entity_type = 'CONTRACT' group by client_uuid
                 """, "CONTRACT", "Contract updated");
+        mergeNewest(newest, """
+                select client_uuid, max(modified_at) from client_activity_log
+                 where entity_type = 'CLIENT' and field_name = 'type' group by client_uuid
+                """, "RELATIONSHIP", "Became a customer");
         mergeNewest(newest, """
                 select clientuuid, max(created) from sales_lead group by clientuuid
                 """, "LEAD", "Lead created");
@@ -180,6 +186,44 @@ public class AccountActivityService {
                     firstNameOf(asString(row[6])),
                     "CONTRACT",
                     asString(row[1])));
+        }
+        return rows;
+    }
+
+    /**
+     * The day a prospect became a customer.
+     *
+     * <p>Its own source rather than a CONTRACT row, even though a contract is what caused
+     * it: "Became a customer" is a fact about the relationship and it should read that way
+     * five years later, when nobody remembers which contract it was. The row is written by
+     * {@code ContractService.graduateProspect}, which is the one place the transition can
+     * happen.
+     */
+    private List<AccountActivityDTO> relationshipRows(String clientUuid, int limit) {
+        Query query = em.createNativeQuery("""
+                select id, old_value, new_value, modified_by, modified_at
+                  from client_activity_log
+                 where client_uuid = :clientUuid and entity_type = 'CLIENT' and field_name = 'type'
+                 order by modified_at desc
+                """);
+        query.setParameter("clientUuid", clientUuid);
+        query.setMaxResults(limit);
+
+        List<AccountActivityDTO> rows = new ArrayList<>();
+        for (Object[] row : rowsOf(query)) {
+            String from = asString(row[1]);
+            String to = asString(row[2]);
+            String summary = "PROSPECT".equals(from) && "CLIENT".equals(to)
+                    ? "Became a customer — first contract signed"
+                    : "Client type changed: " + orDash(from) + " → " + orDash(to);
+            rows.add(new AccountActivityDTO(
+                    "relationship:" + asString(row[0]),
+                    "RELATIONSHIP",
+                    summary,
+                    toLocalDate(row[4]),
+                    firstNameOf(asString(row[3])),
+                    null,
+                    null));
         }
         return rows;
     }

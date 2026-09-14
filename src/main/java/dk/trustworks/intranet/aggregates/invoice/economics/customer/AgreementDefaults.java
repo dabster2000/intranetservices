@@ -20,8 +20,21 @@ record AgreementDefaults(
         int vatZoneNumber,
         int paymentTermId) {
 
-    /** Returns the {@code customerGroupNumber} for the given Trustworks client type. */
+    /**
+     * Returns the {@code customerGroupNumber} for the given Trustworks client type.
+     *
+     * <p><b>A PROSPECT is refused outright.</b> It has never been billed and must not exist
+     * in e-conomic: the whole point of the type is that writing down a company somebody had
+     * a coffee with is not a bookkeeping act. The two callers both gate on the type before
+     * reaching here, so this throw is the backstop that makes "no path can sync one by
+     * accident" true rather than merely intended.
+     */
     int groupNumberFor(ClientType type) {
+        if (type == ClientType.PROSPECT) {
+            throw new IllegalArgumentException(
+                    "A prospect has never been billed and is not synced to e-conomic — "
+                            + "it becomes a customer on its first contract");
+        }
         return (type == ClientType.PARTNER) ? partnerGroupNumber : clientGroupNumber;
     }
 }

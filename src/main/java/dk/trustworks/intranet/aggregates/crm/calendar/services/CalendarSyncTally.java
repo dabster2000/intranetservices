@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.calendar.services;
 
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -35,8 +36,24 @@ final class CalendarSyncTally {
      */
     record LearnedColleagueEmail(String email, String userUuid, String displayName) { }
 
+    /**
+     * One sighting of a domain no {@code client_domain} row claims (spec §2.5).
+     *
+     * @param domain        lower-cased; a company, never a person
+     * @param graphEventId  what makes the sighting idempotent — the same event re-read on
+     *                      the next run is the same sighting, not a second meeting
+     * @param occurredOn    the day of the meeting
+     */
+    record UnmatchedDomainSighting(String domain, String graphEventId, LocalDate occurredOn) { }
+
     /** Keyed by address so one mailbox seeing Malthe in nine meetings writes one row. */
     private final Map<String, LearnedColleagueEmail> learnedEmails = new LinkedHashMap<>();
+
+    /**
+     * Keyed by (event, domain) so one meeting with three people from dsb.dk is one
+     * sighting of dsb.dk, not three.
+     */
+    private final Map<String, UnmatchedDomainSighting> unmatchedDomains = new LinkedHashMap<>();
 
     private int newlyLearnedEmails;
     private int deliveryDropped;
@@ -57,6 +74,29 @@ final class CalendarSyncTally {
         if (isNew) {
             newlyLearnedEmails++;
         }
+    }
+
+    /**
+     * Records a domain on this event that no client claims.
+     *
+     * <p>Called for every attendee whose domain is not in the index, on events that are
+     * kept as well as on events that are dropped: a meeting with both a client and an
+     * unknown company still says somebody keeps meeting the unknown company.
+     */
+    void unmatchedDomain(String domain, String graphEventId, LocalDate occurredOn) {
+        if (domain == null || graphEventId == null || occurredOn == null) {
+            return;
+        }
+        unmatchedDomains.putIfAbsent(graphEventId + "|" + domain,
+                new UnmatchedDomainSighting(domain, graphEventId, occurredOn));
+    }
+
+    Collection<UnmatchedDomainSighting> unmatchedDomains() {
+        return unmatchedDomains.values();
+    }
+
+    boolean hasUnmatchedDomains() {
+        return !unmatchedDomains.isEmpty();
     }
 
     /** A meeting dropped because the mailbox owner was on a contract with that client (D1). */
