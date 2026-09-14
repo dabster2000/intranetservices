@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.slack.api.model.block.Blocks.*;
@@ -802,6 +803,16 @@ public class SlackService {
                                       String text, int replyCount, String latestReply) { }
 
     /**
+     * What {@code conversations.info} knows about one channel — enough for whoever is adding a
+     * source channel to be told immediately whether the bot can actually read it, instead of
+     * discovering it from a nightly run that found nothing. {@code isArchived} and {@code isMember}
+     * are verdicts that still come back as a channel; {@link #describeChannel} explains why they
+     * are booleans here rather than exceptions.
+     */
+    public record SlackChannelInfo(String id, String name, boolean isPrivate,
+                                   boolean isArchived, boolean isMember) { }
+
+    /**
      * Every channel the admin bot can see — public ones and the private ones it is a
      * member of — as {@code lower-cased name → channel id}. Both {@code name} and
      * {@code name_normalized} are indexed so {@code a_e-nettet} matches however Slack
@@ -843,6 +854,86 @@ public class SlackService {
                     ? null : response.getResponseMetadata().getNextCursor();
         } while (cursor != null && !cursor.isEmpty());
         return byName;
+    }
+
+    /**
+     * A Slack channel id as a person pastes it: {@code C…} for a public channel, {@code G…} for a
+     * private one. A channel NAME can never take this shape — Slack forces names to lower case —
+     * so an id and a name are told apart by their shape alone and nobody has to be asked which
+     * they typed. Deliberately the same expression as the settings page's {@code CHANNEL_ID_PATTERN},
+     * so both ends agree on what counts as an id.
+     */
+    private static final Pattern CHANNEL_ID = Pattern.compile("^[CG][A-Z0-9]{6,}$");
+
+    /**
+     * Slack's answer for a channel this token cannot see. {@link #describeChannel} synthesises it
+     * for a {@code #name} that is not in {@link #listChannelIdsByName}, so a name nobody recognises
+     * and an id nobody recognises reach the caller as one code and map to one verdict.
+     */
+    private static final String CHANNEL_NOT_FOUND = "channel_not_found";
+
+    /**
+     * Looks one channel up by id or by {@code #name}. A value shaped like a Slack id goes straight
+     * to {@code conversations.info}; anything else is taken as a name, stripped of its leading
+     * {@code #}, lower-cased and resolved through {@link #listChannelIdsByName} first.
+     *
+     * <p>This needs only {@code channels:read}/{@code groups:read}. The section banner above names
+     * four scopes because the history calls read messages; this one reads a channel's metadata and
+     * never asks for a line of text, so the two {@code :history} scopes are irrelevant to it.
+     *
+     * <p>NOT_FOUND is the only verdict that arrives as an exception. {@code not_in_channel} and
+     * {@code is_archived} come back as the booleans of a perfectly successful answer, because the
+     * caller means to SAVE such a channel with its verdict recorded and let the nightly job
+     * re-check it — throwing would discard the id and name it needs to do that. Two consequences
+     * are worth stating before they read as a bug:
+     * <ul>
+     *   <li>{@code conversations.info} never answers {@code is_archived} as an error code; it
+     *       answers ok with {@code channel.is_archived = true}. The ARCHIVED verdict is therefore
+     *       {@link com.slack.api.model.Conversation#isArchived()} and never a caught error, unlike
+     *       every other Slack call in this section.</li>
+     *   <li>{@link #listChannelIdsByName} excludes archived channels, so an archived channel is
+     *       simply absent from the map: the {@code #name} path can only ever answer NOT_FOUND for
+     *       one, and only a pasted id can reach ARCHIVED at all.</li>
+     * </ul>
+     *
+     * <p>And NOT_FOUND does not mean "you typed it wrong". Slack will not admit that a private
+     * channel exists to a token that is not in it — {@code channel_not_found} is precisely what a
+     * private channel the bot has never been invited to answers — so the text shown for NOT_FOUND
+     * must offer the same remedy as the text shown for NOT_IN_CHANNEL: invite the bot, then retry.
+     *
+     * @throws SlackChannelAccessException with {@code channel_not_found} when no channel of that
+     *                                     id or name is visible to the admin token
+     * @throws SlackConfigurationException for a token or scope fault — a fact about the app
+     * @throws IOException                 for anything transient
+     */
+    public SlackChannelInfo describeChannel(String idOrName) throws IOException, SlackApiException {
+        String typed = idOrName.trim();
+        final String channelId;
+        if (CHANNEL_ID.matcher(typed).matches()) {
+            channelId = typed;
+        } else {
+            String name = (typed.startsWith("#") ? typed.substring(1) : typed).toLowerCase(Locale.ROOT);
+            channelId = listChannelIdsByName().get(name);
+            if (channelId == null) {
+                // The typed name stays out of the message: it is free text a person entered and
+                // this message ends up in the log, which the module keeps to ids and counts.
+                throw new SlackChannelAccessException("Slack channel lookup failed: " + CHANNEL_NOT_FOUND,
+                        CHANNEL_NOT_FOUND);
+            }
+        }
+        ConversationsInfoResponse response = Slack.getInstance().methods(adminSlackBotToken)
+                .conversationsInfo(req -> req.channel(channelId));
+        if (!response.isOk()) {
+            throw channelFailure("Slack channel info read failed", response);
+        }
+        com.slack.api.model.Conversation channel = response.getChannel();
+        if (channel == null) {
+            // Slack documents no such answer, so treat it as a blip worth retrying rather than
+            // dereferencing it into a 500 that says nothing about where it came from.
+            throw new IOException("Slack channel info read failed: ok without a channel");
+        }
+        return new SlackChannelInfo(channel.getId(), channel.getName(),
+                channel.isPrivate(), channel.isArchived(), channel.isMember());
     }
 
     /**

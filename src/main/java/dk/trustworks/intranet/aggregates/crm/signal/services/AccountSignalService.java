@@ -258,8 +258,12 @@ public class AccountSignalService {
     /**
      * Who may decide a signal (spec §3.4): the owner; the sector lead when there is no
      * owner; management anywhere. Pure, so the rule is locked in the fast tier.
+     *
+     * <p>Public because the Slack-mention lane asks the same question of the same accounts
+     * when somebody says a mention is not about their client, and one authorization rule
+     * copied into two packages is two rules the day one of them is changed.
      */
-    static boolean mayDecide(boolean management, boolean isOwner, boolean hasOwner, boolean isSectorLead) {
+    public static boolean mayDecide(boolean management, boolean isOwner, boolean hasOwner, boolean isSectorLead) {
         return management || isOwner || (!hasOwner && isSectorLead);
     }
 

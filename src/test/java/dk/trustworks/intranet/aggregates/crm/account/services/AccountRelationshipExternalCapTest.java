@@ -282,14 +282,14 @@ class AccountRelationshipExternalCapTest {
     }
 
     private static RelationEdgeDTO metEdge(String twPerson, String external, int meetings, LocalDate lastMet) {
-        return new RelationEdgeDTO(twPerson, external, meetings, lastMet, null, RelationEdgeDTO.MET, null);
+        return new RelationEdgeDTO(twPerson, external, meetings, lastMet, null, RelationEdgeDTO.MET, null, null);
     }
 
     private static RelationEdgeDTO knowsEdge(String twPerson, String external, String relation) {
-        return new RelationEdgeDTO(twPerson, external, 0, null, relation, RelationEdgeDTO.KNOWS, null);
+        return new RelationEdgeDTO(twPerson, external, 0, null, relation, RelationEdgeDTO.KNOWS, null, null);
     }
 
     private static RelationEdgeDTO connectedEdge(String twPerson, String external, LocalDate connectedOn) {
-        return new RelationEdgeDTO(twPerson, external, 0, null, null, RelationEdgeDTO.CONNECTED, connectedOn);
+        return new RelationEdgeDTO(twPerson, external, 0, null, null, RelationEdgeDTO.CONNECTED, connectedOn, null);
     }
 }

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.slack.jobs;
 
+import dk.trustworks.intranet.aggregates.crm.slack.model.enums.SlackSyncTrigger;
 import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackSyncService;
 import dk.trustworks.intranet.scheduling.SchedulerShutdownGuard;
 import io.quarkus.scheduler.Scheduled;
@@ -25,6 +26,11 @@ import lombok.extern.jbosslog.JBossLog;
  * scheduled job here carries: a run that overlaps the previous one would fight it for the
  * same per-day upserts, and a run that starts during a deployment gets killed halfway
  * through — with the cursor stored per persisted day, the next night simply continues.
+ * {@code SKIP} covers only the scheduler's own invocations, though, so the lane lock in
+ * {@code SlackSyncRunService} is what keeps this run and a manually triggered one apart.
+ *
+ * <p>{@link SlackSyncTrigger#SCHEDULED} and no actor: this run has nobody behind it, and
+ * the run row's {@code started_by} stays null rather than naming a placeholder.
  *
  * <p>The whole run is gated by {@code crm.slack.account-spaces.enabled} inside the
  * service, seeded off by V594.
@@ -41,6 +47,6 @@ public class AccountSlackSyncJob {
             skipExecutionIf = SchedulerShutdownGuard.class)
     void nightlySync() {
         log.info("Account Slack sync starting");
-        syncService.syncAll();
+        syncService.syncAll(SlackSyncTrigger.SCHEDULED, null);
     }
 }

@@ -29,7 +29,11 @@ import java.util.Set;
  * already saw; {@code NOTE} is the single hand-typed source, and it exists for what no
  * system recorded.
  *
- * <p>Eight sources are unioned here and sorted newest first:
+ * <p>Nine sources are unioned here and sorted newest first. Nine is the number of values
+ * {@code source} can take — which is what the frontend keys its chips and its filter on —
+ * and not the number of queries: LEAD is composed from two of them and SLACK from two, so
+ * eleven producers feed these nine rows. The two numbers had already drifted apart before
+ * the mention lane arrived, which is why this now says which of them it is counting.
  *
  * <table>
  *   <tr><td>CONTRACT</td><td>{@code client_activity_log} rows about contracts</td></tr>
@@ -40,18 +44,23 @@ import java.util.Set;
  *   <tr><td>BAND</td><td>{@code client_band_history}</td></tr>
  *   <tr><td>CALENDAR</td><td>{@code account_meeting} + its external attendees</td></tr>
  *   <tr><td>NOTE</td><td>{@code client_note} — the one line somebody typed</td></tr>
- *   <tr><td>SLACK</td><td>{@code account_slack_digest} — one row per day of the linked account space (V594)</td></tr>
+ *   <tr><td>SLACK</td><td>{@code account_slack_digest} — one row per day of the linked account space (V594) — and {@code account_slack_mention} — one row per day a listed general channel talked about this client (V602)</td></tr>
  * </table>
  *
- * <p><b>The SLACK producer reads a digest, never a channel.</b> {@code AccountSlackSyncJob}
- * pulls the linked {@code a_*} channel nightly with the Slack API — an outbound read,
- * which is why it needed no inbound signing secret — and stores one row per Copenhagen
- * day: counts, participants, and a model's validated reading of the day (headline,
- * decisions, next steps, risks, client asks, people named, topics). No message text is
- * stored anywhere; {@link #slackRows} composes its line from the headline when there is
- * one and from the counts when there is not, and hands the reading to the row as
- * {@code slackDigest}. The {@code /signal} command and the buttons of spec §4.9 still
- * need inbound and are still not built.
+ * <p><b>Neither SLACK producer reads Slack.</b> Both read a row a nightly job left behind.
+ * {@code AccountSlackSyncJob} pulls the linked {@code a_*} channel with the Slack API — an
+ * outbound read, which is why it needed no inbound signing secret — and stores one row per
+ * Copenhagen day: counts, participants, and a model's validated reading of the day
+ * (headline, decisions, next steps, risks, client asks, people named, topics).
+ * {@code SlackSourceSyncJob} does the same for the general channels an admin listed, except
+ * that a day there is about many clients or none, so it stores a row per client the day
+ * actually talked about. No message text is stored by either; {@link #slackRows} and
+ * {@link #slackMentionRows} compose their line from the headline and hand the reading to
+ * the row as {@code slackDigest}. The two carry the same {@code source} deliberately — a
+ * reader does not care which channel a thing was said in — and are told apart by
+ * {@code refType}, because only a mention can be wrong about which client it is about and
+ * so only a mention offers the affordance to say so. The {@code /signal} command and the
+ * buttons of spec §4.9 still need inbound and are still not built.
  *
  * <p><b>Native queries.</b> {@code sales_lead_stage_history} has no entity (it is written
  * with a native INSERT in {@code SalesService}) and the meeting summary needs a join whose
@@ -98,6 +107,7 @@ public class AccountActivityService {
         rows.addAll(meetingRows(clientUuid, capped));
         rows.addAll(noteRows(clientUuid, capped));
         rows.addAll(slackRows(clientUuid, capped));
+        rows.addAll(slackMentionRows(clientUuid, capped));
 
         rows.sort(Comparator.comparing(AccountActivityDTO::occurredAt).reversed()
                 .thenComparing(AccountActivityDTO::id));
@@ -146,6 +156,16 @@ public class AccountActivityService {
         // headline is a paraphrase of a conversation that belongs on the account page.
         mergeNewest(newest, """
                 select client_uuid, max(digest_date) from account_slack_digest group by client_uuid
+                """, "SLACK", "Slack activity");
+        // The same label for a mention in a general channel, because the difference between
+        // the two Slack sources is not one this column could carry. Note what this call is
+        // competing with: mergeNewest keeps ONE row per client across every source above, so
+        // a mention shows as the last activity only when its day beats the newest contract,
+        // lead, note and account-space day as well. Dismissed rows are excluded, or the list
+        // would report Slack activity on a day the account page itself refuses to show.
+        mergeNewest(newest, """
+                select client_uuid, max(mention_date) from account_slack_mention
+                 where dismissed_at is null group by client_uuid
                 """, "SLACK", "Slack activity");
 
         return newest;
@@ -579,6 +599,91 @@ public class AccountActivityService {
                     uuid,
                     new SlackDigestDTO(channel, messages, replies, names, asString(row[5]),
                             asString(row[6]), content)));
+        }
+        return rows;
+    }
+
+    /**
+     * Slack mentions — one row per day a general channel the firm listed talked about this
+     * client (V602).
+     *
+     * <p>Same shape as {@link #slackRows} and the same {@code SLACK} source, because to a
+     * reader "#ledelse said this about Ørsted on Tuesday" is the same kind of fact as a day
+     * in the account's own channel. Three things differ, and each one follows from the
+     * channel being somebody else's rather than the account's:
+     *
+     * <ul>
+     *   <li><b>A dismissed row is gone from here.</b> A general channel says a company name
+     *       and a model decides which client that was; it can be wrong, so the account's
+     *       people can say "not about this client". That is a judgement about the row, not
+     *       a deletion — {@code dismissed_by} and {@code dismissed_at} keep who said so —
+     *       but the feed must honour it immediately and everywhere, so the filter is in the
+     *       query rather than applied to what it returned.</li>
+     *   <li><b>There is no reply count.</b> The extractor cites individual lines, and a
+     *       cited line may itself be a thread reply; there is no top-level/reply split to
+     *       report and inventing one would double-count. The zero passed on to
+     *       {@link SlackDigestDTO} is the honest value, and {@code messageCount} is the
+     *       number of lines that were about THIS client, not the channel's traffic that
+     *       day — which is why a mention row's counts read so much smaller than a digest's.</li>
+     *   <li><b>The headline always exists.</b> {@code headline} is NOT NULL and a stored row
+     *       is never {@code NONE}-relevant — a day the model found nothing to say about a
+     *       client produces no row at all, rather than a row saying nothing. That makes
+     *       {@link #slackSummary}'s counts fallback unreachable from here; the line goes
+     *       through it anyway, because two composers for one kind of row drift apart.</li>
+     * </ul>
+     *
+     * <p>{@code refType} is {@code SLACK_MENTION} so the tab can offer the dismissal on
+     * exactly these rows; {@code actor} is null for the same reason it is on a digest — a
+     * day is many people, and they are in the participants.
+     */
+    private List<AccountActivityDTO> slackMentionRows(String clientUuid, int limit) {
+        Query mentions = em.createNativeQuery("""
+                select uuid, channel_name, mention_date, message_count, permalink,
+                       relevance, headline, digest_json
+                  from account_slack_mention
+                 where client_uuid = :clientUuid and dismissed_at is null
+                 order by mention_date desc
+                """);
+        mentions.setParameter("clientUuid", clientUuid);
+        mentions.setMaxResults(limit);
+        List<Object[]> mentionRows = rowsOf(mentions);
+        if (mentionRows.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> uuids = mentionRows.stream().map(row -> asString(row[0])).toList();
+        Query participants = em.createNativeQuery("""
+                select mention_uuid, user_uuid
+                  from account_slack_mention_participant
+                 where mention_uuid in (:uuids)
+                 order by mention_uuid, message_count desc, user_uuid
+                """);
+        participants.setParameter("uuids", uuids);
+        Map<String, List<String>> namesByMention = new LinkedHashMap<>();
+        for (Object[] row : rowsOf(participants)) {
+            String name = firstNameOf(asString(row[1]));
+            if (name != null) {
+                namesByMention.computeIfAbsent(asString(row[0]), key -> new ArrayList<>()).add(name);
+            }
+        }
+
+        List<AccountActivityDTO> rows = new ArrayList<>();
+        for (Object[] row : mentionRows) {
+            String uuid = asString(row[0]);
+            String channel = asString(row[1]);
+            int messages = asInt(row[3]);
+            List<String> names = namesByMention.getOrDefault(uuid, List.of());
+            SlackDigestContent content = slackDigestService.fromJson(asString(row[7]));
+            rows.add(new AccountActivityDTO(
+                    "slack-mention:" + uuid,
+                    "SLACK",
+                    slackSummary(channel, asString(row[6]), messages, 0, names),
+                    toLocalDate(row[2]),
+                    null,
+                    "SLACK_MENTION",
+                    uuid,
+                    new SlackDigestDTO(channel, messages, 0, names, asString(row[4]),
+                            asString(row[5]), content)));
         }
         return rows;
     }

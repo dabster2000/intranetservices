@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.crm.account.services;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
 import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarConsentService;
+import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
+import dk.trustworks.intranet.aggregates.crm.slack.services.AccountSlackDigestService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -48,12 +50,20 @@ import java.util.Set;
  *   <li><b>KNOWS edges</b> — {@code account_signal}: a colleague wrote down how they know
  *       somebody, and that sentence is the edge's label. Weight 0, no date — it is an
  *       acquaintance, not a meeting, and drawing it as one would overstate it.</li>
+ *   <li><b>HEARD edges</b> — {@code account_slack_mention}: a general channel talked about
+ *       this client on some day, and the model's reading named people on the client side.
+ *       Everyone who wrote a cited line is connected to everyone the day named. Nobody
+ *       asserted an acquaintance, so it is not a KNOWS edge; but somebody said something
+ *       about that person on a known day, which is more than an old LinkedIn connection,
+ *       so it ranks with the people we have met rather than with the ones we are merely
+ *       connected to. See {@link #collectSlackMentionEdges}.</li>
  *   <li><b>CONNECTED edges</b> — {@code trustlink_connection_trustworker}: the nightly
  *       mirror of TrustLink's LinkedIn graph, mapped onto this client through
  *       {@code trustlink_company_alias}. Nobody typed any of it either; it is the one
  *       source that already existed before the CRM did, which is exactly why it is worth
- *       reading. Weakest of the three — an accepted invitation from 2013 is not a
- *       conversation — so it sorts last everywhere it meets a MET or a KNOWS edge.</li>
+ *       reading. Weakest of them all — an accepted invitation from 2013 is not a
+ *       conversation — so it sorts last everywhere it meets a MET, a KNOWS or a HEARD
+ *       edge.</li>
  * </ul>
  *
  * <p><b>An empty graph is a real answer.</b> If nobody on the account has consented to
@@ -101,6 +111,10 @@ public class AccountRelationshipService {
     @Inject
     CalendarConsentService consentService;
 
+    /** Only for reading a stored mention's JSON back; it never calls a model from here. */
+    @Inject
+    AccountSlackDigestService slackDigestService;
+
     public AccountRelationshipsDTO forClient(String clientUuid) {
         Client client = clientService.findByUuid(clientUuid);
         if (client == null) {
@@ -113,6 +127,7 @@ public class AccountRelationshipService {
 
         collectMeetingEdges(clientUuid, trustworksPeople, externals, edges);
         collectSignalEdges(clientUuid, trustworksPeople, externals, edges);
+        collectSlackMentionEdges(clientUuid, trustworksPeople, externals, edges);
         collectTrustLinkEdges(clientUuid, trustworksPeople, externals, edges);
         dropShadowedUnresolvedPeople(trustworksPeople);
 
@@ -292,6 +307,7 @@ public class AccountRelationshipService {
                     AccountActivityService.toLocalDate(row[3]),
                     null,
                     AccountRelationshipsDTO.RelationEdgeDTO.MET,
+                    null,
                     null);
             metEdges.merge(twPerson.name() + '\u0000' + externalName, edge,
                     AccountRelationshipService::mergeMetEdges);
@@ -330,6 +346,7 @@ public class AccountRelationshipService {
                 lastMet,
                 null,
                 AccountRelationshipsDTO.RelationEdgeDTO.MET,
+                null,
                 null);
     }
 
@@ -550,10 +567,197 @@ public class AccountRelationshipService {
                 for (PersonDTO person : named) {
                     edges.add(new AccountRelationshipsDTO.RelationEdgeDTO(
                             person.name(), personName, 0, (LocalDate) null, relation,
-                            AccountRelationshipsDTO.RelationEdgeDTO.KNOWS, null));
+                            AccountRelationshipsDTO.RelationEdgeDTO.KNOWS, null, null));
                 }
             }
         }
+    }
+
+    /**
+     * HEARD edges — one per (colleague who wrote a cited line, person the day named) pair,
+     * from the general channels an admin listed (V602).
+     *
+     * <p><b>What this edge claims, and what it deliberately does not.</b> A signal is
+     * somebody asserting an acquaintance in their own words; a meeting is two people in a
+     * room. This is neither. It is: on this day, in this channel, these colleagues were
+     * talking about the client and the model's reading of that day named these people on
+     * the client side. That is worth drawing — it is how you find out that three of us have
+     * been discussing Mette's move for a month — and it would be a lie told as a fact if it
+     * were drawn as KNOWS. Hence its own source, its own date field, and the headline as
+     * its label: the headline is a paraphrase the backend validated and capped, and it is
+     * the only text this graph will ever carry out of a channel.
+     *
+     * <p><b>A participant joins {@code trustworksPeople} whether or not the day named
+     * anybody at the client</b>, exactly as a colleague named in a signal does. Having been
+     * in the conversation about an account is itself the claim that you have something to
+     * do with it, which is the question "Who knows them" is asking.
+     *
+     * <p><b>Two queries, not a join.</b> The reading is a TEXT column and the participants
+     * are a list per row, so the {@code group_concat} shape {@link #collectSignalEdges} uses
+     * would either fan the JSON out once per participant or drag it through a GROUP BY as
+     * part of the group key. This is the two-query shape
+     * {@code AccountActivityService.slackRows} already uses for the same table family:
+     * the rows, then every participant of those rows in one further query.
+     *
+     * <p><b>No gate on the headline.</b> {@link #collectSignalEdges} draws nothing when
+     * {@code relation_text} is blank, because for a signal that sentence IS the evidence —
+     * without it there is no claim left to draw. A mention still has a day and a channel
+     * when its headline says little, so the edge stands on its own; and in practice the
+     * question does not arise, since the column is NOT NULL and a day the model read as
+     * irrelevant produces no row at all.
+     */
+    private void collectSlackMentionEdges(String clientUuid,
+                                          Map<String, PersonDTO> trustworksPeople,
+                                          Map<String, AccountRelationshipsDTO.ExternalPersonDTO> externals,
+                                          List<AccountRelationshipsDTO.RelationEdgeDTO> edges) {
+        Query query = em.createNativeQuery("""
+                select uuid, headline, mention_date, digest_json
+                  from account_slack_mention
+                 where client_uuid = :clientUuid and dismissed_at is null
+                 order by mention_date desc
+                """);
+        query.setParameter("clientUuid", clientUuid);
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> mentionRows = query.getResultList();
+        if (mentionRows.isEmpty()) {
+            return;
+        }
+        Map<String, List<String>> participantsByMention = mentionParticipants(mentionRows.stream()
+                .map(row -> row[0] == null ? null : row[0].toString())
+                .filter(uuid -> uuid != null && !uuid.isBlank())
+                .toList());
+
+        // Keyed by (colleague, person at the client) and folded, for the same reason MET
+        // edges are: a channel that returns to the same subject on Monday and again on
+        // Thursday is one relationship talked about twice, not two lines between the same
+        // two people.
+        Map<String, AccountRelationshipsDTO.RelationEdgeDTO> heardEdges = new LinkedHashMap<>();
+
+        for (Object[] row : mentionRows) {
+            String mentionUuid = row[0] == null ? null : row[0].toString();
+            String headline = row[1] == null ? null : row[1].toString();
+            LocalDate heardOn = AccountActivityService.toLocalDate(row[2]);
+            SlackDigestContent content =
+                    slackDigestService.fromJson(row[3] == null ? null : row[3].toString());
+
+            List<PersonDTO> named = new ArrayList<>();
+            for (String userUuid : participantsByMention.getOrDefault(mentionUuid, List.of())) {
+                PersonDTO person = trustworksPeople.get(userUuid);
+                if (person == null) {
+                    User user = User.findById(userUuid);
+                    if (user == null) {
+                        continue;
+                    }
+                    person = PersonDTO.from(user);
+                    trustworksPeople.put(userUuid, person);
+                }
+                named.add(person);
+            }
+
+            List<SlackDigestContent.Person> clientPeople =
+                    content == null ? null : content.clientPeople();
+            if (clientPeople == null || clientPeople.isEmpty()) {
+                // The day talked about the client but named nobody in it — or the stored
+                // reading could not be read back at all, which a row edited by hand to
+                // settle a support case can produce. The colleagues above are still on the
+                // account; there is simply no individual to draw an edge to.
+                continue;
+            }
+
+            for (SlackDigestContent.Person clientPerson : clientPeople) {
+                String personName = clientPerson.name() == null ? null : clientPerson.name().trim();
+                if (personName == null || personName.isEmpty()) {
+                    continue;
+                }
+                String role = clientPerson.role();
+                AccountRelationshipsDTO.ExternalPersonDTO existing = externals.get(personName);
+                if (existing == null) {
+                    externals.put(personName, new AccountRelationshipsDTO.ExternalPersonDTO(
+                            personName, role, PersonDTO.initialsOf(personName), null));
+                } else if (existing.role() == null && role != null) {
+                    // A mention knows the role a calendar never does, on the same terms a
+                    // signal does: fill a gap, never overwrite what is already there.
+                    externals.put(personName, new AccountRelationshipsDTO.ExternalPersonDTO(
+                            personName, role, existing.initials(), existing.linkedInUrl()));
+                }
+
+                for (PersonDTO person : named) {
+                    AccountRelationshipsDTO.RelationEdgeDTO edge =
+                            new AccountRelationshipsDTO.RelationEdgeDTO(
+                                    person.name(),
+                                    personName,
+                                    0,
+                                    null,
+                                    headline,
+                                    AccountRelationshipsDTO.RelationEdgeDTO.HEARD,
+                                    null,
+                                    heardOn);
+                    heardEdges.merge(person.name() + '\u0000' + personName, edge,
+                            AccountRelationshipService::mergeHeardEdges);
+                }
+            }
+        }
+        edges.addAll(heardEdges.values());
+    }
+
+    /**
+     * Every participant of the given mention days, as user uuids per mention, most talkative
+     * first.
+     *
+     * <p>A uuid that no longer resolves to a user is left in: the caller drops it when
+     * {@code User.findById} comes back empty, which is where every other source in this
+     * class decides the same thing.
+     */
+    private Map<String, List<String>> mentionParticipants(List<String> mentionUuids) {
+        Map<String, List<String>> byMention = new LinkedHashMap<>();
+        if (mentionUuids.isEmpty()) {
+            return byMention;
+        }
+        Query query = em.createNativeQuery("""
+                select mention_uuid, user_uuid
+                  from account_slack_mention_participant
+                 where mention_uuid in (:uuids)
+                 order by mention_uuid, message_count desc, user_uuid
+                """);
+        query.setParameter("uuids", mentionUuids);
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+        for (Object[] row : rows) {
+            String mentionUuid = row[0] == null ? null : row[0].toString();
+            String userUuid = row[1] == null ? null : row[1].toString();
+            if (mentionUuid == null || userUuid == null || userUuid.isBlank()) {
+                continue;
+            }
+            byMention.computeIfAbsent(mentionUuid, key -> new ArrayList<>()).add(userUuid);
+        }
+        return byMention;
+    }
+
+    /**
+     * Two HEARD edges between the same pair, folded into one: the later day wins, whole.
+     *
+     * <p>The later edge is taken entire rather than merged field by field, which is the one
+     * thing that matters here. The label and the date are two halves of the same sentence —
+     * "heard in Slack on the 4th" — and a fold that kept Thursday's date beside Monday's
+     * headline would put a line somebody wrote about one conversation under the date of
+     * another. There is nothing to add up as {@link #mergeMetEdges} adds up meetings: the
+     * weight of a mention is 0 by construction, because being talked about is not a
+     * quantity the graph should rank on.
+     */
+    private static AccountRelationshipsDTO.RelationEdgeDTO mergeHeardEdges(
+            AccountRelationshipsDTO.RelationEdgeDTO current,
+            AccountRelationshipsDTO.RelationEdgeDTO candidate) {
+        LocalDate currentOn = current.heardOn();
+        LocalDate candidateOn = candidate.heardOn();
+        if (candidateOn == null) {
+            return current;
+        }
+        if (currentOn == null) {
+            return candidate;
+        }
+        return candidateOn.isAfter(currentOn) ? candidate : current;
     }
 
     /**
@@ -658,7 +862,8 @@ public class AccountRelationshipService {
                     null,
                     null,
                     AccountRelationshipsDTO.RelationEdgeDTO.CONNECTED,
-                    AccountActivityService.toLocalDate(row[2])));
+                    AccountActivityService.toLocalDate(row[2]),
+                    null));
         }
     }
 
@@ -845,7 +1050,9 @@ public class AccountRelationshipService {
      * Which of two edges better represents a Trustworks person when only one may be added
      * back: the one with a date, and then the later date. A KNOWS edge carries no date at
      * all and loses to anything dated, but beats nothing — being told how somebody knows a
-     * person is still a better chip than an undated LinkedIn connection.
+     * person is still a better chip than an undated LinkedIn connection. A HEARD edge is
+     * dated and competes on its day like any other, which is the whole reason
+     * {@link #edgeDate} had to learn about it.
      */
     private static AccountRelationshipsDTO.RelationEdgeDTO strongerEdge(
             AccountRelationshipsDTO.RelationEdgeDTO current,
@@ -861,9 +1068,19 @@ public class AccountRelationshipService {
         return candidateDate.isAfter(currentDate) ? candidate : current;
     }
 
-    /** The one date an edge has, whichever kind it is, or null for a signal. */
+    /**
+     * The one date an edge has, whichever kind it is, or null for a signal.
+     *
+     * <p>Each source keeps its date in its own component — a meeting, a Slack day and a
+     * LinkedIn acceptance are not interchangeable facts and no consumer renders them
+     * alike — so every new dated source has to be added here as well. It is easy to miss:
+     * an edge whose date this does not know about is not wrong anywhere visible, it simply
+     * ranks as undated and quietly loses every add-back tiebreak in {@link #strongerEdge}.
+     */
     private static LocalDate edgeDate(AccountRelationshipsDTO.RelationEdgeDTO edge) {
-        return edge.lastMet() != null ? edge.lastMet() : edge.connectedOn();
+        return edge.lastMet() != null ? edge.lastMet()
+                : edge.heardOn() != null ? edge.heardOn()
+                : edge.connectedOn();
     }
 
     /**
