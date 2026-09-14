@@ -183,11 +183,11 @@ public class AccountSlackDigestService {
         List<String> topics = topics(node);
         double confidence = confidence(node);
 
-        String relevance = relevance(textOrNull(node, "relevance"), headline,
-                !decisions.isEmpty() || !risks.isEmpty() || !clientAsks.isEmpty());
+        String signalType = SlackDigestContent.signalTypeOf(textOrNull(node, "signalType"));
+        String relevance = SlackDigestContent.relevanceOf(signalType, headline);
 
-        return Optional.of(new SlackDigestContent(headline, relevance, decisions, nextSteps,
-                risks, clientAsks, people, topics, confidence));
+        return Optional.of(new SlackDigestContent(headline, signalType, relevance, decisions,
+                nextSteps, risks, clientAsks, people, topics, confidence));
     }
 
     /** The reading as it is stored in {@code account_slack_digest.digest_json}. */
@@ -218,22 +218,20 @@ public class AccountSlackDigestService {
     // ------------------------------------------------------------------------
 
     /**
-     * The closed set, reconciled with what the lists actually hold. A model that says
-     * {@code NONE} and still writes a headline or a decision has contradicted itself; the
-     * content wins, because a reader would rather see a line than a blank. An unknown
-     * value is read the same way.
+     * Relevance is no longer parsed — it is derived from {@code signalType} by
+     * {@link SlackDigestContent#relevanceOf}, and the model is not asked for it at all.
+     *
+     * <p>What stood here reconciled the model's own grade against the lists: a {@code LOW}
+     * carrying a non-empty decisions, risks or clientAsks list was promoted to
+     * {@code HIGH}. It was written to stop a model under-grading a real decision, and in
+     * the first production run it did the opposite — "Ny CVE rammer sandsynligvis alle
+     * pipelines" and "E2E-fejl i PR-builds skyldes manglende reset af velkomstbanner" were
+     * promoted to HIGH next to "Marta øges til 50% mindst til juni 2027", because a build
+     * failure is phrased as a risk. It also never looked at {@code nextSteps}, so a
+     * steering-group meeting about contract renewals stayed LOW. The grade cannot be
+     * recovered from the SHAPE of the content; it has to come from what KIND of event the
+     * day was, which is what {@code signalType} now says.
      */
-    static String relevance(String raw, String headline, boolean substantive) {
-        String value = raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT);
-        boolean hasContent = headline != null || substantive;
-        return switch (value) {
-            case SlackDigestContent.RELEVANCE_HIGH -> SlackDigestContent.RELEVANCE_HIGH;
-            case SlackDigestContent.RELEVANCE_LOW -> substantive
-                    ? SlackDigestContent.RELEVANCE_HIGH : SlackDigestContent.RELEVANCE_LOW;
-            default -> !hasContent ? SlackDigestContent.RELEVANCE_NONE
-                    : substantive ? SlackDigestContent.RELEVANCE_HIGH : SlackDigestContent.RELEVANCE_LOW;
-        };
-    }
 
     static List<SlackDigestContent.Item> items(JsonNode node, String field) {
         List<SlackDigestContent.Item> out = new ArrayList<>();

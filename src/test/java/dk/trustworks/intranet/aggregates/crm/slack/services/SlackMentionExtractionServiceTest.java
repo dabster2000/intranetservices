@@ -101,14 +101,14 @@ class SlackMentionExtractionServiceTest {
     void anAnswerTheValidationEmptiesIsStillAnAnswer() {
         // The commonest shape of all: a well-formed reading that every check throws away. It
         // is not a failed call and must not hold the channel's cursor back.
-        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[99]")), 10));
+        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[99]")), 10));
         assertNothing(read("{\"mentions\":[]}", 10));
     }
 
     @Test
     void anythingThatIsNotAMentionObjectIsSkipped() {
         var reading = read("{\"mentions\":[\"x\",1,null,[],"
-                + mention(byId(ACME), "Kundemøde hos Acme torsdag", "LOW", "[1]") + "]}", 10);
+                + mention(byId(ACME), "Kundemøde hos Acme torsdag", "RELATIONSHIP", "[1]") + "]}", 10);
         assertEquals(1, reading.mentions().size());
     }
 
@@ -118,7 +118,7 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void anIdTheRunShowedTheModelIsTheAccountItIsFiledAgainst() {
-        var reading = read(call(mention(byId(ACME), "Kundemøde hos Acme torsdag", "LOW", "[2]")), 10);
+        var reading = read(call(mention(byId(ACME), "Kundemøde hos Acme torsdag", "RELATIONSHIP", "[2]")), 10);
         assertEquals(1, reading.mentions().size());
         assertEquals(ACME, reading.mentions().get(0).clientUuid());
         assertTrue(reading.unmatched().isEmpty());
@@ -127,7 +127,7 @@ class SlackMentionExtractionServiceTest {
     @Test
     void anIdOffTheAllowlistIsASightingNotAMention() {
         var reading = read(call(mention("\"clientId\":\"" + INVENTED + "\",\"companyName\":\"NN Markets\"",
-                "Kundemøde hos NN torsdag", "LOW", "[1]")), 10);
+                "Kundemøde hos NN torsdag", "RELATIONSHIP", "[1]")), 10);
         assertTrue(reading.mentions().isEmpty(), "an invented uuid is never attributed to an account");
         assertEquals(1, reading.unmatched().size());
         assertEquals("NN Markets", reading.unmatched().get(0).displayName());
@@ -136,14 +136,14 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void neitherAnIdNorANameIsNotAMentionAtAll() {
-        assertNothing(read(call(mention(byId(INVENTED), "h", "LOW", "[1]")), 10));
-        assertNothing(read(call(mention(byName("   "), "h", "LOW", "[1]")), 10));
-        assertNothing(read(call(mention(byName(null), "h", "LOW", "[1]")), 10));
+        assertNothing(read(call(mention(byId(INVENTED), "h", "RELATIONSHIP", "[1]")), 10));
+        assertNothing(read(call(mention(byName("   "), "h", "RELATIONSHIP", "[1]")), 10));
+        assertNothing(read(call(mention(byName(null), "h", "RELATIONSHIP", "[1]")), 10));
     }
 
     @Test
     void aLinkedNameIsPromotedToTheAccountSomebodyLinkedItTo() {
-        var reading = service.parse(call(mention(byName("  NN   Markets "), "Kundemøde hos NN", "LOW", "[1]")),
+        var reading = service.parse(call(mention(byName("  NN   Markets "), "Kundemøde hos NN", "RELATIONSHIP", "[1]")),
                 ALLOWLIST, 10, Map.of("nn markets", BETA), COLLEAGUES);
         assertEquals(1, reading.mentions().size());
         assertEquals(BETA, reading.mentions().get(0).clientUuid(),
@@ -153,7 +153,7 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void aNameThatNobodyHasLinkedStaysAHint() {
-        var reading = service.parse(call(mention(byName("NN Markets"), "Kundemøde hos NN", "LOW", "[1]")),
+        var reading = service.parse(call(mention(byName("NN Markets"), "Kundemøde hos NN", "RELATIONSHIP", "[1]")),
                 ALLOWLIST, 10, Map.of("anden virksomhed", BETA), COLLEAGUES);
         assertTrue(reading.mentions().isEmpty());
         assertEquals(1, reading.unmatched().size());
@@ -207,20 +207,20 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void aMentionThatCitesNothingIsNotARow() {
-        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[]")), 10));
-        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "null")), 10));
-        assertNothing(read(call(mention(byName("NN Markets"), "Kundemøde hos NN", "HIGH", "[]")), 10));
+        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[]")), 10));
+        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "null")), 10));
+        assertNothing(read(call(mention(byName("NN Markets"), "Kundemøde hos NN", "EXTENSION", "[]")), 10));
     }
 
     @Test
     void aMentionThatCitesOnlyLinesTheDayNeverHadIsNotARow() {
-        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[0,-3,11,99]")), 10));
-        assertNothing(read(call(mention(byName("NN Markets"), "Kundemøde hos NN", "HIGH", "[11]")), 10));
+        assertNothing(read(call(mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[0,-3,11,99]")), 10));
+        assertNothing(read(call(mention(byName("NN Markets"), "Kundemøde hos NN", "EXTENSION", "[11]")), 10));
     }
 
     @Test
     void evidenceOutOfRangeIsFilteredAndTheRestSurvives() {
-        var reading = read(call(mention(byId(ACME), "Acme har mistet deres deadline", "LOW",
+        var reading = read(call(mention(byId(ACME), "Acme har mistet deres deadline", "RELATIONSHIP",
                 "[0,7,3,11,3,\"4\",true]")), 10);
         assertEquals(List.of(3, 7), reading.mentions().get(0).evidence(),
                 "in range only, lowest first, one entry per cited message");
@@ -235,7 +235,7 @@ class SlackMentionExtractionServiceTest {
             }
             lines.append(line);
         }
-        var reading = read(call(mention(byId(ACME), "Acme har mistet deres deadline", "LOW",
+        var reading = read(call(mention(byId(ACME), "Acme har mistet deres deadline", "RELATIONSHIP",
                 "[" + lines + "]")), 30);
         List<Integer> evidence = reading.mentions().get(0).evidence();
         assertEquals(SlackMentionExtractionService.MAX_EVIDENCE_PER_MENTION, evidence.size());
@@ -250,12 +250,12 @@ class SlackMentionExtractionServiceTest {
     @Test
     void aColleagueOrOurselvesIsDroppedAndCounted() {
         var reading = read(call(
-                mention(byName("Nicolas"), "Nicolas er tilbage på mandag", "LOW", "[1]"),
-                mention(byName("Nicolas Vestergaard"), "Nicolas er tilbage på mandag", "LOW", "[2]"),
-                mention(byName("Trustworks"), "Trustworks er blevet inviteret til udbuddet", "HIGH", "[3]"),
-                mention(byName("TW"), "TW skal levere en arkitekt", "LOW", "[4]"),
-                mention(byName("intra"), "intra er nede", "LOW", "[5]"),
-                mention(byName("NN Markets"), "Kundemøde hos NN torsdag", "LOW", "[6]")), 10);
+                mention(byName("Nicolas"), "Nicolas er tilbage på mandag", "RELATIONSHIP", "[1]"),
+                mention(byName("Nicolas Vestergaard"), "Nicolas er tilbage på mandag", "RELATIONSHIP", "[2]"),
+                mention(byName("Trustworks"), "Trustworks er blevet inviteret til udbuddet", "EXTENSION", "[3]"),
+                mention(byName("TW"), "TW skal levere en arkitekt", "RELATIONSHIP", "[4]"),
+                mention(byName("intra"), "intra er nede", "RELATIONSHIP", "[5]"),
+                mention(byName("NN Markets"), "Kundemøde hos NN torsdag", "RELATIONSHIP", "[6]")), 10);
         assertEquals(5, reading.droppedAsColleague());
         assertTrue(reading.mentions().isEmpty());
         assertEquals(1, reading.unmatched().size(), "only the company that is really a company survives");
@@ -266,13 +266,13 @@ class SlackMentionExtractionServiceTest {
     void anInventedMentionOfAColleagueDoesNotInflateTheCount() {
         // The order in parse is load-bearing: evidence is checked before the colleague test,
         // so an admin reading droppedAsColleague sees mistakes, not hallucinations.
-        assertNothing(read(call(mention(byName("Nicolas"), "Nicolas er tilbage på mandag", "LOW", "[99]")), 10));
+        assertNothing(read(call(mention(byName("Nicolas"), "Nicolas er tilbage på mandag", "RELATIONSHIP", "[99]")), 10));
     }
 
     @Test
     void aColleagueNameBesideAKnownIdIsNotADrop() {
         var reading = read(call(mention("\"clientId\":\"" + ACME + "\",\"companyName\":\"Nicolas\"",
-                "Kundemøde hos Acme torsdag", "LOW", "[1]")), 10);
+                "Kundemøde hos Acme torsdag", "RELATIONSHIP", "[1]")), 10);
         assertEquals(1, reading.mentions().size(), "the id decided it; the name was never read as a company");
         assertEquals(0, reading.droppedAsColleague());
     }
@@ -283,9 +283,9 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void withoutAHeadlineThereIsNoRow() {
-        assertNothing(read(call(mention(byId(ACME), null, "HIGH", "[1]")), 10));
-        assertNothing(read(call(mention(byId(ACME), "   ", "HIGH", "[1]")), 10));
-        assertNothing(read(call(mention(byName("NN Markets"), null, "HIGH", "[1]")), 10));
+        assertNothing(read(call(mention(byId(ACME), null, "EXTENSION", "[1]")), 10));
+        assertNothing(read(call(mention(byId(ACME), "   ", "EXTENSION", "[1]")), 10));
+        assertNothing(read(call(mention(byName("NN Markets"), null, "EXTENSION", "[1]")), 10));
     }
 
     // ------------------------------------------------------------------------
@@ -295,7 +295,7 @@ class SlackMentionExtractionServiceTest {
     @Test
     void theDigestLanesOwnCapsApplyToAMention() {
         String json = "{" + byId(ACME)
-                + ",\"headline\":\"" + "h".repeat(400) + "\",\"relevance\":\"HIGH\","
+                + ",\"headline\":\"" + "h".repeat(400) + "\",\"signalType\":\"EXTENSION\","
                 + "\"decisions\":" + itemsJson("d", 20) + ","
                 + "\"nextSteps\":[{\"text\":\"" + "n".repeat(400) + "\",\"who\":\"" + "w".repeat(100)
                 + "\",\"when\":\"torsdag\"}],"
@@ -317,7 +317,7 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void aCompanyNameIsCutToWhatTheHintsColumnHolds() {
-        var reading = read(call(mention(byName("N".repeat(200)), "Kundemøde hos NN", "LOW", "[1]")), 10);
+        var reading = read(call(mention(byName("N".repeat(200)), "Kundemøde hos NN", "RELATIONSHIP", "[1]")), 10);
         String displayName = reading.unmatched().get(0).displayName();
         assertEquals(SlackMentionExtractionService.MAX_COMPANY_NAME_CHARS, displayName.length());
         assertEquals(displayName.toLowerCase(Locale.ROOT), reading.unmatched().get(0).nameKey(),
@@ -326,20 +326,48 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void aStoredRowIsNeverNone() {
+        // The schema does not offer NONE, so these are all models ignoring their own enum.
+        // RELATIONSHIP is the floor: a mention with nothing else to say still says that
+        // somebody talked about this company today.
+        assertEquals(SlackDigestContent.SIGNAL_RELATIONSHIP, signalOf("NONE"));
+        assertEquals(SlackDigestContent.SIGNAL_RELATIONSHIP, signalOf("banana"));
+        assertEquals(SlackDigestContent.SIGNAL_RELATIONSHIP, signalOf(null));
         assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf("NONE"));
-        assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf("banana"));
-        assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf(null));
-        assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf("LOW"));
-        assertEquals(SlackDigestContent.RELEVANCE_HIGH, relevanceOf("HIGH"));
+        assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf("RELATIONSHIP"));
+        assertEquals(SlackDigestContent.RELEVANCE_LOW, relevanceOf("DELIVERY"));
+        assertEquals(SlackDigestContent.RELEVANCE_HIGH, relevanceOf("EXTENSION"));
+        assertEquals(SlackDigestContent.RELEVANCE_HIGH, relevanceOf("WON"));
     }
 
+    /**
+     * The rule this replaces said the opposite: a non-empty decisions list forced the row
+     * to HIGH whatever the model labelled it. That is how our own build failures — always
+     * phrased as risks, often carrying a decision — were graded next to capacity
+     * commitments in the first production run. A decision about OUR OWN delivery is now
+     * exactly as loud as the signal type says it is, and no louder.
+     */
     @Test
-    void aDecisionMakesTheRowHighWhateverTheModelLabelledIt() {
-        String json = "{" + byId(ACME) + ",\"headline\":\"Acme kører videre uden reelle ejere\","
-                + "\"relevance\":\"NONE\","
-                + "\"decisions\":[{\"text\":\"Systemet bygges uden reelle ejere\",\"who\":\"Lars\",\"when\":null}],"
+    void aDecisionDoesNotByItselfMakeTheRowHigh() {
+        String json = "{" + byId(ACME) + ",\"headline\":\"CVE-fix afventer WCAG-fejl\","
+                + "\"signalType\":\"DELIVERY\","
+                + "\"decisions\":[{\"text\":\"CVE-fixet tages via det samlede PR\",\"who\":\"Rune\",\"when\":null}],"
                 + "\"nextSteps\":[],\"risks\":[],\"clientAsks\":[],\"clientPeople\":[],\"topics\":[],"
                 + "\"confidence\":0.9,\"evidence\":[1]}";
+        assertEquals(SlackDigestContent.RELEVANCE_LOW,
+                read(call(json), 10).mentions().get(0).content().relevance());
+    }
+
+    /**
+     * And the other half of the same failure: a renewal carrying only a next step was LOW,
+     * because nextSteps was never counted as substantive.
+     */
+    @Test
+    void aRenewalWithOnlyANextStepIsHigh() {
+        String json = "{" + byId(ACME) + ",\"headline\":\"Styregruppen drøfter kontraktfornyelser\","
+                + "\"signalType\":\"EXTENSION\",\"decisions\":[],"
+                + "\"nextSteps\":[{\"text\":\"Christian pitcher en front-ender ind\",\"who\":\"Christian\",\"when\":null}],"
+                + "\"risks\":[],\"clientAsks\":[],\"clientPeople\":[],\"topics\":[],"
+                + "\"confidence\":0.94,\"evidence\":[1]}";
         assertEquals(SlackDigestContent.RELEVANCE_HIGH,
                 read(call(json), 10).mentions().get(0).content().relevance());
     }
@@ -355,7 +383,7 @@ class SlackMentionExtractionServiceTest {
         for (int i = 0; i < 25; i++) {
             String uuid = String.format(Locale.ROOT, "%08d-0000-0000-0000-000000000000", i);
             ids.add(uuid);
-            mentions.add(mention(byId(uuid), "mention " + i, i % 5 == 0 ? "HIGH" : "LOW", "[1]"));
+            mentions.add(mention(byId(uuid), "mention " + i, i % 5 == 0 ? "EXTENSION" : "RELATIONSHIP", "[1]"));
         }
         var reading = service.parse(call(mentions.toArray(String[]::new)),
                 Set.copyOf(ids), 10, Map.of(), COLLEAGUES);
@@ -375,12 +403,12 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void twoMentionsOfOneClientAreOneRow() {
-        String morning = "{" + byId(ACME) + ",\"headline\":\"Kundemøde hos Acme torsdag\",\"relevance\":\"HIGH\","
+        String morning = "{" + byId(ACME) + ",\"headline\":\"Kundemøde hos Acme torsdag\",\"signalType\":\"RELATIONSHIP\","
                 + "\"decisions\":[{\"text\":\"Alfa\",\"who\":\"Lars\",\"when\":null}],"
                 + "\"nextSteps\":[],\"risks\":[{\"text\":\"Deadline i fare\"}],\"clientAsks\":[],"
                 + "\"clientPeople\":[{\"name\":\"Lars\",\"role\":\"CIO\"}],"
                 + "\"topics\":[\"møde\"],\"confidence\":0.9,\"evidence\":[3,1]}";
-        String afternoon = "{" + byId(ACME) + ",\"headline\":\"Acme har mistet deres deadline\",\"relevance\":\"HIGH\","
+        String afternoon = "{" + byId(ACME) + ",\"headline\":\"Acme har mistet deres deadline\",\"signalType\":\"ESCALATION\","
                 + "\"decisions\":[{\"text\":\"alfa\",\"who\":null,\"when\":null},"
                 + "{\"text\":\"Beta\",\"who\":null,\"when\":null}],"
                 + "\"nextSteps\":[],\"risks\":[],\"clientAsks\":[],"
@@ -390,7 +418,10 @@ class SlackMentionExtractionServiceTest {
 
         assertEquals(1, reading.mentions().size());
         SlackDigestContent content = reading.mentions().get(0).content();
-        assertEquals("Kundemøde hos Acme torsdag; Acme har mistet deres deadline", content.headline());
+        assertEquals("Acme har mistet deres deadline", content.headline(),
+                "the LOW part's headline is dropped the moment a HIGH one exists");
+        assertEquals(SlackDigestContent.SIGNAL_ESCALATION, content.signalType(),
+                "the row takes the most consequential signal of its parts");
         assertEquals(SlackDigestContent.RELEVANCE_HIGH, content.relevance());
         assertEquals(List.of("Alfa", "Beta"),
                 content.decisions().stream().map(SlackDigestContent.Item::text).toList(),
@@ -407,8 +438,8 @@ class SlackMentionExtractionServiceTest {
     @Test
     void aLowHeadlineIsDroppedTheMomentAHighOneExists() {
         var reading = read(call(
-                mention(byId(ACME), "Møde med Claims i den kommende uge", "LOW", "[1]"),
-                mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[2]")), 10);
+                mention(byId(ACME), "Møde med Claims i den kommende uge", "RELATIONSHIP", "[1]"),
+                mention(byId(ACME), "Acme har mistet deres deadline", "ESCALATION", "[2]")), 10);
         assertEquals(1, reading.mentions().size());
         assertEquals("Acme har mistet deres deadline", reading.mentions().get(0).content().headline());
         assertEquals(SlackDigestContent.RELEVANCE_HIGH, reading.mentions().get(0).content().relevance());
@@ -417,8 +448,8 @@ class SlackMentionExtractionServiceTest {
     @Test
     void twoHighHeadlinesAreJoinedAndCutAtTheColumn() {
         var reading = read(call(
-                mention(byId(ACME), "a".repeat(150), "HIGH", "[1]"),
-                mention(byId(ACME), "b".repeat(150), "HIGH", "[2]")), 10);
+                mention(byId(ACME), "a".repeat(150), "EXTENSION", "[1]"),
+                mention(byId(ACME), "b".repeat(150), "EXTENSION", "[2]")), 10);
         String headline = reading.mentions().get(0).content().headline();
         assertEquals(AccountSlackDigestService.MAX_HEADLINE_CHARS, headline.length());
         assertTrue(headline.startsWith("a".repeat(150) + "; b"));
@@ -427,19 +458,19 @@ class SlackMentionExtractionServiceTest {
     @Test
     void theSameHeadlineTwiceIsSaidOnce() {
         var reading = read(call(
-                mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[1]"),
-                mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[2]")), 10);
+                mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[1]"),
+                mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[2]")), 10);
         assertEquals("Acme har mistet deres deadline", reading.mentions().get(0).content().headline());
     }
 
     @Test
     void theMergedListsAreReCapped() {
-        String first = "{" + byId(ACME) + ",\"headline\":\"Acme, formiddag\",\"relevance\":\"HIGH\","
+        String first = "{" + byId(ACME) + ",\"headline\":\"Acme, formiddag\",\"signalType\":\"EXTENSION\","
                 + "\"decisions\":" + itemsJson("a", 8) + ","
                 + "\"nextSteps\":[],\"risks\":" + notesJson("ra", 8) + ",\"clientAsks\":[],"
                 + "\"clientPeople\":" + peopleJson("PA", 10) + ","
                 + "\"topics\":" + topicsJson("ta", 6) + ",\"confidence\":0.9,\"evidence\":[1]}";
-        String second = "{" + byId(ACME) + ",\"headline\":\"Acme, eftermiddag\",\"relevance\":\"HIGH\","
+        String second = "{" + byId(ACME) + ",\"headline\":\"Acme, eftermiddag\",\"signalType\":\"EXTENSION\","
                 + "\"decisions\":" + itemsJson("b", 8) + ","
                 + "\"nextSteps\":[],\"risks\":" + notesJson("rb", 8) + ",\"clientAsks\":[],"
                 + "\"clientPeople\":" + peopleJson("PB", 10) + ","
@@ -472,9 +503,9 @@ class SlackMentionExtractionServiceTest {
     @Test
     void oneCompanyPerDayHoweverOftenTheCallNamedIt() {
         var reading = read(call(
-                mention(byName("NN Markets"), "Kundemøde hos NN torsdag", "LOW", "[5]"),
-                mention(byName("nn   markets"), "NN spørger til prisen", "LOW", "[2]"),
-                mention(byName("  NN MARKETS  "), "NN har sagt ja", "HIGH", "[2,7]")), 10);
+                mention(byName("NN Markets"), "Kundemøde hos NN torsdag", "RELATIONSHIP", "[5]"),
+                mention(byName("nn   markets"), "NN spørger til prisen", "RELATIONSHIP", "[2]"),
+                mention(byName("  NN MARKETS  "), "NN har sagt ja", "EXTENSION", "[2,7]")), 10);
         assertEquals(1, reading.unmatched().size());
         SlackMentionExtractionService.UnmatchedSighting sighting = reading.unmatched().get(0);
         assertEquals("NN Markets", sighting.displayName(), "the spelling first seen wins");
@@ -485,8 +516,8 @@ class SlackMentionExtractionServiceTest {
     @Test
     void twoDifferentClientsStayTwoRows() {
         var reading = read(call(
-                mention(byId(ACME), "Acme har mistet deres deadline", "HIGH", "[1]"),
-                mention(byId(BETA), "Beta vil gerne mødes", "LOW", "[2]")), 10);
+                mention(byId(ACME), "Acme har mistet deres deadline", "EXTENSION", "[1]"),
+                mention(byId(BETA), "Beta vil gerne mødes", "RELATIONSHIP", "[2]")), 10);
         assertEquals(2, reading.mentions().size());
         assertTrue(holds(reading, ACME));
         assertTrue(holds(reading, BETA));
@@ -504,7 +535,7 @@ class SlackMentionExtractionServiceTest {
         // numbers stop.
         String json = "{" + byId(ACME)
                 + ",\"headline\":\"Nicolas er på skadestuen, ring 12 34 56 78 eller nicolas@trustworks.dk\","
-                + "\"relevance\":\"HIGH\","
+                + "\"signalType\":\"EXTENSION\","
                 + "\"decisions\":[{\"text\":\"Se journalen på https://intra.trustworks.dk/hr/nicolas\","
                 + "\"who\":\"Nicolas <nicolas@trustworks.dk>\",\"when\":null}],"
                 + "\"nextSteps\":[],\"risks\":[],\"clientAsks\":[],"
@@ -521,7 +552,7 @@ class SlackMentionExtractionServiceTest {
 
     @Test
     void aSightingsNameIsCleanedLikeEveryOtherStoredString() {
-        var reading = read(call(mention(byName("NN Markets <mail@nn.dk>"), "Kundemøde hos NN", "LOW", "[1]")), 10);
+        var reading = read(call(mention(byName("NN Markets <mail@nn.dk>"), "Kundemøde hos NN", "RELATIONSHIP", "[1]")), 10);
         assertEquals("NN Markets", reading.unmatched().get(0).displayName());
         assertEquals("nn markets", reading.unmatched().get(0).nameKey());
     }
@@ -554,9 +585,14 @@ class SlackMentionExtractionServiceTest {
         return reading.mentions().stream().anyMatch(row -> clientUuid.equals(row.clientUuid()));
     }
 
-    private String relevanceOf(String raw) {
-        return read(call(mention(byId(ACME), "Kundemøde hos Acme torsdag", raw, "[1]")), 10)
+    private String relevanceOf(String rawSignal) {
+        return read(call(mention(byId(ACME), "Kundemøde hos Acme torsdag", rawSignal, "[1]")), 10)
                 .mentions().get(0).content().relevance();
+    }
+
+    private String signalOf(String rawSignal) {
+        return read(call(mention(byId(ACME), "Kundemøde hos Acme torsdag", rawSignal, "[1]")), 10)
+                .mentions().get(0).content().signalType();
     }
 
     /** The envelope the strict schema produces. */
@@ -565,10 +601,10 @@ class SlackMentionExtractionServiceTest {
     }
 
     /** A mention carrying only what validation requires, so one test varies one thing. */
-    private static String mention(String attribution, String headline, String relevance, String evidence) {
+    private static String mention(String attribution, String headline, String signalType, String evidence) {
         return "{" + attribution
                 + ",\"headline\":" + quoted(headline)
-                + ",\"relevance\":" + quoted(relevance)
+                + ",\"signalType\":" + quoted(signalType)
                 + ",\"decisions\":[],\"nextSteps\":[],\"risks\":[],\"clientAsks\":[],"
                 + "\"clientPeople\":[],\"topics\":[],\"confidence\":0.5,"
                 + "\"evidence\":" + evidence + "}";

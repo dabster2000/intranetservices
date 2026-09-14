@@ -71,7 +71,17 @@ public class AccountSlackMention extends PanacheEntityBase {
     @Column(name = "message_count", nullable = false)
     private int messageCount;
 
-    /** {@code LOW} or {@code HIGH}. A stored row is never {@code NONE}: nothing to say is no row. */
+    /**
+     * The KIND of account event, from {@code SlackDigestContent}'s closed set — the field
+     * {@code relevance} is derived from, and the one a cross-account feed filters on
+     * ("every EXTENSION signal this quarter"). A varchar and not an enum: an unknown
+     * value from a future prompt version degrades to NONE on read rather than failing
+     * the write of a row we already paid a model call for.
+     */
+    @Column(name = "signal_type", length = 20, nullable = false)
+    private String signalType;
+
+    /** {@code LOW} or {@code HIGH}, DERIVED from {@link #signalType}. A stored row is never {@code NONE}: nothing to say is no row. */
     @Column(name = "relevance", length = 10, nullable = false)
     private String relevance;
 

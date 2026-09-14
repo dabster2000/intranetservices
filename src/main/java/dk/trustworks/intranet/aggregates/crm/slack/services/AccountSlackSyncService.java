@@ -653,6 +653,7 @@ public class AccountSlackSyncService {
             row.setPermalink(permalink);
         }
         if (content != null) {
+            row.setSignalType(content.signalType());
             row.setRelevance(content.relevance());
             row.setHeadline(content.headline());
             row.setDigestJson(digestService.toJson(content));

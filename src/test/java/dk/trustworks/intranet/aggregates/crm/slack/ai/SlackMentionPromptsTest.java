@@ -387,7 +387,7 @@ class SlackMentionPromptsTest {
 
     @Test
     void thePromptVersionIsStampedOnEveryRow() {
-        assertEquals("slack-mention-v1", SlackMentionPrompts.PROMPT_VERSION,
+        assertEquals("slack-mention-v2", SlackMentionPrompts.PROMPT_VERSION,
                 "a prompt change that keeps the version leaves the stored rows unattributable");
     }
 
@@ -421,17 +421,20 @@ class SlackMentionPromptsTest {
     void aMentionCarriesEveryFieldTheBackendReadsBackOut() {
         List<String> required = new ArrayList<>();
         mentionItem().path("required").forEach(node -> required.add(node.asText()));
-        assertEquals(List.of("clientId", "companyName", "headline", "relevance", "decisions", "nextSteps",
+        assertEquals(List.of("clientId", "companyName", "headline", "signalType", "decisions", "nextSteps",
                 "risks", "clientAsks", "clientPeople", "topics", "evidence", "confidence"), required);
     }
 
     @Test
-    void relevanceIsAClosedSetWithoutNone() {
-        List<String> levels = new ArrayList<>();
-        mentionProperties().path("relevance").path("enum").forEach(node -> levels.add(node.asText()));
-        assertEquals(List.of(SlackDigestContent.RELEVANCE_LOW, SlackDigestContent.RELEVANCE_HIGH), levels,
-                "a mention of relevance NONE is a contradiction; the backend floors a stored row at LOW");
-        assertEquals("string", mentionProperties().path("relevance").path("type").asText());
+    void theSignalTypeIsAClosedSetWithoutNone() {
+        List<String> kinds = new ArrayList<>();
+        mentionProperties().path("signalType").path("enum").forEach(node -> kinds.add(node.asText()));
+        assertEquals(SlackDigestContent.PRIORITY.stream()
+                        .filter(kind -> !SlackDigestContent.SIGNAL_NONE.equals(kind)).toList(), kinds,
+                "a mention of signal type NONE is a contradiction; the backend floors a stored row at RELATIONSHIP");
+        assertEquals("string", mentionProperties().path("signalType").path("type").asText());
+        assertTrue(mentionProperties().path("relevance").isMissingNode(),
+                "relevance is derived from signalType, never asked of the model");
     }
 
     @Test

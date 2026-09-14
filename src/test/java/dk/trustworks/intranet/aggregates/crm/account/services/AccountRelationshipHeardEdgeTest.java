@@ -543,7 +543,7 @@ class AccountRelationshipHeardEdgeTest {
     /** What the stored reading of that day parses back to. */
     private void reads(String json, SlackDigestContent.Person... people) {
         when(digests.fromJson(json)).thenReturn(new SlackDigestContent(
-                "headline", SlackDigestContent.RELEVANCE_HIGH,
+                "headline", SlackDigestContent.SIGNAL_EXTENSION, SlackDigestContent.RELEVANCE_HIGH,
                 List.of(), List.of(), List.of(), List.of(), List.of(people), List.of(), 0.8d));
     }
 
