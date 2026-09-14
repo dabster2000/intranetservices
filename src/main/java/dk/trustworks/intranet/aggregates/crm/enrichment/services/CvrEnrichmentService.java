@@ -46,10 +46,20 @@ import java.util.Optional;
 @ApplicationScoped
 public class CvrEnrichmentService {
 
-    /** The registry said no more tonight. */
+    /**
+     * The registry said no more tonight.
+     *
+     * <p>Raised on a {@code 429} and on a {@code 401}. Virkdata answers its quota, throttle,
+     * key and country refusals with HTTP 401 and a JSON body carrying an {@code error_code}
+     * ({@code CvrLookupService} rethrows it verbatim); the second staging rehearsal saw the
+     * registry answer normally for twenty calls and then 401 to every call within a second.
+     * Whatever the exact code, the right move is the same — stop asking, leave the rows
+     * {@code PENDING}, try again tomorrow — and filing twenty clients {@code FAILED} for a
+     * key or quota problem would only hide the cause behind a per-client retry policy.
+     */
     public static class QuotaExhausted extends RuntimeException {
-        public QuotaExhausted() {
-            super("Virkdata quota exhausted");
+        public QuotaExhausted(String detail) {
+            super("Virkdata refused: " + detail);
         }
     }
 
@@ -157,9 +167,10 @@ public class CvrEnrichmentService {
                 return applyRegistry(s, byName, cvr, true);
             }
         } catch (WebApplicationException e) {
-            if (e.getResponse() != null && e.getResponse().getStatus() == 429) throw new QuotaExhausted();
+            int status = e.getResponse() != null ? e.getResponse().getStatus() : 0;
+            if (status == 429 || status == 401) throw new QuotaExhausted(describe(status, e));
             log.debugf("Registry name search for '%s' gave nothing usable (status=%s) — asking the model",
-                    s.name(), e.getResponse() != null ? e.getResponse().getStatus() : "?");
+                    s.name(), status);
         } catch (RuntimeException e) {
             log.debugf("Registry name search for '%s' failed (%s) — asking the model", s.name(), e.getClass().getSimpleName());
         }
@@ -201,11 +212,33 @@ public class CvrEnrichmentService {
             return cvrLookupService.lookupByCvr(cvr, "dk");
         } catch (WebApplicationException e) {
             int status = e.getResponse() != null ? e.getResponse().getStatus() : 0;
-            if (status == 429) throw new QuotaExhausted();
-            throw new LookupFailed(status, e.getMessage() != null ? e.getMessage() : "HTTP " + status);
+            if (status == 429 || status == 401) throw new QuotaExhausted(describe(status, e));
+            throw new LookupFailed(status, describe(status, e));
         } catch (RuntimeException e) {
             throw new LookupFailed(0, e.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * The status and, when the response still carries one, the registry's own error body —
+     * Virkdata's {@code {"error_code":7001,"response":"quota_exceeded",...}} is the only place
+     * the actual reason lives, and {@code CvrLookupService} does not log it for a 401.
+     * Bounded, single-line, never the request. Read defensively: the REST client may already
+     * have consumed the entity.
+     */
+    static String describe(int status, WebApplicationException e) {
+        String body = null;
+        try {
+            if (e.getResponse() != null && e.getResponse().hasEntity()) {
+                body = e.getResponse().readEntity(String.class);
+            }
+        } catch (RuntimeException ignore) {
+            // entity consumed or closed — the status alone will have to do
+        }
+        String text = body != null && !body.isBlank()
+                ? body.replaceAll("\\s+", " ").trim()
+                : (e.getMessage() != null ? e.getMessage() : "");
+        return "HTTP " + status + (text.isEmpty() ? "" : " " + CvrCandidateFinder.truncate(text, 160));
     }
 
     static String eightDigits(long vat) {

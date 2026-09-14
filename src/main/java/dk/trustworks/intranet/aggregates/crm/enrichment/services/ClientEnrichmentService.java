@@ -20,9 +20,9 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Status;
 import jakarta.transaction.Synchronization;
 import jakarta.transaction.TransactionSynchronizationRegistry;
+import jakarta.annotation.PreDestroy;
 import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,6 +32,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -76,9 +78,29 @@ public class ClientEnrichmentService {
     @Inject SchedulerShutdownGuard shutdown;
     @Inject EventBus eventBus;
     @Inject TransactionSynchronizationRegistry txSyncRegistry;
-    @Inject ManagedExecutor managedExecutor;
+
+    /**
+     * A plain thread, deliberately NOT the {@code ManagedExecutor}. That executor propagates
+     * the submitting HTTP request's CDI request context onto the worker, and that context
+     * is terminated the moment the {@code 202} is written — so every request-scoped lookup
+     * the run makes afterwards ({@code RequestHeaderHolder} behind the activity log, most of
+     * all) dies with {@code ContextNotActiveException}. The second staging rehearsal
+     * (2026-09-14) failed on exactly that, the same way the employee-document maintenance
+     * runs once did. A plain thread carries no stale context, and
+     * {@link #withRequestContext} gives the run a fresh one of its own.
+     */
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "client-enrichment-run");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow();
+    }
 
     // ------------------------------------------------------------------------
     // Reads
@@ -148,11 +170,11 @@ public class ClientEnrichmentService {
                 try {
                     cvrService.verify(clientUuid);
                 } catch (CvrEnrichmentService.QuotaExhausted e) {
-                    throw new WebApplicationException("The CVR registry's daily quota is used up — try again tomorrow", 429);
+                    throw new WebApplicationException("The CVR registry refused (" + e.getMessage() + ") — try again later", 429);
                 }
             }
             case SECTOR -> sectorService.verify(clientUuid);
-            case LOGO -> managedExecutor.submit(() -> withRequestContext(() -> {
+            case LOGO -> executor.submit(() -> withRequestContext(() -> {
                 try {
                     logoService.enrich(clientUuid);
                 } catch (RuntimeException e) {
@@ -335,7 +357,7 @@ public class ClientEnrichmentService {
         requireEnabled();
         if (!running.compareAndSet(false, true)) return false;
         try {
-            managedExecutor.submit(() -> {
+            executor.submit(() -> {
                 try {
                     withRequestContext(() -> run(jobs, "manual by " + actor));
                 } catch (RuntimeException e) {
@@ -365,6 +387,10 @@ public class ClientEnrichmentService {
      */
     static void withRequestContext(Runnable work) {
         ManagedContext requestContext = Arc.container().requestContext();
+        // On the run's own thread nothing is active and a fresh context is opened here. On a
+        // scheduler or Vert.x worker thread that already holds a real one, it is used as is.
+        // A PROPAGATED context — the ManagedExecutor case above — must never reach this
+        // method: it reads as active and then dies underneath the run.
         if (requestContext.isActive()) {
             work.run();
             return;
@@ -391,21 +417,36 @@ public class ClientEnrichmentService {
 
     private void runCvr(LocalDateTime now) {
         List<String> queue = repository.eligibleForCvr(config.cvrNightlyCap(), now.minusDays(config.cvrRetryAfterDays()));
-        int done = 0, failed = 0;
+        int done = 0, failed = 0, stopped = 0;
         for (String uuid : queue) {
             if (shutdown.isShuttingDown()) break;
             try {
                 Optional<CvrEnrichmentStatus> status = cvrService.verify(uuid);
                 if (status.isPresent() && status.get() == CvrEnrichmentStatus.FAILED) failed++; else done++;
             } catch (CvrEnrichmentService.QuotaExhausted e) {
-                log.warn("CVR pass stopped: the registry's quota is exhausted for today");
+                // The rows not reached stay PENDING and are first in tomorrow's queue.
+                stopped = queue.size() - done - failed;
+                log.warnf("CVR pass stopped with %d of %d left: %s", stopped, queue.size(), e.getMessage());
                 break;
             } catch (RuntimeException e) {
                 failed++;
                 log.errorf(e, "CVR check crashed for client=%s", uuid);
             }
+            // A client costs up to two registry calls (name search, then lookup). The second
+            // rehearsal fired ~20 calls in two minutes and the registry answered 401 to every
+            // call after that; a pause between clients keeps the pass under a burst limit.
+            pause(config.cvrPacingMs());
         }
-        log.infof("CVR pass finished: queued=%d done=%d failed=%d", queue.size(), done, failed);
+        log.infof("CVR pass finished: queued=%d done=%d failed=%d stopped=%d", queue.size(), done, failed, stopped);
+    }
+
+    private static void pause(long millis) {
+        if (millis <= 0) return;
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void runSector(LocalDateTime now) {

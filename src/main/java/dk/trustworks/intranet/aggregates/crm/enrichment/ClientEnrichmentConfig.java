@@ -41,6 +41,10 @@ public class ClientEnrichmentConfig {
     @ConfigProperty(name = "dk.trustworks.crm.enrichment.cvr.finder-model", defaultValue = "gpt-5.6-terra")
     String cvrFinderModel;
 
+    /** Pause between clients in the CVR pass, so ~40 registry calls do not arrive as one burst. */
+    @ConfigProperty(name = "dk.trustworks.crm.enrichment.cvr.pacing-ms", defaultValue = "3000")
+    long cvrPacingMs;
+
     @ConfigProperty(name = "dk.trustworks.crm.enrichment.logo.nightly-cap", defaultValue = "10")
     int logoNightlyCap;
 
@@ -83,6 +87,8 @@ public class ClientEnrichmentConfig {
     public int cvrRetryAfterDays() { return Math.max(1, cvrRetryAfterDays); }
 
     public String cvrFinderModel() { return cvrFinderModel; }
+
+    public long cvrPacingMs() { return Math.max(0L, Math.min(cvrPacingMs, 60_000L)); }
 
     public int logoNightlyCap() { return clamp(logoNightlyCap); }
 
