@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO.ColleagueDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO.FreshnessDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO.RelationEdgeDTO;
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarTime;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountRelationshipsDTO.SharingDTO;
 import dk.trustworks.intranet.aggregates.crm.account.dto.PersonDTO;
 import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarConsentService;
@@ -644,6 +645,12 @@ public class AccountRelationshipService {
      * <p>{@code count(distinct m.uuid)} still counts one real event once per consenting
      * mailbox that saw it, and {@link #mergeMetEdges} still ADDS those counts. That is the
      * sync's one-row-per-mailbox shape and is explicitly out of scope; do not "fix" it here.
+     *
+     * <p><b>Only meetings that have happened.</b> The sync no longer stores a meeting ahead of
+     * its clock, but the guard stays in the read: a row for a meeting next month would make
+     * the person tier 1 today — "met within 90 days" is true of a date in the future — and
+     * put a date nobody has lived yet in "last contact". The comparison is on the calendar's
+     * own clock ({@link CalendarTime}), which is what {@code occurred_at} is written in.
      */
     void collectMeetingEdges(String clientUuid, PersonIndex index, Colleagues colleagues,
                                      List<RelationEdgeDTO> edges) {
@@ -658,10 +665,12 @@ public class AccountRelationshipService {
                                                 and i.kind = 'EMAIL'
                                                 and i.value = lower(a.email)
                  where m.client_uuid = :clientUuid
+                   and m.occurred_at <= :now
                  group by m.user_uuid, lower(a.email), i.person_uuid
                  order by meetings desc, last_met desc
                 """);
         query.setParameter("clientUuid", clientUuid);
+        query.setParameter("now", CalendarTime.now());
 
         Map<EdgeKey, RelationEdgeDTO> metEdges = new LinkedHashMap<>();
         for (Object[] row : rowsOf(query)) {

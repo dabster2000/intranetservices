@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.crm.account.services;
 
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountActivityDTO;
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarTime;
 import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestContent;
 import dk.trustworks.intranet.aggregates.crm.slack.dto.SlackDigestDTO;
@@ -156,9 +157,13 @@ public class AccountActivityService {
         mergeNewest(newest, """
                 select client_uuid, max(changed_at) from client_band_history group by client_uuid
                 """, "BAND", "Band changed");
+        // Only meetings that have happened. The sync no longer stores a meeting ahead of its
+        // clock, but a stale row here would make an account's "Last activity" a date nobody
+        // has lived yet and keep the portfolio's "quiet" badge off an account that is quiet.
         mergeNewest(newest, """
-                select client_uuid, max(occurred_at) from account_meeting group by client_uuid
-                """, "CALENDAR", "Meeting");
+                select client_uuid, max(occurred_at) from account_meeting
+                 where occurred_at <= :now group by client_uuid
+                """, "CALENDAR", "Meeting", Map.of("now", CalendarTime.now()));
         // "Note added", not the note. mergeNewest takes a constant summary and never reads
         // row content, so the accounts list gets a label and a date for several hundred
         // clients while the words stay on the account page where only that page's reader
@@ -418,43 +423,59 @@ public class AccountActivityService {
     }
 
     /**
-     * Meetings, with the attendees folded into the summary in one extra query rather than
-     * one per meeting.
+     * Meetings — one line per meeting that has happened, however many of ours were in it —
+     * with the attendees folded into the summary in one extra query rather than one per
+     * meeting.
+     *
+     * <p><b>Only meetings that have happened.</b> The sync used to read ninety days ahead
+     * and this feed rendered the result as history: on 2026-09-14 half of every account's
+     * meeting rows were in the future, and Ældre Sagen's timeline was a daily standup
+     * repeated into December. The sync no longer stores a meeting ahead of its clock, but
+     * the guard stays here too — the rows it left behind are removed by its next run, not by
+     * the deploy, and a timeline must not spend the hours in between showing December. The
+     * comparison is on the calendar's own clock ({@link CalendarTime}), which is what
+     * {@code occurred_at} is written in; the JVM's UTC would put a meeting still in progress
+     * on the feed for two hours every summer afternoon.
+     *
+     * <p><b>One meeting seen from two mailboxes is one line.</b> Each consenting mailbox
+     * stores its own {@code account_meeting} row for the same real-world event, which is what
+     * the relationship graph needs and what a reader of the feed does not: <i>"Meeting with
+     * Kim Landgrebe (Jeppe)"</i> directly above <i>"Meeting with Kim Landgrebe (Simon)"</i>
+     * reads as two meetings. Rows that share {@code ical_uid} — Graph's identity for the
+     * event across calendars, V614 — are folded by {@link #foldMeetingRows} into one line
+     * naming everybody of ours who was there: <i>"Meeting with Kim Landgrebe (Jeppe,
+     * Simon)"</i>. A row with no identity yet (written before V614 and not re-read since) is
+     * a line on its own, exactly as before.
      *
      * <p><b>An attendee is named by the best name the feed has seen for their address, not
-     * by whatever this meeting's own row happened to carry.</b> Each consenting mailbox
-     * stores its own {@code account_meeting} row for the same real-world event, and
-     * Microsoft Graph does not answer the two mailboxes the same way: it returned
-     * {@code "MYGX (Malthe Yde Andreasen)"} to one and no display name at all to the other.
-     * Read per row, that produced two consecutive lines in the feed —
-     * <i>"Meeting with MYGX (Malthe Yde Andreasen) (Tobias)"</i> and
-     * <i>"Meeting with mygx@novonordisk.com (Kenn)"</i> — for one meeting with one person,
-     * and a reader has no way to tell that those are the same man. The unique key
-     * {@code (meeting_uuid, email)} means the duplicate cannot arise WITHIN one line, so
-     * this is a legibility fix rather than a double-count like the one in
-     * {@link AccountRelationshipService#collectMeetingEdges}; the resolution rule is
-     * deliberately the same one, shared rather than re-implemented, so the feed and the
-     * relationship graph can never disagree about what a person is called.
+     * by whatever this meeting's own row happened to carry.</b> Microsoft Graph does not
+     * answer two mailboxes the same way: it returned {@code "MYGX (Malthe Yde Andreasen)"}
+     * to one and no display name at all to the other, and read per row that produced
+     * <i>"MYGX (Malthe Yde Andreasen)"</i> and <i>"mygx@novonordisk.com"</i> as two people.
+     * The resolution rule is deliberately the one {@link AccountRelationshipService} uses,
+     * shared rather than re-implemented, so the feed and the relationship graph can never
+     * disagree about what a person is called.
      *
      * <p>The names are resolved over the attendee rows of the meetings this call is
      * returning, not over the client's entire history, because those rows are already being
      * fetched and a second client-wide query to name people who appear only on meetings the
      * feed is not showing would buy nothing a reader could see.
      *
-     * <p>The ordering within a line is the same alphabetical-by-displayed-name it has
-     * always been, but it has to happen in Java now: the name is no longer a column the
-     * database can sort on. {@link String#CASE_INSENSITIVE_ORDER} rather than natural order
-     * keeps the old behaviour of {@code utf8mb4_general_ci}, where a bare lower-case
-     * address does not jump behind every capitalised name.
+     * <p>The ordering within a line is alphabetical by displayed name, in Java: the name is
+     * not a column the database can sort on. {@link String#CASE_INSENSITIVE_ORDER} rather
+     * than natural order keeps the behaviour of {@code utf8mb4_general_ci}, where a bare
+     * lower-case address does not jump behind every capitalised name.
      */
     private List<AccountActivityDTO> meetingRows(String clientUuid, int limit) {
         Query meetings = em.createNativeQuery("""
-                select uuid, user_uuid, occurred_at, duration_minutes
+                select uuid, user_uuid, occurred_at, ical_uid
                   from account_meeting
                  where client_uuid = :clientUuid
-                 order by occurred_at desc
+                   and occurred_at <= :now
+                 order by occurred_at desc, uuid
                 """);
         meetings.setParameter("clientUuid", clientUuid);
+        meetings.setParameter("now", CalendarTime.now());
         meetings.setMaxResults(limit);
         List<Object[]> meetingRows = rowsOf(meetings);
         if (meetingRows.isEmpty()) {
@@ -496,22 +517,77 @@ public class AccountActivityService {
             namesByMeeting.computeIfAbsent(asString(row[0]), key -> new LinkedHashSet<>()).add(name);
         }
 
-        List<AccountActivityDTO> rows = new ArrayList<>();
+        List<MeetingRow> rows = new ArrayList<>(meetingRows.size());
         for (Object[] row : meetingRows) {
-            String uuid = asString(row[0]);
-            String actor = firstNameOf(asString(row[1]));
-            List<String> names = new ArrayList<>(namesByMeeting.getOrDefault(uuid, Set.of()));
-            names.sort(String.CASE_INSENSITIVE_ORDER);
-            rows.add(new AccountActivityDTO(
-                    "meeting:" + uuid,
+            rows.add(new MeetingRow(asString(row[0]), firstNameOf(asString(row[1])),
+                    toLocalDate(row[2]), asString(row[3])));
+        }
+        return foldMeetingRows(rows, namesByMeeting);
+    }
+
+    /**
+     * One {@code account_meeting} row as the fold needs it: which row, who read it, when,
+     * and — when the sync has filled it in — which meeting it is.
+     */
+    record MeetingRow(String uuid, String actor, LocalDate occurredOn, String icalUid) { }
+
+    /**
+     * One line per meeting, folding the rows that share an identity.
+     *
+     * <p>Rows arrive newest first and the fold keeps that order: a group's line takes the
+     * position of its first row, its id is that row's uuid — stable across loads, because
+     * the query orders by uuid within a day — and its date is the latest the group carries,
+     * which for rows that share an identity is the same date. Attendee names are the union
+     * across the group, so a name one mailbox had and another lacked is still named; the
+     * actors are every mailbox owner, alphabetical, and go both into the line and into
+     * {@code actor}, where the footer shows them.
+     *
+     * <p>A row with no identity folds with nothing and is its own line. Static and free of
+     * the database so the fold can be pinned without one.
+     */
+    static List<AccountActivityDTO> foldMeetingRows(List<MeetingRow> rows, Map<String, Set<String>> namesByMeeting) {
+        Map<String, List<MeetingRow>> byMeeting = new LinkedHashMap<>();
+        for (MeetingRow row : rows) {
+            String key = row.icalUid() == null || row.icalUid().isBlank()
+                    ? "row:" + row.uuid()
+                    : "meeting:" + row.icalUid();
+            byMeeting.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        }
+
+        List<AccountActivityDTO> out = new ArrayList<>(byMeeting.size());
+        for (List<MeetingRow> group : byMeeting.values()) {
+            MeetingRow first = group.get(0);
+            Set<String> names = new LinkedHashSet<>();
+            List<String> actors = new ArrayList<>();
+            LocalDate occurredOn = first.occurredOn();
+            for (MeetingRow row : group) {
+                names.addAll(namesByMeeting.getOrDefault(row.uuid(), Set.of()));
+                if (row.actor() != null && !actors.contains(row.actor())) {
+                    actors.add(row.actor());
+                }
+                if (row.occurredOn() != null && (occurredOn == null || row.occurredOn().isAfter(occurredOn))) {
+                    occurredOn = row.occurredOn();
+                }
+            }
+            List<String> sortedNames = new ArrayList<>(names);
+            sortedNames.sort(String.CASE_INSENSITIVE_ORDER);
+            actors.sort(String.CASE_INSENSITIVE_ORDER);
+            out.add(new AccountActivityDTO(
+                    "meeting:" + first.uuid(),
                     "CALENDAR",
-                    "Meeting with " + joinNames(names) + (actor == null ? "" : " (" + actor + ")"),
-                    toLocalDate(row[2]),
-                    actor,
+                    meetingLine(sortedNames, actors),
+                    occurredOn,
+                    actors.isEmpty() ? null : String.join(", ", actors),
                     null,
                     null));
         }
-        return rows;
+        return out;
+    }
+
+    /** <i>"Meeting with Kim Landgrebe, Janni Høyer Thoft (Jeppe, Simon)"</i>. */
+    static String meetingLine(List<String> names, List<String> actors) {
+        String line = "Meeting with " + joinNames(names);
+        return actors == null || actors.isEmpty() ? line : line + " (" + cutList(actors) + ")";
     }
 
     /**
@@ -769,8 +845,15 @@ public class AccountActivityService {
     }
 
     private void mergeNewest(Map<String, AccountActivityDTO> into, String sql, String source, String summary) {
-        @SuppressWarnings("unchecked")
-        List<Object[]> rows = em.createNativeQuery(sql).getResultList();
+        mergeNewest(into, sql, source, summary, Map.of());
+    }
+
+    /** As above, with the query's named parameters bound — never a value spliced into the SQL. */
+    private void mergeNewest(Map<String, AccountActivityDTO> into, String sql, String source, String summary,
+                             Map<String, Object> params) {
+        Query query = em.createNativeQuery(sql);
+        params.forEach(query::setParameter);
+        List<Object[]> rows = rowsOf(query);
         for (Object[] row : rows) {
             String clientUuid = asString(row[0]);
             LocalDate when = toLocalDate(row[1]);
@@ -832,6 +915,11 @@ public class AccountActivityService {
         if (names == null || names.isEmpty()) {
             return "the client";
         }
+        return cutList(names);
+    }
+
+    /** The first {@value #MAX_NAMES_IN_SUMMARY}, then "+n more". The caller decides what an empty list says. */
+    private static String cutList(List<String> names) {
         if (names.size() <= MAX_NAMES_IN_SUMMARY) {
             return String.join(", ", names);
         }

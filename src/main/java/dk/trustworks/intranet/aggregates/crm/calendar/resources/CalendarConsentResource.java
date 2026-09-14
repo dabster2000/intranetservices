@@ -10,11 +10,13 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -81,13 +83,21 @@ public class CalendarConsentResource {
     /**
      * Runs the sync now. Admin-only and deliberately synchronous — it exists so the
      * nightly job can be verified without waiting a night, not as a routine call.
+     *
+     * <p>{@code ?full=true} reads every mailbox over its whole twelve-month window instead of
+     * the last fortnight, which re-judges every stored meeting under the current rules and
+     * removes the ones that no longer hold. The nightly job does this by itself on Sundays;
+     * the flag is for the day a rule changes and nobody wants to wait for one. A full run
+     * over fifty mailboxes takes minutes, longer than the load balancer's sixty-second idle
+     * timeout — the call may answer 504 while the run itself carries on to completion and
+     * writes its summary to the log.
      */
     @POST
     @Path("/sync")
     @RolesAllowed({"admin:write"})
-    public CalendarSyncSummary syncNow() {
+    public CalendarSyncSummary syncNow(@QueryParam("full") @DefaultValue("false") boolean full) {
         requireHumanActor();
-        return syncService.syncAll();
+        return syncService.syncAll(full);
     }
 
     /**

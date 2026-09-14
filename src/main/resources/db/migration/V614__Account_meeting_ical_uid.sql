@@ -1,0 +1,81 @@
+-- ============================================================================
+-- V614 — the identity of a meeting ACROSS mailboxes
+--
+-- Domain: aggregates/crm/calendar
+--
+-- WHAT THIS DOES
+--   One nullable column on account_meeting: ical_uid, Microsoft Graph's iCalUId
+--   for the event — the identifier that is the same for one real-world meeting
+--   in every attendee's mailbox, and different for every occurrence of a series.
+--
+-- WHY
+--   account_meeting is one row per (event, mailbox), by design: two consenting
+--   colleagues in the same meeting are two rows, because the relationship
+--   registry needs to know that BOTH of them were there. The account timeline
+--   is the one surface where that shape is wrong. It rendered the same meeting
+--   twice — "Meeting with Kim Landgrebe, Janni Høyer Thoft (Jeppe)" directly
+--   above "Meeting with Kim Landgrebe, Janni Høyer Thoft (Simon)" — and a reader
+--   cannot tell that those are one meeting with two of ours in the room.
+--
+--   graph_event_id cannot fold them: Graph issues a different id for the same
+--   meeting in every mailbox. iCalUId is the property Graph documents for
+--   exactly this ("a unique identifier for an event across calendars"), and it
+--   was verified against production mailboxes on 2026-09-14: the same
+--   occurrence read from two Trustworks mailboxes carried the same iCalUId,
+--   different ids and different seriesMasterIds. AccountActivityService groups
+--   on (client, ical_uid) and names every colleague who was there on one line.
+--
+-- WHY NULLABLE, AND WHAT NULL MEANS
+--   Every row written before this migration is null, and stays null until the
+--   sync re-reads it — the value is not derivable from anything stored. The feed
+--   treats a null as "identity unknown" and renders the row on its own, which is
+--   exactly what it did before. The sync's next full read of a mailbox (the
+--   first run after this deploy, and every Sunday) rewrites every row in its
+--   twelve-month window with the value filled in.
+--
+-- NOT PERSONAL DATA
+--   An opaque identifier for a calendar item. No name, no address, no subject,
+--   nothing a person typed. It adds nothing to what the retention purge sweeps.
+--
+-- WHY THE COLUMN GOES LAST
+--   Same reason as V607: InnoDB adds a column at the END of the row instantly on
+--   every MariaDB 10.x, and account_meeting is not empty.
+--
+-- METADATA LOCK
+--   account_meeting is written only by AccountCalendarSyncService on the 02:20
+--   schedule, one short transaction per mailbox; every read path is a single
+--   SELECT. Nothing holds it open across a request, and the migration runs at
+--   deploy, outside that window. An instant ADD COLUMN takes the lock for a
+--   metadata change and releases it, with no rebuild behind it.
+--
+--   The lock wait is capped all the same (V557, prod 2026-09-02: an ALTER that
+--   queued behind a console's open transaction hung three boots in a row and
+--   stalled every read on the table while it waited). Twenty seconds turns that
+--   into a fast, visible failure that rolls the task back, and a retry once the
+--   holder is gone applies in well under a second.
+--
+-- RESERVED-WORD CHECK (MariaDB 10.11): `ical_uid` is not a keyword. `LINES`,
+--   the word behind the V534 incident, does not appear.
+--
+-- COLLATION: utf8mb4_general_ci, inherited from the table (V588). The value is
+--   compared for equality only, always against another value from the same
+--   column, so case-insensitivity cannot merge two distinct identifiers — Graph
+--   never issues two iCalUIds that differ only by case.
+--
+-- STAGING SYNC: not re-emitted. account_meeting is excluded from
+--   sp_sync_prod_to_staging by V588 and stays excluded.
+--
+-- Idempotency: ADD COLUMN IF NOT EXISTS.
+--
+-- Author: Claude Code
+-- Date:   2026-09-14
+-- Rollback:
+--   ALTER TABLE account_meeting DROP COLUMN ical_uid;
+--   (The feed falls back to one line per mailbox; no meeting is lost.)
+-- ============================================================================
+
+SET SESSION lock_wait_timeout = 20;
+
+ALTER TABLE account_meeting
+    ADD COLUMN IF NOT EXISTS ical_uid VARCHAR(255) NULL
+        COMMENT 'Graph iCalUId: the same for one meeting in every mailbox, different per occurrence. Null on rows the sync has not re-read since V614';

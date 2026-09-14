@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.crm.person.services;
 
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarTime;
 import dk.trustworks.intranet.aggregates.crm.person.PersonNames;
 import dk.trustworks.intranet.aggregates.crm.person.model.AccountPerson;
 import dk.trustworks.intranet.aggregates.crm.person.model.AccountPersonBuildState;
@@ -1339,7 +1340,9 @@ public class AccountPersonService {
      * <p>{@code account_meeting_attendee} already holds only external attendees on a matched
      * client domain — the calendar sync dropped rooms, our own people and delivery meetings on
      * the way in — so this needs no filter of its own beyond the join back to the meeting for
-     * its client.
+     * its client, and one guard: the meeting has to have happened. The sync no longer stores a
+     * meeting ahead of its clock, but a person on next month's invitation is not yet somebody
+     * the firm has met, and the guard costs nothing.
      */
     private List<Sighting> calendarSightings(String clientUuid) {
         Query query = em.createNativeQuery("""
@@ -1347,8 +1350,10 @@ public class AccountPersonService {
                   from account_meeting_attendee a
                   join account_meeting m on m.uuid = a.meeting_uuid
                  where m.client_uuid = :clientUuid
+                   and m.occurred_at <= :now
                 """);
         query.setParameter("clientUuid", clientUuid);
+        query.setParameter("now", CalendarTime.now());
 
         List<Sighting> sightings = new ArrayList<>();
         for (Object[] row : rowsOf(query)) {

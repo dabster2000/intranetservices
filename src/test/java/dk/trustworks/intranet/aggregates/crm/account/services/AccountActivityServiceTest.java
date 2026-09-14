@@ -93,6 +93,73 @@ class AccountActivityServiceTest {
         assertEquals("the client", AccountActivityService.joinNames(null));
     }
 
+    // ------------------------------------------------------------------------
+    // One meeting, however many of ours were in it
+    // ------------------------------------------------------------------------
+
+    /**
+     * The Ældre Sagen shape: Jeppe's and Simon's mailboxes each hold a row for the same
+     * meeting. The feed showed it twice, one line per mailbox, and a reader cannot tell that
+     * those are one meeting. Rows that share Graph's identity for the event fold into one
+     * line naming both of ours.
+     */
+    @Test
+    void oneMeetingSeenFromTwoMailboxesIsOneLine() {
+        var rows = List.of(
+                new AccountActivityService.MeetingRow("row-a", "Jeppe", LocalDate.of(2026, 9, 3), "ical-1"),
+                new AccountActivityService.MeetingRow("row-b", "Simon", LocalDate.of(2026, 9, 3), "ical-1"));
+        var names = java.util.Map.of(
+                "row-a", java.util.Set.of("Kim Landgrebe"),
+                "row-b", java.util.Set.of("Kim Landgrebe", "Janni Høyer Thoft"));
+
+        var lines = AccountActivityService.foldMeetingRows(rows, names);
+
+        assertEquals(1, lines.size());
+        assertEquals("meeting:row-a", lines.get(0).id(), "the first row's uuid, so the id is stable across loads");
+        assertEquals("Meeting with Janni Høyer Thoft, Kim Landgrebe (Jeppe, Simon)", lines.get(0).summary());
+        assertEquals("Jeppe, Simon", lines.get(0).actor());
+        assertEquals(LocalDate.of(2026, 9, 3), lines.get(0).occurredAt());
+        assertEquals("CALENDAR", lines.get(0).source());
+    }
+
+    /** A row written before V614 has no identity and is a line on its own, exactly as before. */
+    @Test
+    void rowsWithoutAnIdentityStayOneLineEach() {
+        var rows = List.of(
+                new AccountActivityService.MeetingRow("row-a", "Jeppe", LocalDate.of(2026, 9, 3), null),
+                new AccountActivityService.MeetingRow("row-b", "Simon", LocalDate.of(2026, 9, 3), ""));
+        var names = java.util.Map.of("row-a", java.util.Set.of("Kim Landgrebe"));
+
+        var lines = AccountActivityService.foldMeetingRows(rows, names);
+
+        assertEquals(2, lines.size());
+        assertEquals("Meeting with Kim Landgrebe (Jeppe)", lines.get(0).summary());
+        assertEquals("Meeting with the client (Simon)", lines.get(1).summary());
+        assertEquals("Simon", lines.get(1).actor());
+    }
+
+    /** Two different meetings on the same day are two lines; the identity is what folds, not the date. */
+    @Test
+    void differentMeetingsOnTheSameDayDoNotFold() {
+        var rows = List.of(
+                new AccountActivityService.MeetingRow("row-a", "Jeppe", LocalDate.of(2026, 9, 3), "ical-1"),
+                new AccountActivityService.MeetingRow("row-b", "Jeppe", LocalDate.of(2026, 9, 3), "ical-2"));
+
+        var lines = AccountActivityService.foldMeetingRows(rows, java.util.Map.of());
+
+        assertEquals(2, lines.size());
+        assertEquals("Meeting with the client (Jeppe)", lines.get(0).summary());
+    }
+
+    /** A mass meeting stores no attendees and no mailbox owner may resolve to a name; the line still reads. */
+    @Test
+    void aLineWithNoActorsHasNoParenthesis() {
+        assertEquals("Meeting with the client", AccountActivityService.meetingLine(List.of(), List.of()));
+        assertEquals("Meeting with Kim Landgrebe", AccountActivityService.meetingLine(List.of("Kim Landgrebe"), null));
+        assertEquals("Meeting with Kim Landgrebe (A, B, C +1 more)",
+                AccountActivityService.meetingLine(List.of("Kim Landgrebe"), List.of("A", "B", "C", "D")));
+    }
+
     @Test
     void enumNamesAreTitledForReading() {
         assertEquals("Strategic", AccountActivityService.titled("STRATEGIC"));

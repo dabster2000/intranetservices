@@ -287,11 +287,15 @@ class AccountCalendarSyncPagingTest {
         for (int i = 1; i <= count; i++) {
             events.add(new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
                     prefix + "-" + i,
+                    "ical-" + prefix + "-" + i,
+                    "singleInstance",
+                    null,
                     Boolean.FALSE,
                     new GraphCalendarClient.CalendarViewResponse.GraphDateTime(
                             "2026-09-12T09:00:00", "Europe/Copenhagen"),
                     new GraphCalendarClient.CalendarViewResponse.GraphDateTime(
                             "2026-09-12T10:00:00", "Europe/Copenhagen"),
+                    null,
                     List.of()));
         }
         return new GraphCalendarClient.AttendeeViewResponse(events, nextLink);

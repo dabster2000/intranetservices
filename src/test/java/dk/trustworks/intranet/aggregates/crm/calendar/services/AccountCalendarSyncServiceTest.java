@@ -76,7 +76,139 @@ class AccountCalendarSyncServiceTest {
         assertFalse(AccountCalendarSyncService.SELECT.contains("subject"),
                 "The subject must never be requested — spec §3.7 and there is no column for it");
         assertFalse(AccountCalendarSyncService.SELECT.contains("body"));
-        assertEquals("id,start,end,isCancelled,attendees", AccountCalendarSyncService.SELECT);
+        assertEquals("id,iCalUId,type,seriesMasterId,start,end,isCancelled,responseStatus,attendees",
+                AccountCalendarSyncService.SELECT);
+    }
+
+    // ------------------------------------------------------------------------
+    // The gates: a standing meeting is not a contact, a declined one was not attended
+    // ------------------------------------------------------------------------
+
+    /**
+     * The Ældre Sagen shape: a fifteen-minute daily standup, five people from the client on
+     * it, arriving as one occurrence per working day per mailbox. Sixty rows on one account
+     * from one series, and not one of them somebody selling something.
+     */
+    @Test
+    void anOccurrenceOfARecurringSeriesIsDroppedAndCounted() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        var meeting = service.toMeeting(ME,
+                occurrence("occ-1", "master-1", "occurrence", "2026-11-02T15:00:00", "2026-11-02T15:15:00",
+                        attendee("kim@acme.dk", "Kim Landgrebe"),
+                        attendee("janni@acme.dk", "Janni Høyer Thoft"),
+                        attendee("somebody@unknown-company.dk", "Somebody Else")),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
+
+        assertNull(meeting, "a standing meeting is a cadence, not a contact");
+        assertEquals(1, tally.recurringDroppedCount());
+        assertFalse(tally.hasUnmatchedDomains(),
+                "an occurrence must not tally an unknown company as 'seen in calendars' either");
+        assertFalse(tally.hasLearnedEmails());
+    }
+
+    /** A rescheduled or edited occurrence is still an occurrence of the series. */
+    @Test
+    void anExceptionOfASeriesIsDroppedToo() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        var meeting = service.toMeeting(ME,
+                occurrence("exc-1", "master-1", "exception", "2026-08-28T15:00:00", "2026-08-28T15:15:00",
+                        attendee("kim@acme.dk", "Kim Landgrebe")),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
+
+        assertNull(meeting);
+        assertEquals(1, tally.recurringDroppedCount());
+    }
+
+    /** Either signal is enough: the type alone, with no master id, still says "series". */
+    @Test
+    void aSeriesIsRecognisedByItsTypeWhenTheMasterIdIsMissing() {
+        assertTrue(AccountCalendarSyncService.isSeriesOccurrence(
+                occurrence("x", null, "occurrence", "2026-09-01T09:00:00", "2026-09-01T10:00:00")));
+        assertTrue(AccountCalendarSyncService.isSeriesOccurrence(
+                occurrence("x", null, "seriesMaster", "2026-09-01T09:00:00", "2026-09-01T10:00:00")));
+        assertTrue(AccountCalendarSyncService.isSeriesOccurrence(
+                occurrence("x", "master", null, "2026-09-01T09:00:00", "2026-09-01T10:00:00")));
+        assertFalse(AccountCalendarSyncService.isSeriesOccurrence(
+                occurrence("x", "", "singleInstance", "2026-09-01T09:00:00", "2026-09-01T10:00:00")));
+        assertFalse(AccountCalendarSyncService.isSeriesOccurrence(
+                occurrence("x", null, null, "2026-09-01T09:00:00", "2026-09-01T10:00:00")),
+                "an event Graph sends with neither field is an ordinary event, not a series");
+    }
+
+    /** The one-off meeting — a workshop, a pitch, a first coffee — is exactly what is kept. */
+    @Test
+    void aSingleInstanceMeetingWithTheClientIsKept() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        var meeting = service.toMeeting(ME,
+                event("one-off", false, "2026-09-03T13:00:00", "2026-09-03T14:00:00",
+                        attendee("kim@acme.dk", "Kim Landgrebe")),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
+
+        assertNotNull(meeting);
+        assertEquals(0, tally.recurringDroppedCount());
+        assertEquals(0, tally.declinedDroppedCount());
+    }
+
+    @Test
+    void aDeclinedInvitationIsDroppedAndCounted() {
+        CalendarSyncTally tally = new CalendarSyncTally();
+        var meeting = service.toMeeting(ME,
+                withResponse(event("declined-1", false, "2026-09-03T13:00:00", "2026-09-03T14:00:00",
+                        attendee("kim@acme.dk", "Kim Landgrebe")), "declined"),
+                DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
+
+        assertNull(meeting, "a meeting the owner said no to is not one they attended");
+        assertEquals(1, tally.declinedDroppedCount());
+    }
+
+    /**
+     * Every other answer keeps the meeting. {@code notResponded} in particular: on
+     * production it was the most common status on real client meetings, because people
+     * attend without clicking accept, and dropping it would empty half the timeline on a
+     * guess.
+     */
+    @Test
+    void everyOtherAnswerToAnInvitationKeepsTheMeeting() {
+        for (String response : new String[]{"accepted", "tentativelyAccepted", "organizer", "notResponded", "none", null}) {
+            CalendarSyncTally tally = new CalendarSyncTally();
+            var meeting = service.toMeeting(ME,
+                    withResponse(event("evt-" + response, false, "2026-09-03T13:00:00", "2026-09-03T14:00:00",
+                            attendee("kim@acme.dk", "Kim Landgrebe")), response),
+                    DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
+            assertNotNull(meeting, "response " + response + " must keep the meeting");
+            assertEquals(0, tally.declinedDroppedCount());
+        }
+    }
+
+    /**
+     * The identity the timeline folds on. The same meeting in Jeppe's and Simon's mailboxes
+     * has different ids and the same iCalUId; the row has to carry the second.
+     */
+    @Test
+    void theMeetingsIdentityAcrossMailboxesIsStored() {
+        var meeting = toMeeting(event("evt-9", false, "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                attendee("mette@acme.dk", "Mette Kjær")));
+
+        assertNotNull(meeting);
+        assertEquals("ical-evt-9", meeting.icalUid());
+    }
+
+    /** Never cut to fit the column: a shortened identifier could fold two meetings into one. */
+    @Test
+    void anIdentityTheColumnCannotHoldIsStoredAsUnknownRatherThanCut() {
+        String tooLong = "x".repeat(AccountCalendarSyncService.MAX_ICAL_UID_LENGTH + 1);
+        var event = new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
+                "evt-long", tooLong, "singleInstance", null, false,
+                time("2026-09-12T09:00:00"), time("2026-09-12T10:00:00"), null,
+                List.of(attendee("mette@acme.dk", "Mette Kjær")));
+
+        var meeting = toMeeting(event);
+
+        assertNotNull(meeting);
+        assertNull(meeting.icalUid());
+        assertNull(AccountCalendarSyncService.icalUidOf(
+                new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
+                        "evt-blank", "   ", "singleInstance", null, false, null, null, null, List.of())));
     }
 
     // ------------------------------------------------------------------------
@@ -990,14 +1122,45 @@ class AccountCalendarSyncServiceTest {
                 null);
     }
 
+    /** A single-instance event with an identity and no recorded answer — the ordinary meeting. */
     private static GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event(
             String id, boolean cancelled, String start, String end,
             GraphCalendarClient.CalendarEventDetails.EventAttendee... attendees) {
         return new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
                 id,
+                "ical-" + id,
+                "singleInstance",
+                null,
                 cancelled,
                 start == null ? null : time(start),
                 end == null ? null : time(end),
+                null,
                 attendees.length == 0 ? List.of() : List.of(attendees));
+    }
+
+    /** One instance of a recurring series, as calendarView expands it. */
+    private static GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent occurrence(
+            String id, String seriesMasterId, String type, String start, String end,
+            GraphCalendarClient.CalendarEventDetails.EventAttendee... attendees) {
+        return new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
+                id,
+                "ical-" + id,
+                type,
+                seriesMasterId,
+                false,
+                start == null ? null : time(start),
+                end == null ? null : time(end),
+                null,
+                attendees.length == 0 ? List.of() : List.of(attendees));
+    }
+
+    /** The same event, with the mailbox owner's answer to the invitation filled in. */
+    private static GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent withResponse(
+            GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event, String response) {
+        return new GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent(
+                event.id(), event.iCalUId(), event.type(), event.seriesMasterId(), event.isCancelled(),
+                event.start(), event.end(),
+                response == null ? null : new GraphCalendarClient.AttendeeViewResponse.EventResponseStatus(response),
+                event.attendees());
     }
 }
