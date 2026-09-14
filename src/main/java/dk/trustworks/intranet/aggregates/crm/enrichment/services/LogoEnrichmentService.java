@@ -76,7 +76,9 @@ public class LogoEnrichmentService {
         if (s.type() != ClientType.CLIENT) {
             return Optional.of(record(s.uuid(), LogoEnrichmentStatus.SKIPPED, null, null, false));
         }
-        byte[] existing = photoService.findPhotoByRelatedUUID(s.uuid()).getFile();
+        // The row lookup inside needs a transaction on an executor thread; the S3 read it
+        // chains is one GET, so the connection is held for a moment, not a round-trip.
+        byte[] existing = QuarkusTransaction.requiringNew().call(() -> photoService.findPhotoByRelatedUUID(s.uuid()).getFile());
         if (existing != null && existing.length > 0) {
             return Optional.of(record(s.uuid(), LogoEnrichmentStatus.PRESENT, null, null, false));
         }

@@ -98,10 +98,19 @@ public class ClientEnrichmentRepository {
     // Reads
     // ------------------------------------------------------------------------
 
+    /**
+     * Every read below opens (or joins) a transaction. The jobs call them from executor and
+     * scheduler threads where no request-scoped session exists, and Hibernate refuses a
+     * query with neither a transaction nor a request context — the first staging rehearsal
+     * (2026-09-14) failed on the first queue read for that reason. A read-only transaction
+     * around one SELECT is a few milliseconds of pooled connection, never a round-trip.
+     */
+    @Transactional(Transactional.TxType.REQUIRED)
     public Optional<ClientEnrichment> find(String clientUuid) {
         return ClientEnrichment.findByIdOptional(clientUuid);
     }
 
+    @Transactional(Transactional.TxType.REQUIRED)
     public List<ClientEnrichment> findAll() {
         return ClientEnrichment.listAll();
     }
@@ -116,6 +125,7 @@ public class ClientEnrichmentRepository {
      * DISMISSED — wait for a person. Oldest attempt first, newest client first among the
      * untouched, so a client added yesterday is verified before one added in 2019.
      */
+    @Transactional(Transactional.TxType.REQUIRED)
     @SuppressWarnings("unchecked")
     public List<String> eligibleForCvr(int limit, LocalDateTime retryBefore) {
         if (limit <= 0) return List.of();
@@ -133,6 +143,7 @@ public class ClientEnrichmentRepository {
                 .getResultList();
     }
 
+    @Transactional(Transactional.TxType.REQUIRED)
     @SuppressWarnings("unchecked")
     public List<String> eligibleForLogo(int limit, LocalDateTime retryBefore) {
         if (limit <= 0) return List.of();
@@ -151,6 +162,7 @@ public class ClientEnrichmentRepository {
                 .getResultList();
     }
 
+    @Transactional(Transactional.TxType.REQUIRED)
     @SuppressWarnings("unchecked")
     public List<String> eligibleForSector(int limit, LocalDateTime retryBefore) {
         if (limit <= 0) return List.of();
@@ -170,6 +182,7 @@ public class ClientEnrichmentRepository {
     }
 
     /** Another client already carrying this CVR, if any. */
+    @Transactional(Transactional.TxType.REQUIRED)
     public Optional<Client> otherClientWithCvr(String cvr, String exceptClientUuid) {
         if (cvr == null || cvr.isBlank()) return Optional.empty();
         return Client.find("cvr = ?1 and uuid <> ?2", cvr.trim(), exceptClientUuid).firstResultOptional();
