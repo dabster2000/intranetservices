@@ -19,8 +19,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The derived account feed (CRM spec §3.2). Every row but one is something a system
@@ -340,6 +342,32 @@ public class AccountActivityService {
     /**
      * Meetings, with the attendees folded into the summary in one extra query rather than
      * one per meeting.
+     *
+     * <p><b>An attendee is named by the best name the feed has seen for their address, not
+     * by whatever this meeting's own row happened to carry.</b> Each consenting mailbox
+     * stores its own {@code account_meeting} row for the same real-world event, and
+     * Microsoft Graph does not answer the two mailboxes the same way: it returned
+     * {@code "MYGX (Malthe Yde Andreasen)"} to one and no display name at all to the other.
+     * Read per row, that produced two consecutive lines in the feed —
+     * <i>"Meeting with MYGX (Malthe Yde Andreasen) (Tobias)"</i> and
+     * <i>"Meeting with mygx@novonordisk.com (Kenn)"</i> — for one meeting with one person,
+     * and a reader has no way to tell that those are the same man. The unique key
+     * {@code (meeting_uuid, email)} means the duplicate cannot arise WITHIN one line, so
+     * this is a legibility fix rather than a double-count like the one in
+     * {@link AccountRelationshipService#collectMeetingEdges}; the resolution rule is
+     * deliberately the same one, shared rather than re-implemented, so the feed and the
+     * relationship graph can never disagree about what a person is called.
+     *
+     * <p>The names are resolved over the attendee rows of the meetings this call is
+     * returning, not over the client's entire history, because those rows are already being
+     * fetched and a second client-wide query to name people who appear only on meetings the
+     * feed is not showing would buy nothing a reader could see.
+     *
+     * <p>The ordering within a line is the same alphabetical-by-displayed-name it has
+     * always been, but it has to happen in Java now: the name is no longer a column the
+     * database can sort on. {@link String#CASE_INSENSITIVE_ORDER} rather than natural order
+     * keeps the old behaviour of {@code utf8mb4_general_ci}, where a bare lower-case
+     * address does not jump behind every capitalised name.
      */
     private List<AccountActivityDTO> meetingRows(String clientUuid, int limit) {
         Query meetings = em.createNativeQuery("""
@@ -357,22 +385,38 @@ public class AccountActivityService {
 
         List<String> uuids = meetingRows.stream().map(row -> asString(row[0])).toList();
         Query attendees = em.createNativeQuery("""
-                select meeting_uuid, coalesce(display_name, email)
+                select meeting_uuid, lower(email), display_name
                   from account_meeting_attendee
                  where meeting_uuid in (:uuids)
-                 order by meeting_uuid, coalesce(display_name, email)
                 """);
         attendees.setParameter("uuids", uuids);
-        Map<String, List<String>> namesByMeeting = new LinkedHashMap<>();
-        for (Object[] row : rowsOf(attendees)) {
-            namesByMeeting.computeIfAbsent(asString(row[0]), key -> new ArrayList<>()).add(asString(row[1]));
+        List<Object[]> attendeeRows = rowsOf(attendees);
+
+        List<String[]> named = new ArrayList<>(attendeeRows.size());
+        for (Object[] row : attendeeRows) {
+            named.add(new String[]{asString(row[1]), asString(row[2])});
+        }
+        Map<String, String> namesByEmail = AccountRelationshipService.bestExternalNames(named);
+
+        // A set, because resolving by address makes one new collision possible: two
+        // addresses of one person that carry the same display name were two attendee rows
+        // and are now one name, and "Meeting with Malthe, Malthe" is worse than the line it
+        // replaces.
+        Map<String, Set<String>> namesByMeeting = new LinkedHashMap<>();
+        for (Object[] row : attendeeRows) {
+            String name = AccountRelationshipService.externalNameOf(asString(row[1]), namesByEmail);
+            if (name == null) {
+                continue;
+            }
+            namesByMeeting.computeIfAbsent(asString(row[0]), key -> new LinkedHashSet<>()).add(name);
         }
 
         List<AccountActivityDTO> rows = new ArrayList<>();
         for (Object[] row : meetingRows) {
             String uuid = asString(row[0]);
             String actor = firstNameOf(asString(row[1]));
-            List<String> names = namesByMeeting.getOrDefault(uuid, List.of());
+            List<String> names = new ArrayList<>(namesByMeeting.getOrDefault(uuid, Set.of()));
+            names.sort(String.CASE_INSENSITIVE_ORDER);
             rows.add(new AccountActivityDTO(
                     "meeting:" + uuid,
                     "CALENDAR",

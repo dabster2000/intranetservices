@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.crm.account.services.AccountService;
 import dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSyncSummary;
 import dk.trustworks.intranet.aggregates.crm.calendar.model.AccountMeeting;
 import dk.trustworks.intranet.aggregates.crm.calendar.model.AccountMeetingAttendee;
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSyncTally.LearnedColleagueEmail;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.graph.GraphCalendarClient;
 import dk.trustworks.intranet.graph.GraphMailboxConcurrencyLimiter;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -43,18 +45,59 @@ import java.util.UUID;
  * registration holds tenant-wide {@code Calendars.ReadWrite} and could open any mailbox —
  * that list is the rule Intra imposes on itself, and this is the one place it has to hold.
  *
- * <h2>Which meetings</h2>
- * An event is kept only when at least one attendee's e-mail domain matches a
- * {@code client_domain} row. Everything else — internal meetings, personal appointments,
- * meetings with companies we do not serve — is dropped without being written anywhere.
- * Cancelled events are dropped too.
+ * <h2>Which meetings — four rules, and most of Graph's answer fails one of them</h2>
+ * An event has to survive all four to be written. On production this throws away roughly
+ * two thirds of everything Graph returns, which is the point: the meetings that matter
+ * were buried under the ones that do not.
+ *
+ * <ol>
+ *   <li><b>Somebody from a known client has to be in it.</b> At least one attendee's
+ *       e-mail domain must match a {@code client_domain} row. Internal meetings, personal
+ *       appointments and meetings with companies we do not serve are dropped without being
+ *       written anywhere. Cancelled and undated events are dropped here too.</li>
+ *
+ *   <li><b>Room and equipment attendees are not people</b> (decision D3). Graph marks them
+ *       {@code type="resource"}, and {@code "KIT-LLV-Modelokale-2@politi.dk"} on a client
+ *       domain would otherwise be drawn in the relationship graph as somebody the firm
+ *       knows at Rigspolitiet. They are dropped, and they no longer count towards
+ *       {@code attendeeCount} either — that number is the size of the room in PEOPLE.
+ *       Attendees known only by their e-mail address, with no display name at all, are
+ *       <b>kept</b>: politi.dk never sends display names, and dropping the nameless would
+ *       empty Rigspolitiet's whole relationship graph.</li>
+ *
+ *   <li><b>Our own consultants at the client are not client contacts</b> (decision D2). A
+ *       consultant placed at a client gets a mailbox there — {@code mygx@novonordisk.com}
+ *       is Malthe Yde Andreasen — so they arrived as EXTERNAL people the firm had "met"
+ *       and were drawn as the firm's network into its own account. An attendee is dropped
+ *       when the display name matches somebody employed here ON THE DAY OF THE MEETING, or
+ *       when the address is already known to be a colleague's (see
+ *       {@link CalendarFilterService}). <b>Employment is part of the rule, not an
+ *       optimisation</b>: a FORMER colleague now working at the client is one of the best
+ *       client contacts the firm has and must be kept — and the address branch asks the
+ *       same employment question about the same day, because a learned address says whose
+ *       a mailbox is and nothing at all about when. If dropping colleagues leaves the
+ *       event with no client-domain attendee at all, the whole meeting goes — 39 such
+ *       meetings on production.</li>
+ *
+ *   <li><b>Delivery is not sales</b> (decision D1). If the mailbox owner was on a contract
+ *       with the winning client on the day of the meeting, the meeting is dropped. A
+ *       consultant sitting at a client has standups, refinements and sprint reviews with
+ *       them all day; counted as client contact they made "who last saw them" answer with
+ *       a standup. The rule is a {@code contract_consultants} row whose date window
+ *       contains the meeting date — <b>contract status is deliberately ignored</b>, because
+ *       the date window is the record of when somebody actually sat there. 630 of 960
+ *       meetings on production, 158 of 206 on Novo Nordisk.</li>
+ * </ol>
  *
  * <h2>Transactions and Graph</h2>
  * A Graph round trip is never made while a transaction is open. A model or HTTP call
  * inside a transaction holds a pooled connection for its whole duration, which is the §P9
  * M1 rule the signal extractor already enforces; here it would hold one for the length of
  * ~100 mailbox reads. Each mailbox is: read (no transaction) → persist (its own short
- * transaction).
+ * transaction). The filters are loaded ONCE for the whole run, in their own transaction
+ * before the loop, for the same reason — and the learned colleague addresses are written
+ * inside the mailbox's existing short write transaction, never between it and the next
+ * Graph call.
  *
  * <h2>Windows</h2>
  * A mailbox with no meetings yet is read 12 months back — enough history for meeting
@@ -76,6 +119,13 @@ public class AccountCalendarSyncService {
     /** Graph's page cap for calendarView. Bigger asks are silently truncated anyway. */
     static final int PAGE_SIZE = 250;
 
+    /**
+     * The {@code attendee.type} Microsoft Graph puts on a meeting room or a piece of
+     * equipment. The other values are {@code required} and {@code optional}, and a null
+     * type is a normal attendee — Graph omits it on events created outside Outlook.
+     */
+    static final String RESOURCE_ATTENDEE_TYPE = "resource";
+
     private static final DateTimeFormatter GRAPH_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     @Inject
@@ -87,6 +137,9 @@ public class AccountCalendarSyncService {
 
     @Inject
     AccountService accountService;
+
+    @Inject
+    CalendarFilterService filterService;
 
     @Inject
     GraphMailboxConcurrencyLimiter limiter;
@@ -104,27 +157,39 @@ public class AccountCalendarSyncService {
     public CalendarSyncSummary syncAll() {
         if (!syncEnabled) {
             log.info("Account calendar sync is switched off (dk.trustworks.crm.calendar.sync.enabled=false)");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0);
+            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         Map<String, String> domainIndex = QuarkusTransaction.requiringNew().call(accountService::domainIndex);
         if (domainIndex.isEmpty()) {
             log.info("Account calendar sync: no client domains configured, nothing can be attributed");
-            return new CalendarSyncSummary(0, 0, 0, 0, 0);
+            return new CalendarSyncSummary(0, 0, 0, 0, 0, 0, 0, 0);
         }
+
+        // Contracts, colleagues and learned addresses: read once, used by every mailbox.
+        // Per mailbox these would be a hundred repetitions of the same answer, and they
+        // cannot be read at all once the Graph loop is running without breaking the rule
+        // that no transaction is open during a Graph call.
+        CalendarFilters filters = QuarkusTransaction.requiringNew().call(filterService::load);
 
         Set<String> mailboxes = QuarkusTransaction.requiringNew().call(consentService::consentedUserUuids);
         int eventsSeen = 0;
         int meetingsKept = 0;
         int attendees = 0;
         int failures = 0;
+        int deliveryFiltered = 0;
+        int colleagueFiltered = 0;
+        int emailsLearned = 0;
 
         for (String userUuid : mailboxes) {
             try {
-                MailboxResult result = syncMailbox(userUuid, domainIndex);
+                MailboxResult result = syncMailbox(userUuid, domainIndex, filters);
                 eventsSeen += result.eventsSeen();
                 meetingsKept += result.meetingsKept();
                 attendees += result.attendees();
+                deliveryFiltered += result.deliveryFiltered();
+                colleagueFiltered += result.colleagueFiltered();
+                emailsLearned += result.colleagueEmailsLearned();
             } catch (RuntimeException e) {
                 failures++;
                 // The message, not the stack, and never the event payload: a Graph error
@@ -133,22 +198,35 @@ public class AccountCalendarSyncService {
             }
         }
 
-        log.infof("Account calendar sync done: mailboxes=%d events=%d meetings=%d attendees=%d failures=%d",
-                mailboxes.size(), eventsSeen, meetingsKept, attendees, failures);
-        return new CalendarSyncSummary(mailboxes.size(), eventsSeen, meetingsKept, attendees, failures);
+        log.infof("Account calendar sync done: mailboxes=%d events=%d meetings=%d attendees=%d failures=%d "
+                        + "deliveryFiltered=%d colleagueFiltered=%d colleagueEmailsLearned=%d",
+                mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
+                deliveryFiltered, colleagueFiltered, emailsLearned);
+        return new CalendarSyncSummary(mailboxes.size(), eventsSeen, meetingsKept, attendees, failures,
+                deliveryFiltered, colleagueFiltered, emailsLearned);
     }
 
-    record MailboxResult(int eventsSeen, int meetingsKept, int attendees) { }
+    record MailboxResult(int eventsSeen,
+                         int meetingsKept,
+                         int attendees,
+                         int deliveryFiltered,
+                         int colleagueFiltered,
+                         int colleagueEmailsLearned) {
+
+        static MailboxResult nothing() {
+            return new MailboxResult(0, 0, 0, 0, 0, 0);
+        }
+    }
 
     /**
      * One mailbox. The Graph read happens with NO transaction held; the write is a separate
      * short one.
      */
-    MailboxResult syncMailbox(String userUuid, Map<String, String> domainIndex) {
+    MailboxResult syncMailbox(String userUuid, Map<String, String> domainIndex, CalendarFilters filters) {
         String principal = QuarkusTransaction.requiringNew().call(() -> mailboxAddressOf(userUuid));
         if (principal == null) {
             log.debugf("No mailbox address for %s — skipping", userUuid);
-            return new MailboxResult(0, 0, 0);
+            return MailboxResult.nothing();
         }
 
         boolean firstRun = QuarkusTransaction.requiringNew()
@@ -160,7 +238,7 @@ public class AccountCalendarSyncService {
         GraphCalendarClient.AttendeeViewResponse response;
         if (!limiter.tryAcquire(principal)) {
             log.warnf("Graph mailbox %s busy — skipping this run", userUuid);
-            return new MailboxResult(0, 0, 0);
+            return MailboxResult.nothing();
         }
         try {
             response = graphClient.calendarViewWithAttendees(
@@ -170,35 +248,68 @@ public class AccountCalendarSyncService {
         }
 
         if (response == null || response.value() == null || response.value().isEmpty()) {
-            return new MailboxResult(0, 0, 0);
+            return MailboxResult.nothing();
         }
 
+        CalendarSyncTally tally = new CalendarSyncTally();
         List<PendingMeeting> pending = new ArrayList<>();
         for (GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event : response.value()) {
-            PendingMeeting meeting = toMeeting(userUuid, event, domainIndex);
+            PendingMeeting meeting = toMeeting(userUuid, event, domainIndex, filters, tally);
             if (meeting != null) {
                 pending.add(meeting);
             }
         }
 
         int attendeeRows = pending.stream().mapToInt(meeting -> meeting.attendees().size()).sum();
-        if (!pending.isEmpty()) {
-            QuarkusTransaction.requiringNew().run(() -> persist(pending, now));
+        if (!pending.isEmpty() || tally.hasLearnedEmails()) {
+            // One transaction, opened after the last Graph call for this mailbox and closed
+            // before the next one. The learned addresses ride along in it rather than in a
+            // second transaction of their own: they are a by-product of the same pass and
+            // are worthless if the meetings they came from were not written.
+            QuarkusTransaction.requiringNew().run(() -> {
+                persist(pending, now);
+                filterService.rememberColleagueEmails(tally.learnedEmails(), now);
+            });
         }
-        return new MailboxResult(response.value().size(), pending.size(), attendeeRows);
+        return new MailboxResult(
+                response.value().size(),
+                pending.size(),
+                attendeeRows,
+                tally.deliveryDroppedCount(),
+                tally.colleagueOnlyDroppedCount(),
+                tally.newlyLearnedEmails());
     }
 
     /**
-     * Turns one Graph event into a meeting, or null when it is not one we keep: cancelled,
-     * undated, or with nobody from a known client in it.
+     * Turns one Graph event into a meeting, or null when it is not one we keep — the four
+     * rules in this class's javadoc, in the order they can be decided.
      *
      * <p>When attendees from two different clients are in the same meeting the one with
      * the most attendees wins. Splitting a meeting across accounts would double-count it in
-     * both, and attributing it to neither would lose it.
+     * both, and attributing it to neither would lose it. The delivery check is applied
+     * AFTER that winner is known, because "was the mailbox owner delivering" is a question
+     * about a specific client and there is no answer to it until the meeting has one.
+     *
+     * <p><b>Pure, and it has to stay that way.</b> No {@code EntityManager}, no Graph call,
+     * no clock: everything it needs arrives as an argument, which is what lets the fast
+     * tier hold the whole set of rules without booting Quarkus or a database. The
+     * consequence is {@code tally} — a colleague address identified here has to be WRITTEN,
+     * and the writing happens in the caller's transaction. Note that a meeting this method
+     * drops still teaches an address: the drop is precisely the evidence that the address
+     * belongs to one of ours.
+     *
+     * @param userUuid    the mailbox owner, and the person the delivery rule asks about
+     * @param event       one event from Graph's calendarView
+     * @param domainIndex {@code domain → clientUuid}, from {@code client_domain}
+     * @param filters     the run's contract index, colleague directory and known colleague
+     *                    addresses; its address set GROWS as this method identifies more
+     * @param tally       collects what was learned and why things were dropped
      */
     PendingMeeting toMeeting(String userUuid,
                              GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event,
-                             Map<String, String> domainIndex) {
+                             Map<String, String> domainIndex,
+                             CalendarFilters filters,
+                             CalendarSyncTally tally) {
         if (event == null || event.id() == null || Boolean.TRUE.equals(event.isCancelled())) {
             return null;
         }
@@ -207,11 +318,20 @@ public class AccountCalendarSyncService {
         if (start == null) {
             return null;
         }
+        // Every date question below is asked about the day of the MEETING, never about
+        // today: a meeting from eighteen months ago is judged against the contracts and
+        // the employments that were in force eighteen months ago.
+        LocalDate meetingDate = start.toLocalDate();
 
         Map<String, List<PendingAttendee>> byClient = new LinkedHashMap<>();
+        boolean sawClientAttendee = false;
         int attendeeCount = 0;
         if (event.attendees() != null) {
             for (GraphCalendarClient.CalendarEventDetails.EventAttendee attendee : event.attendees()) {
+                if (isResourceAttendee(attendee)) {
+                    // D3: a meeting room is not a person and must not be counted as one.
+                    continue;
+                }
                 attendeeCount++;
                 if (attendee == null || attendee.emailAddress() == null) {
                     continue;
@@ -226,17 +346,52 @@ public class AccountCalendarSyncService {
                 if (clientUuid == null) {
                     continue;
                 }
+                sawClientAttendee = true;
+
+                // D2, by name. The uuid is what makes this worth more than a boolean: it
+                // is written down against the address so the next run recognises it even
+                // when Graph sends no display name at all.
+                String displayName = attendee.emailAddress().name();
+                String colleagueUuid = filters.colleagues().colleagueUuidOn(displayName, meetingDate);
+                if (colleagueUuid != null) {
+                    boolean firstTimeThisRun = filters.rememberColleagueEmail(normalised, colleagueUuid);
+                    tally.learnedColleagueEmail(
+                            new LearnedColleagueEmail(normalised, colleagueUuid, displayName), firstTimeThisRun);
+                    continue;
+                }
+                // D2, by address. Covers the bare-address case the name rule cannot reach
+                // — and asks the SAME employment question, about the person the address is
+                // known to belong to. A date-blind address rule would quietly override the
+                // name rule's employment test and drop a former colleague's meetings for
+                // ever; production already holds that shape, in an address whose owner left
+                // on 2026-04-01 and which still appears on a meeting in June.
+                if (filters.isColleagueEmailOn(normalised, meetingDate)) {
+                    continue;
+                }
+
                 byClient.computeIfAbsent(clientUuid, key -> new ArrayList<>())
-                        .add(new PendingAttendee(normalised, attendee.emailAddress().name(), domain));
+                        .add(new PendingAttendee(normalised, displayName, domain));
             }
         }
         if (byClient.isEmpty()) {
+            if (sawClientAttendee) {
+                // The client's domain WAS in the room, but every address on it was one of
+                // ours. Two of our consultants comparing notes at the client site is not a
+                // meeting with the client.
+                tally.colleagueOnlyDropped();
+            }
             return null;
         }
 
         Map.Entry<String, List<PendingAttendee>> winner = byClient.entrySet().stream()
                 .max((a, b) -> Integer.compare(a.getValue().size(), b.getValue().size()))
                 .orElseThrow();
+
+        // D1, last: the winning client is the one the delivery question is about.
+        if (filters.delivery().isDelivering(winner.getKey(), userUuid, meetingDate)) {
+            tally.deliveryDropped();
+            return null;
+        }
 
         int minutes = end == null ? 0 : (int) Duration.between(start, end).toMinutes();
         return new PendingMeeting(
@@ -248,6 +403,20 @@ public class AccountCalendarSyncService {
                 Math.max(minutes, 0),
                 attendeeCount,
                 winner.getValue());
+    }
+
+    /**
+     * A room or a piece of equipment rather than a person (decision D3).
+     *
+     * <p>Case-insensitive because Graph's casing on this field is not something to bet the
+     * relationship graph on, and a null type is a normal attendee — it is omitted on events
+     * that were not created in Outlook, and reading a missing value as "resource" would
+     * silently delete real people.
+     */
+    static boolean isResourceAttendee(GraphCalendarClient.CalendarEventDetails.EventAttendee attendee) {
+        return attendee != null
+                && attendee.type() != null
+                && RESOURCE_ATTENDEE_TYPE.equalsIgnoreCase(attendee.type().trim());
     }
 
     /** Upsert: the deterministic uuid means a re-sync updates the row instead of adding one. */
