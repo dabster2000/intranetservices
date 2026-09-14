@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -40,7 +41,10 @@ import java.util.Set;
  *   <li><b>MET edges</b> — {@code account_meeting}: calendar metadata from mailboxes whose
  *       owners consented, attributed to this client by the attendee's e-mail domain. The
  *       weight is the number of meetings the two were both in; {@code lastMet} is the most
- *       recent.</li>
+ *       recent. <b>A person on this side IS their e-mail address</b>, not their display
+ *       name: each consenting mailbox stores its own copy of the same meeting and Graph
+ *       names the same attendee in one answer and not in the other, so grouping on the name
+ *       drew one human as two. See {@link #collectMeetingEdges}.</li>
  *   <li><b>KNOWS edges</b> — {@code account_signal}: a colleague wrote down how they know
  *       somebody, and that sentence is the edge's label. Weight 0, no date — it is an
  *       acquaintance, not a meeting, and drawing it as one would overstate it.</li>
@@ -195,29 +199,73 @@ public class AccountRelationshipService {
      * MET edges, aggregated in SQL: one row per (Trustworks person, external person) with a
      * count and the latest date. Doing the aggregation in the database rather than in Java
      * keeps a heavily-met account from loading thousands of attendee rows to count them.
+     *
+     * <p><b>The group is the e-mail address, never the display name.</b> This used to group
+     * on {@code coalesce(a.display_name, a.email)}, and on production data that counted one
+     * human as two people. The reason is structural, not a data accident:
+     * {@code account_meeting_attendee} is keyed {@code UNIQUE(meeting_uuid, email)} and
+     * EVERY consented mailbox writes its own {@code account_meeting} row for the same
+     * real-world event, so one meeting between two of us and one person at the client
+     * stores that person twice — and Microsoft Graph does not answer the two mailboxes
+     * identically. It handed {@code "MYGX (Malthe Yde Andreasen)"} to one mailbox and no
+     * display name at all to the other, so the same address sat in the table both as a name
+     * and as a bare address. The graph drew two external nodes for one man, "Who knows
+     * them" offered two chips for him, and {@link #MAX_EXTERNAL_PEOPLE} spent two of its
+     * twelve slots saying the same thing twice — on Novo Nordisk, where the slots are worth
+     * something.
+     *
+     * <p>So the address is the identity and the display name is only a label, resolved in a
+     * SECOND query by {@link #externalNameRows}. That query deliberately spans the WHOLE
+     * client rather than the {@code user_uuid} group a row belongs to: {@code externals} is
+     * keyed by NAME and has to stay that way, because a signal and a TrustLink connection
+     * carry no e-mail address at all and have nothing else to be keyed by. If Kenn's group
+     * resolved an address to a name and Tobias's group did not, the one person would enter
+     * that map under two keys again and nothing would have been fixed. Only the MEETING
+     * source changes here; how an external is identified everywhere else is untouched.
+     *
+     * <p>An address nobody ever named keeps the address as its name. That is not a
+     * fallback nobody meant to hit — politi.dk never sends display names at all, and
+     * dropping the people we know only by address would empty Rigspolitiet's whole
+     * relationship graph. It was decided explicitly that we draw them.
      */
     private void collectMeetingEdges(String clientUuid,
                                      Map<String, PersonDTO> trustworksPeople,
                                      Map<String, AccountRelationshipsDTO.ExternalPersonDTO> externals,
                                      List<AccountRelationshipsDTO.RelationEdgeDTO> edges) {
+        Map<String, String> namesByEmail = bestExternalNames(externalNameRows(clientUuid));
+
+        // count(distinct m.uuid) and max(m.occurred_at) are unchanged by the regroup: the
+        // two mailboxes' rows for one event are two DIFFERENT m.uuid, so the count was
+        // already counting the event twice before this and still is. That is the sync's
+        // one-row-per-mailbox shape and a separate matter from who the attendee is.
         Query query = em.createNativeQuery("""
                 select m.user_uuid,
-                       coalesce(a.display_name, a.email) as external_name,
-                       count(distinct m.uuid)            as meetings,
-                       max(m.occurred_at)                as last_met
+                       lower(a.email)         as email,
+                       count(distinct m.uuid) as meetings,
+                       max(m.occurred_at)     as last_met
                   from account_meeting m
                   join account_meeting_attendee a on a.meeting_uuid = m.uuid
                  where m.client_uuid = :clientUuid
-                 group by m.user_uuid, coalesce(a.display_name, a.email)
+                 group by m.user_uuid, lower(a.email)
                  order by meetings desc, last_met desc
                 """);
         query.setParameter("clientUuid", clientUuid);
+
+        // Keyed by (Trustworks person, drawn name) and merged, because the regroup makes one
+        // new case possible that the old name-grouping could not produce: two DIFFERENT
+        // addresses that carry the same display name are now two rows, and both are drawn
+        // at the same node. They must not become two identical lines between the same pair
+        // of people. Merging by the drawn name — rather than by uuid and address — is
+        // deliberate: the name is what the graph and the Overview card actually key on, so
+        // it is the only identity under which a doubled line would be visible.
+        Map<String, AccountRelationshipsDTO.RelationEdgeDTO> metEdges = new LinkedHashMap<>();
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
         for (Object[] row : rows) {
             String userUuid = row[0] == null ? null : row[0].toString();
-            String externalName = row[1] == null ? null : row[1].toString();
+            String externalName = externalNameOf(
+                    row[1] == null ? null : row[1].toString(), namesByEmail);
             if (userUuid == null || externalName == null || externalName.isBlank()) {
                 continue;
             }
@@ -237,15 +285,182 @@ public class AccountRelationshipService {
             externals.putIfAbsent(externalName,
                     new AccountRelationshipsDTO.ExternalPersonDTO(
                             externalName, null, PersonDTO.initialsOf(externalName), null));
-            edges.add(new AccountRelationshipsDTO.RelationEdgeDTO(
+            AccountRelationshipsDTO.RelationEdgeDTO edge = new AccountRelationshipsDTO.RelationEdgeDTO(
                     twPerson.name(),
                     externalName,
                     ((Number) row[2]).intValue(),
                     AccountActivityService.toLocalDate(row[3]),
                     null,
                     AccountRelationshipsDTO.RelationEdgeDTO.MET,
-                    null));
+                    null);
+            metEdges.merge(twPerson.name() + '\u0000' + externalName, edge,
+                    AccountRelationshipService::mergeMetEdges);
         }
+        // Insertion order is the query's order — most meetings first, then most recently
+        // met — which selectExternals relies on to rank people we have actually met.
+        edges.addAll(metEdges.values());
+    }
+
+    /**
+     * Two MET edges between the same pair, folded into one: the meetings add up and the
+     * later date wins.
+     *
+     * <p>Two rows arrive here for one of two reasons. Either one person at the client holds
+     * two e-mail addresses carrying the same display name — the one case
+     * {@link #collectMeetingEdges}'s regrouping makes newly visible — or this firm holds two
+     * {@code user} rows for one colleague, which it demonstrably does (Henrik Falch
+     * Midtgaard, Christian Ingemann) and which {@link #dropShadowedUnresolvedPeople} already
+     * treats as one person on screen for the same reason: an edge names its Trustworks end
+     * by NAME, so two edges under one name are one line drawn twice.
+     *
+     * <p>Adding the counts is the honest answer — those really were that many separate
+     * meetings — and it keeps the edge's weight the number it would have been under the old
+     * name-grouping, so nothing about the graph's ranking shifts where this occurs.
+     */
+    private static AccountRelationshipsDTO.RelationEdgeDTO mergeMetEdges(
+            AccountRelationshipsDTO.RelationEdgeDTO current,
+            AccountRelationshipsDTO.RelationEdgeDTO candidate) {
+        LocalDate lastMet = current.lastMet() == null ? candidate.lastMet()
+                : candidate.lastMet() == null ? current.lastMet()
+                : candidate.lastMet().isAfter(current.lastMet()) ? candidate.lastMet() : current.lastMet();
+        return new AccountRelationshipsDTO.RelationEdgeDTO(
+                current.twPersonName(),
+                current.externalName(),
+                current.meetings() + candidate.meetings(),
+                lastMet,
+                null,
+                AccountRelationshipsDTO.RelationEdgeDTO.MET,
+                null);
+    }
+
+    /**
+     * Every (e-mail, display name) pair this client's meetings ever recorded, one row per
+     * address, for {@link #bestExternalNames} to collapse.
+     *
+     * <p>Two filters run in SQL so the result stays one row per person rather than one per
+     * attendee row: a missing display name says nothing, and a display name that is only
+     * the address repeated back is not a name — Graph does that for a mailbox it cannot
+     * resolve, and letting it through would make "mygx@novonordisk.com" compete with
+     * "MYGX (Malthe Yde Andreasen)" to be the label for the same address.
+     *
+     * <p>{@code min(display_name)} picks between two real spellings of one person. The
+     * choice is arbitrary — nothing in the data says which mailbox's rendering of a name is
+     * the better one — but it MUST be deterministic, because an address that is labelled
+     * one way on one page load and another way on the next changes the key
+     * {@code externals} is stored under, and the graph would rearrange itself for no reason
+     * a reader could see. MIN is the cheapest stable answer and the database can do it
+     * while it is already grouping.
+     *
+     * <p>The same filters are applied again in {@link #bestExternalNames}. That is not
+     * belt-and-braces for its own sake: the SQL half needs a database and the fast tier
+     * cannot hold it, so the rule that decides what a person is called lives where a test
+     * can reach it, and the query is only there to keep the row count down.
+     */
+    private List<String[]> externalNameRows(String clientUuid) {
+        Query query = em.createNativeQuery("""
+                select lower(a.email)      as email,
+                       min(a.display_name) as display_name
+                  from account_meeting m
+                  join account_meeting_attendee a on a.meeting_uuid = m.uuid
+                 where m.client_uuid = :clientUuid
+                   and a.display_name is not null
+                   and lower(a.display_name) <> lower(a.email)
+                 group by lower(a.email)
+                """);
+        query.setParameter("clientUuid", clientUuid);
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+        List<String[]> named = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            named.add(new String[]{
+                    row[0] == null ? null : row[0].toString(),
+                    row[1] == null ? null : row[1].toString()});
+        }
+        return named;
+    }
+
+    /**
+     * The one name the graph draws for each external e-mail address on this client.
+     *
+     * <p>E-mail is the identity; the display name is a label that one mailbox happened to
+     * have and another did not (see {@link #collectMeetingEdges} for how that arises). This
+     * is where the two are reconciled: an address that was named ANYWHERE on the account is
+     * drawn under that name everywhere on the account, so it cannot enter the
+     * name-keyed {@code externals} map twice.
+     *
+     * <p>The rules, and why each one is here rather than left to the query:
+     * <ul>
+     *   <li>A blank or absent display name is not a name. The row says only that somebody
+     *       was in a meeting.</li>
+     *   <li>A display name equal to the address is not a name either — that is Graph
+     *       echoing back a mailbox it could not resolve, and treating it as a name would
+     *       let it win the MIN against a real one for the same address.</li>
+     *   <li>Two spellings of one address collapse to the lexicographically smaller, which
+     *       is the same arbitrary-but-stable pick {@code min(display_name)} makes in SQL.
+     *       The two must agree or the name would depend on which path produced it.</li>
+     *   <li>The key is lower-cased. {@code account_meeting_attendee} is
+     *       {@code utf8mb4_general_ci}, so the database already considers
+     *       {@code MYGX@novonordisk.com} and {@code mygx@novonordisk.com} the same address
+     *       inside one meeting; Java does not, and would split them back apart.
+     *       {@link java.util.Locale#ROOT} rather than the default locale because a Turkish
+     *       default would lower-case {@code I} to a dotless {@code ı} and quietly stop an
+     *       address matching itself.</li>
+     * </ul>
+     *
+     * <p>Pure and package-private so the DB-free tier that gates every deploy holds it. The
+     * failure it guards against is invisible to a compiler and to every integration test we
+     * have: the page renders, nothing throws, one person is simply drawn as two.
+     *
+     * @param rows (e-mail, display name) pairs, typically from {@link #externalNameRows}
+     * @return lower-cased e-mail to the name to draw; addresses nobody named are absent,
+     *         and {@link #externalNameOf} is what turns that absence into the address
+     */
+    static Map<String, String> bestExternalNames(List<String[]> rows) {
+        Map<String, String> best = new LinkedHashMap<>();
+        if (rows == null) {
+            return best;
+        }
+        for (String[] row : rows) {
+            if (row == null || row.length < 2) {
+                continue;
+            }
+            String email = row[0] == null ? null : row[0].trim().toLowerCase(Locale.ROOT);
+            String name = row[1] == null ? null : row[1].trim();
+            if (email == null || email.isEmpty() || name == null || name.isEmpty()) {
+                continue;
+            }
+            if (name.equalsIgnoreCase(email)) {
+                continue;
+            }
+            best.merge(email, name, (current, candidate) ->
+                    current.compareTo(candidate) <= 0 ? current : candidate);
+        }
+        return best;
+    }
+
+    /**
+     * What to call the person at an address: the name the account knows them by, or the
+     * address itself when the account has never seen a name for it.
+     *
+     * <p>The bare address is a legitimate answer, not a degraded one. Rigspolitiet's
+     * mailboxes send no display names at all, so every person the firm knows at politi.dk
+     * is known by address; it was decided explicitly that they are drawn rather than
+     * dropped, which is the whole reason this falls back instead of returning null.
+     *
+     * <p>The address is returned lower-cased, the same form it is keyed by, so that the two
+     * spellings of one mailbox cannot end up as two chips through this path either.
+     */
+    static String externalNameOf(String email, Map<String, String> namesByEmail) {
+        if (email == null) {
+            return null;
+        }
+        String key = email.trim().toLowerCase(Locale.ROOT);
+        if (key.isEmpty()) {
+            return null;
+        }
+        String name = namesByEmail == null ? null : namesByEmail.get(key);
+        return name != null ? name : key;
     }
 
     /**
