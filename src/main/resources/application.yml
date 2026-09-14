@@ -550,6 +550,49 @@ dk:
           # a night with no signal that the number had gone nowhere. If you touch either store,
           # check the other in the same change.
           nightly-account-cap: ${CRM_RETENTION_PURGE_CAP:10}
+      # ---- Nightly client enrichment (V610): CVR verification, logo hunt, sector check ----
+      # Three jobs in one 04:00 Copenhagen pass (ClientEnrichmentJob), each under its own
+      # per-night cap, plus the on-edit sector check (ClientSectorVerifyConsumer).
+      #
+      # TWO SWITCHES AND A GATE. `enabled` here is the deploy-time kill switch (env var);
+      # the app_settings row 'crm.enrichment.enabled' (seeded 'true' by V610) is the
+      # runtime one, flipped through PUT /app-settings without a deploy. Both must be on.
+      # The nightly cron ALSO refuses where dk.trustworks.environment.id is `staging`:
+      # staging's database is a nightly copy of production's and it shares production's
+      # S3 bucket, Virkdata key and OpenAI key, so the cron there would redo production's
+      # work every night for ever. POST /clients/enrichment/run ignores that gate, which is
+      # how a run is rehearsed on staging.
+      #
+      # The caps were chosen small on purpose (20 CVR, 10 logos, 20 sectors a night): the
+      # backlog clears in two to three weeks and one bad night cannot burn the Virkdata
+      # quota or a few hundred image generations. Raise per environment with the env vars.
+      enrichment:
+        enabled: ${CRM_ENRICHMENT_ENABLED:true}
+        # reasoning.effort for the three model calls (all reasoning-class by default). An
+        # EMPTY value omits the node — required if any *-model below is ever pointed at a
+        # non-reasoning (gpt-4o-family) model. Optional<String> at the injection point for
+        # the SRCFG00040 reason documented on every other reasoning-effort key in this file.
+        reasoning-effort: ${CRM_ENRICHMENT_REASONING_EFFORT:low}
+        cvr:
+          nightly-cap: ${CRM_ENRICHMENT_CVR_CAP:20}
+          # A FAILED lookup (registry error, not "unknown CVR") is retried after this many days.
+          retry-after-days: ${CRM_ENRICHMENT_CVR_RETRY_DAYS:7}
+          # Finds the CVR of a client that has none, with web search. The registry verifies
+          # every proposal before anything is written (CvrEnrichmentService).
+          finder-model: ${CRM_ENRICHMENT_CVR_FINDER_MODEL:gpt-5.6-terra}
+        logo:
+          nightly-cap: ${CRM_ENRICHMENT_LOGO_CAP:10}
+          retry-after-days: ${CRM_ENRICHMENT_LOGO_RETRY_DAYS:14}
+          # Finds a direct image URL, with web search; SafeImageDownloader fetches it.
+          finder-model: ${CRM_ENRICHMENT_LOGO_FINDER_MODEL:gpt-5.6-terra}
+          # Draws a logo when nothing usable was found online (POST /v1/images/generations).
+          image-model: ${CRM_ENRICHMENT_LOGO_IMAGE_MODEL:gpt-image-1}
+          # The most a found logo may weigh before the download is cut off.
+          max-download-bytes: ${CRM_ENRICHMENT_LOGO_MAX_BYTES:5242880}
+        sector:
+          nightly-cap: ${CRM_ENRICHMENT_SECTOR_CAP:20}
+          retry-after-days: ${CRM_ENRICHMENT_SECTOR_RETRY_DAYS:7}
+          model: ${CRM_ENRICHMENT_SECTOR_MODEL:gpt-5.6-terra}
     expense:
       # Slack DM to the employee when an expense lands on them (AI block or
       # accounting send-back), plus the Monday reminder digest.
