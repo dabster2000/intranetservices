@@ -279,6 +279,15 @@ public class ClientResource {
         // Load old state for change logging
         Client oldClient = clientAPI.findByUuid(client.getUuid());
 
+        // A row merged into another client (V615) is a forwarding address, not a client. An
+        // edit landing on it would revive a company the merge put back together on purpose.
+        if (oldClient != null && oldClient.isMerged()) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity(Map.of("error", oldClient.getName() + " was merged into another client and can no longer be edited",
+                            "mergedIntoUuid", oldClient.getMergedIntoUuid()))
+                    .build();
+        }
+
         // PROSPECT → CLIENT is a promotion somebody may make by hand (filling the billing
         // details early is exactly what the account page offers a link for). The reverse
         // is refused: a company we have billed is a customer for ever, and a form that

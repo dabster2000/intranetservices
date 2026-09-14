@@ -63,6 +63,11 @@ public final class Permissions {
             new Permission("accounts:write", "Accounts — write", "CRM"),
             new Permission("bids:read", "Bids — read", "CRM"),
             new Permission("bids:write", "Bids — write", "CRM"),
+            // Merging a duplicate client into the right one (2026-09-14, V615,
+            // docs/specs/crm-client-merge-2026-09-14.md §7). Not crm:write: a merge
+            // repoints invoices and contracts, and its e-conomic consequence is a
+            // bookkeeping act. Granted to the roles that can book invoices.
+            new Permission("clients:merge", "Clients — merge duplicates", "CRM"),
 
             // Contracts
             new Permission("contracts:read", "Contracts — read", "Contracts"),

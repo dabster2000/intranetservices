@@ -31,7 +31,8 @@ public class ClientNewsRepository {
                 SELECT c.uuid, c.name, c.cvr FROM client c
                 JOIN client_plan p ON p.client_uuid=c.uuid AND p.status='ACTIVE'
                 LEFT JOIN client_news_state n ON n.client_uuid=c.uuid
-                WHERE c.type='CLIENT' ORDER BY COALESCE(n.last_successful_check_at, '1970-01-01'), c.uuid
+                WHERE c.type='CLIENT' AND c.merged_into_uuid IS NULL
+                ORDER BY COALESCE(n.last_successful_check_at, '1970-01-01'), c.uuid
                 """).getResultList();
         return rows.stream().map(r -> new Identity((String) r[0], (String) r[1], (String) r[2])).toList();
     }

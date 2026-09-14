@@ -106,7 +106,7 @@ public class QuestionnaireService {
                 .distinct()
                 .count();
 
-        long totalClients = Client.count();
+        long totalClients = Client.count(Client.NOT_MERGED);
 
         int coveragePercent = totalClients > 0
                 ? (int) Math.round((double) uniqueClients / totalClients * 100)

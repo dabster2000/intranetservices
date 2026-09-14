@@ -112,13 +112,29 @@ public class ClientEnrichmentService {
         return out;
     }
 
-    /** A client with no row yet answers with its seeded state, without writing one. */
+    /**
+     * A client with no row yet answers with its seeded state, without writing one.
+     *
+     * <p>A {@code DUPLICATE} row also names the client that carries the CVR, so the account
+     * page can offer the merge (crm-client-merge spec D6). Resolved here and not on the
+     * list read: one lookup per page, not one per row.
+     */
     public ClientEnrichmentDTO read(String clientUuid) {
         Optional<ClientEnrichment> row = repository.find(clientUuid);
-        if (row.isPresent()) return ClientEnrichmentDTO.of(row.get());
+        if (row.isPresent()) return withDuplicateOf(ClientEnrichmentDTO.of(row.get()), row.get());
         Client client = Client.findById(clientUuid);
         if (client == null) throw new WebApplicationException("Client not found", 404);
         return ClientEnrichmentDTO.of(ClientEnrichmentRepository.initialState(client));
+    }
+
+    private ClientEnrichmentDTO withDuplicateOf(ClientEnrichmentDTO dto, ClientEnrichment row) {
+        if (row.cvrStatus() != CvrEnrichmentStatus.DUPLICATE) return dto;
+        Client client = Client.findById(row.getClientUuid());
+        if (client == null) return dto;
+        String cvr = client.getCvr() != null && !client.getCvr().isBlank() ? client.getCvr() : row.getCvrCandidate();
+        return repository.otherClientWithCvr(cvr, client.getUuid())
+                .map(other -> dto.withDuplicateOf(other.getUuid(), other.getName()))
+                .orElse(dto);
     }
 
     public boolean isRunning() {

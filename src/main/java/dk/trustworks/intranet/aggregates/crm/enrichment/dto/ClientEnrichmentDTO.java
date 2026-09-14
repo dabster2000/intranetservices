@@ -25,8 +25,16 @@ public record ClientEnrichmentDTO(
         boolean needsAttention,
         List<String> attention) {
 
+    /**
+     * @param duplicateOfUuid when the status is {@code DUPLICATE}: the client that already
+     *                        carries the CVR, so the account page can offer to merge this
+     *                        row into it (spec D6). Resolved by
+     *                        {@code ClientEnrichmentService.read} for one client; null on
+     *                        the list read and for every other status.
+     */
     public record CvrPart(String status, LocalDateTime checkedAt, LocalDateTime verifiedAt,
-                          String candidateCvr, String candidateName, String candidateSource, String error) {}
+                          String candidateCvr, String candidateName, String candidateSource, String error,
+                          String duplicateOfUuid, String duplicateOfName) {}
 
     public record LogoPart(String status, LocalDateTime checkedAt, String sourceUrl, String error) {}
 
@@ -55,11 +63,21 @@ public record ClientEnrichmentDTO(
         return new ClientEnrichmentDTO(
                 row.getClientUuid(),
                 new CvrPart(cvr.name(), row.getCvrCheckedAt(), row.getCvrVerifiedAt(),
-                        row.getCvrCandidate(), row.getCvrCandidateName(), row.getCvrCandidateSource(), row.getCvrError()),
+                        row.getCvrCandidate(), row.getCvrCandidateName(), row.getCvrCandidateSource(), row.getCvrError(),
+                        null, null),
                 new LogoPart(logo.name(), row.getLogoCheckedAt(), row.getLogoSourceUrl(), row.getLogoError()),
                 new SectorPart(sector.name(), row.getSectorCheckedAt(), row.getSectorAiSegment(),
                         row.getSectorConfidence() == null ? null : row.getSectorConfidence().doubleValue(), row.getSectorReason()),
                 !attention.isEmpty(),
                 List.copyOf(attention));
+    }
+
+    /** The same answer, naming the client that already carries the CVR (status DUPLICATE). */
+    public ClientEnrichmentDTO withDuplicateOf(String otherUuid, String otherName) {
+        CvrPart c = cvr;
+        return new ClientEnrichmentDTO(clientUuid,
+                new CvrPart(c.status(), c.checkedAt(), c.verifiedAt(), c.candidateCvr(), c.candidateName(),
+                        c.candidateSource(), c.error(), otherUuid, otherName),
+                logo, sector, needsAttention, attention);
     }
 }

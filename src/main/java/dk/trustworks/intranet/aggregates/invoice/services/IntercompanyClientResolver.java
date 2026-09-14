@@ -48,6 +48,6 @@ public class IntercompanyClientResolver {
             return Optional.empty();
         }
         // Parameter-bound query — never concatenate the CVR value (security §1).
-        return Client.find("cvr = ?1", cvr).firstResultOptional();
+        return Client.find("cvr = ?1 and " + Client.NOT_MERGED, cvr).firstResultOptional();
     }
 }

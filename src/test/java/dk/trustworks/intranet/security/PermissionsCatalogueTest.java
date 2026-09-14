@@ -65,9 +65,15 @@ class PermissionsCatalogueTest {
      * is split from {@code signals:write} because capture is open to every
      * employee and deciding commits the firm's time; which signals a person
      * may decide is an ownership check in the service, since a scope cannot
-     * express "the owner of this particular account".
+     * express "the owner of this particular account";
+     * 101 since merging a duplicate client got its own key,
+     * {@code clients:merge} (2026-09-14, V615, crm-client-merge spec §7).
+     * {@code crm:write} could not carry it: a merge repoints invoices and
+     * contracts and leaves e-conomic customers to deactivate by hand, which
+     * is a bookkeeping act. Granted to whoever holds {@code invoices:write}
+     * — the SELECT in V615 reads the live grants rather than naming roles.
      */
-    private static final int EXPECTED_PERMISSIONS = 100;
+    private static final int EXPECTED_PERMISSIONS = 101;
 
     @Test
     void catalogueHoldsExpectedNumberOfPermissions() {

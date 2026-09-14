@@ -28,10 +28,22 @@ public class ClientService {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    /**
+     * Every client that still is one. A row merged into another
+     * ({@link Client#NOT_MERGED}) is left out here and in every other listing, search and
+     * dedup lookup below: a tombstone is not a client anybody may pick, and a name match
+     * against one would quietly revive a company that was put back together on purpose.
+     */
     public List<Client> listAllClients() {
-        return Client.listAll(Sort.ascending("name"));
+        return Client.list(Client.NOT_MERGED, Sort.ascending("name"));
     }
 
+    /**
+     * By uuid, INCLUDING a merged row. This is the one read that must still answer for a
+     * tombstone: a bookmarked account page or a cached uuid gets the row back with
+     * {@code mergedIntoUuid} set, and the page forwards. Every listing goes through the
+     * filtered methods instead.
+     */
     public Client findByUuid(String uuid) {
         return Client.findById(uuid);
     }
@@ -40,7 +52,7 @@ public class ClientService {
      * Lists clients filtered by type.
      */
     public List<Client> listByType(ClientType type) {
-        return Client.list("type = ?1", Sort.ascending("name"), type);
+        return Client.list("type = ?1 and " + Client.NOT_MERGED, Sort.ascending("name"), type);
     }
 
     /**
@@ -59,13 +71,17 @@ public class ClientService {
         if (types == null || types.isEmpty()) {
             return List.of();
         }
-        return Client.list("type in ?1", Sort.ascending("name"), List.copyOf(types));
+        return Client.list("type in ?1 and " + Client.NOT_MERGED, Sort.ascending("name"), List.copyOf(types));
     }
 
     @Transactional
     public Client save(Client client) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         client.setUuid(UUID.randomUUID().toString());
+        // The tombstone is written by ClientMergeService alone. The entity is the request
+        // body here, so a caller could otherwise create a client already merged away.
+        client.setMergedIntoUuid(null);
+        client.setMergedAt(null);
         if(client.getManaged() == null || client.getManaged().isBlank()) {
             log.warnf("Client managed field is blank for new client name=%s, defaulting to INTRA, user=%s",
                     client.getName(), userUuid);
@@ -124,11 +140,11 @@ public class ClientService {
     }
 
     public Client findByCvr(String cvr) {
-        return Client.find("cvr", cvr).firstResult();
+        return Client.find("cvr = ?1 and " + Client.NOT_MERGED, cvr).firstResult();
     }
 
     public Client findByExactNameIgnoreCase(String name) {
-        return Client.find("LOWER(name) = LOWER(?1)", name).firstResult();
+        return Client.find("LOWER(name) = LOWER(?1) and " + Client.NOT_MERGED, name).firstResult();
     }
 
     /**
@@ -194,7 +210,7 @@ public class ClientService {
         }
         if (name != null && !name.isBlank()) {
             String sanitized = escapeLikeWildcards(name.trim());
-            return Client.list("LOWER(name) LIKE LOWER(?1) ORDER BY " +
+            return Client.list("LOWER(name) LIKE LOWER(?1) and " + Client.NOT_MERGED + " ORDER BY " +
                     "CASE WHEN LOWER(name) = LOWER(?2) THEN 0 ELSE 1 END, name",
                     "%" + sanitized + "%", name.trim());
         }

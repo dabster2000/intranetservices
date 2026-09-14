@@ -33,7 +33,7 @@ public class BudgetCalculatingExecutor {
     @ActivateRequestContext
     @Transactional
     void init() {
-        clientList = Client.listAll();
+        clientList = Client.list(Client.NOT_MERGED);
     }
 
     /**
