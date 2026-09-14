@@ -132,6 +132,7 @@ public class ClientEnrichmentService {
     @ActivateRequestContext
     public ClientEnrichmentDTO acceptCvrCandidate(String clientUuid) {
         requireEnabled();
+        requireRegistryAllowed();
         cvrService.acceptCandidate(clientUuid);
         return read(clientUuid);
     }
@@ -156,6 +157,7 @@ public class ClientEnrichmentService {
     @ActivateRequestContext
     public ClientEnrichmentDTO retry(String clientUuid, Job job) {
         requireEnabled();
+        if (job == Job.CVR) requireRegistryAllowed();
         QuarkusTransaction.requiringNew().run(() -> {
             ClientEnrichment row = repository.ensure(clientUuid);
             if (row == null) throw new WebApplicationException("Client not found", 404);
@@ -353,8 +355,15 @@ public class ClientEnrichmentService {
      * {@code false} when a run holds the lock; a switch that is off throws so the caller can
      * say which.
      */
-    public boolean runManual(Set<Job> jobs, String actor) {
+    public boolean runManual(Set<Job> requested, String actor) {
         requireEnabled();
+        // Staging never calls the registry. A request naming only CVR is refused so the
+        // caller learns why; one naming several jobs runs the others.
+        Set<Job> jobs = EnumSet.copyOf(requested);
+        if (!config.registryCallsAllowedHere() && jobs.remove(Job.CVR)) {
+            log.infof("CVR pass dropped from the manual run: environment %s must not call the CVR registry", config.environmentId());
+            if (jobs.isEmpty()) requireRegistryAllowed();
+        }
         if (!running.compareAndSet(false, true)) return false;
         try {
             executor.submit(() -> {
@@ -409,7 +418,14 @@ public class ClientEnrichmentService {
         int seeded = repository.seedMissingRows();
         if (seeded > 0) log.infof("Client enrichment seeded %d client rows", seeded);
         LocalDateTime now = LocalDateTime.now();
-        if (jobs.contains(Job.CVR)) runCvr(now);
+        if (jobs.contains(Job.CVR)) {
+            if (config.registryCallsAllowedHere()) {
+                runCvr(now);
+            } else {
+                log.infof("CVR pass skipped: environment %s must not call the CVR registry (the key and its daily quota are production's)",
+                        config.environmentId());
+            }
+        }
         if (jobs.contains(Job.SECTOR)) runSector(now);
         if (jobs.contains(Job.LOGO)) runLogo(now);
         log.infof("Client enrichment run finished (%s)", trigger);
@@ -514,6 +530,13 @@ public class ClientEnrichmentService {
     private void requireEnabled() {
         if (!config.enabled()) throw new WebApplicationException("Client enrichment is disabled on this environment", 412);
         if (!featureFlag.isEnabled()) throw new WebApplicationException("Client enrichment is switched off (crm.enrichment.enabled)", 412);
+    }
+
+    private void requireRegistryAllowed() {
+        if (!config.registryCallsAllowedHere()) {
+            throw new WebApplicationException("The CVR registry is not called from " + config.environmentId()
+                    + " — its key and daily quota are production's", 412);
+        }
     }
 
     public static Optional<Job> parseJob(String raw) {

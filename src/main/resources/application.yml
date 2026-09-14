@@ -577,7 +577,10 @@ dk:
       # staging's database is a nightly copy of production's and it shares production's
       # S3 bucket, Virkdata key and OpenAI key, so the cron there would redo production's
       # work every night for ever. POST /clients/enrichment/run ignores that gate, which is
-      # how a run is rehearsed on staging.
+      # how a run is rehearsed on staging — EXCEPT for the CVR pass: staging never calls the
+      # CVR registry at all (not nightly, not manually, not from a retry or an accept),
+      # because Virkdata's daily quota is shared with the client form's Look up button in
+      # production and one staging rehearsal spent it in two minutes (2026-09-14).
       #
       # The caps were chosen small on purpose (20 CVR, 10 logos, 20 sectors a night): the
       # backlog clears in two to three weeks and one bad night cannot burn the Virkdata
