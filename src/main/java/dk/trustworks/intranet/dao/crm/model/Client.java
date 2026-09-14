@@ -86,6 +86,33 @@ public class Client extends PanacheEntityBase {
     @Column(name = "company_desc", length = 100)
     private String companyDesc;
 
+    /**
+     * The tombstone (V615). Set when this row was merged into another client: everything
+     * that referenced it now references {@code mergedIntoUuid}, and every listing filters
+     * this row out ({@link #NOT_MERGED}). The row itself stays so a stale link or a cached
+     * uuid still resolves — and answers with where the company went. Never set through
+     * the create or update endpoints: {@code ClientService.save} blanks it and
+     * {@code ClientService.updateOne} does not list it.
+     */
+    @Column(name = "merged_into_uuid", length = 36)
+    private String mergedIntoUuid;
+
+    @Column(name = "merged_at")
+    private LocalDateTime mergedAt;
+
+    /**
+     * The Panache predicate every client listing carries. A merged row is not a client
+     * anybody may pick, search for, dedup against or enrich; it exists only to answer
+     * {@code findById} with a forwarding address.
+     */
+    public static final String NOT_MERGED = "mergedIntoUuid is null";
+
+    /** Derived from {@link #mergedIntoUuid}; not serialised — the uuid says it and says where. */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public boolean isMerged() {
+        return mergedIntoUuid != null && !mergedIntoUuid.isBlank();
+    }
+
     @Transient private List<Project> projects;
 
     public Client() {

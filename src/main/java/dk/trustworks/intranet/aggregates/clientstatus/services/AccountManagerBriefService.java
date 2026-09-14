@@ -93,6 +93,7 @@ public class AccountManagerBriefService {
                 SELECT c.uuid, c.name
                 FROM client c
                 WHERE c.accountmanager = :am
+                  AND c.merged_into_uuid IS NULL
                 """, Tuple.class)
                 .setParameter("am", accountManagerUuid)
                 .getResultList();

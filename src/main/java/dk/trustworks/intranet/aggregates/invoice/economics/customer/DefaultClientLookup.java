@@ -11,14 +11,16 @@ import java.util.Optional;
  * Default Panache-backed {@link ClientLookup}. Lists all clients regardless
  * of {@code type} or {@code active} — the pairing UI shows CLIENT and PARTNER
  * rows side-by-side and includes inactive clients so admins can pair/unpair
- * them too.
+ * them too. A client merged into another (V615) is not offered: its e-conomic
+ * mappings moved or were orphaned with the merge, and pairing a tombstone would
+ * bring one back.
  */
 @ApplicationScoped
 public class DefaultClientLookup implements ClientLookup {
 
     @Override
     public List<Client> listAll() {
-        return Client.listAll(Sort.ascending("name"));
+        return Client.list(Client.NOT_MERGED, Sort.ascending("name"));
     }
 
     @Override

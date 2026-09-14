@@ -79,6 +79,7 @@ public class ClientEnrichmentRepository {
                 FROM client c
                 LEFT JOIN client_enrichment e ON e.client_uuid = c.uuid
                 WHERE e.client_uuid IS NULL
+                  AND c.merged_into_uuid IS NULL
                 """).executeUpdate();
     }
 
@@ -146,8 +147,9 @@ public class ClientEnrichmentRepository {
                 SELECT e.client_uuid
                 FROM client_enrichment e
                 JOIN client c ON c.uuid = e.client_uuid
-                WHERE e.cvr_status = 'PENDING'
-                   OR (e.cvr_status = 'FAILED' AND (e.cvr_checked_at IS NULL OR e.cvr_checked_at < :retryBefore))
+                WHERE (e.cvr_status = 'PENDING'
+                   OR (e.cvr_status = 'FAILED' AND (e.cvr_checked_at IS NULL OR e.cvr_checked_at < :retryBefore)))
+                  AND c.merged_into_uuid IS NULL
                 ORDER BY COALESCE(e.cvr_checked_at, '1970-01-01'),
                          CASE WHEN c.type = 'PROSPECT' THEN 1 ELSE 0 END,
                          c.created DESC,
@@ -168,6 +170,7 @@ public class ClientEnrichmentRepository {
                 FROM client_enrichment e
                 JOIN client c ON c.uuid = e.client_uuid
                 WHERE c.type = 'CLIENT'
+                  AND c.merged_into_uuid IS NULL
                   AND (e.logo_status = 'PENDING'
                        OR (e.logo_status = 'FAILED' AND (e.logo_checked_at IS NULL OR e.logo_checked_at < :retryBefore)))
                 ORDER BY COALESCE(e.logo_checked_at, '1970-01-01'), c.created DESC, c.uuid
@@ -187,6 +190,7 @@ public class ClientEnrichmentRepository {
                 FROM client_enrichment e
                 JOIN client c ON c.uuid = e.client_uuid
                 WHERE (c.segment IS NULL OR c.segment = 'OTHER')
+                  AND c.merged_into_uuid IS NULL
                   AND (e.sector_status = 'PENDING'
                        OR (e.sector_status = 'FAILED' AND (e.sector_checked_at IS NULL OR e.sector_checked_at < :retryBefore)))
                 ORDER BY COALESCE(e.sector_checked_at, '1970-01-01'), c.created DESC, c.uuid
@@ -197,10 +201,14 @@ public class ClientEnrichmentRepository {
                 .getResultList();
     }
 
-    /** Another client already carrying this CVR, if any. */
+    /**
+     * Another client already carrying this CVR, if any. A row merged away does not count:
+     * after a merge the survivor would otherwise be marked DUPLICATE against its own
+     * tombstone every night.
+     */
     @Transactional(Transactional.TxType.REQUIRED)
     public Optional<Client> otherClientWithCvr(String cvr, String exceptClientUuid) {
         if (cvr == null || cvr.isBlank()) return Optional.empty();
-        return Client.find("cvr = ?1 and uuid <> ?2", cvr.trim(), exceptClientUuid).firstResultOptional();
+        return Client.find("cvr = ?1 and uuid <> ?2 and " + Client.NOT_MERGED, cvr.trim(), exceptClientUuid).firstResultOptional();
     }
 }

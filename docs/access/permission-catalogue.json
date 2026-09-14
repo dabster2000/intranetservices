@@ -1,7 +1,7 @@
 {
   "generatedFrom": "dk.trustworks.intranet.security.Permissions",
   "generator": "dk.trustworks.intranet.security.PermissionCatalogueJson",
-  "count": 100,
+  "count": 101,
   "permissions": [
     { "key": "accounting:read", "displayName": "Accounting — read", "category": "Accounting" },
     { "key": "accounting:write", "displayName": "Accounting — write", "category": "Accounting" },
@@ -25,6 +25,7 @@
     { "key": "capacity:read", "displayName": "Capacity — read", "category": "Capacity" },
     { "key": "careerlevel:read", "displayName": "Career level — read", "category": "Career level" },
     { "key": "careerlevel:write", "displayName": "Career level — write", "category": "Career level" },
+    { "key": "clients:merge", "displayName": "Clients — merge duplicates", "category": "CRM" },
     { "key": "companies:read", "displayName": "Companies — read", "category": "Companies" },
     { "key": "competence:approve", "displayName": "Competence — approve", "category": "Competence" },
     { "key": "competence:read", "displayName": "Competence — read", "category": "Competence" },

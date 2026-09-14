@@ -67,6 +67,8 @@ public class ClientActivityLog extends PanacheEntityBase {
     // --- Action constants ---
     public static final String ACTION_CREATED = "CREATED";
     public static final String ACTION_MODIFIED = "MODIFIED";
+    /** A duplicate client was merged (V615): on the winner, {@code merged_from}; on the tombstone, {@code merged_into}. */
+    public static final String ACTION_MERGED = "MERGED";
     public static final String ACTION_DELETED = "DELETED";
 
     // --- Panache finder methods ---

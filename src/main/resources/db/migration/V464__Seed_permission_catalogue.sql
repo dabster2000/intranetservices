@@ -76,6 +76,9 @@ INSERT INTO permission (permission_key, display_name, description, category, ori
   VALUES ('careerlevel:write', 'Career level — write', NULL, 'Career level', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
+  VALUES ('clients:merge', 'Clients — merge duplicates', NULL, 'CRM', 'CODE', 'ACTIVE')
+  ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
+INSERT INTO permission (permission_key, display_name, description, category, origin, state)
   VALUES ('companies:read', 'Companies — read', NULL, 'Companies', 'CODE', 'ACTIVE')
   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), category = VALUES(category);
 INSERT INTO permission (permission_key, display_name, description, category, origin, state)
