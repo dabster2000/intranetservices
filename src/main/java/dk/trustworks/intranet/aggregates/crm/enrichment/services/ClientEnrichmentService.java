@@ -10,6 +10,8 @@ import dk.trustworks.intranet.aggregates.crm.enrichment.model.enums.SectorEnrich
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import dk.trustworks.intranet.scheduling.SchedulerShutdownGuard;
+import io.quarkus.arc.Arc;
+import io.quarkus.arc.ManagedContext;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -150,13 +152,13 @@ public class ClientEnrichmentService {
                 }
             }
             case SECTOR -> sectorService.verify(clientUuid);
-            case LOGO -> managedExecutor.submit(() -> {
+            case LOGO -> managedExecutor.submit(() -> withRequestContext(() -> {
                 try {
                     logoService.enrich(clientUuid);
                 } catch (RuntimeException e) {
                     log.errorf(e, "Logo retry failed for client=%s", clientUuid);
                 }
-            });
+            }));
         }
         return read(clientUuid);
     }
@@ -287,14 +289,15 @@ public class ClientEnrichmentService {
     // ------------------------------------------------------------------------
 
     /** What the consumer runs. Gated on the switches; the environment gate is the cron's alone. */
-    @ActivateRequestContext
     public void verifySectorNow(String clientUuid) {
-        if (!enabled()) return;
-        try {
-            sectorService.verify(clientUuid);
-        } catch (RuntimeException e) {
-            log.errorf(e, "Sector check failed for client=%s", clientUuid);
-        }
+        withRequestContext(() -> {
+            if (!enabled()) return;
+            try {
+                sectorService.verify(clientUuid);
+            } catch (RuntimeException e) {
+                log.errorf(e, "Sector check failed for client=%s", clientUuid);
+            }
+        });
     }
 
     /** The nightly pass. Returns false when a switch or the gate kept it from starting. */
@@ -316,7 +319,7 @@ public class ClientEnrichmentService {
             return false;
         }
         try {
-            run(EnumSet.allOf(Job.class), "nightly");
+            withRequestContext(() -> run(EnumSet.allOf(Job.class), "nightly"));
         } finally {
             running.set(false);
         }
@@ -334,7 +337,7 @@ public class ClientEnrichmentService {
         try {
             managedExecutor.submit(() -> {
                 try {
-                    run(jobs, "manual by " + actor);
+                    withRequestContext(() -> run(jobs, "manual by " + actor));
                 } catch (RuntimeException e) {
                     log.errorf(e, "Client enrichment manual run failed");
                 } finally {
@@ -348,7 +351,32 @@ public class ClientEnrichmentService {
         return true;
     }
 
-    @ActivateRequestContext
+    /**
+     * Runs {@code work} inside a CDI request context, activating one when the thread has
+     * none — the executor's and the scheduler's threads.
+     *
+     * <p>Programmatic rather than {@code @ActivateRequestContext}, because the run is
+     * invoked from inside this very bean (the executor lambda, the cron entry) and an
+     * interceptor binding on a self-invoked method does not fire. The first staging
+     * rehearsal (2026-09-14) died on exactly that: {@code ContextNotActiveException} from
+     * the first queue read. The request context is what lets Hibernate answer a read
+     * without a transaction and what gives {@code RequestHeaderHolder} a scope, so the
+     * activity log can attribute the job's writes to {@code system}.
+     */
+    static void withRequestContext(Runnable work) {
+        ManagedContext requestContext = Arc.container().requestContext();
+        if (requestContext.isActive()) {
+            work.run();
+            return;
+        }
+        requestContext.activate();
+        try {
+            work.run();
+        } finally {
+            requestContext.terminate();
+        }
+    }
+
     void run(Set<Job> jobs, String trigger) {
         log.infof("Client enrichment run starting (%s): jobs=%s caps cvr=%d logo=%d sector=%d",
                 trigger, jobs, config.cvrNightlyCap(), config.logoNightlyCap(), config.sectorNightlyCap());
