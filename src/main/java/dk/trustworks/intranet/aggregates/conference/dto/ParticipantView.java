@@ -23,12 +23,18 @@ public record ParticipantView(
         String andet,
         boolean samtykke,
         boolean marketingConsent,
+        boolean unsubscribed,
+        LocalDateTime unsubscribedAt,
         ConferencePhase conferencePhase,
         LocalDateTime registered,
         Map<String, Object> fields,
         Map<String, Object> allFields) {
 
     public static ParticipantView from(ConferenceParticipant p) {
+        return from(p, null);
+    }
+
+    public static ParticipantView from(ConferenceParticipant p, LocalDateTime unsubscribedAt) {
         Map<String, Object> bag = p.getFields() != null
                 ? new LinkedHashMap<>(p.getFields())
                 : new LinkedHashMap<>();
@@ -41,11 +47,13 @@ public record ParticipantView(
         putIfNotNull(all, "message", p.getAndet());
         all.put("consent", p.isSamtykke());
         all.put("marketing", p.isMarketingConsent());
+        all.put("unsubscribed", unsubscribedAt != null);
+        all.put("unsubscribedAt", unsubscribedAt);
 
         return new ParticipantView(
                 p.getUuid(), p.getParticipantuuid(), p.getConferenceuuid(),
                 p.getName(), p.getCompany(), p.getTitel(), p.getEmail(), p.getAndet(),
-                p.isSamtykke(), p.isMarketingConsent(),
+                p.isSamtykke(), p.isMarketingConsent(), unsubscribedAt != null, unsubscribedAt,
                 p.getConferencePhase(), p.getRegistered(),
                 bag, all);
     }

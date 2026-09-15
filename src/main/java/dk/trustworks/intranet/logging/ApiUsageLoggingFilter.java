@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.logging;
 
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceUnsubscribeService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
@@ -23,12 +24,14 @@ public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerR
 
     @Override
     public void filter(ContainerRequestContext requestContext) throws IOException {
+        if (ConferenceUnsubscribeService.isUnsubscribePath(requestContext.getUriInfo().getPath())) return;
         requestContext.setProperty("apiUsageStartTime", System.currentTimeMillis());
         log.debugf("Started request %s %s", requestContext.getMethod(), requestContext.getUriInfo().getPath());
     }
 
     @Override
     public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext) throws IOException {
+        if (ConferenceUnsubscribeService.isUnsubscribePath(requestContext.getUriInfo().getPath())) return;
         long start = (long) requestContext.getProperty("apiUsageStartTime");
         long duration = System.currentTimeMillis() - start;
         String path = requestContext.getUriInfo().getPath();

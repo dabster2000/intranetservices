@@ -5,6 +5,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooterConverter;
 import java.time.LocalDateTime;
 
 /**
@@ -16,6 +18,22 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "bulk_email_job")
 public class BulkEmailJob extends PanacheEntityBase {
+
+    @Convert(converter = UnsubscribeFooterConverter.class)
+    @Column(name = "unsubscribe_footer", columnDefinition = "JSON")
+    private UnsubscribeFooter unsubscribeFooter;
+
+    @Column(name = "conference_uuid")
+    private String conferenceUuid;
+
+    @Column(name = "mail_origin")
+    private String mailOrigin = "SYSTEM";
+
+    @Column(name = "hold_reason")
+    private String holdReason;
+
+    @Column(name = "skipped_count", nullable = false)
+    private int skippedCount;
 
     @Id
     private String uuid;
@@ -58,6 +76,9 @@ public class BulkEmailJob extends PanacheEntityBase {
 
     public enum BulkEmailJobStatus {
         PENDING,
+        POLICY_PENDING,
+        POLICY_PROCESSING,
+        HELD,
         PROCESSING,
         COMPLETED,
         FAILED

@@ -108,8 +108,11 @@ public class ConferenceEventHandler {
     }
 
     private void changeConferenceParticipantPhase(DomainEventEnvelope env) {
-        ConferenceParticipant conferenceParticipant = new JsonObject(env.getPayload()).mapTo(ConferenceParticipant.class);
-        conferenceService.changeParticipantPhase(conferenceParticipant);
+        JsonObject payload = new JsonObject(env.getPayload());
+        boolean handled = Boolean.TRUE.equals(payload.remove("notificationHandled"));
+        ConferenceParticipant participant = payload.mapTo(ConferenceParticipant.class);
+        if (handled) conferenceService.changeParticipantPhase(participant, true);
+        else conferenceService.changeParticipantPhase(participant);
     }
 
     private void deleteConferenceParticipant(DomainEventEnvelope env) {

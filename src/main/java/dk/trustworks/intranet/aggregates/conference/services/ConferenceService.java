@@ -12,6 +12,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import jakarta.transaction.TransactionSynchronizationRegistry;
+import jakarta.transaction.Synchronization;
+import jakarta.transaction.Status;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import java.util.List;
 
 @JBossLog
@@ -20,6 +24,15 @@ public class ConferenceService {
 
     @Inject
     MailResource mailResource;
+
+    @Inject
+    ConferenceMailService conferenceMailService;
+
+    @Inject
+    ConferenceRecipientResolver conferenceRecipientResolver;
+
+    @Inject
+    TransactionSynchronizationRegistry transactions;
 
     @Inject
     EntityManager entityManager;
@@ -44,7 +57,9 @@ public class ConferenceService {
     public List<ConferenceParticipant> findAllConferenceParticipants(String conferenceuuid) {
         String hql = "SELECT a FROM ConferenceParticipant a " +
                 "LEFT JOIN ConferenceParticipant b " +
-                "ON a.participantuuid = b.participantuuid AND a.registered < b.registered " +
+                "ON a.conferenceuuid = b.conferenceuuid AND a.participantuuid = b.participantuuid " +
+                "AND (a.registered < b.registered OR (a.registered IS NULL AND b.registered IS NOT NULL) " +
+                "OR ((a.registered = b.registered OR (a.registered IS NULL AND b.registered IS NULL)) AND a.uuid > b.uuid)) " +
                 "WHERE b.participantuuid IS NULL AND a.conferenceuuid = ?1";
 
         return ConferenceParticipant.find(hql, conferenceuuid).list();
@@ -58,7 +73,9 @@ public class ConferenceService {
         return ConferenceParticipant.getEntityManager().createNativeQuery("SELECT a.* " +
                 "FROM twservices.conference_participants a " +
                 "LEFT JOIN twservices.conference_participants b " +
-                "ON a.participantuuid = b.participantuuid AND a.registered < b.registered " +
+                "ON a.conferenceuuid = b.conferenceuuid AND a.participantuuid = b.participantuuid " +
+                "AND (a.registered < b.registered OR (a.registered IS NULL AND b.registered IS NOT NULL) " +
+                "OR ((a.registered = b.registered OR (a.registered IS NULL AND b.registered IS NULL)) AND a.uuid > b.uuid)) " +
                 "WHERE b.participantuuid IS NULL and a.conferenceuuid like '"+conferenceuuid+"'", ConferenceParticipant.class).getResultList();
 
     }
@@ -66,30 +83,72 @@ public class ConferenceService {
 
 
     @Transactional
-    public void createParticipant(ConferenceParticipant conferenceParticipant) {
-        ConferencePhase conferencePhase = conferenceParticipant.getConferencePhase();
-        if(conferencePhase.isUseMail()) {
-            mailResource.sendingMail(conferenceParticipant.getEmail(), conferencePhase.getSubject(), new String(Base64.decodeBase64(conferencePhase.getMail().getBytes())));
-        }
-        conferenceParticipant.persist();
+    public void createParticipant(ConferenceParticipant participant) {
+        participant.setEmail(ConferenceUnsubscribeService.validatedEmail(participant.getEmail()));
+        participant.persist();
+        scheduleNotification(participant);
     }
 
     @Transactional
-    public void updateParticipantData(ConferenceParticipant conferenceParticipant) {
-        conferenceParticipant.persist();
+    public void updateParticipantData(ConferenceParticipant participant) {
+        participant.setEmail(ConferenceUnsubscribeService.validatedEmail(participant.getEmail()));
+        participant.persist();
     }
 
     @Transactional
-    public void changeParticipantPhase(ConferenceParticipant conferenceParticipant) {
-        ConferencePhase conferencePhase = conferenceParticipant.getConferencePhase();
+    public void changeParticipantPhase(ConferenceParticipant participant) {
+        changeParticipantPhase(participant, false);
+    }
 
-        // Only send individual emails if phase uses mail AND has no attachments
-        // If attachments exist, bulk email is sent from the Resource layer
-        if(conferencePhase.isUseMail() && !conferencePhase.hasAttachments()) {
-            mailResource.sendingMail(conferenceParticipant.getEmail(), conferencePhase.getSubject(), new String(Base64.decodeBase64(conferencePhase.getMail().getBytes())));
+    @Transactional
+    public void changeParticipantPhase(ConferenceParticipant participant, boolean notificationHandled) {
+        participant.persist();
+        if (!notificationHandled) scheduleNotification(participant);
+    }
+
+    private void scheduleNotification(ConferenceParticipant participant) {
+        ConferencePhase phase = participant.getConferencePhase();
+        // Event JSON intentionally omits attachments. Reload trusted phase metadata while its lazy collection is available.
+        if (phase != null && phase.getUuid() != null) {
+            phase = ConferencePhase.findById(phase.getUuid());
+            if (phase == null || !participant.getConferenceuuid().equals(phase.getConferenceuuid())) {
+                log.warnf("Phase notification skipped: participant=%s reason=INVALID_PHASE", participant.getParticipantuuid());
+                return;
+            }
         }
-
-        conferenceParticipant.persist();
+        if (phase == null || !phase.isUseMail()) return;
+        // Capture immutable fields while attachments are initialized in the participant transaction.
+        String listId = participant.getConferenceuuid();
+        String participantId = participant.getParticipantuuid();
+        String address = participant.getEmail();
+        String subject = phase.getSubject();
+        String body = phase.getMail();
+        var footer = phase.getUnsubscribeFooter();
+        var attachments = phase.getAttachments().stream()
+                .map(dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment::toEmailAttachment).toList();
+        transactions.registerInterposedSynchronization(new Synchronization() {
+            public void beforeCompletion() {}
+            public void afterCompletion(int status) {
+                if (status != Status.STATUS_COMMITTED) return;
+                try {
+                    // Lookup after commit detects ambiguous current snapshots, while the queued address stays fixed.
+                    var current = conferenceRecipientResolver.resolveOne(listId, participantId);
+                    if (!current.normalizedEmail().equals(ConferenceUnsubscribeService.normalizeEmail(address))) {
+                        log.warnf("Phase notification skipped: participant=%s reason=STALE_RECIPIENT", participantId);
+                        return;
+                    }
+                    QuarkusTransaction.requiringNew().run(() -> {
+                        var outcome = conferenceMailService.queueAutomated(listId, current, subject,
+                                new String(Base64.decodeBase64(body), java.nio.charset.StandardCharsets.UTF_8), footer, attachments);
+                        if ("SKIPPED".equals(outcome.outcome()))
+                            log.infof("Phase notification skipped: participant=%s reason=UNSUBSCRIBED", participantId);
+                    });
+                } catch (RuntimeException e) {
+                    // No notification error can roll back the already committed history.
+                    log.warnf("Phase notification admission failed: participant=%s", participantId);
+                }
+            }
+        });
     }
 
     @Transactional

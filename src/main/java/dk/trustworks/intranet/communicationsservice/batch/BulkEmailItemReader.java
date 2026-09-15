@@ -57,7 +57,14 @@ public class BulkEmailItemReader implements ItemReader {
                  " - Subject: '" + job.getSubject() + "', Recipients: " + job.getTotalRecipients());
 
         // Mark job as PROCESSING
-        bulkEmailService.updateJobStatus(currentJobUuid, BulkEmailJob.BulkEmailJobStatus.PROCESSING);
+        if (job.getMailOrigin() == null) {
+            job.setStatus(BulkEmailJob.BulkEmailJobStatus.HELD);
+            job.setHoldReason("LEGACY_UNCLASSIFIED");
+            recipients = new ArrayList<>();
+            return;
+        }
+        bulkEmailService.updateJobStatus(currentJobUuid, "CONFERENCE".equals(job.getMailOrigin())
+                ? BulkEmailJob.BulkEmailJobStatus.POLICY_PROCESSING : BulkEmailJob.BulkEmailJobStatus.PROCESSING);
 
         // Load all pending recipients
         recipients = bulkEmailService.findPendingRecipients(currentJobUuid);

@@ -1,11 +1,11 @@
 {
   "generatedFrom": "src/test/java/dk/trustworks/intranet/security/surface/PublicSurfaceSnapshotter.java",
   "totals": {
-    "endpoints": 38,
-    "permitAllEndpoints": 23,
+    "endpoints": 39,
+    "permitAllEndpoints": 24,
     "entityReturningEndpoints": 11,
     "entityRequestBodies": 2,
-    "unresolved": 9,
+    "unresolved": 10,
     "truncated": 0,
     "sensitiveFields": 3
   },
@@ -631,6 +631,16 @@
       "fields": {
       }
     },
+    "POST /knowledge/conferences/{conferenceuuid}/downloads/{presentationId}": {
+      "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceDownloadResource#recordRequest",
+      "access": "permit-all",
+      "returns": "jakarta.ws.rs.core.Response",
+      "returnsEntity": false,
+      "requestBody": null,
+      "requestBodyIsEntity": false,
+      "fields": {
+      }
+    },
     "POST /knowledge/conferences/{conferenceuuid}/participants": {
       "resource": "dk.trustworks.intranet.aggregates.conference.resources.ConferenceResource#createParticipant",
       "access": "permit-all",
@@ -639,6 +649,12 @@
       "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
       "requestBodyIsEntity": true,
       "fields": {
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter": {
+          "action": "java.lang.String",
+          "alignment": "java.lang.String",
+          "appearance": "java.lang.String",
+          "label": "java.lang.String"
+        },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
           "billingAddress": "java.lang.String",
@@ -711,6 +727,7 @@
           "slackChannel": "java.lang.String",
           "step": "int",
           "subject": "java.lang.String",
+          "unsubscribeFooter": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter",
           "useMail": "boolean",
           "uuid": "java.lang.String"
         },
@@ -733,6 +750,12 @@
       "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
       "requestBodyIsEntity": true,
       "fields": {
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter": {
+          "action": "java.lang.String",
+          "alignment": "java.lang.String",
+          "appearance": "java.lang.String",
+          "label": "java.lang.String"
+        },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
           "billingAddress": "java.lang.String",
@@ -805,6 +828,7 @@
           "slackChannel": "java.lang.String",
           "step": "int",
           "subject": "java.lang.String",
+          "unsubscribeFooter": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter",
           "useMail": "boolean",
           "uuid": "java.lang.String"
         },
@@ -964,6 +988,7 @@
     "POST /apply/{slug} — returns Response, shape not statically known",
     "POST /auth/token — returns Response, shape not statically known",
     "POST /cvtool/sync — returns Response, shape not statically known",
+    "POST /knowledge/conferences/{conferenceuuid}/downloads/{presentationId} — returns Response, shape not statically known",
     "POST /knowledge/conferences/{conferenceuuid}/participants — returns Object, shape not statically known",
     "POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants — returns Object, shape not statically known",
     "POST /onboarding/tokens/{tokenUuid}/upload — returns Response, shape not statically known",

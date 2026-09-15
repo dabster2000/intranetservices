@@ -3,6 +3,7 @@ package dk.trustworks.intranet.batch;
 import dk.trustworks.intranet.competenceservice.services.CompetenceAttemptService;
 import dk.trustworks.intranet.competenceservice.services.CompetenceDueNotifier;
 import dk.trustworks.intranet.services.PracticeSyncService;
+import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,6 +22,9 @@ public class BatchScheduler {
 
     @Inject
     JobOperator jobOperator;
+
+    @Inject
+    BulkEmailService bulkEmailService;
 
     @Inject
     EntityManager em;
@@ -303,6 +307,9 @@ public class BatchScheduler {
                     return; // Already running, skip this cycle
                 }
             }
+            // A previous JVM may have died after marking a policy job PROCESSING.
+            // Only recover after the shared JBeret no-running-execution guard above.
+            bulkEmailService.recoverInterruptedConferenceJobs();
             jobOperator.start("bulk-mail-send", new Properties());
         } catch (Exception e) {
             // Log and continue - will retry in next cycle

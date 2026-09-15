@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
+import dk.trustworks.intranet.aggregates.conference.events.ConferenceUnsubscribeEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.DeleteParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
@@ -32,6 +33,7 @@ import java.util.UUID;
         use = JsonTypeInfo.Id.NAME,
         property = "type")
 @JsonSubTypes({
+        @JsonSubTypes.Type(value = ConferenceUnsubscribeEvent.class, name = "ConferenceUnsubscribeEvent"),
         @JsonSubTypes.Type(value = CreateClientEvent.class, name = "CreateClientEvent"),
         @JsonSubTypes.Type(value = ModifyContractConsultantEvent.class, name = "ModifyContractConsultantEvent"),
         @JsonSubTypes.Type(value = CreateUserEvent.class, name = "CreateUserEvent"),

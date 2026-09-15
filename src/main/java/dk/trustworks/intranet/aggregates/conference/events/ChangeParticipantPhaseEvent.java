@@ -20,4 +20,9 @@ public class ChangeParticipantPhaseEvent extends AggregateRootChangeEvent {
     public ChangeParticipantPhaseEvent(String aggregateRootUUID, ConferenceParticipant item) {
         super(aggregateRootUUID, CHANGE_CONFERENCE_PARTICIPANT_PHASE, JsonObject.mapFrom(item).encode());
     }
+
+    public ChangeParticipantPhaseEvent(String aggregateRootUUID, ConferenceParticipant item, boolean notificationHandled) {
+        super(aggregateRootUUID, CHANGE_CONFERENCE_PARTICIPANT_PHASE,
+                JsonObject.mapFrom(item).put("notificationHandled", notificationHandled).encode());
+    }
 }
