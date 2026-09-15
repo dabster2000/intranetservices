@@ -69,4 +69,17 @@ class ConferenceMailAdmissionTest {
         assertEquals("SKIPPED", result.outcome());
         verifyNoInteractions(service.bulkEmailService, service.mailResource);
     }
+    @Test void overlongResolvedCopyIsRejectedBeforeAnySingleBulkOrAutomatedQueue() {
+        when(service.policy.listName(LIST)).thenReturn("x".repeat(255));
+        var footer = new UnsubscribeFooter("conference-unsubscribe", "Unsubscribe", "text-link", "centre", null, null,
+                new UnsubscribePageCopy(null, "{listName}".repeat(50), null, null, null, null, null));
+        assertThrows(BadRequestException.class, () -> service.send(new ConferenceMailRequest(null, LIST, PARTICIPANT,
+                null, "Subject", "<p>Body</p>", footer, List.of(), null, null)));
+        assertThrows(BadRequestException.class, () -> service.sendBulk(new ConferenceBulkMailRequest(LIST,
+                List.of(PARTICIPANT), null, "Subject", "<p>Body</p>", footer, List.of(), null, null)));
+        assertThrows(BadRequestException.class, () -> service.queueAutomated(LIST, recipient, "Subject", "<p>Body</p>", footer, List.of()));
+        assertThrows(BadRequestException.class, () -> service.queueAutomated(LIST, recipient, "Subject", "<p>Body</p>", footer, List.of(new EmailAttachment())));
+        verifyNoInteractions(service.mailResource, service.bulkEmailService);
+        verify(service.policy, never()).issueToken(anyString(), anyString(), anyString(), any());
+    }
 }

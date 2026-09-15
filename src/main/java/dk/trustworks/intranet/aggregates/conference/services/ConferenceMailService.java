@@ -69,6 +69,7 @@ public class ConferenceMailService {
             String body, UnsubscribeFooter footer, List<EmailAttachment> attachments) {
         dispatch.requireEnabled();
         ConferenceMailRenderer.validateContent(subject, body);
+        validatePageCopy(conferenceUuid, footer);
         List<ResolvedRecipient> eligible = new ArrayList<>();
         for (ResolvedRecipient recipient : resolved) {
             if (!policy.isSuppressedFresh(conferenceUuid, recipient.email())) eligible.add(recipient);
@@ -93,8 +94,9 @@ public class ConferenceMailService {
         return new SendOutcome("QUEUED", null);
     }
 
-    private static TrustworksMail scopedMail(String conferenceUuid, ResolvedRecipient recipient,
+    private TrustworksMail scopedMail(String conferenceUuid, ResolvedRecipient recipient,
             String subject, String body, UnsubscribeFooter footer) {
+        validatePageCopy(conferenceUuid, footer);
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), recipient.email(), subject, ConferenceMailRenderer.personalize(body, recipient.name()));
         mail.setMailOrigin("CONFERENCE");
         mail.setConferenceUuid(conferenceUuid);
@@ -102,6 +104,10 @@ public class ConferenceMailService {
         mail.setNormalizedEmail(recipient.normalizedEmail());
         mail.setUnsubscribeFooter(UnsubscribeFooter.orDefault(footer));
         return mail;
+    }
+    private void validatePageCopy(String conferenceUuid, UnsubscribeFooter descriptor) {
+        UnsubscribeFooter footer = UnsubscribeFooter.orDefault(descriptor);
+        if (footer.pageCopy() != null) footer.pageCopy().resolve(footer.resolvedListName(policy.listName(conferenceUuid)));
     }
     private static void rejectCopies(String cc, String bcc) {
         if ((cc != null && !cc.isBlank()) || (bcc != null && !bcc.isBlank()))

@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.aggregates.conference.services;
 
 import io.agroal.api.AgroalDataSource;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -35,6 +38,7 @@ public class ConferenceUnsubscribeService {
     public static final String API_PATH = "knowledge/conferences/unsubscribe";
     public static final String TOKEN_HEADER = "X-Unsubscribe-Token";
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final ObjectMapper COPY_JSON = new ObjectMapper();
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{43}");
     // Same accepted address syntax as the existing recruitment mail sender, with length,
     // local dot, and DNS-label checks to reject malformed addresses rather than repair them.
@@ -122,6 +126,11 @@ public class ConferenceUnsubscribeService {
 
     /** Raw token is returned for in-memory rendering only. No raw value enters persistence. */
     public String issueToken(String conferenceUuid, String email) {
+        return issueToken(conferenceUuid, email, null, null);
+    }
+
+    /** Snapshot display copy with the capability; it is never used to resolve the withdrawal identity. */
+    public String issueToken(String conferenceUuid, String email, String listDisplayName, UnsubscribePageCopy pageCopy) {
         String list = requireUuid(conferenceUuid);
         String normalized = normalizeEmail(email);
         byte[] bytes = new byte[32];
@@ -129,14 +138,18 @@ public class ConferenceUnsubscribeService {
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         try (Connection connection = connectFresh()) {
             connection.setAutoCommit(false);
+            String displayName = listDisplayName == null || listDisplayName.isBlank() ? listName(connection, list)
+                    : UnsubscribeFooter.publicListName(listDisplayName);
+            PublicCopy copy = new PublicCopy(displayName, (pageCopy == null ? UnsubscribePageCopy.defaults() : pageCopy).resolve(displayName));
             try (var insert = connection.prepareStatement("""
                     INSERT INTO conference_unsubscribe_token
-                        (token_hash, conference_uuid, normalized_email, created_at)
-                    VALUES (?, ?, ?, UTC_TIMESTAMP(6))
+                        (token_hash, conference_uuid, normalized_email, created_at, public_copy)
+                    VALUES (?, ?, ?, UTC_TIMESTAMP(6), ?)
                     """)) {
                 insert.setBytes(1, hashToken(token));
                 insert.setString(2, list);
                 insert.setString(3, normalized);
+                insert.setString(4, encodeCopy(copy));
                 insert.executeUpdate();
                 connection.commit();
                 return token;
@@ -238,20 +251,23 @@ public class ConferenceUnsubscribeService {
 
     private static TokenIdentity identity(Connection connection, byte[] hash) throws SQLException {
         try (var query = connection.prepareStatement("""
-                SELECT conference_uuid, normalized_email FROM conference_unsubscribe_token
+                SELECT conference_uuid, normalized_email, public_copy FROM conference_unsubscribe_token
                 WHERE token_hash = ? AND revoked_at IS NULL
                 """)) {
             query.setBytes(1, hash);
             try (var rows = query.executeQuery()) {
                 if (!rows.next()) throw notFound();
-                return new TokenIdentity(rows.getString(1), rows.getString(2));
+                return new TokenIdentity(rows.getString(1), rows.getString(2), decodeCopy(rows.getString(3)));
             }
         }
     }
 
     private static PublicState state(Connection connection, TokenIdentity identity, boolean suppressed) throws SQLException {
-        return new PublicState(listName(connection, identity.conferenceUuid()), maskEmail(identity.email()),
-                suppressed ? "UNSUBSCRIBED" : "NOT_UNSUBSCRIBED");
+        PublicCopy copy = identity.copy();
+        String displayName = copy == null ? listName(connection, identity.conferenceUuid()) : copy.listName();
+        return new PublicState(displayName, maskEmail(identity.email()),
+                suppressed ? "UNSUBSCRIBED" : "NOT_UNSUBSCRIBED",
+                copy == null ? UnsubscribePageCopy.defaults().resolve(displayName) : copy.pageCopy());
     }
 
     private static String listName(Connection connection, String list) throws SQLException {
@@ -260,7 +276,7 @@ public class ConferenceUnsubscribeService {
             try (var rows = query.executeQuery()) {
                 if (rows.next()) {
                     String name = rows.getString(1);
-                    if (name != null && !name.isBlank()) return name;
+                    if (name != null && !name.isBlank()) return UnsubscribeFooter.publicListName(name);
                 }
                 return "this mailing list";
             }
@@ -325,6 +341,26 @@ public class ConferenceUnsubscribeService {
         return new IllegalStateException("CONFERENCE_POLICY_UNAVAILABLE");
     }
 
-    private record TokenIdentity(String conferenceUuid, String email) {}
-    public record PublicState(String listName, String maskedEmail, String status) {}
+    private static String encodeCopy(PublicCopy copy) {
+        try { return COPY_JSON.writeValueAsString(copy); }
+        catch (Exception e) { throw unavailable(); }
+    }
+    private static PublicCopy decodeCopy(String json) {
+        if (json == null) return null;
+        try {
+            PublicCopy copy = COPY_JSON.readValue(json, PublicCopy.class);
+            if (copy == null || copy.listName() == null || copy.listName().isBlank() || copy.pageCopy() == null
+                    || COPY_JSON.valueToTree(copy.pageCopy()).size() != 7) throw unavailable();
+            for (var value : COPY_JSON.valueToTree(copy.pageCopy()))
+                if (!value.isTextual() || value.asText().isBlank() || value.asText().length() > 8192) throw unavailable();
+            return copy;
+        } catch (Exception e) { throw unavailable(); }
+    }
+    private record PublicCopy(String listName, UnsubscribePageCopy.Resolved pageCopy) {}
+    private record TokenIdentity(String conferenceUuid, String email, PublicCopy copy) {}
+    public record PublicState(String listName, String maskedEmail, String status, UnsubscribePageCopy.Resolved pageCopy) {
+        public PublicState(String listName, String maskedEmail, String status) {
+            this(listName, maskedEmail, status, UnsubscribePageCopy.defaults().resolve(listName));
+        }
+    }
 }

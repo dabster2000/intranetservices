@@ -653,7 +653,19 @@
           "action": "java.lang.String",
           "alignment": "java.lang.String",
           "appearance": "java.lang.String",
-          "label": "java.lang.String"
+          "introText": "java.lang.String",
+          "label": "java.lang.String",
+          "listDisplayName": "java.lang.String",
+          "pageCopy": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy"
+        },
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy": {
+          "alreadyUnsubscribedDescription": "java.lang.String",
+          "alreadyUnsubscribedTitle": "java.lang.String",
+          "buttonLabel": "java.lang.String",
+          "description": "java.lang.String",
+          "successDescription": "java.lang.String",
+          "successTitle": "java.lang.String",
+          "title": "java.lang.String"
         },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
@@ -754,7 +766,19 @@
           "action": "java.lang.String",
           "alignment": "java.lang.String",
           "appearance": "java.lang.String",
-          "label": "java.lang.String"
+          "introText": "java.lang.String",
+          "label": "java.lang.String",
+          "listDisplayName": "java.lang.String",
+          "pageCopy": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy"
+        },
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy": {
+          "alreadyUnsubscribedDescription": "java.lang.String",
+          "alreadyUnsubscribedTitle": "java.lang.String",
+          "buttonLabel": "java.lang.String",
+          "description": "java.lang.String",
+          "successDescription": "java.lang.String",
+          "successTitle": "java.lang.String",
+          "title": "java.lang.String"
         },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",

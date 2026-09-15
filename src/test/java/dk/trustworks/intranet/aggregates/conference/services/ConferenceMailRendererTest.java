@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.conference.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy;
 import dk.trustworks.intranet.knowledgeservice.model.ConferencePhase;
 import jakarta.ws.rs.BadRequestException;
 import org.jsoup.Jsoup;
@@ -23,7 +24,7 @@ class ConferenceMailRendererTest {
         assertEquals(1, footer.size());
         assertEquals(result.body(), footer.first().parent());
         assertEquals(URL, footer.select("a").attr("href"));
-        assertTrue(footer.text().contains("A & <B>"));
+        assertTrue(footer.text().contains("A & B"));
         assertEquals(2, result.select("table").size());
         assertFalse(result.select("body > table").first().text().contains("Unsubscribe"));
     }
@@ -129,6 +130,62 @@ class ConferenceMailRendererTest {
         assertEquals("Afmeld & stop", result.select("[data-conference-footer] a").text());
         assertEquals("left", result.select("[data-conference-footer] td").attr("align"));
         assertTrue(result.select("[data-conference-footer] a").attr("style").contains("border:"));
+    }
+    @Test void customCopyAndDisplayNameRenderAsTextWithoutChangingDestination() throws Exception {
+        String json = """
+                {"action":"conference-unsubscribe","label":"Afmeld","appearance":"text-link","alignment":"centre",
+                "introText":"Du får nyheder fra {listName}.","listDisplayName":"Trustworks & venner",
+                "pageCopy":{"title":"Afmeld {listName}?","buttonLabel":"Afmeld nu"}}
+                """;
+        var descriptor = new ObjectMapper().readValue(json, UnsubscribeFooter.class);
+        var result = Jsoup.parse(ConferenceMailRenderer.render(BODY, descriptor, "INTERNAL_2026", URL));
+        assertEquals("Du får nyheder fra Trustworks & venner.", result.select("[data-conference-footer] p").text());
+        assertEquals("Afmeld", result.select("[data-conference-footer] a").text());
+        assertEquals(URL, result.select("[data-conference-footer] a").attr("href"));
+        assertFalse(result.text().contains("INTERNAL_2026"));
+        assertEquals("Afmeld Trustworks & venner?", descriptor.pageCopy().resolve(descriptor.listDisplayName()).title());
+        assertEquals("You’re unsubscribed.", descriptor.pageCopy().resolve("List").successTitle());
+        var renderer = new ConferenceMailRenderer(); renderer.json = new ObjectMapper();
+        var phase = new ConferencePhase(); phase.setMailJson("{\"rows\":[{\"managedFooter\":" + json + "}]}");
+        phase.setUnsubscribeFooter(descriptor); renderer.preparePhase(phase);
+        assertEquals(descriptor, phase.getUnsubscribeFooter());
+    }
+    @Test void blankIntroRemovesParagraphWhileBlankDisplayNameUsesFallback() {
+        var descriptor = new UnsubscribeFooter("conference-unsubscribe", "Afmeld", "text-link", "centre", " ", " ", null);
+        var result = Jsoup.parse(ConferenceMailRenderer.render(BODY, descriptor, "List", URL));
+        assertTrue(result.select("[data-conference-footer] p").isEmpty());
+        assertEquals(1, result.select("[data-conference-footer] a").size());
+        assertEquals("List", descriptor.resolvedListName("List"));
+        assertEquals("You’re receiving emails from List.", UnsubscribeFooter.defaults().resolvedIntro("List"));
+    }
+    @Test void fourFieldDescriptorsRemainIdenticalAndOptionalCopyRoundTrips() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        var legacy = mapper.valueToTree(UnsubscribeFooter.defaults());
+        assertEquals(4, legacy.size());
+        assertEquals(UnsubscribeFooter.defaults(), mapper.treeToValue(legacy, UnsubscribeFooter.class));
+        var custom = new UnsubscribeFooter("conference-unsubscribe", "Afmeld", "text-link", "left", "Fra {listName}", "Public",
+                new UnsubscribePageCopy(null, "Stop nyheder fra {listName}.", null, null, null, null, null));
+        assertEquals(custom, mapper.readValue(mapper.writeValueAsString(custom), UnsubscribeFooter.class));
+    }
+    @Test void copyRejectsHtmlControlsUnknownPlaceholdersAndIdentityInjection() {
+        ObjectMapper mapper = new ObjectMapper().disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        String base = "\"action\":\"conference-unsubscribe\",\"label\":\"Unsubscribe\",\"appearance\":\"text-link\",\"alignment\":\"centre\"";
+        for (String field : new String[]{"\"introText\":\"<b>Hi</b>\"", "\"introText\":\"Hi {email}\"",
+                "\"introText\":null", "\"listDisplayName\":true", "\"listDisplayName\":\"" + "a".repeat(161) + "\"",
+                "\"pageCopy\":null", "\"pageCopy\":{\"title\":\" \"}", "\"pageCopy\":{\"title\":\"Hi\\nthere\"}",
+                "\"pageCopy\":{\"buttonLabel\":\"{recipient}\"}", "\"pageCopy\":{\"title\":\"" + "a".repeat(121) + "\"}",
+                "\"pageCopy\":{\"url\":\"https://evil.example\"}", "\"conferenceUuid\":\"other\"", "\"email\":\"other@example.com\""}) {
+            assertThrows(Exception.class, () -> mapper.readValue("{" + base + "," + field + "}", UnsubscribeFooter.class), field);
+        }
+    }
+    @Test void templateSubstitutionIsLiteralNonRecursiveAndBoundedAfterExpansion() {
+        var copy = new UnsubscribePageCopy("Stop {listName}?", null, null, null, null, null, null);
+        assertEquals("Stop $1 & {listName}?", copy.resolve("$1 & {listName}").title());
+        var longTemplate = new UnsubscribePageCopy(null, "{listName}".repeat(50), null, null, null, null, null);
+        assertThrows(BadRequestException.class, () -> longTemplate.resolve("x".repeat(500)));
+        assertEquals("News 2026", UnsubscribeFooter.publicListName("\u200b News <2026>\n"));
+        assertEquals("this mailing list", UnsubscribeFooter.publicListName("<>\u200b\n"));
+        assertEquals(500, UnsubscribeFooter.publicListName("a".repeat(600)).length());
     }
     @Test void retriesAndRecipientsStartFromImmutableSource() {
         String first = ConferenceMailRenderer.render(BODY, null, "List", URL);
