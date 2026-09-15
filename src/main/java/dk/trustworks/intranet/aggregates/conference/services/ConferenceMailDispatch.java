@@ -22,9 +22,10 @@ public class ConferenceMailDispatch {
         if (conferenceUuid == null || conferenceUuid.isBlank()) throw new IllegalStateException("CONFERENCE_CONTEXT_REQUIRED");
         if (policy.isSuppressedFresh(conferenceUuid, recipient)) return null;
         // issueToken commits a NEW transaction before returning; never retain a bulk snapshot.
-        String token = policy.issueToken(conferenceUuid, recipient);
-        return ConferenceMailRenderer.render(sourceBody, footer,
-                policy.listName(conferenceUuid), policy.unsubscribeUrl(token));
+        UnsubscribeFooter settings = UnsubscribeFooter.orDefault(footer);
+        String listName = settings.resolvedListName(policy.listName(conferenceUuid));
+        String token = policy.issueToken(conferenceUuid, recipient, listName, settings.pageCopy());
+        return ConferenceMailRenderer.render(sourceBody, settings, listName, policy.unsubscribeUrl(token));
     }
 
     /** Call directly before SMTP after attachments/headers have been prepared. */

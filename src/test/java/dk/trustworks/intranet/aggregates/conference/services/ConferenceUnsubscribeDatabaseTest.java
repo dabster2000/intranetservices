@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.conference.services;
 
 import jakarta.ws.rs.WebApplicationException;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribePageCopy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import javax.sql.DataSource;
@@ -42,6 +43,9 @@ class ConferenceUnsubscribeDatabaseTest {
         execute("CREATE TABLE aggregate_events (uuid VARCHAR(36) PRIMARY KEY, event_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, event_user VARCHAR(50), event_type VARCHAR(40), aggregate_root_uuid VARCHAR(36), event_content MEDIUMTEXT, DTYPE VARCHAR(31)) ENGINE=InnoDB");
         execute("CREATE TABLE conference_participants (uuid CHAR(36) PRIMARY KEY, participantuuid CHAR(36), conferenceuuid CHAR(36), email VARCHAR(320), name VARCHAR(255), registered DATETIME(6)) ENGINE=InnoDB");
         for (String sql : Files.readString(Path.of("src/main/resources/db/migration/V617__Conference_email_unsubscribe.sql")).split(";")) {
+            if (!sql.isBlank()) execute(sql);
+        }
+        for (String sql : Files.readString(Path.of("src/main/resources/db/migration/V619__Conference_unsubscribe_copy_snapshot.sql")).split(";")) {
             if (!sql.isBlank()) execute(sql);
         }
         execute("INSERT INTO conferences VALUES ('" + A + "', 'TechTalk'), ('" + B + "', 'Another list')");
@@ -101,8 +105,31 @@ class ConferenceUnsubscribeDatabaseTest {
         execute("INSERT INTO conference_participants VALUES ('" + snapshot + "', '" + participant + "', '" + A + "', 'new@example.com', 'New', '2026-09-15 12:00:00')");
         assertTrue(service.isSuppressedFresh(A, "mary+tag@example.com")); assertFalse(service.isSuppressedFresh(A, "new@example.com"));
         execute("DELETE FROM conference_participants"); assertEquals("UNSUBSCRIBED", service.status(first).status());
-        execute("UPDATE conferences SET name = 'Renamed' WHERE uuid = '" + A + "'"); assertEquals("Renamed", service.status(first).listName());
-        execute("DELETE FROM conferences WHERE uuid = '" + B + "'"); assertEquals("this mailing list", service.unsubscribe(otherList).listName());
+        execute("UPDATE conferences SET name = 'Renamed' WHERE uuid = '" + A + "'"); assertEquals("TechTalk", service.status(first).listName());
+        execute("DELETE FROM conferences WHERE uuid = '" + B + "'"); assertEquals("Another list", service.unsubscribe(otherList).listName());
+        // Pre-upgrade capabilities have no snapshot and retain their existing metadata fallback.
+        try (var connection = connect(); var update = connection.prepareStatement("UPDATE conference_unsubscribe_token SET public_copy = NULL WHERE token_hash = ?")) {
+            update.setBytes(1, ConferenceUnsubscribeService.hashToken(otherList)); update.executeUpdate();
+        }
+        assertEquals("this mailing list", service.status(otherList).listName());
+        String custom = service.issueToken(A, "custom@example.com", "Friendly {listName}",
+                new UnsubscribePageCopy("Afmeld {listName}?", null, "Afmeld", null, "Farvel {listName}.", null, null));
+        assertEquals("Friendly {listName}", service.status(custom).listName());
+        assertEquals("Afmeld Friendly {listName}?", service.status(custom).pageCopy().title());
+        assertEquals("Afmeld", service.status(custom).pageCopy().buttonLabel());
+        execute("UPDATE conferences SET name = 'Changed again' WHERE uuid = '" + A + "'");
+        assertEquals("Farvel Friendly {listName}.", service.unsubscribe(custom).pageCopy().successDescription());
+        assertTrue(service.isSuppressedFresh(A, "custom@example.com"));
+        assertFalse(service.isSuppressedFresh(B, "custom@example.com"));
+        String legacy = service.issueToken(A, "legacy@example.com");
+        try (var connection = connect(); var update = connection.prepareStatement("UPDATE conference_unsubscribe_token SET public_copy = NULL WHERE token_hash = ?")) {
+            update.setBytes(1, ConferenceUnsubscribeService.hashToken(legacy)); update.executeUpdate();
+        }
+        execute("UPDATE conferences SET name = 'News <2026>' WHERE uuid = '" + A + "'");
+        assertEquals("News 2026", service.status(legacy).listName());
+        assertEquals("Unsubscribe from News 2026?", service.status(legacy).pageCopy().title());
+        String normalized = service.issueToken(A, "normalized@example.com");
+        assertEquals("News 2026", service.status(normalized).listName());
 
         // Audit failure rolls back the preference; no partial success can escape.
         String atomic = service.issueToken(A, "atomic@example.com"); execute("RENAME TABLE aggregate_events TO withheld_audit");
@@ -120,13 +147,10 @@ class ConferenceUnsubscribeDatabaseTest {
         // withdrawal between preparation and final dispatch (no mocked policy lookup).
         final String[] deliveryToken = new String[1];
         var racingPolicy = new ConferenceUnsubscribeService(datasource, "https://trustworks.dk") {
-            @Override public String issueToken(String list, String email) {
-                deliveryToken[0] = super.issueToken(list, email);
-                return deliveryToken[0];
-            }
-            @Override public String listName(String list) {
+            @Override public String issueToken(String list, String email, String displayName, UnsubscribePageCopy copy) {
+                deliveryToken[0] = super.issueToken(list, email, displayName, copy);
                 service.unsubscribe(deliveryToken[0]);
-                return super.listName(list);
+                return deliveryToken[0];
             }
         };
         var dispatch = new ConferenceMailDispatch();

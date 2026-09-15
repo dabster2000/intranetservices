@@ -33,7 +33,7 @@ public class ConferenceMailRenderer {
                 for (int i = 0; i < rows.size(); i++) {
                     JsonNode managed = rows.get(i).get("managedFooter");
                     if (managed == null || managed.isNull()) continue;
-                    if (footer != null || i != rows.size() - 1 || managed.size() != 4)
+                    if (footer != null || i != rows.size() - 1)
                         throw new BadRequestException("Email requires one final managed footer");
                     footer = json.treeToValue(managed, UnsubscribeFooter.class);
                 }
@@ -106,8 +106,9 @@ public class ConferenceMailRenderer {
                 .attr("style", "display:table!important;visibility:visible!important;opacity:1!important;width:100%;background:#ffffff;color:#374151;margin:0;");
         Element cell = footer.appendElement("tbody").appendElement("tr").appendElement("td")
                 .attr("align", alignment).attr("style", "display:table-cell!important;visibility:visible!important;padding:24px 20px;font:14px Arial,sans-serif;color:#374151;text-align:" + alignment + ";");
-        cell.appendElement("p").attr("style", "display:block!important;font-size:14px!important;color:#374151!important;margin:0 0 12px;")
-                .text("You’re receiving emails from " + (listName == null || listName.isBlank() ? "this mailing list" : listName) + ".");
+        String intro = settings.resolvedIntro(settings.resolvedListName(listName));
+        if (!intro.isEmpty()) cell.appendElement("p").attr("style", "display:block!important;font-size:14px!important;color:#374151!important;margin:0 0 12px;")
+                .text(intro);
         String linkStyle = "display:inline-block!important;visibility:visible!important;opacity:1!important;color:#1f2937!important;font:14px Arial,sans-serif!important;";
         linkStyle += "outlined-button".equals(settings.appearance())
                 ? "border:1px solid #374151;padding:12px 18px;text-decoration:none;" : "text-decoration:underline!important;padding:8px 0;";
