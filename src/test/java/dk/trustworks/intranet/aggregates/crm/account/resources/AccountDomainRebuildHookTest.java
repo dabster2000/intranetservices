@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.crm.account.resources;
 import dk.trustworks.intranet.aggregates.crm.account.dto.AccountDomainsRequest;
 import dk.trustworks.intranet.aggregates.crm.account.dto.ClientDomainDTO;
 import dk.trustworks.intranet.aggregates.crm.account.services.AccountService;
+import dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarRecoveryService;
 import dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,6 +68,10 @@ class AccountDomainRebuildHookTest {
         resource.accountService = accountService;
         resource.personService = personService;
         resource.requestHeaderHolder = headers;
+        // A domain edit also changes which meetings the calendar rules keep, so the endpoint asks
+        // for a full replay. It swallows its own failures inside CalendarRecoveryService, which is
+        // why a plain mock is enough here and why a throwing one would pin the wrong contract.
+        resource.calendarRecovery = mock(CalendarRecoveryService.class);
 
         when(accountService.replaceDomains(CLIENT, REQUEST, ACTOR)).thenReturn(SAVED);
         when(personService.rebuild(CLIENT))

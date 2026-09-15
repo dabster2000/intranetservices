@@ -48,6 +48,13 @@ public class CalendarUnmatchedMeeting extends PanacheEntityBase {
     @Column(name = "occurred_on", nullable = false)
     private LocalDate occurredOn;
 
+    /** Cross-calendar occurrence identity; absent legacy metadata is counted independently. */
+    @Column(name = "ical_uid", length = 255)
+    private String icalUid;
+
+    @Column(name = "sync_generation", nullable = false)
+    private long syncGeneration;
+
     @Column(name = "synced_at", nullable = false)
     private LocalDateTime syncedAt;
 }

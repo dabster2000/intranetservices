@@ -54,6 +54,9 @@ public class AccountPlanResource {
     AccountPlanService planService;
 
     @Inject
+    dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarRecoveryService calendarRecovery;
+
+    @Inject
     RequestHeaderHolder requestHeaderHolder;
 
     @GET
@@ -166,7 +169,9 @@ public class AccountPlanResource {
     @RolesAllowed({"accounts:write"})
     public AccountPlanDTO addStakeholder(@PathParam("clientUuid") String clientUuid,
                                          PlanRequests.StakeholderRequest request) {
-        return planService.addStakeholder(clientUuid, request, requireActor());
+        AccountPlanDTO result = planService.addStakeholder(clientUuid, request, requireActor());
+        calendarRecovery.requestAfterRulesChanged();
+        return result;
     }
 
     @PATCH
@@ -175,7 +180,9 @@ public class AccountPlanResource {
     public AccountPlanDTO updateStakeholder(@PathParam("clientUuid") String clientUuid,
                                             @PathParam("stakeholderUuid") String stakeholderUuid,
                                             PlanRequests.StakeholderRequest request) {
-        return planService.updateStakeholder(clientUuid, stakeholderUuid, request, requireActor());
+        AccountPlanDTO result = planService.updateStakeholder(clientUuid, stakeholderUuid, request, requireActor());
+        calendarRecovery.requestAfterRulesChanged();
+        return result;
     }
 
     /** Takes a person off the plan — and this is what unstarring one does (spec §3.6). */
@@ -184,7 +191,9 @@ public class AccountPlanResource {
     @RolesAllowed({"accounts:write"})
     public AccountPlanDTO removeStakeholder(@PathParam("clientUuid") String clientUuid,
                                             @PathParam("stakeholderUuid") String stakeholderUuid) {
-        return planService.removeStakeholder(clientUuid, stakeholderUuid, requireActor());
+        AccountPlanDTO result = planService.removeStakeholder(clientUuid, stakeholderUuid, requireActor());
+        calendarRecovery.requestAfterRulesChanged();
+        return result;
     }
 
     // ---- Reviews -----------------------------------------------------------

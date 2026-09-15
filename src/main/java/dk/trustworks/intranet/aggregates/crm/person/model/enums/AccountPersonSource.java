@@ -45,7 +45,10 @@ public enum AccountPersonSource {
     SIGNAL,
 
     /** {@code account_slack_mention.digest_json} — a model's reading named somebody. */
-    SLACK;
+    SLACK,
+
+    /** An exact calendar email explicitly reviewed and starred; no meeting claim is implied. */
+    REVIEW;
 
     /** The separator in {@code account_person.sources}. Not a character an enum name can contain. */
     public static final String SEPARATOR = ",";

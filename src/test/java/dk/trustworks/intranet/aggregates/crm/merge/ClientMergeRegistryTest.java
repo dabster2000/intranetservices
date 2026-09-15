@@ -81,6 +81,7 @@ class ClientMergeRegistryTest {
     @Test
     void theSpecialCollapsesAreExactlyTheSpecsFour() {
         assertEquals(List.of("account_person"), tablesWith(Collapse.PERSON));
+        assertEquals(List.of("account_meeting"), tablesWith(Collapse.MEETING));
         assertEquals(List.of("client_account"), tablesWith(Collapse.ACCOUNT));
         assertEquals(List.of("client_month_control"), tablesWith(Collapse.MONTH_CONTROL));
         assertEquals(List.of("client_economics_customer"), tablesWith(Collapse.ECONOMICS_CUSTOMER));
@@ -124,8 +125,8 @@ class ClientMergeRegistryTest {
      */
     @Test
     void theSurfaceIsTheOneMappedOn2026_09_14() {
-        assertEquals(50, ClientMergeRegistry.REPOINT.size(), "repointed columns");
-        assertEquals(19, ClientMergeRegistry.UNIQUE.size(), "unique keys including a client column");
+        assertEquals(52, ClientMergeRegistry.REPOINT.size(), "repointed columns");
+        assertEquals(22, ClientMergeRegistry.UNIQUE.size(), "unique keys including a client column");
     }
 
     private static List<String> columnsOf(String table) {

@@ -76,7 +76,7 @@ class AccountCalendarSyncServiceTest {
         assertFalse(AccountCalendarSyncService.SELECT.contains("subject"),
                 "The subject must never be requested — spec §3.7 and there is no column for it");
         assertFalse(AccountCalendarSyncService.SELECT.contains("body"));
-        assertEquals("id,iCalUId,type,seriesMasterId,start,end,isCancelled,responseStatus,attendees",
+        assertEquals("id,iCalUId,type,seriesMasterId,start,end,isCancelled,responseStatus,attendees,sensitivity,organizer",
                 AccountCalendarSyncService.SELECT);
     }
 
@@ -897,27 +897,19 @@ class AccountCalendarSyncServiceTest {
         assertEquals(0, tally.massAttendeesSuppressedCount());
     }
 
-    /**
-     * The rule measures the WINNING DELEGATION, not the room. Eighteen people from two
-     * companies is not one company sending a delegation, and the nine who won are nine
-     * people somebody sat down with.
-     */
+    /** Splitting one large room across accounts must not invent personal connections. */
     @Test
-    void theRuleMeasuresTheWinningDelegationAndNotTheSizeOfTheRoom() {
+    void multiAccountMassMeetingKeepsActivityWithoutAttendeeEdges() {
         CalendarSyncTally tally = new CalendarSyncTally();
         var attendees = new ArrayList<>(List.of(clientDelegation("acme.dk", 9)));
         attendees.addAll(List.of(clientDelegation("beta.dk", 8)));
-
-        var meeting = service.toMeeting(ME, event("evt-mass-split", false,
-                        "2026-09-12T09:00:00", "2026-09-12T10:00:00",
-                        attendees.toArray(new GraphCalendarClient.CalendarEventDetails.EventAttendee[0])),
+        var meetings = service.toMeetings(ME, event("evt-mass-split", false,
+                "2026-09-12T09:00:00", "2026-09-12T10:00:00",
+                attendees.toArray(new GraphCalendarClient.CalendarEventDetails.EventAttendee[0])),
                 DOMAINS, CalendarFilters.empty(), tally, INTERNAL_MIN, MASS_MIN);
-
-        assertNotNull(meeting);
-        assertEquals(CLIENT, meeting.clientUuid(), "largest delegation still wins, and first");
-        assertEquals(17, meeting.attendeeCount(), "seventeen people were in the room");
-        assertEquals(9, meeting.attendees().size(), "but no single client sent ten");
-        assertEquals(0, tally.massMeetingsFlaggedCount());
+        assertEquals(2, meetings.size());
+        assertTrue(meetings.stream().allMatch(meeting -> meeting.attendees().isEmpty()));
+        assertEquals(17, tally.massAttendeesSuppressedCount());
     }
 
     /**

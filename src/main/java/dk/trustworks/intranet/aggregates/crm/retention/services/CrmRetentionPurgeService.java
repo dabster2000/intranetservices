@@ -188,11 +188,14 @@ public class CrmRetentionPurgeService {
                      where i.person_uuid = p.uuid and i.kind = 'TRUSTLINK')
             """;
 
+    /** Calendar PII rows include unresolved candidates and their review decisions (V621). */
     private static final String COUNT_MEETING_ATTENDEES = """
-            select m.client_uuid, count(*)
-              from account_meeting_attendee a
-              join account_meeting m on m.uuid = a.meeting_uuid
-             group by m.client_uuid
+            select client_uuid, count(*) from (
+                select m.client_uuid from account_meeting_attendee a
+                  join account_meeting m on m.uuid=a.meeting_uuid
+                union all select client_uuid from account_calendar_candidate
+                union all select client_uuid from account_calendar_review
+            ) calendar_pii group by client_uuid
             """;
 
     private static final String COUNT_SIGNALS = """
@@ -488,7 +491,8 @@ public class CrmRetentionPurgeService {
         // itself ACROSS runs either, for the reason the candidate set is built from outstanding
         // counts rather than from dates: a swept account has nothing left to erase and drops
         // out before its now-older clock is ever consulted again.
-        Map<String, LocalDate> activity = lastActivityDates();
+        Map<String, LocalDate> activity = new HashMap<>(lastActivityDates());
+        mergeNewest(activity, "select client_uuid, max(occurred_at) from account_calendar_candidate group by client_uuid");
         Map<String, LocalDate> human = humanClock();
         Map<String, LocalDate> fallback = fallbackClock();
 
@@ -844,6 +848,10 @@ public class CrmRetentionPurgeService {
     private long[] purgeAccount(String clientUuid) {
         return QuarkusTransaction.requiringNew().call(() -> {
             long attendees = execute(DELETE_MEETING_ATTENDEES, Map.of("clientUuid", clientUuid));
+            attendees += execute("delete from account_calendar_candidate where client_uuid=:clientUuid",
+                    Map.of("clientUuid", clientUuid));
+            attendees += execute("delete from account_calendar_review where client_uuid=:clientUuid",
+                    Map.of("clientUuid", clientUuid));
             long signals = execute(REDACT_SIGNALS,
                     Map.of("clientUuid", clientUuid, "redacted", REDACTED_SIGNAL_TEXT));
             long mentions = execute(DELETE_SLACK_MENTIONS, Map.of("clientUuid", clientUuid));
@@ -1010,6 +1018,7 @@ public class CrmRetentionPurgeService {
         Map<String, LocalDate> dates = new HashMap<>();
         mergeNewest(dates, HUMAN_CLOCK_CLAIMS);
         mergeNewest(dates, HUMAN_CLOCK_STAKEHOLDERS);
+        mergeNewest(dates, "select client_uuid, max(reviewed_at) from account_calendar_review group by client_uuid");
         return dates;
     }
 

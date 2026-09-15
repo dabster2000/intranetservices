@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.crm.calendar.model.UserCalendarConsent;
 import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -38,6 +39,9 @@ import java.util.Set;
 @ApplicationScoped
 public class CalendarConsentService {
 
+    @Inject
+    CalendarSyncStateService syncStateService;
+
     /** Roles whose work is client contact. On unless the person says otherwise. */
     static final Set<String> DEFAULT_ON_ROLES = Set.of("SALES", "PARTNER", "ADMIN");
 
@@ -61,6 +65,9 @@ public class CalendarConsentService {
     @Transactional
     public CalendarConsentDTO decide(String userUuid, boolean enabled) {
         requireUser(userUuid);
+        // Lock order is mailbox state, then explicit consent, matching sync finalisation.
+        // Revocation invalidates in-flight work while preserving previously shared history.
+        syncStateService.fenceConsentChange(userUuid, enabled);
         UserCalendarConsent row = UserCalendarConsent.findById(userUuid);
         if (row == null) {
             row = new UserCalendarConsent();

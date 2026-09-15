@@ -273,8 +273,21 @@ public interface GraphCalendarClient {
             CalendarViewResponse.GraphDateTime start,
             CalendarViewResponse.GraphDateTime end,
             EventResponseStatus responseStatus,
-            List<CalendarEventDetails.EventAttendee> attendees
-        ) { }
+            List<CalendarEventDetails.EventAttendee> attendees,
+            String sensitivity,
+            EventOrganizer organizer
+        ) {
+            /** Compatibility for callers constructing metadata without the optional fields. */
+            public AttendeeViewEvent(String id, String iCalUId, String type, String seriesMasterId,
+                    Boolean isCancelled, CalendarViewResponse.GraphDateTime start,
+                    CalendarViewResponse.GraphDateTime end, EventResponseStatus responseStatus,
+                    List<CalendarEventDetails.EventAttendee> attendees) {
+                this(id, iCalUId, type, seriesMasterId, isCancelled, start, end, responseStatus,
+                        attendees, "normal", null);
+            }
+        }
+
+        public record EventOrganizer(CalendarEventRequest.Attendee.EmailAddress emailAddress) { }
 
         /**
          * The mailbox owner's own answer to the invitation: {@code none},

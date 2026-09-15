@@ -119,6 +119,9 @@ public class AccountResource {
     CalendarSuggestionService calendarSuggestions;
 
     @Inject
+    dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarRecoveryService calendarRecovery;
+
+    @Inject
     SlackUnmatchedCompanyService slackSuggestions;
 
     @Inject
@@ -218,6 +221,7 @@ public class AccountResource {
     public Response decideCalendarSuggestion(@PathParam("domain") String domain,
                                              CalendarSuggestionDecisionRequest request) {
         calendarSuggestions.decide(domain, request, requireActor());
+        calendarRecovery.requestAfterRulesChanged();
         return Response.noContent().build();
     }
 
@@ -361,6 +365,7 @@ public class AccountResource {
     public List<ClientDomainDTO> replaceDomains(@PathParam("clientUuid") String clientUuid,
                                                 AccountDomainsRequest request) {
         List<ClientDomainDTO> domains = accountService.replaceDomains(clientUuid, request, requireActor());
+        calendarRecovery.requestAfterRulesChanged();
         rebuildPeopleAfterDomainChange(clientUuid);
         return domains;
     }

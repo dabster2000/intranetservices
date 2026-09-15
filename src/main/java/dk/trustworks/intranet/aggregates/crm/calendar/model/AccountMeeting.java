@@ -25,7 +25,8 @@ import java.time.LocalDateTime;
  * <p><b>One row per mailbox, not per meeting.</b> A meeting with two consenting Trustworks
  * attendees produces two rows, which is exactly what the relationship graph needs: both of
  * them were there and both now have an edge. {@link #uuid} is derived deterministically
- * from {@code (graphEventId, userUuid)} so a re-sync updates the row instead of adding one.
+ * from {@code (graphEventId, userUuid, clientUuid)} so each matched account has its own
+ * projection and a re-sync updates the row instead of adding one.
  * {@link #icalUid} is what says those two rows are ONE meeting: it is Graph's identifier for
  * the event across calendars, and the account timeline folds rows that share it into a single
  * line naming everybody of ours who was there.
@@ -92,6 +93,20 @@ public class AccountMeeting extends PanacheEntityBase {
 
     @Column(name = "synced_at", nullable = false)
     private LocalDateTime syncedAt;
+
+    /** Membership of a completed mailbox read. Never compared using timestamp precision. */
+    @Column(name = "sync_generation", nullable = false)
+    private long syncGeneration;
+
+    @Column(name = "series_master_id", length = 600)
+    private String seriesMasterId;
+
+    @Column(name = "recurring", nullable = false)
+    private boolean recurring;
+
+    /** NORMAL or STARRED_OVERRIDE; no meeting content is retained. */
+    @Column(name = "inclusion_reason", length = 32, nullable = false)
+    private String inclusionReason = "NORMAL";
 
     /**
      * Graph's {@code iCalUId}: the same for one meeting in every attendee's mailbox, and

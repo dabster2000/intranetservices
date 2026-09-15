@@ -17,6 +17,7 @@ import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -57,7 +58,10 @@ public class CalendarConsentResource {
     CalendarConsentService consentService;
 
     @Inject
-    AccountCalendarSyncService syncService;
+    dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSyncJobService jobService;
+
+    @Inject
+    dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSyncStateService stateService;
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
@@ -80,24 +84,26 @@ public class CalendarConsentResource {
         return consentService.decide(actor, request.enabled());
     }
 
-    /**
-     * Runs the sync now. Admin-only and deliberately synchronous — it exists so the
-     * nightly job can be verified without waiting a night, not as a routine call.
-     *
-     * <p>{@code ?full=true} reads every mailbox over its whole twelve-month window instead of
-     * the last fortnight, which re-judges every stored meeting under the current rules and
-     * removes the ones that no longer hold. The nightly job does this by itself on Sundays;
-     * the flag is for the day a rule changes and nobody wants to wait for one. A full run
-     * over fifty mailboxes takes minutes, longer than the load balancer's sixty-second idle
-     * timeout — the call may answer 504 while the run itself carries on to completion and
-     * writes its summary to the log.
-     */
+    @GET
+    @Path("/status")
+    public dk.trustworks.intranet.aggregates.crm.calendar.dto.CalendarSyncHealthDTO status() {
+        return stateService.health();
+    }
+
+    /** A durable request: no HTTP connection is held across a full-year Graph read. */
     @POST
     @Path("/sync")
     @RolesAllowed({"admin:write"})
-    public CalendarSyncSummary syncNow(@QueryParam("full") @DefaultValue("false") boolean full) {
-        requireHumanActor();
-        return syncService.syncAll(full);
+    public Response syncNow(@QueryParam("full") @DefaultValue("false") boolean full) {
+        return Response.accepted(jobService.enqueue(full, requireHumanActor())).build();
+    }
+
+    @GET
+    @Path("/sync/{uuid}")
+    @RolesAllowed({"admin:read"})
+    public dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSyncJobService.Job syncStatus(
+            @PathParam("uuid") String uuid) {
+        return jobService.read(uuid);
     }
 
     /**

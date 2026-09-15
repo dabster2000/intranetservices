@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Everything one calendar sync run needs in order to decide what a meeting IS, carried
@@ -27,6 +28,8 @@ final class CalendarFilters {
 
     private final DeliveryContractIndex delivery;
     private final ColleagueDirectory colleagues;
+    private Set<String> commercialUsers = Set.of();
+    private Map<String, Set<String>> starredEmails = Map.of();
 
     /**
      * Lower-cased address to the uuid of the colleague who holds it. Seeded from
@@ -68,6 +71,24 @@ final class CalendarFilters {
     /** Filters that drop nothing. Used when the sync is off and by tests that need neither. */
     static CalendarFilters empty() {
         return of(DeliveryContractIndex.empty(), ColleagueDirectory.empty(), Map.of());
+    }
+
+    /** Current roles and explicit person/email identities; account bands and names never qualify. */
+    CalendarFilters withCommercialStars(Set<String> users, Map<String, Set<String>> emailsByClient) {
+        commercialUsers = Set.copyOf(users);
+        Map<String, Set<String>> normalised = new LinkedHashMap<>();
+        emailsByClient.forEach((client, emails) -> normalised.put(client, emails.stream()
+                .map(email -> email.trim().toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet())));
+        starredEmails = Map.copyOf(normalised);
+        return this;
+    }
+
+    boolean hasStarredOverride(String userUuid, String clientUuid,
+            java.util.List<AccountCalendarSyncService.PendingAttendee> attendees) {
+        if (!commercialUsers.contains(userUuid)) return false;
+        Set<String> stars = starredEmails.getOrDefault(clientUuid, Set.of());
+        return attendees.stream().anyMatch(attendee -> stars.contains(attendee.email()));
     }
 
     DeliveryContractIndex delivery() {

@@ -35,154 +35,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Reads calendar METADATA from consenting mailboxes and turns it into account meetings
- * (CRM spec §3.2, §3.7).
+ * Reads metadata from enabled calendars and produces per-account meeting evidence.
+ * No Graph call runs inside a database transaction. A per-mailbox generation fences both
+ * consent changes and concurrent imports; only complete reads may reconcile missing rows.
  *
- * <h2>What it reads, and what it refuses to read</h2>
- * Attendees, start and end. The {@code $select} handed to Graph names exactly those
- * fields and never {@code subject} or {@code body}; {@code account_meeting} has no column
- * for a subject; the summary shown on the page is composed from attendee names. The text
- * of what people discussed never leaves Microsoft's tenant.
- *
- * <h2>Which mailboxes</h2>
- * Only the ones {@link CalendarConsentService#consentedUserUuids()} returns. The Graph app
- * registration holds tenant-wide {@code Calendars.ReadWrite} and could open any mailbox —
- * that list is the rule Intra imposes on itself, and this is the one place it has to hold.
- *
- * <h2>Which events are even candidates — three gates before any rule</h2>
- * Decided 2026-09-14, after the account timeline turned out to be half meetings that had
- * not happened: 209 of 415 stored rows were in the future, and Ældre Sagen's feed was one
- * daily standup read from two mailboxes, repeated every working day into December.
- * <ol>
- *   <li><b>It has to have ended.</b> The window closes at the moment the run starts and an
- *       event still running at that moment is left for the next night. A meeting that has
- *       not happened is not activity, does not make a relationship warm, and is not "the
- *       last time we talked to them". Nothing ahead of the run's clock is read and nothing
- *       ahead of it is kept.</li>
- *   <li><b>A standing meeting is a cadence, not a contact.</b> {@code calendarView} expands
- *       a recurring series into its occurrences, so a daily standup arrives as one event per
- *       day, each carrying the master's id. A standup, a weekly status, a sprint review are
- *       how a project is run — not somebody selling something — and they would drown the
- *       handful of meetings that were. Every occurrence and exception of a series is
- *       dropped, and the count is tallied so the size of what the rule takes is visible.</li>
- *   <li><b>A meeting the owner declined is not one they attended.</b> Outlook normally takes
- *       a declined meeting off the calendar, but "decline and keep" exists.</li>
- * </ol>
- *
- * <h2>Which meetings — five rules, and most of Graph's answer fails one of them</h2>
- * An event that passes the gates has to survive all five to be written. On production this
- * throws away roughly two thirds of everything Graph returns, which is the point: the
- * meetings that matter were buried under the ones that do not.
- *
- * <ol>
- *   <li><b>Somebody from a known client has to be in it.</b> At least one attendee's
- *       e-mail domain must match a {@code client_domain} row. Internal meetings, personal
- *       appointments and meetings with companies we do not serve are not kept as meetings.
- *       Cancelled and undated events are dropped here too.
- *
- *       <p><b>An unmatched domain is no longer dropped silently</b> (spec §2.5, V601). Only
- *       34 of 307 clients have a domain, so this rule was quietly discarding exactly the
- *       companies the customers/prospects/contacts split exists for — the ones several
- *       colleagues keep meeting and Intra has never heard of. The DOMAIN and the DAY are
- *       tallied into {@code calendar_unmatched_meeting} and surface on the Contacts view as
- *       "Seen in calendars" with three things to do about them. Never an attendee, never a
- *       subject: a domain identifies a company, not a person, which is a smaller footprint
- *       than {@code account_meeting_attendee} already has. Freemail, our own and
- *       deny-listed domains never land there.</li>
- *
- *   <li><b>Room and equipment attendees are not people</b> (decision D3). Graph marks them
- *       {@code type="resource"}, and {@code "KIT-LLV-Modelokale-2@politi.dk"} on a client
- *       domain would otherwise be drawn in the relationship graph as somebody the firm
- *       knows at Rigspolitiet. They are dropped, and they no longer count towards
- *       {@code attendeeCount} either — that number is the size of the room in PEOPLE.
- *       Attendees known only by their e-mail address, with no display name at all, are
- *       <b>kept</b>: politi.dk never sends display names, and dropping the nameless would
- *       empty Rigspolitiet's whole relationship graph.</li>
- *
- *   <li><b>Our own all-hands is not a meeting with a client</b> (spec §4.2). The moment one
- *       attendee's domain matches, a firm-wide internal event with a single guest on it is
- *       indistinguishable from a sales meeting — and the account with the most internal
- *       traffic then comes out looking like the warmest relationship in the book. Arba
- *       Security's 77 meetings are one external guest on 76 recurring internal events seen
- *       by 22 mailboxes; 53 of Banedanmark's 60 have eight or more people in them. The
- *       signal that separates the two is how many of OURS were there, so the attendees on
- *       our own tenant are counted, stored on {@code account_meeting.own_attendee_count},
- *       and the event is dropped once the count reaches the configured threshold. Eight by
- *       default: above any sales meeting or steering committee, below any firm-wide event,
- *       and a workshop with eight of ours at the client is delivery, which the next rule
- *       excludes anyway. The threshold is configuration rather than a constant so it can be
- *       re-tuned from a log line instead of a release.
- *
- *       <p><b>The same rule from the other side: a mass event AT the client.</b> Counting
- *       only OUR OWN people caught "a meeting that was really ours with a guest on it" and
- *       said nothing about the event where we were the guests. One meeting at Banedanmark
- *       with fifty people in it stored forty-seven client attendee rows, and each of those
- *       forty-seven then appeared on the account as somebody the firm had met. Firm-wide,
- *       ten meetings with eleven or more attendees produced 132 of the 330 client attendee
- *       rows. So when the WINNING client's delegation reaches its own threshold the
- *       {@code account_meeting} row is kept — a fifty-person event is real activity with
- *       the account — and NO attendee rows are written for it: the event is not evidence
- *       that anybody knows anybody. Ten by default, and configuration for the same reason
- *       eight is.</li>
- *
- *   <li><b>Our own consultants at the client are not client contacts</b> (decision D2). A
- *       consultant placed at a client gets a mailbox there — {@code mygx@novonordisk.com}
- *       is Malthe Yde Andreasen — so they arrived as EXTERNAL people the firm had "met"
- *       and were drawn as the firm's network into its own account. An attendee is dropped
- *       when the display name matches somebody employed here ON THE DAY OF THE MEETING —
- *       by the strict token rules for anybody, and by first-token-then-last-token for
- *       somebody with a placement at that client (spec §4.1 rule b, the shape behind
- *       "Sara Louise Vest (XSVES)" and 53 of the 441 attendee rows) — or when the address
- *       is already known to be a colleague's (see
- *       {@link CalendarFilterService}). <b>Employment is part of the rule, not an
- *       optimisation</b>: a FORMER colleague now working at the client is one of the best
- *       client contacts the firm has and must be kept — and the address branch asks the
- *       same employment question about the same day, because a learned address says whose
- *       a mailbox is and nothing at all about when. If dropping colleagues leaves the
- *       event with no client-domain attendee at all, the whole meeting goes — 39 such
- *       meetings on production.</li>
- *
- *   <li><b>Delivery is not sales</b> (decision D1). If the mailbox owner was on a contract
- *       with the winning client on the day of the meeting, the meeting is dropped. A
- *       consultant sitting at a client has standups, refinements and sprint reviews with
- *       them all day; counted as client contact they made "who last saw them" answer with
- *       a standup. The rule is a {@code contract_consultants} row whose date window
- *       contains the meeting date — <b>contract status is deliberately ignored</b>, because
- *       the date window is the record of when somebody actually sat there. 630 of 960
- *       meetings on production, 158 of 206 on Novo Nordisk.</li>
- * </ol>
- *
- * <h2>Transactions and Graph</h2>
- * A Graph round trip is never made while a transaction is open. A model or HTTP call
- * inside a transaction holds a pooled connection for its whole duration, which is the §P9
- * M1 rule the signal extractor already enforces; here it would hold one for the length of
- * ~100 mailbox reads. Each mailbox is: read (no transaction) → persist (its own short
- * transaction). The filters are loaded ONCE for the whole run, in their own transaction
- * before the loop, for the same reason — and the learned colleague addresses are written
- * inside the mailbox's existing short write transaction, never between it and the next
- * Graph call.
- *
- * <h2>Windows, and what is stored mirrors what was read</h2>
- * Every window closes at the run's clock. A mailbox is read over the last
- * {@value #INCREMENTAL_BACK_DAYS} days each night, which catches late edits and
- * cancellations without re-reading a year; and over the whole {@value #FULL_READ_BACK_DAYS}
- * days on its first run, on Sundays, when rows from before V614 still need their identity
- * filled in, and when the manual trigger asks for it — see {@link #fullReadDue}. The full
- * read is what re-judges old rows under a rule that changed, or under a contract that was
- * entered late.
- *
- * <p>After a COMPLETE read of a window, the rows of that mailbox inside it that the read did
- * not produce are removed: the event was cancelled, deleted, declined, moved, or a rule now
- * drops it. The sync was append-only before this, which is how a meeting that was dropped
- * on every read since the delivery rule shipped still sat on the account. A truncated read
- * removes nothing — it proves nothing about the pages it never fetched. Rows ahead of the
- * clock are removed for every mailbox at the end of the run, whether or not the mailbox was
- * read: they cannot be right, and a mailbox that has opted out keeps what happened, not
- * what was going to.
- *
- * <p>Graph reads the window bounds as UTC when they carry no offset — the documentation
- * says so, and the Prefer header does not change it — so the bounds are formatted from the
- * run's instant in UTC rather than from whatever wall clock the JVM happens to run on.
+ * <p>Current SALES/PARTNER owners meeting an actual starred person may bypass recurrence
+ * and delivery exclusions. Privacy, participant identity and mass/internal guards remain
+ * mandatory. Excluded recurring/delivery contacts can be reviewed without inventing MET edges.
  */
 @JBossLog
 @ApplicationScoped
@@ -197,7 +56,7 @@ public class AccountCalendarSyncService {
      * series; {@code responseStatus} is the owner's own answer. All four are metadata about
      * the calendar item, not about what was said in it.
      */
-    static final String SELECT = "id,iCalUId,type,seriesMasterId,start,end,isCancelled,responseStatus,attendees";
+    static final String SELECT = "id,iCalUId,type,seriesMasterId,start,end,isCancelled,responseStatus,attendees,sensitivity,organizer";
 
     /** A full read: a mailbox's first run, Sundays, a backfill, or a manual {@code ?full=true}. */
     static final int FULL_READ_BACK_DAYS = 365;
@@ -293,6 +152,18 @@ public class AccountCalendarSyncService {
     @Inject
     GraphMailboxConcurrencyLimiter limiter;
 
+    @Inject
+    jakarta.persistence.EntityManager em;
+
+    @Inject
+    CalendarSyncStateService stateService;
+
+    @Inject
+    CalendarCandidateService candidateService;
+
+    @Inject
+    dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService personService;
+
     @ConfigProperty(name = "dk.trustworks.crm.calendar.sync.enabled", defaultValue = "false")
     boolean syncEnabled;
 
@@ -366,11 +237,7 @@ public class AccountCalendarSyncService {
         // that no transaction is open during a Graph call.
         CalendarFilters filters = QuarkusTransaction.requiringNew().call(filterService::load);
 
-        // ONE clock for the whole run. Every mailbox's window closes at this instant, every
-        // row written tonight carries it as synced_at, and the reconcile that removes what a
-        // read no longer produced compares against it. A per-mailbox clock would let the
-        // fiftieth mailbox's window close ten minutes after the first one's and leave the
-        // reconcile comparing rows against a boundary that moved while it ran.
+        // One clock bounds all mailboxes; integer generations independently identify their writes.
         Instant runStart = Instant.now();
 
         Set<String> mailboxes = QuarkusTransaction.requiringNew().call(consentService::consentedUserUuids);
@@ -415,7 +282,7 @@ public class AccountCalendarSyncService {
                 failures++;
                 // The message, not the stack, and never the event payload: a Graph error
                 // body can echo back calendar content.
-                log.warnf("Account calendar sync failed for mailbox %s: %s", userUuid, e.getMessage());
+                log.warnf("Account calendar sync failed for mailbox %s: SYNC_FAILED", userUuid);
             }
         }
 
@@ -424,6 +291,13 @@ public class AccountCalendarSyncService {
         // was read while it was on, and "what was read" means meetings that happened; a row
         // for a meeting that was going to happen is not history anybody agreed to keep.
         int futureRemoved = QuarkusTransaction.requiringNew().call(() -> (int) purgeFuture(runStart));
+
+        // Registry rebuild follows committed metadata; the UI must not wait for another nightly job.
+        var registry = personService.rebuildAll();
+        if (registry.failures() > 0 || registry.status()
+                != dk.trustworks.intranet.aggregates.crm.person.services.AccountPersonService.RebuildSummary.Status.RAN) {
+            throw new IllegalStateException("REGISTRY_REBUILD_FAILED");
+        }
 
         // The per-domain counts are recomputed from the ledger once, after every mailbox
         // has written its sightings — never incremented as they arrive, because the
@@ -470,137 +344,87 @@ public class AccountCalendarSyncService {
                          int staleRemoved,
                          boolean fullRead) {
 
+        static MailboxResult incomplete() {
+            return new MailboxResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, false);
+        }
+
         static MailboxResult nothing() {
             return new MailboxResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false);
         }
     }
 
-    /**
-     * One mailbox. The Graph read happens with NO transaction held; the write and the
-     * reconcile are one separate short transaction.
-     *
-     * <h2>Which window</h2>
-     * The last {@value #INCREMENTAL_BACK_DAYS} days, closing at the run's clock, unless a
-     * full read is due — {@link #fullReadDue}. Nothing ahead of the clock is read.
-     *
-     * <h2>Reconcile — what a complete read no longer produces is removed</h2>
-     * Every row this pass keeps is rewritten with the run's {@code synced_at}. After that,
-     * every row of this mailbox whose {@code occurred_at} lies inside the window just read
-     * and whose {@code synced_at} is older than the run is a row the calendar no longer
-     * vouches for — cancelled, deleted, declined, moved out of the window, or dropped by a
-     * rule that has changed since it was written — and it is deleted, attendees cascading
-     * with it. That is what makes the stored meetings a mirror of the mailbox rather than a
-     * ledger of everything it ever said.
-     *
-     * <p>Only a COMPLETE read reconciles. A read that hit the page guard, or a continuation
-     * Graph promised and did not deliver, says nothing about the events on the pages it
-     * never fetched, and deleting on its evidence would erase real meetings from exactly the
-     * busiest calendars. And an empty complete read reconciles like any other: a fortnight
-     * in which every meeting was cancelled has to end with no rows for that fortnight.
-     */
+    /** Reserve, read outside a transaction, then commit and reconcile under the same mailbox fence. */
     MailboxResult syncMailbox(String userUuid, Map<String, String> domainIndex, CalendarFilters filters,
                               Instant runStart, boolean forceFullRead) {
         String principal = QuarkusTransaction.requiringNew().call(() -> mailboxAddressOf(userUuid));
-        if (principal == null) {
-            log.debugf("No mailbox address for %s — skipping", userUuid);
-            return MailboxResult.nothing();
-        }
-
-        LocalDate runDay = LocalDate.ofInstant(runStart, CalendarTime.ZONE);
-        LocalDateTime fullWindowStart = CalendarTime.wallClock(runStart.minus(Duration.ofDays(FULL_READ_BACK_DAYS)));
-        boolean full = QuarkusTransaction.requiringNew().call(() -> {
-            boolean firstRun = AccountMeeting.count("userUuid", userUuid) == 0;
-            // Rows written before V614 have no identity; the feed shows them one per mailbox
-            // until a full read fills the column in. Scoped to the window a full read can
-            // actually reach, or a row older than a year would make every night a full night.
-            boolean backfillNeeded = !firstRun && AccountMeeting.count(
-                    "userUuid = ?1 and icalUid is null and occurredAt >= ?2", userUuid, fullWindowStart) > 0;
-            return fullReadDue(forceFullRead, firstRun, backfillNeeded, runDay);
-        });
-        ReadWindow window = ReadWindow.of(runStart, full);
-        // synced_at keeps the JVM's own wall clock, as it always has; what matters is that
-        // every row this run writes carries the SAME value and that the reconcile compares
-        // against exactly that value.
-        LocalDateTime syncedAt = LocalDateTime.ofInstant(runStart, ZoneId.systemDefault());
-
-        // The tally is opened BEFORE the read, not after it: how many pages the read took
-        // and whether it finished are facts about the mailbox's pass, exactly like the
-        // reasons meetings were dropped, and a mailbox that yields no events at all still
-        // has to be able to say whether that was the whole calendar.
-        CalendarSyncTally tally = new CalendarSyncTally();
-
-        // One permit for the WHOLE continuation loop, not one per page. The limiter exists
-        // to stop two passes hammering the same mailbox; releasing it between pages would
-        // let a second reader interleave halfway through somebody's calendar.
-        CalendarRead read;
-        if (!limiter.tryAcquire(principal)) {
-            log.warnf("Graph mailbox %s busy — skipping this run", userUuid);
-            return MailboxResult.nothing();
-        }
+        // The process-local limiter is acquired before reservation: a skipped duplicate must
+        // not invalidate the generation belonging to the reader already using this mailbox.
+        if (principal != null && !limiter.tryAcquire(principal)) return MailboxResult.incomplete();
+        CalendarSyncStateService.Lease lease = null;
         try {
-            read = readCalendar(userUuid, principal, window.graphFrom(), window.graphTo());
-        } finally {
-            limiter.release(principal);
-        }
-        tally.graphPagesFetched(read.pages());
-        if (!read.complete()) {
-            tally.readTruncated();
-        }
-
-        List<PendingMeeting> pending = new ArrayList<>();
-        for (GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event : read.events()) {
-            // Graph returns every event that OVERLAPS the window, so one still running at the
-            // run's clock comes back too. It is not activity yet — the next run sees it whole
-            // — and writing it now would put a meeting on the timeline with people still in
-            // it. Asked here rather than in toMeeting, which holds no clock on purpose.
-            if (!hasEnded(event, runStart)) {
-                continue;
+            lease = stateService.reserve(userUuid, runStart);
+            if (lease == null) return MailboxResult.nothing();
+            if (principal == null) {
+                stateService.fail(lease, "NO_MAILBOX");
+                throw new IllegalStateException("NO_MAILBOX");
             }
-            // Both thresholds are read here and handed down, because toMeeting has no
-            // configuration of its own — see its javadoc on staying pure.
-            PendingMeeting meeting = toMeeting(userUuid, event, domainIndex, filters, tally,
-                    internalMeetingMinOwnAttendees, massMeetingMinClientAttendees);
-            if (meeting != null) {
-                pending.add(meeting);
+            CalendarSyncStateService.Lease reservation = lease;
+            // Read changeable rules AFTER reserving. A rule edit before this lease is observed;
+            // an edit after it invalidates the lease, so old rules cannot mark recovery complete.
+            Map<String, String> currentDomains = QuarkusTransaction.requiringNew().call(accountService::domainIndex);
+            QuarkusTransaction.requiringNew().run(() -> filterService.refreshCommercialStars(filters));
+            LocalDate runDay = LocalDate.ofInstant(runStart, CalendarTime.ZONE);
+            boolean full = fullReadDue(forceFullRead, lease.recoveryRequired(), false, runDay);
+            ReadWindow window = ReadWindow.of(runStart, full);
+            LocalDateTime syncedAt = LocalDateTime.ofInstant(runStart, ZoneOffset.UTC);
+            CalendarSyncTally tally = new CalendarSyncTally();
+            CalendarRead read = readCalendar(userUuid, principal, window.graphFrom(), window.graphTo(),
+                    () -> stateService.canRead(reservation));
+            tally.graphPagesFetched(read.pages());
+            if (!read.complete()) tally.readTruncated();
+            Map<String, PendingMeeting> uniquePending = new LinkedHashMap<>();
+            for (var event : read.events()) {
+                if (!hasEnded(event, runStart)) continue;
+                for (PendingMeeting meeting : toMeetings(userUuid, event, currentDomains, filters, tally,
+                        internalMeetingMinOwnAttendees, massMeetingMinClientAttendees)) {
+                    uniquePending.put(meeting.uuid(), meeting);
+                }
             }
-        }
-
-        int attendeeRows = pending.stream().mapToInt(meeting -> meeting.attendees().size()).sum();
-        int staleRemoved = 0;
-        if (read.complete() || !pending.isEmpty() || tally.hasLearnedEmails() || tally.hasUnmatchedDomains()) {
-            // One transaction, opened after the last Graph call for this mailbox and closed
-            // before the next one. The learned addresses ride along in it rather than in a
-            // second transaction of their own: they are a by-product of the same pass and
-            // are worthless if the meetings they came from were not written. The reconcile
-            // is last and in the same transaction, so a write that fails removes nothing.
-            staleRemoved = QuarkusTransaction.requiringNew().call(() -> {
-                persist(pending, syncedAt);
+            List<PendingMeeting> pending = List.copyOf(uniquePending.values());
+            CalendarSyncStateService.Completion committed = stateService.complete(lease, full, read.complete(), () -> {
+                persist(pending, syncedAt, reservation.generation());
                 filterService.rememberColleagueEmails(tally.learnedEmails(), syncedAt);
-                suggestionService.record(userUuid, tally.unmatchedDomains(), syncedAt);
-                return read.complete() ? (int) reconcile(userUuid, window, syncedAt) : 0;
+                suggestionService.record(userUuid, tally.unmatchedDomains(), syncedAt, reservation.generation(),
+                        window.fromWallClock(), window.toWallClock(), read.complete());
+                candidateService.record(userUuid, reservation.generation(), tally.candidates(),
+                        window.fromWallClock(), window.toWallClock(), read.complete());
+                AccountMeeting.flush();
+                int removed = read.complete() ? (int) reconcile(userUuid, window, reservation.generation()) : 0;
+                int kept = (int) AccountMeeting.count("userUuid = ?1 and syncGeneration = ?2", userUuid, reservation.generation());
+                int attendeeRows = ((Number) AccountMeeting.getEntityManager().createNativeQuery("""
+                        select count(*) from account_meeting_attendee a
+                        join account_meeting m on m.uuid = a.meeting_uuid
+                        where m.user_uuid = :user and m.sync_generation = :generation
+                        """).setParameter("user", userUuid).setParameter("generation", reservation.generation())
+                        .getSingleResult()).intValue();
+                return new CalendarSyncStateService.SyncCounts(kept, attendeeRows, removed);
             });
+            if (!committed.applied()) {
+                boolean stillEnabled = QuarkusTransaction.requiringNew().call(() -> consentService.isEnabled(userUuid));
+                return stillEnabled ? MailboxResult.incomplete() : MailboxResult.nothing();
+            }
+            return new MailboxResult(read.events().size(), committed.counts().meetings(),
+                    committed.counts().attendees(), tally.deliveryDroppedCount(), tally.colleagueOnlyDroppedCount(),
+                    tally.newlyLearnedEmails(), tally.internalDroppedCount(), tally.colleagueByPlacementCount(),
+                    tally.graphPagesCount(), tally.readsTruncatedCount(), tally.massMeetingsFlaggedCount(),
+                    tally.massAttendeesSuppressedCount(), tally.recurringDroppedCount(), tally.declinedDroppedCount(),
+                    committed.counts().staleRemoved(), full);
+        } catch (RuntimeException failure) {
+            stateService.fail(lease, principal == null ? "NO_MAILBOX" : "SYNC_FAILED");
+            throw failure;
+        } finally {
+            if (principal != null) limiter.release(principal);
         }
-        if (staleRemoved > 0) {
-            log.infof("Account calendar sync: mailbox %s — %d stored meeting(s) no longer in the calendar "
-                    + "(%s-day window) removed", userUuid, staleRemoved, full ? FULL_READ_BACK_DAYS : INCREMENTAL_BACK_DAYS);
-        }
-        return new MailboxResult(
-                read.events().size(),
-                pending.size(),
-                attendeeRows,
-                tally.deliveryDroppedCount(),
-                tally.colleagueOnlyDroppedCount(),
-                tally.newlyLearnedEmails(),
-                tally.internalDroppedCount(),
-                tally.colleagueByPlacementCount(),
-                tally.graphPagesCount(),
-                tally.readsTruncatedCount(),
-                tally.massMeetingsFlaggedCount(),
-                tally.massAttendeesSuppressedCount(),
-                tally.recurringDroppedCount(),
-                tally.declinedDroppedCount(),
-                staleRemoved,
-                full);
     }
 
     /**
@@ -643,7 +467,8 @@ public class AccountCalendarSyncService {
 
         static ReadWindow of(Instant runStart, boolean full) {
             int days = full ? FULL_READ_BACK_DAYS : INCREMENTAL_BACK_DAYS;
-            return new ReadWindow(runStart.minus(Duration.ofDays(days)), runStart, full);
+            Instant boundary = runStart.truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+            return new ReadWindow(boundary.minus(Duration.ofDays(days)), boundary, full);
         }
 
         String graphFrom() {
@@ -739,23 +564,17 @@ public class AccountCalendarSyncService {
         return value.isEmpty() || value.length() > MAX_ICAL_UID_LENGTH ? null : value;
     }
 
-    /**
-     * Removes this mailbox's rows inside the window that this run did not write.
-     *
-     * <p>Must be called inside the same transaction as {@link #persist}, after it, so the
-     * kept rows already carry the run's {@code synced_at} and are excluded by it. Attendees
-     * go with their meeting through the {@code ON DELETE CASCADE} of V588 — nothing sweeps
-     * them by hand, and nothing has to.
-     */
-    long reconcile(String userUuid, ReadWindow window, LocalDateTime syncedAt) {
-        return AccountMeeting.delete(
-                "userUuid = ?1 and occurredAt >= ?2 and occurredAt <= ?3 and syncedAt < ?4",
-                userUuid, window.fromWallClock(), window.toWallClock(), syncedAt);
+    /** Complete-read reconciliation uses integer membership, never a rounded wall-clock timestamp. */
+    long reconcile(String userUuid, ReadWindow window, long generation) {
+        return em.createQuery("delete from AccountMeeting where userUuid = :user "
+                        + "and occurredAt >= :from and occurredAt <= :to and syncGeneration <> :generation")
+                .setParameter("user", userUuid).setParameter("from", window.fromWallClock())
+                .setParameter("to", window.toWallClock()).setParameter("generation", generation).executeUpdate();
     }
 
     /** Every row, any mailbox, whose meeting had not started when this run began. */
     long purgeFuture(Instant runStart) {
-        return AccountMeeting.delete("occurredAt > ?1", CalendarTime.wallClock(runStart));
+        return AccountMeeting.delete("syncGeneration = 0 and occurredAt > ?1", CalendarTime.wallClock(runStart));
     }
 
     /**
@@ -788,23 +607,25 @@ public class AccountCalendarSyncService {
      * @param principal the mailbox to read
      */
     CalendarRead readCalendar(String userUuid, String principal, String startDateTime, String endDateTime) {
+        return readCalendar(userUuid, principal, startDateTime, endDateTime, () -> true);
+    }
+
+    CalendarRead readCalendar(String userUuid, String principal, String startDateTime, String endDateTime,
+                              java.util.function.BooleanSupplier mayRead) {
         List<GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent> events = new ArrayList<>();
         GraphContinuation continuation = null;
         int page = 0;
         boolean complete = true;
         do {
+            if (!mayRead.getAsBoolean()) return new CalendarRead(events, page, false);
             GraphCalendarClient.AttendeeViewResponse response = graphClient.calendarViewWithAttendees(
                     principal, startDateTime, endDateTime, SELECT, PAGE_SIZE,
                     continuation == null ? null : continuation.skipToken(),
                     continuation == null ? null : continuation.skip());
             page++;
             if (response == null || response.value() == null) {
-                // Nothing on the FIRST request is an empty window, which is ordinary for a
-                // mailbox with a quiet fortnight. Nothing on a CONTINUATION is a truncation:
-                // Graph said there was more and then did not hand it over.
-                if (page > 1) {
-                    complete = false;
-                }
+                // A malformed response is never proof that the calendar is empty.
+                complete = false;
                 break;
             }
             events.addAll(response.value());
@@ -871,8 +692,7 @@ public class AccountCalendarSyncService {
         } catch (RuntimeException e) {
             // An unparseable link stops pagination; it must never throw the mailbox away,
             // because the pages already read are real meetings.
-            log.warnf("Account calendar sync: could not read an @odata.nextLink — stopping pagination: %s",
-                    e.getMessage());
+            log.warn("Account calendar sync: unreadable continuation — stopping pagination");
             return null;
         }
         return skipToken == null && skip == null ? null : new GraphContinuation(skipToken, skip);
@@ -913,218 +733,162 @@ public class AccountCalendarSyncService {
                         int pages,
                         boolean complete) { }
 
-    /**
-     * Turns one Graph event into a meeting, or null when it is not one we keep — the five
-     * rules in this class's javadoc, in the order they can be decided:
-     *
-     * <pre>
-     *   rooms -> INTERNAL -> per attendee: domain index
-     *                                   -> colleague by name (strict, then placed)
-     *                                   -> colleague by address
-     *         -> nobody from the client left -> largest delegation wins
-     *         -> MASS EVENT (keep the meeting, store no attendees) -> delivery
-     * </pre>
-     *
-     * <p>The internal test comes before the attendee loop because an event that is our own
-     * all-hands is not evidence about anybody: attributing one guest's domain to a client,
-     * learning an address from it or tallying an unknown company off it would all be
-     * conclusions drawn from a meeting that never was one. The delivery test comes last
-     * because it is the only one that needs the winning client.
-     *
-     * <p>When attendees from two different clients are in the same meeting the one with
-     * the most attendees wins. Splitting a meeting across accounts would double-count it in
-     * both, and attributing it to neither would lose it. The delivery check is applied
-     * AFTER that winner is known, because "was the mailbox owner delivering" is a question
-     * about a specific client and there is no answer to it until the meeting has one.
-     *
-     * <p><b>Pure, and it has to stay that way.</b> No {@code EntityManager}, no Graph call,
-     * no clock: everything it needs arrives as an argument, which is what lets the fast
-     * tier hold the whole set of rules without booting Quarkus or a database. The
-     * consequence is {@code tally} — a colleague address identified here has to be WRITTEN,
-     * and the writing happens in the caller's transaction. Note that a meeting this method
-     * drops still teaches an address: the drop is precisely the evidence that the address
-     * belongs to one of ours.
-     *
-     * @param userUuid           the mailbox owner, and the person the delivery rule asks about
-     * @param event              one event from Graph's calendarView
-     * @param domainIndex        {@code domain → clientUuid}, from {@code client_domain}
-     * @param filters            the run's contract index, colleague directory, placement
-     *                           index and known colleague addresses; its address set GROWS
-     *                           as this method identifies more
-     * @param tally              collects what was learned and why things were dropped
-     * @param minOwnAttendees    how many of our own people make the event internal (spec
-     *                           §4.2). A parameter rather than a field for the same reason
-     *                           {@code tally} is one: this method holds no configuration
-     *                           and reads no clock. Zero or less switches the rule off
-     * @param minClientAttendees how many people from the WINNING client make the event a
-     *                           mass event whose attendees are no evidence of a personal
-     *                           relationship. A parameter for exactly the same reason.
-     *                           Zero or less switches the rule off
-     */
+    /** Compatibility helper for single-projection callers; the import uses {@link #toMeetings}. */
     PendingMeeting toMeeting(String userUuid,
                              GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event,
-                             Map<String, String> domainIndex,
-                             CalendarFilters filters,
-                             CalendarSyncTally tally,
-                             int minOwnAttendees,
-                             int minClientAttendees) {
-        if (event == null || event.id() == null || Boolean.TRUE.equals(event.isCancelled())) {
-            return null;
-        }
-        // A standing meeting is a cadence, not a contact (decided 2026-09-14). Before the
-        // attendee loop for the same reason the internal rule is: an occurrence of a daily
-        // standup must not teach an address, tally an unknown company as "seen in
-        // calendars" twenty times a month, or attribute anything to anybody.
-        if (isSeriesOccurrence(event)) {
-            tally.recurringDropped();
-            return null;
-        }
-        // A meeting the owner said no to is not one they attended.
+                             Map<String, String> domainIndex, CalendarFilters filters,
+                             CalendarSyncTally tally, int minOwnAttendees, int minClientAttendees) {
+        // Compatibility for callers needing one projection. The importer uses all projections.
+        return toMeetings(userUuid, event, domainIndex, filters, tally, minOwnAttendees, minClientAttendees)
+                .stream().max(java.util.Comparator.comparingInt(meeting -> meeting.attendees().size()))
+                .orElse(null);
+    }
+
+    /** One projection per represented account; every decision is made against that account's people. */
+    List<PendingMeeting> toMeetings(String userUuid,
+                             GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event,
+                             Map<String, String> domainIndex, CalendarFilters filters,
+                             CalendarSyncTally tally, int minOwnAttendees, int minClientAttendees) {
+        if (event == null || event.id() == null || event.id().isBlank()
+                || Boolean.TRUE.equals(event.isCancelled()) || isSensitive(event)
+                || "seriesMaster".equalsIgnoreCase(event.type())) return List.of();
         if (isDeclined(event)) {
             tally.declinedDropped();
-            return null;
+            return List.of();
         }
-        LocalDateTime start = parseGraphTime(event.start());
-        LocalDateTime end = parseGraphTime(event.end());
-        if (start == null) {
-            return null;
-        }
-        // Every date question below is asked about the day of the MEETING, never about
-        // today: a meeting from eighteen months ago is judged against the contracts and
-        // the employments that were in force eighteen months ago.
+        Instant started = instantOf(event.start());
+        Instant ended = instantOf(event.end());
+        if (started == null) return List.of();
+        LocalDateTime start = CalendarTime.wallClock(started);
         LocalDate meetingDate = start.toLocalDate();
-
-        // How many of the room were ours, decided before anything is attributed to anybody.
-        // An internal event with one client guest on it must not teach an address or tally
-        // an unknown domain either: it is not a meeting with that company at all, and every
-        // conclusion drawn from it would be drawn from our own all-hands.
-        int ownAttendeeCount = countOwnTenantAttendees(event.attendees());
+        List<GraphCalendarClient.CalendarEventDetails.EventAttendee> participants = participants(event);
+        int ownAttendeeCount = countOwnTenantAttendees(participants);
         if (minOwnAttendees > 0 && ownAttendeeCount >= minOwnAttendees) {
             tally.internalDropped();
-            return null;
+            return List.of();
         }
 
+        boolean recurring = isSeriesOccurrence(event);
         Map<String, List<PendingAttendee>> byClient = new LinkedHashMap<>();
+        Map<String, List<PendingAttendee>> sharedByClient = new LinkedHashMap<>();
         boolean sawClientAttendee = false;
-        int attendeeCount = 0;
+        for (var attendee : participants) {
+            String normalised = attendee.emailAddress().address().trim().toLowerCase(Locale.ROOT);
+            String domain = normalised.substring(normalised.lastIndexOf('@') + 1);
+            String clientUuid = domainIndex.get(domain);
+            if (clientUuid == null) {
+                // Repeated working cadences must not inflate the unknown-company suggestions.
+                if (!recurring && CalendarUnmatchedDomainFilter.isSuggestable(domain)) {
+                    tally.unmatchedDomain(domain, event.id(), icalUidOf(event), meetingDate);
+                }
+                continue;
+            }
+            sawClientAttendee = true;
+            String displayName = attendee.emailAddress().name();
+            ColleagueDirectory.ColleagueMatch colleague =
+                    filters.colleagues().colleagueOn(displayName, meetingDate, clientUuid);
+            if (colleague != null) {
+                if (colleague.byPlacement()) tally.colleagueByPlacement();
+                boolean first = filters.rememberColleagueEmail(normalised, colleague.userUuid());
+                tally.learnedColleagueEmail(new LearnedColleagueEmail(normalised, colleague.userUuid(), displayName), first);
+                continue;
+            }
+            if (filters.isColleagueEmailOn(normalised, meetingDate)) continue;
+            PendingAttendee person = new PendingAttendee(normalised, displayName, domain);
+            (CalendarSharedAddressFilter.isShared(normalised) ? sharedByClient : byClient)
+                    .computeIfAbsent(clientUuid, ignored -> new ArrayList<>()).add(person);
+        }
+
+        List<PendingMeeting> meetings = new ArrayList<>();
+        Set<String> clients = new java.util.LinkedHashSet<>(byClient.keySet());
+        clients.addAll(sharedByClient.keySet());
+        // A multi-account event is still one room: splitting the room cannot evade the mass guard.
+        int clientParticipants = byClient.values().stream().mapToInt(List::size).sum()
+                + sharedByClient.values().stream().mapToInt(List::size).sum();
+        boolean mass = minClientAttendees > 0 && clientParticipants >= minClientAttendees;
+        for (String clientUuid : clients) {
+            List<PendingAttendee> people = byClient.getOrDefault(clientUuid, List.of());
+            List<PendingAttendee> shared = sharedByClient.getOrDefault(clientUuid, List.of());
+            boolean delivery = filters.delivery().isDelivering(clientUuid, userUuid, meetingDate);
+            boolean override = !mass && filters.hasStarredOverride(userUuid, clientUuid, people);
+            if (!mass && !shared.isEmpty()) {
+                addCandidates(tally, userUuid, event, clientUuid, start, "SHARED_ADDRESS", shared);
+            }
+            if ((recurring || delivery) && !override) {
+                if (!mass && !people.isEmpty()) {
+                    addCandidates(tally, userUuid, event, clientUuid, start,
+                            recurring ? "RECURRING" : "DELIVERY", people);
+                }
+                continue;
+            }
+            // A group mailbox by itself is no evidence of a relationship or a client meeting.
+            if (people.isEmpty() && !mass) continue;
+            List<PendingAttendee> admitted = mass ? List.of() : people;
+            if (mass) tally.massMeeting(people.size());
+            meetings.add(new PendingMeeting(deterministicUuid(event.id(), userUuid, clientUuid),
+                    clientUuid, userUuid, event.id(), icalUidOf(event), start,
+                    ended == null ? 0 : Math.max(0, (int) Duration.between(started, ended).toMinutes()),
+                    participants.size(), ownAttendeeCount, admitted, event.seriesMasterId(), recurring,
+                    override && (recurring || delivery) ? "STARRED_OVERRIDE" : "NORMAL"));
+        }
+        if (meetings.isEmpty()) {
+            if (recurring) tally.recurringDropped();
+            else if (clients.stream().anyMatch(client -> filters.delivery().isDelivering(client, userUuid, meetingDate))) {
+                tally.deliveryDropped();
+            } else if (sawClientAttendee && clients.isEmpty()) tally.colleagueOnlyDropped();
+        }
+        return meetings;
+    }
+
+    private static void addCandidates(CalendarSyncTally tally, String userUuid,
+            GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event, String clientUuid,
+            LocalDateTime start, String reason, List<PendingAttendee> people) {
+        tally.candidate(new CalendarCandidateService.PendingCandidate(clientUuid, userUuid, event.id(),
+                icalUidOf(event), start, event.seriesMasterId(), reason,
+                people.stream().map(person -> new CalendarCandidateService.Attendee(
+                        person.email(), person.displayName(), person.domain())).toList()));
+    }
+
+    static boolean isSensitive(GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event) {
+        // An omitted/unknown sensitivity cannot establish that the event is shareable.
+        return event.sensitivity() == null || !"normal".equalsIgnoreCase(event.sensitivity().trim());
+    }
+
+    /** Normalize identities once, include the organizer, and retain a decline/resource veto on duplicates. */
+    static List<GraphCalendarClient.CalendarEventDetails.EventAttendee> participants(
+            GraphCalendarClient.AttendeeViewResponse.AttendeeViewEvent event) {
+        Map<String, GraphCalendarClient.CalendarEventDetails.EventAttendee> unique = new LinkedHashMap<>();
+        Set<String> excluded = new java.util.HashSet<>();
         if (event.attendees() != null) {
-            for (GraphCalendarClient.CalendarEventDetails.EventAttendee attendee : event.attendees()) {
-                if (isResourceAttendee(attendee)) {
-                    // D3: a meeting room is not a person and must not be counted as one.
-                    continue;
+            for (var attendee : event.attendees()) {
+                String email = attendeeEmail(attendee);
+                if (email == null) continue;
+                if (isResourceAttendee(attendee) || attendee.status() != null
+                        && "declined".equalsIgnoreCase(attendee.status().response())) {
+                    excluded.add(email);
+                } else {
+                    unique.merge(email, attendee, (a, b) -> a.emailAddress().name() == null ? b : a);
                 }
-                attendeeCount++;
-                if (attendee == null || attendee.emailAddress() == null) {
-                    continue;
-                }
-                String email = attendee.emailAddress().address();
-                if (email == null || !email.contains("@")) {
-                    continue;
-                }
-                String normalised = email.trim().toLowerCase(Locale.ROOT);
-                String domain = normalised.substring(normalised.lastIndexOf('@') + 1);
-                String clientUuid = domainIndex.get(domain);
-                if (clientUuid == null) {
-                    // Nobody claims this domain. Write down THAT, so a company several
-                    // colleagues keep meeting stops being invisible (spec §2.5).
-                    if (CalendarUnmatchedDomainFilter.isSuggestable(domain)) {
-                        tally.unmatchedDomain(domain, event.id(), meetingDate);
-                    }
-                    continue;
-                }
-                sawClientAttendee = true;
-
-                // D2, by name — the strict rules first and then, for somebody placed at
-                // THIS client, the widened one (spec §4.1 a then b). The client is passed
-                // in because rule b is only safe confined to placements: without it,
-                // "Lars Peter Jensen" matches our Lars Jensen and a client person is
-                // deleted. The uuid is what makes this worth more than a boolean: it is
-                // written down against the address so the next run recognises it even when
-                // Graph sends no display name at all.
-                String displayName = attendee.emailAddress().name();
-                ColleagueDirectory.ColleagueMatch colleague =
-                        filters.colleagues().colleagueOn(displayName, meetingDate, clientUuid);
-                if (colleague != null) {
-                    if (colleague.byPlacement()) {
-                        tally.colleagueByPlacement();
-                    }
-                    boolean firstTimeThisRun = filters.rememberColleagueEmail(normalised, colleague.userUuid());
-                    tally.learnedColleagueEmail(
-                            new LearnedColleagueEmail(normalised, colleague.userUuid(), displayName),
-                            firstTimeThisRun);
-                    continue;
-                }
-                // D2, by address. Covers the bare-address case the name rule cannot reach
-                // — and asks the SAME employment question, about the person the address is
-                // known to belong to. A date-blind address rule would quietly override the
-                // name rule's employment test and drop a former colleague's meetings for
-                // ever; production already holds that shape, in an address whose owner left
-                // on 2026-04-01 and which still appears on a meeting in June.
-                if (filters.isColleagueEmailOn(normalised, meetingDate)) {
-                    continue;
-                }
-
-                byClient.computeIfAbsent(clientUuid, key -> new ArrayList<>())
-                        .add(new PendingAttendee(normalised, displayName, domain));
             }
         }
-        if (byClient.isEmpty()) {
-            if (sawClientAttendee) {
-                // The client's domain WAS in the room, but every address on it was one of
-                // ours. Two of our consultants comparing notes at the client site is not a
-                // meeting with the client.
-                tally.colleagueOnlyDropped();
-            }
-            return null;
+        if (event.organizer() != null && event.organizer().emailAddress() != null) {
+            var organizer = new GraphCalendarClient.CalendarEventDetails.EventAttendee(
+                    event.organizer().emailAddress(), "required", null);
+            String email = attendeeEmail(organizer);
+            if (email != null) unique.putIfAbsent(email, organizer);
         }
+        excluded.forEach(unique::remove);
+        return List.copyOf(unique.values());
+    }
 
-        Map.Entry<String, List<PendingAttendee>> winner = byClient.entrySet().stream()
-                .max((a, b) -> Integer.compare(a.getValue().size(), b.getValue().size()))
-                .orElseThrow();
-
-        // The mass event, decided here because it is a question about the WINNING
-        // delegation and there is no delegation to measure until the winner is known.
-        //
-        // KEEP THE MEETING, DROP THE ATTENDEES — and that asymmetry is the whole rule. A
-        // fifty-person event at Banedanmark IS activity with that account and belongs on
-        // its timeline; what it is not is evidence that anybody in this firm knows the
-        // forty-seven people who were in the room. Stored as attendees they each became a
-        // person on the account reading "met x1 — 228 d ago", which is a relationship the
-        // firm does not have. §7's retention purge already leaves account_meeting rows with
-        // no attendees behind, and AccountActivityService.joinNames renders exactly that
-        // shape as "Meeting with the client", so nothing downstream is surprised by it.
-        boolean massMeeting = minClientAttendees > 0 && winner.getValue().size() >= minClientAttendees;
-
-        // D1, last: the winning client is the one the delivery question is about. The mass
-        // rule above deliberately does not return, so this still runs on exactly the
-        // meetings it ran on before — a mass event the mailbox owner was delivering is
-        // still a delivery drop, and is counted as one rather than as two things at once.
-        if (filters.delivery().isDelivering(winner.getKey(), userUuid, meetingDate)) {
-            tally.deliveryDropped();
-            return null;
-        }
-
-        // Tallied only now that the meeting is actually being written. Counting it before
-        // the delivery check would attribute suppressed attendee rows to meetings that were
-        // never stored, and the number's only job is to say how many people the threshold
-        // took off real meetings — the evidence for re-tuning it from a log line.
-        List<PendingAttendee> attendees = massMeeting ? List.of() : winner.getValue();
-        if (massMeeting) {
-            tally.massMeeting(winner.getValue().size());
-        }
-
-        int minutes = end == null ? 0 : (int) Duration.between(start, end).toMinutes();
-        return new PendingMeeting(
-                deterministicUuid(event.id(), userUuid),
-                winner.getKey(),
-                userUuid,
-                event.id(),
-                icalUidOf(event),
-                start,
-                Math.max(minutes, 0),
-                attendeeCount,
-                ownAttendeeCount,
-                attendees);
+    private static String attendeeEmail(GraphCalendarClient.CalendarEventDetails.EventAttendee attendee) {
+        if (attendee == null || attendee.emailAddress() == null) return null;
+        String email = attendee.emailAddress().address();
+        if (email == null) return null;
+        String value = email.trim().toLowerCase(Locale.ROOT);
+        int at = value.indexOf('@');
+        return at > 0 && at == value.lastIndexOf('@') && at < value.length() - 1
+                && value.length() <= 320 && !value.matches(".*\\s+.*") ? value : null;
     }
 
     /**
@@ -1136,9 +900,7 @@ public class AccountCalendarSyncService {
      * attendee loop in {@code toMeeting} skips — a null address, an address with no
      * {@code @} — is skipped here too, so the count is over the same population.
      *
-     * <p>Addresses are counted as they arrive, without de-duplication. Graph does not
-     * repeat an attendee on an event, and {@code attendeeCount} is already "the size of the
-     * room" on the same terms.
+     * <p>The importer passes its normalized, deduplicated participant list here.
      */
     static int countOwnTenantAttendees(List<GraphCalendarClient.CalendarEventDetails.EventAttendee> attendees) {
         if (attendees == null) {
@@ -1208,8 +970,21 @@ public class AccountCalendarSyncService {
 
     /** Upsert: the deterministic uuid means a re-sync updates the row instead of adding one. */
     void persist(List<PendingMeeting> pending, LocalDateTime now) {
+        persist(pending, now, 0);
+    }
+
+    void persist(List<PendingMeeting> pending, LocalDateTime now, long generation) {
         for (PendingMeeting item : pending) {
-            AccountMeeting meeting = AccountMeeting.findById(item.uuid());
+            AccountMeeting meeting = em.find(AccountMeeting.class, item.uuid());
+            if (meeting == null) {
+                // Pre-generation imports used a mailbox/event UUID without the account.
+                // Reuse that row by its natural key so the first recovery does not hit the
+                // unique constraint before it can reconcile older generations.
+                meeting = em.createQuery("from AccountMeeting where graphEventId = :event "
+                                + "and userUuid = :user and clientUuid = :client", AccountMeeting.class)
+                        .setParameter("event", item.graphEventId()).setParameter("user", item.userUuid())
+                        .setParameter("client", item.clientUuid()).getResultStream().findFirst().orElse(null);
+            }
             if (meeting == null) {
                 meeting = new AccountMeeting();
                 meeting.setUuid(item.uuid());
@@ -1223,19 +998,24 @@ public class AccountCalendarSyncService {
             meeting.setAttendeeCount(item.attendeeCount());
             meeting.setOwnAttendeeCount(item.ownAttendeeCount());
             meeting.setSyncedAt(now);
-            meeting.persist();
+            meeting.setSyncGeneration(generation);
+            meeting.setSeriesMasterId(item.seriesMasterId());
+            meeting.setRecurring(item.recurring());
+            meeting.setInclusionReason(item.inclusionReason());
+            em.persist(meeting);
 
             // The attendee list is replaced wholesale: somebody removed from an invitation
             // must not stay on the meeting forever, and the set is small.
-            AccountMeetingAttendee.delete("meetingUuid", item.uuid());
+            em.createQuery("delete from AccountMeetingAttendee where meetingUuid = :meeting")
+                    .setParameter("meeting", meeting.getUuid()).executeUpdate();
             for (PendingAttendee attendee : item.attendees()) {
                 AccountMeetingAttendee row = new AccountMeetingAttendee();
                 row.setUuid(UUID.randomUUID().toString());
-                row.setMeetingUuid(item.uuid());
+                row.setMeetingUuid(meeting.getUuid());
                 row.setEmail(attendee.email());
                 row.setDisplayName(attendee.displayName());
                 row.setDomain(attendee.domain());
-                row.persist();
+                em.persist(row);
             }
         }
     }
@@ -1261,6 +1041,10 @@ public class AccountCalendarSyncService {
      * uuid — the column is CHAR(36) and a random uuid would make every nightly run insert
      * duplicates of meetings it has already seen.
      */
+    static String deterministicUuid(String graphEventId, String userUuid, String clientUuid) {
+        return deterministicUuid(graphEventId, userUuid + "|" + clientUuid);
+    }
+
     static String deterministicUuid(String graphEventId, String userUuid) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-1");
@@ -1303,5 +1087,15 @@ public class AccountCalendarSyncService {
             int durationMinutes,
             int attendeeCount,
             int ownAttendeeCount,
-            List<PendingAttendee> attendees) { }
+            List<PendingAttendee> attendees,
+            String seriesMasterId,
+            boolean recurring,
+            String inclusionReason) {
+        PendingMeeting(String uuid, String clientUuid, String userUuid, String graphEventId, String icalUid,
+                LocalDateTime occurredAt, int durationMinutes, int attendeeCount, int ownAttendeeCount,
+                List<PendingAttendee> attendees) {
+            this(uuid, clientUuid, userUuid, graphEventId, icalUid, occurredAt, durationMinutes,
+                    attendeeCount, ownAttendeeCount, attendees, null, false, "NORMAL");
+        }
+    }
 }

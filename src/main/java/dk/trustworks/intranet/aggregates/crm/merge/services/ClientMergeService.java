@@ -151,6 +151,7 @@ public class ClientMergeService {
             }
             long n = switch (u.strategy()) {
                 case PERSON -> collapsePersons(w, l, tables);
+                case MEETING -> collapseMeetings(w, l, tables);
                 case ACCOUNT -> collapseAccount(w, l, picture.bothHaveAccounts(), accountFrom);
                 case MONTH_CONTROL -> collapseMonthControls(w, l, picture.monthControls());
                 case ECONOMICS_CUSTOMER -> collapseEconomicsCustomers(l, picture.orphaned());
@@ -342,7 +343,7 @@ public class ClientMergeService {
                 case MONTH_CONTROL -> monthControls.size();
                 case ECONOMICS_CUSTOMER -> orphaned.size();
                 case DROP_ALL -> count(new Ref(u.table(), u.column()), l);
-                case KEEP_WINNER, UNION -> countCollisions(u, w, l);
+                case KEEP_WINNER, UNION, MEETING -> countCollisions(u, w, l);
             };
             if (n > 0) {
                 dropped.add(new TableCount(u.table(), null, n));
@@ -428,6 +429,29 @@ public class ClientMergeService {
     // The collapses
     // ------------------------------------------------------------------------
 
+    /** Preserve external contacts when two account projections of one invitation collapse. */
+    @SuppressWarnings("unchecked")
+    long collapseMeetings(String winner, String loser, Set<String> tables) {
+        List<Object[]> pairs = em.createNativeQuery("""
+                select d.uuid, s.uuid from account_meeting d join account_meeting s
+                  on d.graph_event_id=s.graph_event_id and d.user_uuid=s.user_uuid
+                 where d.client_uuid=:loser and s.client_uuid=:winner
+                """).setParameter("loser", loser).setParameter("winner", winner).getResultList();
+        for (Object[] pair : pairs) {
+            Map<String, Object> keys = Map.of("loserMeeting", pair[0], "winnerMeeting", pair[1]);
+            if (tables.contains("account_meeting_attendee")) {
+                execute("""
+                        delete d from account_meeting_attendee d join account_meeting_attendee s
+                          on lower(d.email)=lower(s.email)
+                         where d.meeting_uuid=:loserMeeting and s.meeting_uuid=:winnerMeeting
+                        """, keys);
+                execute("update account_meeting_attendee set meeting_uuid=:winnerMeeting where meeting_uuid=:loserMeeting", keys);
+            }
+            execute("delete from account_meeting where uuid=:loserMeeting", Map.of("loserMeeting", pair[0]));
+        }
+        return pairs.size();
+    }
+
     /**
      * {@code account_person}: a name on both sides is one person. For every loser person
      * whose {@code name_key} the winner already holds, the identities and claims the
@@ -462,6 +486,9 @@ public class ClientMergeService {
                         + "ON d.`user_uuid` <=> s.`user_uuid` "
                         + "WHERE d.`person_uuid` = :lp AND s.`person_uuid` = :sp", lpSp);
                 execute("UPDATE `account_relation_claim` SET `person_uuid` = :sp, `client_uuid` = :w WHERE `person_uuid` = :lp", lpSpW);
+            }
+            if (tables.contains("account_calendar_review")) {
+                execute("UPDATE `account_calendar_review` SET `person_uuid` = :sp WHERE `person_uuid` = :lp", lpSp);
             }
             if (tables.contains("client_plan_stakeholder")) {
                 execute("UPDATE `client_plan_stakeholder` SET `person_uuid` = :sp WHERE `person_uuid` = :lp", lpSp);

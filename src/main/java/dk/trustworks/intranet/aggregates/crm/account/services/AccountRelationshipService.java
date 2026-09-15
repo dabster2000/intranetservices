@@ -159,7 +159,7 @@ public class AccountRelationshipService {
         seedAccountTeam(account, client.getAccountmanager(), colleagues);
 
         List<RelationEdgeDTO> edges = new ArrayList<>();
-        collectMeetingEdges(account, index, colleagues, edges);
+        Map<String, Integer> uniqueMeetingCounts = collectMeetingEdges(account, index, colleagues, edges);
         collectClaimEdges(account, index, colleagues, edges);
         LocalDate lastSignalOn = collectSignalEdges(account, index, colleagues, edges);
         collectSlackMentionEdges(account, index, colleagues, edges);
@@ -167,7 +167,7 @@ public class AccountRelationshipService {
 
         Map<String, List<RelationEdgeDTO>> edgesByPerson = groupByPerson(edges);
         List<ClientPersonDTO> people = people(index, edgesByPerson, loadStakeholders(account),
-                colleagues.directory(), today);
+                colleagues.directory(), today, uniqueMeetingCounts);
         List<ColleagueDTO> team = colleagueList(colleagues);
 
         log.debugf("Account relationships read: client=%s people=%d colleagues=%d edges=%d",
@@ -628,37 +628,17 @@ public class AccountRelationshipService {
     // ------------------------------------------------------------------------
 
     /**
-     * {@code MET} edges — the two were both in a meeting our calendar sync saw.
-     *
-     * <p><b>The grouping is on {@code lower(a.email)} and must never move to a display
-     * name.</b> Each consenting mailbox writes its own {@code account_meeting} row for the
-     * same real event, {@code account_meeting_attendee} is {@code UNIQUE(meeting_uuid, email)},
-     * and Graph returned {@code "MYGX (Malthe Yde Andreasen)"} to one mailbox and a bare
-     * address to the other — so grouping by the name drew one human as two nodes.
-     *
-     * <p>The join to {@code account_person_identity} is an INNER join, which is the whole
-     * point of the reshape: an address is a person only once the registry says which one, and
-     * an address no rebuild has reached yet contributes nothing rather than a nameless node.
-     * An edge that resolves to a {@code COLLEAGUE} person is dropped here — that is defect D1,
-     * our own consultants drawn as the client's contacts.
-     *
-     * <p>{@code count(distinct m.uuid)} still counts one real event once per consenting
-     * mailbox that saw it, and {@link #mergeMetEdges} still ADDS those counts. That is the
-     * sync's one-row-per-mailbox shape and is explicitly out of scope; do not "fix" it here.
-     *
-     * <p><b>Only meetings that have happened.</b> The sync no longer stores a meeting ahead of
-     * its clock, but the guard stays in the read: a row for a meeting next month would make
-     * the person tier 1 today — "met within 90 days" is true of a date in the future — and
-     * put a date nobody has lived yet in "last contact". The comparison is on the calendar's
-     * own clock ({@link CalendarTime}), which is what {@code occurred_at} is written in.
+     * Calendar evidence grouped by person and colleague, with event identities retained until
+     * aggregation. One invitation sent to two aliases is one event; two mailbox copies are
+     * two colleagues' evidence but still one event in the person's total.
      */
-    void collectMeetingEdges(String clientUuid, PersonIndex index, Colleagues colleagues,
-                                     List<RelationEdgeDTO> edges) {
+    Map<String, Integer> collectMeetingEdges(String clientUuid, PersonIndex index, Colleagues colleagues,
+                                             List<RelationEdgeDTO> edges) {
         Query query = em.createNativeQuery("""
-                select m.user_uuid,
-                       i.person_uuid,
-                       count(distinct m.uuid) as meetings,
-                       max(m.occurred_at)     as last_met
+                select distinct m.user_uuid, i.person_uuid,
+                       case when nullif(trim(m.ical_uid), '') is not null
+                            then concat('ical:', m.ical_uid) else concat('row:', m.uuid) end collate utf8mb4_bin,
+                       m.occurred_at
                   from account_meeting m
                   join account_meeting_attendee a on a.meeting_uuid = m.uuid
                   join account_person_identity i on i.client_uuid = m.client_uuid
@@ -666,60 +646,49 @@ public class AccountRelationshipService {
                                                 and i.value = lower(a.email)
                  where m.client_uuid = :clientUuid
                    and m.occurred_at <= :now
-                 group by m.user_uuid, lower(a.email), i.person_uuid
-                 order by meetings desc, last_met desc
+                 order by m.occurred_at desc
                 """);
         query.setParameter("clientUuid", clientUuid);
         query.setParameter("now", CalendarTime.now());
 
-        Map<EdgeKey, RelationEdgeDTO> metEdges = new LinkedHashMap<>();
+        Map<EdgeKey, MeetingAccumulator> byEdge = new LinkedHashMap<>();
+        Map<String, Set<String>> byPerson = new LinkedHashMap<>();
         for (Object[] row : rowsOf(query)) {
             String personUuid = asString(row[1]);
-            if (!index.isVisible(personUuid)) {
-                continue;
-            }
+            if (!index.isVisible(personUuid)) continue;
             ColleagueRow colleague = colleagues.resolve(asString(row[0]), null);
-            if (colleague == null) {
-                continue;
-            }
+            if (colleague == null) continue;
+            String eventKey = asString(row[2]);
+            if (eventKey == null) continue;
             colleague.knows(personUuid);
-
-            RelationEdgeDTO edge = new RelationEdgeDTO(
-                    personUuid, colleague.name(), colleague.uuid(),
-                    index.visible().get(personUuid).name(),
-                    row[2] == null ? 0 : ((Number) row[2]).intValue(),
-                    AccountActivityService.toLocalDate(row[3]),
-                    null, RelationEdgeDTO.MET, null, null, null, null, null);
-            // Two addresses of one person are two rows here and one relationship; and two
-            // user rows for one colleague collapse for the same reason the map is keyed by
-            // name rather than by uuid.
-            metEdges.merge(new EdgeKey(colleague.name(), personUuid), edge,
-                    AccountRelationshipService::mergeMetEdges);
+            MeetingAccumulator met = byEdge.computeIfAbsent(new EdgeKey(colleague.name(), personUuid),
+                    key -> new MeetingAccumulator(colleague, personUuid));
+            met.events.add(eventKey);
+            LocalDate day = AccountActivityService.toLocalDate(row[3]);
+            if (day != null && (met.lastMet == null || day.isAfter(met.lastMet))) met.lastMet = day;
+            byPerson.computeIfAbsent(personUuid, key -> new LinkedHashSet<>()).add(eventKey);
         }
-        edges.addAll(metEdges.values());
+        for (MeetingAccumulator met : byEdge.values()) {
+            edges.add(new RelationEdgeDTO(met.personUuid, met.colleague.name(), met.colleague.uuid(),
+                    index.visible().get(met.personUuid).name(), met.events.size(), met.lastMet,
+                    null, RelationEdgeDTO.MET, null, null, null, null, null));
+        }
+        Map<String, Integer> totals = new LinkedHashMap<>();
+        byPerson.forEach((person, events) -> totals.put(person, events.size()));
+        return totals;
     }
 
-    /**
-     * The two ends of one relationship, used as a map key while edges from one source are
-     * folded together.
-     *
-     * <p>A record rather than two strings joined by a separator, because both halves are free
-     * text: {@code "A|B"} plus {@code "C"} and {@code "A"} plus {@code "B|C"} are different
-     * relationships that any joined key would quietly merge into one line. The Trustworks end
-     * is the NAME for the reason every edge carries a name — two {@code user} rows for one
-     * human are one chip, and an unmatched TrustLink trustworker has no uuid at all.
-     */
-    record EdgeKey(String twPersonName, String other) {
-    }
+    record EdgeKey(String twPersonName, String other) { }
 
-    /** Meetings add up; the later day wins. Everything else is carried from the first edge. */
-    private static RelationEdgeDTO mergeMetEdges(RelationEdgeDTO current, RelationEdgeDTO candidate) {
-        LocalDate lastMet = current.lastMet() == null ? candidate.lastMet()
-                : candidate.lastMet() == null ? current.lastMet()
-                : candidate.lastMet().isAfter(current.lastMet()) ? candidate.lastMet() : current.lastMet();
-        return new RelationEdgeDTO(current.personUuid(), current.twPersonName(), current.twPersonUuid(),
-                current.externalName(), current.meetings() + candidate.meetings(), lastMet,
-                null, RelationEdgeDTO.MET, null, null, null, null, null);
+    private static final class MeetingAccumulator {
+        final ColleagueRow colleague;
+        final String personUuid;
+        final Set<String> events = new LinkedHashSet<>();
+        LocalDate lastMet;
+        MeetingAccumulator(ColleagueRow colleague, String personUuid) {
+            this.colleague = colleague;
+            this.personUuid = personUuid;
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -1126,6 +1095,13 @@ public class AccountRelationshipService {
                                                 Map<String, String> stakeholders,
                                                 Directory directory,
                                                 LocalDate today) {
+        return people(index, edgesByPerson, stakeholders, directory, today, null);
+    }
+
+    static List<ClientPersonDTO> people(PersonIndex index,
+                                       Map<String, List<RelationEdgeDTO>> edgesByPerson,
+                                       Map<String, String> stakeholders, Directory directory,
+                                       LocalDate today, Map<String, Integer> uniqueMeetingCounts) {
         List<ClientPersonDTO> people = new ArrayList<>(index.visible().size());
         for (RegisteredPerson person : index.visible().values()) {
             List<RelationEdgeDTO> personEdges = edgesByPerson.getOrDefault(person.uuid(), List.of());
@@ -1151,7 +1127,8 @@ public class AccountRelationshipService {
                     person.linkedinUrl(),
                     stakeholders.get(person.uuid()),
                     RelationshipWarmth.personTier(warmth, alumni, today),
-                    lastContactOn, meetings,
+                    lastContactOn, uniqueMeetingCounts == null ? meetings
+                            : uniqueMeetingCounts.getOrDefault(person.uuid(), 0),
                     alumni ? directory.leftOn().get(person.alumniUserUuid()) : null));
         }
 

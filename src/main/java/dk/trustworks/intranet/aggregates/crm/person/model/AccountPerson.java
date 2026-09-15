@@ -29,10 +29,9 @@ import java.util.List;
  * carry a claim.
  *
  * <h2>Derived, materialised, and never typed</h2>
- * Every field here is written by {@code AccountPersonService.rebuild}. There is no endpoint
- * that creates a person and none that edits one; a claim is a statement <i>about</i> a person
- * the sources already knew, which is why {@code account_relation_claim} has a foreign key
- * into this table and no path back out of it.
+ * The registry rebuild writes source-derived identity fields. Calendar candidate review may
+ * additionally create a person from an exact observed email and explicitly star that person.
+ * Such a REVIEW identity does not create calendar evidence or a relationship claim.
  *
  * <h2>The rebuild never deletes a row</h2>
  * A person whose every source has gone quiet keeps their row: a claim, a star, or a
