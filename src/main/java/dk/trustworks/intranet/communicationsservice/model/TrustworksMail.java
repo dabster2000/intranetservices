@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooterConverter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,9 +17,31 @@ import java.util.List;
 @Entity
 @Table(name = "mail")
 public class TrustworksMail extends PanacheEntityBase {
+    @Convert(converter = UnsubscribeFooterConverter.class)
+    @Column(name = "unsubscribe_footer", columnDefinition = "JSON")
+    private UnsubscribeFooter unsubscribeFooter;
+
+    @Column(name = "conference_uuid")
+    private String conferenceUuid;
+
+    @Column(name = "mail_origin")
+    private String mailOrigin = "SYSTEM";
+
+    @Column(name = "hold_reason")
+    private String holdReason;
+
+    @Column(name = "participant_uuid")
+    private String participantUuid;
+
+    @Column(name = "normalized_email")
+    private String normalizedEmail;
+
+    @Column(name = "skip_reason")
+    private String skipReason;
+
     @Id
     private String uuid;
-    @Column(name = "mail")
+    @Column(name = "mail", length = 320)
     private String to;
     private String subject;
     @Column(name = "content")

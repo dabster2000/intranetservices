@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.messaging.emitters.enums;
 
 public enum AggregateEventType {
+    CONFERENCE_EMAIL_UNSUBSCRIBED,
     CREATE_CLIENT,
     MODIFY_CONTRACT_CONSULTANT,
     UPDATE_WORK,

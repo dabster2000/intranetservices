@@ -1,12 +1,12 @@
 package dk.trustworks.intranet.communicationsservice.batch;
 
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceMailDispatch;
 import dk.trustworks.intranet.communicationsservice.batch.BulkEmailItemReader.BulkEmailContext;
-import dk.trustworks.intranet.communicationsservice.model.BulkEmailAttachment;
-import dk.trustworks.intranet.communicationsservice.model.BulkEmailJob;
-import dk.trustworks.intranet.communicationsservice.model.BulkEmailRecipient;
+import dk.trustworks.intranet.communicationsservice.model.*;
 import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
 import io.quarkus.mailer.Mail;
 import io.quarkus.mailer.Mailer;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.batch.api.BatchProperty;
 import jakarta.batch.api.chunk.ItemWriter;
 import jakarta.batch.runtime.context.StepContext;
@@ -20,183 +20,104 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * ItemWriter for bulk email batch job.
- * Sends emails with configurable throttling (default 5 seconds between sends).
- * Updates recipient status after each send attempt.
- */
+/** One fresh policy check and committed result per recipient, outside the throttled chunk snapshot. */
 @JBossLog
 @Named("bulkEmailItemWriter")
 @Dependent
 public class BulkEmailItemWriter implements ItemWriter {
-
-    @Inject
-    Mailer mailer;
-
-    @Inject
-    BulkEmailService bulkEmailService;
-
-    @Inject
-    StepContext stepContext;
-
-    @Inject
-    @BatchProperty(name = "throttleMs")
-    String throttleMsStr;
-
+    @Inject Mailer mailer;
+    @Inject BulkEmailService bulkEmailService;
+    @Inject ConferenceMailDispatch conferenceDispatch;
+    @Inject StepContext stepContext;
+    @Inject @BatchProperty(name = "throttleMs") String throttleMsStr;
     private long throttleMs;
-    private int processedCount;
-    private int sentCount;
-    private int failedCount;
-    private long startNs;
 
-    @Override
-    public void open(Serializable checkpoint) throws Exception {
-        processedCount = 0;
-        sentCount = 0;
-        failedCount = 0;
-        startNs = System.nanoTime();
-
-        // Parse throttle delay (default 5000ms = 5 seconds)
-        try {
-            throttleMs = (throttleMsStr == null || throttleMsStr.isBlank())
-                    ? 5000L
-                    : Long.parseLong(throttleMsStr);
-        } catch (Exception e) {
-            throttleMs = 5000L;
-        }
-
-        log.info("BulkEmailItemWriter opened: throttleMs=" + throttleMs);
+    @Override public void open(Serializable checkpoint) {
+        try { throttleMs = throttleMsStr == null || throttleMsStr.isBlank() ? 5000L : Long.parseLong(throttleMsStr); }
+        catch (NumberFormatException e) { throttleMs = 5000L; }
     }
 
     @Override
-    @Transactional
-    public void writeItems(List<Object> items) throws Exception {
+    @Transactional(Transactional.TxType.NOT_SUPPORTED)
+    public void writeItems(List<Object> items) {
         BulkEmailContext context = (BulkEmailContext) stepContext.getTransientUserData();
-
-        if (context == null) {
-            log.error("BulkEmailContext not found in step context");
-            return;
-        }
-
-        BulkEmailJob job = context.job;
-        List<BulkEmailAttachment> attachments = context.attachments;
-
+        if (context == null) throw new IllegalStateException("Missing bulk email context");
         for (int i = 0; i < items.size(); i++) {
-            if (!(items.get(i) instanceof BulkEmailRecipient recipient)) {
-                continue;
+            if (!(items.get(i) instanceof BulkEmailRecipient recipient)) continue;
+            sendEmailToRecipient(recipient, context.job, context.attachments);
+            if (i < items.size() - 1 && throttleMs > 0) {
+                try { Thread.sleep(throttleMs); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException("Bulk mail interrupted"); }
             }
-
-            boolean isLastInBatch = (i == items.size() - 1);
-            sendEmailToRecipient(recipient, job, attachments, isLastInBatch);
         }
-
-        // Update job counters after processing this chunk
-        bulkEmailService.updateJobCounts(job.getUuid());
-
-        // Log progress every chunk
-        long elapsedMs = (System.nanoTime() - startNs) / 1_000_000;
-        log.info("Bulk email progress: job=" + job.getUuid() +
-                 ", processed=" + processedCount +
-                 ", sent=" + sentCount +
-                 ", failed=" + failedCount +
-                 ", elapsedMs=" + elapsedMs);
+        QuarkusTransaction.requiringNew().run(() -> bulkEmailService.updateJobCounts(context.job.getUuid()));
     }
 
-    /**
-     * Send email to a single recipient with throttling
-     */
-    private void sendEmailToRecipient(BulkEmailRecipient recipient,
-                                      BulkEmailJob job,
-                                      List<BulkEmailAttachment> attachments,
-                                      boolean isLastInBatch) {
+    void sendEmailToRecipient(BulkEmailRecipient recipient, BulkEmailJob job, List<BulkEmailAttachment> attachments) {
+        // A release/rollback pause preserves pending recipients and never turns them into failures.
+        if ("CONFERENCE".equals(job.getMailOrigin()) && !conferenceDispatch.isEnabled()) return;
+        // Recheck saved state: held jobs and already-finalized recipients are never dispatched.
+        boolean pending = QuarkusTransaction.requiringNew().call(() -> {
+            BulkEmailJob current = BulkEmailJob.findById(job.getUuid());
+            BulkEmailRecipient target = BulkEmailRecipient.findById(recipient.getId());
+            if (current == null || target == null || current.getStatus() == BulkEmailJob.BulkEmailJobStatus.HELD
+                    || target.getStatus() != BulkEmailRecipient.RecipientStatus.PENDING) return false;
+            if (current.getMailOrigin() == null) {
+                current.setStatus(BulkEmailJob.BulkEmailJobStatus.HELD);
+                current.setHoldReason("LEGACY_UNCLASSIFIED");
+                return false;
+            }
+            return true;
+        });
+        if (!pending) return;
+        boolean conference = "CONFERENCE".equals(job.getMailOrigin());
         try {
-            log.info("Sending bulk email to: " + recipient.getRecipientEmail() +
-                     " (job=" + job.getUuid() + ")");
-
-            // Create email
-            Mail mail = Mail.withHtml(
-                    recipient.getRecipientEmail(),
-                    job.getSubject(),
-                    job.getBody()
-            );
-
-            // Add attachments if present
-            if (attachments != null && !attachments.isEmpty()) {
-                for (BulkEmailAttachment attachment : attachments) {
-                    mail.addAttachment(
-                            attachment.getFilename(),
-                            attachment.getContent(),
-                            attachment.getContentType()
-                    );
-                }
+            if (conference && (job.getConferenceUuid() == null || !job.getConferenceUuid().equals(recipient.getConferenceUuid())
+                    || recipient.getParticipantUuid() == null || recipient.getNormalizedEmail() == null))
+                throw new IllegalStateException("CONFERENCE_CONTEXT_REQUIRED");
+            String html = conference ? conferenceDispatch.prepare(job.getConferenceUuid(), recipient.getRecipientEmail(),
+                    dk.trustworks.intranet.aggregates.conference.services.ConferenceMailRenderer.personalize(job.getBody(), recipient.getRecipientName()),
+                    job.getUnsubscribeFooter()) : job.getBody();
+            if (html == null) { skipped(recipient); return; }
+            Mail outgoing = Mail.withHtml(recipient.getRecipientEmail(), job.getSubject(), html);
+            if (attachments != null) for (BulkEmailAttachment attachment : attachments)
+                outgoing.addAttachment(attachment.getFilename(), attachment.getContent(), attachment.getContentType());
+            if (conference && !conferenceDispatch.allowedAtDispatch(job.getConferenceUuid(), recipient.getRecipientEmail())) {
+                skipped(recipient); return;
             }
-
-            // Send email
-            mailer.send(mail);
-
-            // Mark as SENT (use UPDATE query for detached entity)
-            BulkEmailRecipient.update(
-                "status = ?1, sentAt = ?2 WHERE id = ?3",
-                BulkEmailRecipient.RecipientStatus.SENT,
-                LocalDateTime.now(),
-                recipient.getId()
-            );
-
-            sentCount++;
-            log.info("Successfully sent bulk email to: " + recipient.getRecipientEmail());
-
+            mailer.send(outgoing);
+            QuarkusTransaction.requiringNew().run(() -> BulkEmailRecipient.update(
+                    "status = ?1, sentAt = ?2 where id = ?3", BulkEmailRecipient.RecipientStatus.SENT,
+                    LocalDateTime.now(), recipient.getId()));
         } catch (Exception e) {
-            // Mark as FAILED (use UPDATE query for detached entity)
-            log.error("Failed to send bulk email to: " + recipient.getRecipientEmail(), e);
-            BulkEmailRecipient.update(
-                "status = ?1, errorMessage = ?2 WHERE id = ?3",
-                BulkEmailRecipient.RecipientStatus.FAILED,
-                e.getMessage(),
-                recipient.getId()
-            );
-
-            failedCount++;
-        } finally {
-            processedCount++;
-
-            // Throttle (sleep) unless this is the last item in the batch
-            if (!isLastInBatch && throttleMs > 0) {
-                try {
-                    Thread.sleep(throttleMs);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    log.warn("Throttle sleep interrupted");
-                }
-            }
+            // Never persist/log SMTP exception content: it may contain finalized capability URLs.
+            QuarkusTransaction.requiringNew().run(() -> BulkEmailRecipient.update(
+                    "status = ?1, errorMessage = ?2 where id = ?3", BulkEmailRecipient.RecipientStatus.FAILED,
+                    conference ? "CONFERENCE_DELIVERY_FAILED" : "MAIL_DELIVERY_FAILED", recipient.getId()));
+            log.warnf("Bulk recipient delivery failed: job=%s recipientId=%s", job.getUuid(), recipient.getId());
         }
     }
 
-    @Override
-    public Serializable checkpointInfo() throws Exception {
-        return null;
+    private void skipped(BulkEmailRecipient recipient) {
+        QuarkusTransaction.requiringNew().run(() -> BulkEmailRecipient.update(
+                "status = ?1, skipReason = ?2 where id = ?3", BulkEmailRecipient.RecipientStatus.SKIPPED,
+                "UNSUBSCRIBED", recipient.getId()));
     }
+    @Override public Serializable checkpointInfo() { return null; }
 
     @Override
     @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public void close() throws Exception {
-        long elapsedMs = (System.nanoTime() - startNs) / 1_000_000;
-
-        // Get job from context to update final status
+    public void close() {
         BulkEmailContext context = (BulkEmailContext) stepContext.getTransientUserData();
-        if (context != null) {
-            BulkEmailJob job = context.job;
-
-            // Update final counts
-            bulkEmailService.updateJobCounts(job.getUuid());
-
-            // Mark job as COMPLETED
-            bulkEmailService.updateJobStatus(job.getUuid(), BulkEmailJob.BulkEmailJobStatus.COMPLETED);
-
-            log.info("BulkEmailItemWriter completed: job=" + job.getUuid() +
-                     ", processed=" + processedCount +
-                     ", sent=" + sentCount +
-                     ", failed=" + failedCount +
-                     ", elapsedMs=" + elapsedMs);
-        }
+        if (context == null) return;
+        bulkEmailService.updateJobCounts(context.job.getUuid());
+        BulkEmailJob current = BulkEmailJob.findById(context.job.getUuid());
+        if (current == null || current.getStatus() == BulkEmailJob.BulkEmailJobStatus.HELD) return;
+        int finished = current.getSentCount() + current.getFailedCount() + current.getSkippedCount();
+        if (finished == current.getTotalRecipients())
+            bulkEmailService.updateJobStatus(current.getUuid(), BulkEmailJob.BulkEmailJobStatus.COMPLETED);
+        else
+            bulkEmailService.updateJobStatus(current.getUuid(), "CONFERENCE".equals(current.getMailOrigin())
+                    ? BulkEmailJob.BulkEmailJobStatus.POLICY_PENDING : BulkEmailJob.BulkEmailJobStatus.PENDING);
     }
 }

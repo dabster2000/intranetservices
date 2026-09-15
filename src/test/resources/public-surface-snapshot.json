@@ -649,6 +649,12 @@
       "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
       "requestBodyIsEntity": true,
       "fields": {
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter": {
+          "action": "java.lang.String",
+          "alignment": "java.lang.String",
+          "appearance": "java.lang.String",
+          "label": "java.lang.String"
+        },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
           "billingAddress": "java.lang.String",
@@ -721,6 +727,7 @@
           "slackChannel": "java.lang.String",
           "step": "int",
           "subject": "java.lang.String",
+          "unsubscribeFooter": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter",
           "useMail": "boolean",
           "uuid": "java.lang.String"
         },
@@ -743,6 +750,12 @@
       "requestBody": "dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant",
       "requestBodyIsEntity": true,
       "fields": {
+        "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter": {
+          "action": "java.lang.String",
+          "alignment": "java.lang.String",
+          "appearance": "java.lang.String",
+          "label": "java.lang.String"
+        },
         "dk.trustworks.intranet.dao.crm.model.Client": {
           "accountmanager": "java.lang.String",
           "billingAddress": "java.lang.String",
@@ -815,6 +828,7 @@
           "slackChannel": "java.lang.String",
           "step": "int",
           "subject": "java.lang.String",
+          "unsubscribeFooter": "dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter",
           "useMail": "boolean",
           "uuid": "java.lang.String"
         },

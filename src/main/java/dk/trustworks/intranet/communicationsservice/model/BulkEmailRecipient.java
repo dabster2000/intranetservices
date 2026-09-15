@@ -17,6 +17,21 @@ import java.time.LocalDateTime;
 @Table(name = "bulk_email_recipient")
 public class BulkEmailRecipient extends PanacheEntityBase {
 
+    @Column(name = "conference_uuid")
+    private String conferenceUuid;
+
+    @Column(name = "participant_uuid")
+    private String participantUuid;
+
+    @Column(name = "normalized_email")
+    private String normalizedEmail;
+
+    @Column(name = "recipient_name")
+    private String recipientName;
+
+    @Column(name = "skip_reason")
+    private String skipReason;
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -45,6 +60,7 @@ public class BulkEmailRecipient extends PanacheEntityBase {
 
     public enum RecipientStatus {
         PENDING,
+        SKIPPED,
         SENT,
         FAILED
     }

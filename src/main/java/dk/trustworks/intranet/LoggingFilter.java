@@ -1,6 +1,7 @@
 package dk.trustworks.intranet;
 
 
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceUnsubscribeService;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceDownloadCatalog;
 import jakarta.ws.rs.HttpMethod;
 import jakarta.ws.rs.container.ContainerRequestContext;
@@ -59,6 +60,7 @@ public class LoggingFilter implements ContainerRequestFilter {
     @Override
     public void filter(ContainerRequestContext requestContext) throws IOException {
         String path = requestContext.getUriInfo().getPath();
+        if (ConferenceUnsubscribeService.isUnsubscribePath(path)) return;
 
         // Even a caller-supplied JSON body or identity header must not turn this
         // aggregate metric into a record of a person's presentation requests.

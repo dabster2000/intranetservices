@@ -50,6 +50,20 @@ class MailResourceDrainPolicyTest {
     }
 
     @Test
+    void conferenceQueueAndHeldRowsRespectPolicyStates() {
+        assertEquals(ClaimOutcome.SEND, MailResource.claimOutcome(MailStatus.POLICY_READY, 0));
+        assertEquals(ClaimOutcome.SKIP, MailResource.claimOutcome(MailStatus.SKIPPED, 0));
+        assertEquals(ClaimOutcome.SKIP, MailResource.claimOutcome(MailStatus.HELD, 0));
+    }
+
+    @Test
+    void disabledConferenceDispatchLeavesPolicyRowsUnclaimedWithoutSpendingAttempts() {
+        assertEquals(java.util.List.of(MailStatus.READY), MailResource.dispatchableStatuses(false));
+        assertEquals(ClaimOutcome.SKIP, MailResource.claimOutcome(MailStatus.POLICY_READY, 4, false));
+        assertEquals(ClaimOutcome.SEND, MailResource.claimOutcome(MailStatus.READY, 4, false));
+    }
+
+    @Test
     void failureBeforeTheCeiling_staysReadyForTheNextRun() {
         assertEquals(MailStatus.READY,
                 MailResource.statusAfterFailure(MailResource.MAX_ATTEMPTS - 1));

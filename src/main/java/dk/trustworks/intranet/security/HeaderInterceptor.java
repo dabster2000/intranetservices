@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.security;
 
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceUnsubscribeService;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceDownloadCatalog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.MDC;
@@ -35,6 +36,12 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
     @Override
     public void filter(ContainerRequestContext context) throws IOException {
         String requestPath = uriInfo.getPath();
+        if (ConferenceUnsubscribeService.isUnsubscribePath(requestPath)) {
+            requestHeaderHolder.setUserUuid("anonymous");
+            requestHeaderHolder.setActingForUuid(null);
+            MDC.remove("userUuid");
+            return;
+        }
         // This public metric intentionally has no person dimension, even if a caller
         // supplies identity headers or a query parameter. Do not resolve/log an actor.
         if ("POST".equals(context.getMethod())

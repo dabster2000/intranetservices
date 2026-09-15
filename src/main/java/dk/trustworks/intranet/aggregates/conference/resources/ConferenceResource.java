@@ -3,6 +3,12 @@ package dk.trustworks.intranet.aggregates.conference.resources;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.conference.dto.ParticipantView;
 import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
+import dk.trustworks.intranet.aggregates.conference.dto.ConferenceMailRequest;
+import dk.trustworks.intranet.aggregates.conference.dto.ConferenceBulkMailRequest;
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceMailService;
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceMailRenderer;
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceRecipientResolver;
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceUnsubscribeService;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.DeleteParticipantEvent;
@@ -77,10 +83,22 @@ public class ConferenceResource {
     ConferenceService conferenceService;
 
     @Inject
+    ConferenceUnsubscribeService unsubscribeService;
+
+    @Inject
     MailResource mailResource;
 
     @Inject
     BulkEmailService bulkEmailService;
+
+    @Inject
+    ConferenceMailService conferenceMailService;
+
+    @Inject
+    ConferenceMailRenderer conferenceMailRenderer;
+
+    @Inject
+    ConferenceRecipientResolver conferenceRecipientResolver;
 
     @Inject
     PhaseSlackNotifier phaseSlackNotifier;
@@ -108,8 +126,17 @@ public class ConferenceResource {
     @GET
     @Path("/{conferenceuuid}/participants")
     public List<ParticipantView> findAllConferenceParticipants(@PathParam("conferenceuuid") String conferenceuuid) {
-        return conferenceService.findAllConferenceParticipants(conferenceuuid)
-                .stream().map(ParticipantView::from).toList();
+        Map<String, LocalDateTime> suppressions = unsubscribeService.suppressionTimesFresh(conferenceuuid);
+        return conferenceService.findAllConferenceParticipants(conferenceuuid).stream().map(participant -> {
+            // Historical malformed addresses stay administratively editable, but cannot be sent.
+            LocalDateTime withdrawnAt = null;
+            try {
+                withdrawnAt = suppressions.get(ConferenceUnsubscribeService.normalizeEmail(participant.getEmail()));
+            } catch (WebApplicationException ignored) {
+                // The send resolver explicitly rejects this invalid current recipient.
+            }
+            return ParticipantView.from(participant, withdrawnAt);
+        }).toList();
     }
 
     @GET
@@ -130,13 +157,18 @@ public class ConferenceResource {
     @Transactional
     @RolesAllowed({"conference:write"})
     public void addConferencePhase(@PathParam("conferenceuuid") String conferenceuuid, ConferencePhase conferencePhase) {
-        if(conferencePhase.getUuid()==null) throw new IllegalArgumentException("ConferencePhase must have a uuid");
+        if (conferencePhase == null || conferencePhase.getUuid() == null)
+            throw new BadRequestException("ConferencePhase must have a uuid");
+        if (!conferenceuuid.equals(conferencePhase.getConferenceuuid())) throw new BadRequestException("Conference phase list mismatch");
+        ConferencePhase existing = ConferencePhase.findById(conferencePhase.getUuid());
+        if (existing != null && !conferenceuuid.equals(existing.getConferenceuuid())) throw new BadRequestException("Conference phase list mismatch");
+        conferenceMailRenderer.preparePhase(conferencePhase);
         ConferencePhase.findByIdOptional(conferencePhase.getUuid()).ifPresentOrElse(cp -> updatePhase(conferencePhase), conferencePhase::persist);
     }
 
     private void updatePhase(ConferencePhase conferencePhase) {
-        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6, mailJson = ?7 where uuid = ?8",
-                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getMailJson(), conferencePhase.getUuid());
+        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6, mailJson = ?7, unsubscribeFooter = ?8 where uuid = ?9",
+                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getMailJson(), conferencePhase.getUnsubscribeFooter(), conferencePhase.getUuid());
     }
 
     @DELETE
@@ -312,7 +344,10 @@ public class ConferenceResource {
     @PermitAll
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants")
     public void createParticipant(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, ConferenceParticipant conferenceParticipant) {
+        // Field limits first: an over-length field names itself, and that contract predates
+        // address validation. Both guards still run before any event is published.
         rejectOversizedFields(conferenceParticipant);
+        conferenceParticipant.setEmail(validatedParticipantEmail(conferenceParticipant.getEmail()));
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
@@ -330,7 +365,10 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/participants")
     @RolesAllowed({"conference:write"})
     public void updateParticipantData(@PathParam("conferenceuuid") String conferenceUUID, ConferenceParticipant conferenceParticipant) {
+        // Field limits first: an over-length field names itself, and that contract predates
+        // address validation. Both guards still run before any event is published.
         rejectOversizedFields(conferenceParticipant);
+        conferenceParticipant.setEmail(validatedParticipantEmail(conferenceParticipant.getEmail()));
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
@@ -352,7 +390,7 @@ public class ConferenceResource {
     @POST
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants/list")
     @RolesAllowed({"conference:write"})
-    public void changeParticipantPhase(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, List<ConferenceParticipant> conferenceParticipantList) {
+    public Response changeParticipantPhase(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, List<ConferenceParticipant> conferenceParticipantList) {
         // Validate the whole batch up front: each participant is written by a separate
         // async event, so a single oversized row would otherwise vanish on its own while
         // the other N-1 succeed and the caller still sees 204.
@@ -361,34 +399,16 @@ public class ConferenceResource {
         // Fetch the target phase to check for email and attachments
         ConferencePhase targetPhase = conferenceService.findConferencePhase(conferenceUUID, phaseNumber);
 
-        // If phase uses email and has attachments, create a bulk email job for all participants
-        if (targetPhase.isUseMail() && targetPhase.hasAttachments()) {
-            log.info("Phase " + phaseNumber + " has attachments, creating bulk email job for " + conferenceParticipantList.size() + " participants");
-
-            // Collect recipient emails
-            List<String> recipientEmails = conferenceParticipantList.stream()
-                    .map(ConferenceParticipant::getEmail)
-                    .toList();
-
-            // Convert phase attachments to email attachments
-            List<EmailAttachment> emailAttachments = targetPhase.getAttachments().stream()
-                    .map(ConferencePhaseAttachment::toEmailAttachment)
-                    .toList();
-
-            // Decode the Base64-encoded mail body
-            String decodedBody = new String(org.apache.commons.codec.binary.Base64.decodeBase64(targetPhase.getMail().getBytes()));
-
-            // Create bulk email request
-            BulkEmailRequest bulkEmailRequest = new BulkEmailRequest(
-                    targetPhase.getSubject(),
-                    decodedBody,
-                    recipientEmails,
-                    emailAttachments
-            );
-
-            // Create the bulk email job
-            bulkEmailService.createBulkEmailJob(bulkEmailRequest);
-            log.info("Bulk email job created for phase transition with " + emailAttachments.size() + " attachments");
+        int notificationInvalid = 0;
+        Map<String, ConferenceRecipientResolver.ResolvedRecipient> distinct = new TreeMap<>();
+        if (targetPhase.isUseMail()) {
+            for (ConferenceParticipant participant : conferenceParticipantList) {
+                try {
+                    var recipient = conferenceRecipientResolver.resolveOne(conferenceUUID, participant.getParticipantuuid());
+                    distinct.merge(recipient.normalizedEmail(), recipient,
+                            (a, b) -> a.participantUuid().compareTo(b.participantUuid()) <= 0 ? a : b);
+                } catch (RuntimeException e) { notificationInvalid++; }
+            }
         }
 
         // Update each participant's phase in the database (email already sent or will be sent individually)
@@ -397,11 +417,29 @@ public class ConferenceResource {
             conferenceParticipant.setUuid(UUID.randomUUID().toString());
             conferenceParticipant.setConferenceuuid(conferenceUUID);
             conferenceParticipant.setConferencePhase(targetPhase);
-            ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant);
+            ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant, true);
             aggregateEventSender.handleEvent(event);
         });
 
+        int notificationExcluded = 0;
+        String notificationOutcome = "NOT_REQUESTED";
+        if (targetPhase.isUseMail()) {
+            if (distinct.isEmpty()) notificationOutcome = "NOTIFICATION_FAILED";
+            else try {
+                var result = conferenceMailService.queueResolved(conferenceUUID, List.copyOf(distinct.values()),
+                        targetPhase.getSubject(), new String(Base64.getDecoder().decode(targetPhase.getMail()), java.nio.charset.StandardCharsets.UTF_8),
+                        targetPhase.getUnsubscribeFooter(), targetPhase.getAttachments().stream().map(ConferencePhaseAttachment::toEmailAttachment).toList());
+                notificationExcluded = result.excludedUnsubscribedCount();
+                notificationOutcome = result.outcome();
+            } catch (RuntimeException e) {
+                notificationOutcome = "NOTIFICATION_FAILED";
+                log.warnf("Phase mail admission failed for conference %s", conferenceUUID);
+            }
+        }
         phaseSlackNotifier.notifyBatch(targetPhase, conferenceParticipantList);
+        return Response.ok(Map.of("phaseChangeCount", conferenceParticipantList.size(),
+                "emailOutcome", notificationOutcome, "excludedUnsubscribedCount", notificationExcluded,
+                "invalidNotificationCount", notificationInvalid)).build();
     }
 
     @POST
@@ -531,37 +569,10 @@ public class ConferenceResource {
             }
         )
     )
-    public Response message(TrustworksMail mail) {
-        log.info("ConferenceResource.message - Processing email to: " + mail.getTo());
-
-        // If no attachments, use existing deferred send mechanism
-        if (!mail.hasAttachments()) {
-            log.info("No attachments, using deferred send");
-            mailResource.sendingHTML(mail);
-            return Response.ok().build();
-        }
-
-        // Validate attachments
-        try {
-            validateAttachments(mail.getAttachments());
-        } catch (WebApplicationException e) {
-            throw e; // Re-throw JAX-RS exceptions directly
-        }
-
-        // Send immediately with attachments
-        try {
-            mailResource.sendWithAttachments(mail);
-            return Response.ok().build();
-        } catch (Exception e) {
-            log.error("Failed to send email with attachments", e);
-            EmailErrorResponse error = new EmailErrorResponse(
-                "Email send failed",
-                "Failed to send email to " + mail.getTo()
-            );
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(error)
-                    .build();
-        }
+    public Response message(ConferenceMailRequest request) {
+        if (request == null) throw new BadRequestException("Conference mail is required");
+        validateAttachments(request.attachments());
+        return Response.ok(conferenceMailService.send(request)).build();
     }
 
     /**
@@ -599,6 +610,20 @@ public class ConferenceResource {
     }
 
     /**
+     * ConferenceUnsubscribeService.invalid() carries its code in a response entity, which
+     * WebApplicationExceptionMapper discards. Restate it as the exception's own message so
+     * the public signup form gets a usable 400 instead of a bare "HTTP 400 Bad Request".
+     */
+    private static String validatedParticipantEmail(String email) {
+        try {
+            return ConferenceUnsubscribeService.validatedEmail(email);
+        } catch (WebApplicationException e) {
+            throw new WebApplicationException("email: INVALID_RECIPIENT_EMAIL",
+                    Response.status(Response.Status.BAD_REQUEST).build());
+        }
+    }
+
+    /**
      * Validate email attachments according to business rules
      */
     private void validateAttachments(List<EmailAttachment> attachments) {
@@ -619,6 +644,10 @@ public class ConferenceResource {
 
         // Validate individual file sizes and MIME types
         for (EmailAttachment attachment : attachments) {
+            if (attachment == null || attachment.getContent() == null || attachment.getFilename() == null
+                    || attachment.getFilename().isBlank() || attachment.getFilename().length() > 255
+                    || attachment.getFilename().codePoints().anyMatch(Character::isISOControl))
+                throw new BadRequestException("Invalid attachment");
             long fileSize = attachment.getSize();
 
             if (fileSize > MAX_FILE_SIZE_BYTES) {
@@ -665,6 +694,16 @@ public class ConferenceResource {
         }
     }
 
+    @GET
+    @Path("/bulk-message/{jobId}")
+    public Response bulkMessageStatus(@PathParam("jobId") String jobId) {
+        BulkEmailJob job = bulkEmailService.findByUuid(jobId);
+        if (job == null || !"CONFERENCE".equals(job.getMailOrigin())) throw new NotFoundException();
+        return Response.ok(Map.of("jobId", job.getUuid(), "status", job.getStatus().name(),
+                "totalRecipients", job.getTotalRecipients(), "sentCount", job.getSentCount(),
+                "failedCount", job.getFailedCount(), "skippedCount", job.getSkippedCount())).build();
+    }
+
     @POST
     @Path("/bulk-message")
     @RolesAllowed({"conference:write"})
@@ -706,47 +745,15 @@ public class ConferenceResource {
         required = true,
         content = @Content(
             mediaType = MediaType.APPLICATION_JSON,
-            schema = @Schema(implementation = BulkEmailRequest.class),
+            schema = @Schema(implementation = ConferenceBulkMailRequest.class),
             examples = @ExampleObject(
                 value = "{\"subject\": \"Conference Update\", \"body\": \"<html><body>Dear participants...</body></html>\", \"recipients\": [\"participant1@example.com\", \"participant2@example.com\"], \"attachments\": [{\"filename\": \"agenda.pdf\", \"contentType\": \"application/pdf\", \"content\": \"JVBERi0xLjQK...\"}]}"
             )
         )
     )
-    public Response bulkMessage(BulkEmailRequest request) {
-        log.info("ConferenceResource.bulkMessage - Processing bulk email: subject='" +
-                 request.getSubject() + "', recipients=" + request.getRecipients().size());
-
-        // Validate attachments (same rules as single email)
-        if (request.hasAttachments()) {
-            try {
-                validateAttachments(request.getAttachments());
-            } catch (WebApplicationException e) {
-                throw e;
-            }
-        }
-
-        // Create bulk email job
-        try {
-            BulkEmailJob job = bulkEmailService.createBulkEmailJob(request);
-
-            // Return job information
-            Map<String, Object> response = new HashMap<>();
-            response.put("jobId", job.getUuid());
-            response.put("recipientCount", job.getTotalRecipients());
-            response.put("status", job.getStatus().toString());
-            response.put("message", "Bulk email job created successfully. Emails will be sent asynchronously.");
-
-            return Response.ok(response).build();
-
-        } catch (Exception e) {
-            log.error("Failed to create bulk email job", e);
-            EmailErrorResponse error = new EmailErrorResponse(
-                "Bulk email creation failed",
-                "Failed to create bulk email job: " + e.getMessage()
-            );
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(error)
-                    .build();
-        }
+    public Response bulkMessage(ConferenceBulkMailRequest request) {
+        if (request == null) throw new BadRequestException("Conference mail is required");
+        validateAttachments(request.attachments());
+        return Response.ok(conferenceMailService.sendBulk(request)).build();
     }
 }

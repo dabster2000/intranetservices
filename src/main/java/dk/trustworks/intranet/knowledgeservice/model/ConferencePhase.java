@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooter;
+import dk.trustworks.intranet.aggregates.conference.dto.UnsubscribeFooterConverter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +18,10 @@ import java.util.List;
 @Entity
 @Table(name = "conference_phases")
 public class ConferencePhase extends PanacheEntityBase {
+    @Convert(converter = UnsubscribeFooterConverter.class)
+    @Column(name = "unsubscribe_footer", columnDefinition = "JSON")
+    private UnsubscribeFooter unsubscribeFooter;
+
     @Id
     private String uuid;
     private String conferenceuuid;
