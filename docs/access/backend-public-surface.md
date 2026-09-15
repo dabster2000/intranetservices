@@ -13,12 +13,12 @@ That count is Phase 13's burn-down target (findings F-21).
 
 | | Count |
 |---|---|
-| Endpoints | 38 |
-| … reachable with no credential (`@PermitAll`) | 23 |
+| Endpoints | 39 |
+| … reachable with no credential (`@PermitAll`) | 24 |
 | … returning a persistence entity | 11 |
 | … accepting a persistence entity as request body | 2 |
 | Sensitive-named fields on the surface | 3 |
-| Unresolved response shapes | 9 |
+| Unresolved response shapes | 10 |
 
 ## Endpoints
 
@@ -54,6 +54,7 @@ That count is Phase 13's burn-down target (findings F-21).
 | `POST /knowledge/conferences/apply/{conferenceSlug}/{phaseNumber}` | permit-all | `void` | no | — | `ConferenceResource#receiveFormBySlug` |
 | `POST /knowledge/conferences/{conferenceuuid}/apply` | permit-all | `void` | no | — | `ConferenceResource#receiveForm` |
 | `POST /knowledge/conferences/{conferenceuuid}/contact` | permit-all | `void` | no | `jakarta.ws.rs.core.MultivaluedMap<String,String>` | `ConferenceResource#receiveContactForm` |
+| `POST /knowledge/conferences/{conferenceuuid}/downloads/{presentationId}` | permit-all | `jakarta.ws.rs.core.Response` | no | — | `ConferenceDownloadResource#recordRequest` |
 | `POST /knowledge/conferences/{conferenceuuid}/participants` | permit-all | `void` | no | `ConferenceParticipant` **entity** | `ConferenceResource#createParticipant` |
 | `POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants` | permit-all | `void` | no | `ConferenceParticipant` **entity** | `ConferenceResource#createParticipant` |
 | `POST /onboarding/tokens/{tokenUuid}/upload` | permit-all | `jakarta.ws.rs.core.Response` | no | `String` | `OnboardingResource#upload` |
@@ -79,6 +80,7 @@ Recorded as gaps rather than omitted — the snapshot cannot vouch for these.
 - POST /apply/{slug} — returns Response, shape not statically known
 - POST /auth/token — returns Response, shape not statically known
 - POST /cvtool/sync — returns Response, shape not statically known
+- POST /knowledge/conferences/{conferenceuuid}/downloads/{presentationId} — returns Response, shape not statically known
 - POST /knowledge/conferences/{conferenceuuid}/participants — returns Object, shape not statically known
 - POST /knowledge/conferences/{conferenceuuid}/phase/{phasenumber}/participants — returns Object, shape not statically known
 - POST /onboarding/tokens/{tokenUuid}/upload — returns Response, shape not statically known

@@ -123,6 +123,8 @@ quarkus:
       max-form-attribute-size: 40M
     access-log:
       enabled: true
+      # Aggregate-only festival counting: never pair a presentation request with a client IP.
+      exclude-pattern: '^/knowledge/conferences/9ade6f8d-7925-416a-80fd-3548ca462a29/downloads/[^/]+/?$'
       pattern: common #"...traceId=%{X,traceId} spanId=%{X,spanId}" #common
     port: 9093 #registry.hub.docker.com/
   smallrye-health:

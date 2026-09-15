@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.security;
 
+import dk.trustworks.intranet.aggregates.conference.services.ConferenceDownloadCatalog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.MDC;
 import lombok.extern.jbosslog.JBossLog;
@@ -34,6 +35,14 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
     @Override
     public void filter(ContainerRequestContext context) throws IOException {
         String requestPath = uriInfo.getPath();
+        // This public metric intentionally has no person dimension, even if a caller
+        // supplies identity headers or a query parameter. Do not resolve/log an actor.
+        if ("POST".equals(context.getMethod())
+                && ConferenceDownloadCatalog.isAnonymousRequestPath(requestPath)) {
+            requestHeaderHolder.setUserUuid("anonymous");
+            MDC.remove("userUuid");
+            return;
+        }
         boolean compensationRequest = requestPath.startsWith("individual-bonuses")
                 || requestPath.startsWith("/individual-bonuses");
         String requestedBy = context.getHeaders().getFirst("X-Requested-By");
