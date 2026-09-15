@@ -1,5 +1,10 @@
 -- RELEASE GATE: stop admission and ALL old mail workers before applying this migration.
 -- Existing origin cannot be inferred from addresses. Review held rows using trustworthy provenance.
+-- V557 (prod 2026-09-02): a DDL migration that waits on a MariaDB metadata lock hangs the
+-- Quarkus boot silently, queues ahead of every new read on the table, and gets the task
+-- killed as unhealthy. Fail fast instead: `mail` is the busiest table this touches.
+SET SESSION lock_wait_timeout = 20;
+
 ALTER TABLE conference_phases ADD COLUMN unsubscribe_footer JSON NULL;
 ALTER TABLE mail
     MODIFY COLUMN mail VARCHAR(320) NULL,
