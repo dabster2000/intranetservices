@@ -62,6 +62,8 @@ public final class ClientMergeRegistry {
          * off it.
          */
         PERSON,
+        /** One event projected onto both accounts: preserve the union of its attendees. */
+        MEETING,
         /** {@code client_account}: two bands and two owners — a person decides (spec D2). */
         ACCOUNT,
         /** {@code client_month_control}: the row with content wins, the winner on a tie (spec D3). */
@@ -89,6 +91,8 @@ public final class ClientMergeRegistry {
      * leave the other pointing at a tombstone.
      */
     public static final List<Ref> REPOINT = List.of(
+            new Ref("account_calendar_candidate", "client_uuid"),
+            new Ref("account_calendar_review", "client_uuid"),
             new Ref("account_meeting", "client_uuid"),
             new Ref("account_person", "client_uuid"),
             new Ref("account_person_identity", "client_uuid"),
@@ -146,6 +150,9 @@ public final class ClientMergeRegistry {
      * empty list is a primary key on the client column alone — one row per client.
      */
     public static final List<Unique> UNIQUE = List.of(
+            new Unique("account_calendar_candidate", "client_uuid", List.of("event_key"), Collapse.UNION),
+            new Unique("account_calendar_review", "client_uuid", List.of("email"), Collapse.UNION),
+            new Unique("account_meeting", "client_uuid", List.of("graph_event_id", "user_uuid"), Collapse.MEETING),
             new Unique("account_person", "client_uuid", List.of("name_key"), Collapse.PERSON),
             new Unique("account_person_identity", "client_uuid", List.of("kind", "value"), Collapse.UNION),
             new Unique("account_slack_digest", "client_uuid", List.of("digest_date"), Collapse.KEEP_WINNER),

@@ -127,7 +127,7 @@ public class AccountPersonService {
      */
     static final List<AccountPersonSource> NAME_PREFERENCE =
             List.of(AccountPersonSource.TRUSTLINK, AccountPersonSource.CALENDAR,
-                    AccountPersonSource.SIGNAL, AccountPersonSource.SLACK);
+                    AccountPersonSource.SIGNAL, AccountPersonSource.SLACK, AccountPersonSource.REVIEW);
 
     /**
      * Which source's job title wins (spec §3.1): TrustLink {@code position} first — the
@@ -1015,7 +1015,25 @@ public class AccountPersonService {
         Set<String> placedHere = readPlacements(clientUuid);
         Registry registry = Registry.of(AccountPerson.listForClient(clientUuid),
                 AccountPersonIdentity.listForClient(clientUuid));
-        return applyDrafts(clientUuid, drafts, colleagues, placedHere, registry, now, new PersistingWriter(em));
+        RegistryWriter writer = new PersistingWriter(em);
+        retireSharedCalendarPeople(registry, writer);
+        return applyDrafts(clientUuid, drafts, colleagues, placedHere, registry, now, writer);
+    }
+
+    /** Remove legacy calendar-only group mailboxes from the visible person registry. */
+    static void retireSharedCalendarPeople(Registry registry, RegistryWriter writer) {
+        for (AccountPerson person : registry.personsByUuid().values()) {
+            if (!"CALENDAR".equals(person.getSources())) continue;
+            List<AccountPersonIdentity> emails = registry.identitiesByKey().values().stream()
+                    .filter(identity -> person.getUuid().equals(identity.getPersonUuid())
+                            && identity.getKind() == AccountPersonIdentityKind.EMAIL).toList();
+            if (!emails.isEmpty() && emails.stream().allMatch(identity ->
+                    dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSharedAddressFilter
+                            .isShared(identity.getValue()))) {
+                person.setSources(AccountPerson.RETIRED_SOURCES);
+                writer.write(person);
+            }
+        }
     }
 
     /**
@@ -1328,9 +1346,26 @@ public class AccountPersonService {
     private List<Sighting> readSightings(String clientUuid) {
         List<Sighting> sightings = new ArrayList<>();
         sightings.addAll(calendarSightings(clientUuid));
+        sightings.addAll(reviewSightings(clientUuid));
         sightings.addAll(trustLinkSightings(clientUuid));
         sightings.addAll(signalSightings(clientUuid));
         sightings.addAll(slackSightings(clientUuid));
+        return sightings;
+    }
+
+    /** A reviewed exact email is a source of identity, not evidence that anyone met. */
+    private List<Sighting> reviewSightings(String clientUuid) {
+        Query query = em.createNativeQuery("""
+                select r.email, p.name from account_calendar_review r
+                  join account_person p on p.uuid=r.person_uuid and p.client_uuid=r.client_uuid
+                 where r.client_uuid=:clientUuid and r.status='STARRED' and p.sources<>''
+                """);
+        query.setParameter("clientUuid", clientUuid);
+        List<Sighting> sightings = new ArrayList<>();
+        for (Object[] row : rowsOf(query)) {
+            add(sightings, sighting(AccountPersonSource.REVIEW, asString(row[1]), asString(row[0]),
+                    null, null, null));
+        }
         return sightings;
     }
 
@@ -1357,6 +1392,8 @@ public class AccountPersonService {
 
         List<Sighting> sightings = new ArrayList<>();
         for (Object[] row : rowsOf(query)) {
+            if (dk.trustworks.intranet.aggregates.crm.calendar.services.CalendarSharedAddressFilter
+                    .isShared(asString(row[0]))) continue;
             add(sightings, sighting(AccountPersonSource.CALENDAR, asString(row[1]), asString(row[0]),
                     null, null, null));
         }

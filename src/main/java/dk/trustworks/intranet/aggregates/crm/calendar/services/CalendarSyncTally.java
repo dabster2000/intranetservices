@@ -44,7 +44,11 @@ final class CalendarSyncTally {
      *                      the next run is the same sighting, not a second meeting
      * @param occurredOn    the day of the meeting
      */
-    record UnmatchedDomainSighting(String domain, String graphEventId, LocalDate occurredOn) { }
+    record UnmatchedDomainSighting(String domain, String graphEventId, String icalUid, LocalDate occurredOn) {
+        UnmatchedDomainSighting(String domain, String graphEventId, LocalDate occurredOn) {
+            this(domain, graphEventId, null, occurredOn);
+        }
+    }
 
     /** Keyed by address so one mailbox seeing Malthe in nine meetings writes one row. */
     private final Map<String, LearnedColleagueEmail> learnedEmails = new LinkedHashMap<>();
@@ -54,6 +58,11 @@ final class CalendarSyncTally {
      * sighting of dsb.dk, not three.
      */
     private final Map<String, UnmatchedDomainSighting> unmatchedDomains = new LinkedHashMap<>();
+
+    private final java.util.List<CalendarCandidateService.PendingCandidate> candidates = new java.util.ArrayList<>();
+
+    void candidate(CalendarCandidateService.PendingCandidate candidate) { candidates.add(candidate); }
+    java.util.List<CalendarCandidateService.PendingCandidate> candidates() { return java.util.List.copyOf(candidates); }
 
     private int newlyLearnedEmails;
     private int deliveryDropped;
@@ -92,11 +101,15 @@ final class CalendarSyncTally {
      * unknown company still says somebody keeps meeting the unknown company.
      */
     void unmatchedDomain(String domain, String graphEventId, LocalDate occurredOn) {
+        unmatchedDomain(domain, graphEventId, null, occurredOn);
+    }
+
+    void unmatchedDomain(String domain, String graphEventId, String icalUid, LocalDate occurredOn) {
         if (domain == null || graphEventId == null || occurredOn == null) {
             return;
         }
         unmatchedDomains.putIfAbsent(graphEventId + "|" + domain,
-                new UnmatchedDomainSighting(domain, graphEventId, occurredOn));
+                new UnmatchedDomainSighting(domain, graphEventId, icalUid, occurredOn));
     }
 
     Collection<UnmatchedDomainSighting> unmatchedDomains() {

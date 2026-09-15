@@ -91,7 +91,7 @@ public class CrmRetentionPurgeRun extends PanacheEntityBase {
     @Column(name = "accounts_purged", nullable = false)
     private int accountsPurged;
 
-    /** {@code account_meeting_attendee} rows deleted; the dated {@code account_meeting} rows stay. */
+    /** Calendar attendee, candidate and review PII rows deleted; dated meeting skeletons stay. */
     @Column(name = "meeting_attendees", nullable = false)
     private int meetingAttendees;
 

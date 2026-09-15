@@ -226,6 +226,25 @@ class AccountCalendarSyncPagingTest {
         assertThrows(IllegalStateException.class, () -> service.readCalendar(USER, PRINCIPAL, FROM, TO));
     }
 
+    @Test
+    void aMalformedFirstPageCannotAuthorizePruning() {
+        when(graph.calendarViewWithAttendees(anyString(), anyString(), anyString(), anyString(),
+                anyInt(), any(), any())).thenReturn(new GraphCalendarClient.AttendeeViewResponse(null, null));
+        assertFalse(service.readCalendar(USER, PRINCIPAL, FROM, TO).complete());
+    }
+
+    @Test
+    void revokedConsentStopsBeforeTheNextGraphPage() {
+        when(graph.calendarViewWithAttendees(anyString(), anyString(), anyString(), anyString(),
+                anyInt(), any(), any())).thenReturn(page("first", 250, nextLink(250)));
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var read = service.readCalendar(USER, PRINCIPAL, FROM, TO, () -> calls.getAndIncrement() == 0);
+        assertFalse(read.complete());
+        assertEquals(1, read.pages());
+        verify(graph, times(1)).calendarViewWithAttendees(anyString(), anyString(), anyString(), anyString(),
+                anyInt(), any(), any());
+    }
+
     // ------------------------------------------------------------------------
     // Reading the continuation out of the link
     // ------------------------------------------------------------------------

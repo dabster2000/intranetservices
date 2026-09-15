@@ -17,6 +17,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
+import dk.trustworks.intranet.domain.user.entity.Role;
 
 /**
  * The database half of the calendar filters: it reads the four things
@@ -72,11 +75,41 @@ public class CalendarFilterService {
         CalendarFilters filters = CalendarFilters.of(
                 DeliveryContractIndex.of(loadDeliveryContracts()),
                 ColleagueDirectory.of(loadColleagues(), loadPlacements()),
-                loadColleagueClientEmails());
+                loadColleagueClientEmails()).withCommercialStars(loadCommercialUsers(), loadStarredEmails());
         log.infof("Calendar filters loaded: deliveryPairs=%d colleagues=%d placements=%d knownColleagueEmails=%d",
                 filters.delivery().size(), filters.colleagues().size(),
                 filters.colleagues().placementCount(), filters.knownColleagueEmailCount());
         return filters;
+    }
+
+    CalendarFilters refreshCommercialStars(CalendarFilters filters) {
+        return filters.withCommercialStars(loadCommercialUsers(), loadStarredEmails());
+    }
+
+    private Set<String> loadCommercialUsers() {
+        Set<String> users = new LinkedHashSet<>();
+        for (Role role : Role.<Role>list("role in ?1", List.of("SALES", "PARTNER"))) {
+            if (role.getUseruuid() != null) users.add(role.getUseruuid());
+        }
+        return users;
+    }
+
+    private Map<String, Set<String>> loadStarredEmails() {
+        Map<String, Set<String>> emails = new LinkedHashMap<>();
+        for (Object[] row : resultsOf(em.createNativeQuery("""
+                select distinct s.client_uuid, lower(trim(i.value))
+                  from client_plan_stakeholder s
+                  join account_person_identity i on i.person_uuid = s.person_uuid
+                       and i.client_uuid = s.client_uuid and i.kind = 'EMAIL'
+                  join account_person p on p.uuid = i.person_uuid
+                 where p.kind <> 'COLLEAGUE'
+                """))) {
+            String email = asString(row[1]);
+            if (email != null && !CalendarSharedAddressFilter.isShared(email)) {
+                emails.computeIfAbsent(asString(row[0]), ignored -> new LinkedHashSet<>()).add(email);
+            }
+        }
+        return emails;
     }
 
     /**

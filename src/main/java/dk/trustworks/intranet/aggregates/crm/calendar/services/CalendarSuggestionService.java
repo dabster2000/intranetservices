@@ -104,12 +104,16 @@ public class CalendarSuggestionService {
      * reversed with the numbers intact, and the read filters on status.
      */
     public void record(String userUuid, Collection<UnmatchedDomainSighting> sightings, LocalDateTime now) {
-        if (userUuid == null || sightings == null || sightings.isEmpty()) {
-            return;
-        }
-        for (UnmatchedDomainSighting sighting : sightings) {
+        record(userUuid, sightings, now, 0, null, null, false);
+    }
+
+    /** Writes and reconciles inside the same mailbox generation fence as account meetings. */
+    public void record(String userUuid, Collection<UnmatchedDomainSighting> sightings, LocalDateTime now,
+                       long generation, LocalDateTime from, LocalDateTime to, boolean complete) {
+        if (userUuid == null) return;
+        for (UnmatchedDomainSighting sighting : sightings == null ? List.<UnmatchedDomainSighting>of() : sightings) {
             String uuid = deterministicUuid(sighting.graphEventId(), userUuid, sighting.domain());
-            CalendarUnmatchedMeeting row = CalendarUnmatchedMeeting.findById(uuid);
+            CalendarUnmatchedMeeting row = em.find(CalendarUnmatchedMeeting.class, uuid);
             if (row == null) {
                 row = new CalendarUnmatchedMeeting();
                 row.setUuid(uuid);
@@ -117,8 +121,22 @@ public class CalendarSuggestionService {
                 row.setUserUuid(userUuid);
             }
             row.setOccurredOn(sighting.occurredOn());
+            String icalUid = sighting.icalUid();
+            row.setIcalUid(icalUid == null || icalUid.isBlank() ? null
+                    : icalUid.substring(0, Math.min(255, icalUid.length())));
             row.setSyncedAt(now);
-            row.persist();
+            row.setSyncGeneration(generation);
+            em.persist(row);
+        }
+        if (complete) {
+            // The ledger stores days, not event times. Only prune days fully covered by
+            // this read; the partial first/last day is reconciled by a later complete pass.
+            LocalDate first = from.toLocalDate();
+            if (!from.toLocalTime().equals(java.time.LocalTime.MIDNIGHT)) first = first.plusDays(1);
+            em.flush();
+            em.createQuery("delete from CalendarUnmatchedMeeting where userUuid=:user and occurredOn>=:first and occurredOn<:end and syncGeneration<>:generation")
+                    .setParameter("user", userUuid).setParameter("first", first)
+                    .setParameter("end", to.toLocalDate()).setParameter("generation", generation).executeUpdate();
         }
     }
 
@@ -153,19 +171,7 @@ public class CalendarSuggestionService {
                     ahead, today);
         }
 
-        @SuppressWarnings("unchecked")
-        List<Object[]> rows = em.createNativeQuery("""
-                select domain,
-                       count(*)                        as meetings_total,
-                       sum(case when occurred_on >= :recent then 1 else 0 end) as meetings_90d,
-                       count(distinct user_uuid)       as people_count,
-                       min(occurred_on)                as first_seen,
-                       max(occurred_on)                as last_seen
-                  from calendar_unmatched_meeting
-                 group by domain
-                """)
-                .setParameter("recent", ninetyDaysAgo.toString())
-                .getResultList();
+        List<Object[]> rows = aggregateRows(ninetyDaysAgo);
 
         LocalDateTime now = LocalDateTime.now();
         Set<String> seen = new LinkedHashSet<>();
@@ -195,6 +201,23 @@ public class CalendarSuggestionService {
                 aggregate.delete();
             }
         }
+    }
+
+    /** Unique occurrences, not mailbox copies; unknown legacy identities remain separate. */
+    @SuppressWarnings("unchecked")
+    List<Object[]> aggregateRows(LocalDate recent) {
+        return em.createNativeQuery("""
+                select domain,
+                       count(distinct binary case when nullif(trim(ical_uid),'') is not null
+                           then concat('ical:',ical_uid) else concat('row:',uuid) end) as meetings_total,
+                       count(distinct binary case when occurred_on>=:recent then
+                           case when nullif(trim(ical_uid),'') is not null
+                               then concat('ical:',ical_uid) else concat('row:',uuid) end end) as meetings_90d,
+                       count(distinct user_uuid) as people_count,
+                       min(occurred_on) as first_seen,
+                       max(occurred_on) as last_seen
+                  from calendar_unmatched_meeting group by domain
+                """).setParameter("recent", recent).getResultList();
     }
 
     // ------------------------------------------------------------------------

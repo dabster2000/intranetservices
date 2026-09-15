@@ -112,11 +112,12 @@ class AccountRelationshipMetEdgeTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(em).createNativeQuery(sql.capture());
         String text = sql.getValue();
-        assertTrue(text.contains("group by m.user_uuid, lower(a.email)"),
+        assertTrue(text.contains("select distinct m.user_uuid, i.person_uuid"),
                 "a person on the meeting side is their address, never their display name");
         assertTrue(text.contains("i.kind = 'EMAIL'"), "the address resolves through the registry");
         assertTrue(text.contains("i.value = lower(a.email)"));
-        assertTrue(text.contains("count(distinct m.uuid)"));
+        assertTrue(text.contains("concat('ical:', m.ical_uid)"));
+        assertTrue(text.contains("concat('row:', m.uuid)"));
         verify(query).setParameter("clientUuid", CLIENT);
     }
 
@@ -237,8 +238,45 @@ class AccountRelationshipMetEdgeTest {
      * fixture uses the real types so a change of cast is caught here rather than in production.
      */
     private void row(String userUuid, String personUuid, int meetings, LocalDate lastMet) {
-        rows.add(new Object[]{userUuid, personUuid, BigInteger.valueOf(meetings),
-                Timestamp.valueOf(LocalDateTime.of(lastMet, java.time.LocalTime.of(9, 0)))});
+        for (int i = 0; i < meetings; i++) {
+            event(userUuid, personUuid, "ical:" + lastMet + ":" + i, lastMet);
+        }
+    }
+
+    private void event(String userUuid, String personUuid, String identity, LocalDate day) {
+        rows.add(new Object[]{userUuid, personUuid, identity,
+                Timestamp.valueOf(day.atTime(9, 0))});
+    }
+
+    @Test
+    void aliasesAndMailboxCopiesCountOnceInPersonTotal() {
+        colleague(TOBIAS_UUID, TOBIAS);
+        colleague(KENN_UUID, KENN);
+        contact(MALTHE_UUID, MALTHE);
+        event(TOBIAS_UUID, MALTHE_UUID, "ical:one-event", SEPTEMBER);
+        event(TOBIAS_UUID, MALTHE_UUID, "ical:one-event", SEPTEMBER);
+        event(KENN_UUID, MALTHE_UUID, "ical:one-event", SEPTEMBER);
+        Map<String, Integer> totals = service.collectMeetingEdges(CLIENT, index(), colleagues, edges);
+        assertEquals(2, edges.size(), "both colleagues retain their own meeting evidence");
+        assertEquals(List.of(1, 1), edges.stream().map(RelationEdgeDTO::meetings).toList());
+        assertEquals(1, totals.get(MALTHE_UUID));
+        var people = AccountRelationshipService.people(index(), AccountRelationshipService.groupByPerson(edges),
+                Map.of(), colleagues.directory(), SEPTEMBER, totals);
+        assertEquals(1, people.getFirst().meetings(), "the person total is not a sum of mailbox copies");
+    }
+
+    @Test
+    void duplicateUserRowsForSameHumanDeduplicateSameEvent() {
+        colleague(TOBIAS_UUID, TOBIAS);
+        colleague(KENN_UUID, TOBIAS);
+        contact(MALTHE_UUID, MALTHE);
+        event(TOBIAS_UUID, MALTHE_UUID, "ical:same", SEPTEMBER);
+        event(KENN_UUID, MALTHE_UUID, "ical:same", SEPTEMBER);
+        event(KENN_UUID, MALTHE_UUID, "row:unknown-identity", AUGUST);
+        var totals = service.collectMeetingEdges(CLIENT, index(), colleagues, edges);
+        assertEquals(1, edges.size());
+        assertEquals(2, edges.getFirst().meetings());
+        assertEquals(2, totals.get(MALTHE_UUID));
     }
 
     private void colleague(String userUuid, String name) {
