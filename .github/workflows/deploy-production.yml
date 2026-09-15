@@ -129,6 +129,7 @@ jobs:
               {"name":"INDIVIDUAL_BONUS_MONTHLY_RECONCILIATION_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_GRAPH_CALENDAR_ORGANIZER","value":"career@trustworks.dk"},
+              {"name":"CONFERENCE_MAIL_ENABLED","value":"true"},
               {"name":"DK_TRUSTWORKS_RECRUITMENT_SCHEDULING_METHODB_ENABLED","value":"true"},
               {"name":"FEATURE_DECLARED_AVAILABILITY_MODE","value":"LIVE"},
               {"name":"DECLARED_AVAILABILITY_FLOOR_DATE","value":"2026-10-01"},
